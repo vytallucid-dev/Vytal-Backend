@@ -1,0 +1,1814 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// SECTORS
+// Screener data doesn't include sector — you
+// pre-seed this table and link stocks to it.
+// ─────────────────────────────────────────────
+model Sector {
+  id          String @id @default(uuid())
+  name        String @unique // "IT Services", "Banking", "FMCG" …
+  displayName String @map("display_name")
+  stockCount  Int    @default(0) @map("stock_count")
+
+  // Health score config (JSONB) — populated later
+  healthScoreWeightages Json? @map("health_score_weightages")
+  thresholds            Json? // sector-specific metric floors
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  stocks     Stock[]
+  peerGroups PeerGroup[]
+
+  @@map("sectors")
+}
+
+// ─────────────────────────────────────────────
+// STOCKS
+// One row per company. Created on first ingest.
+// ─────────────────────────────────────────────
+model Stock {
+  id                String        @id @default(uuid())
+  symbol            String        @unique // "TCS", "HDFCBANK"
+  name              String // "Tata Consultancy Services Limited"
+  sectorId          String?       @map("sector_id")
+  exchange          String        @default("NSE")
+  marketCapCategory String?       @map("market_cap_category") // large_cap | mid_cap | small_cap
+  isActive          Boolean       @default(true) @map("is_active")
+  faceValue         Decimal?      @map("face_value") @db.Decimal(10, 2)
+  description       String?
+  industryType      IndustryType  @default(non_financial)
+  fiscalYearEnd     FiscalYearEnd @default(march)
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  sector                   Sector?                           @relation(fields: [sectorId], references: [id])
+  fundamentals             Fundamental[]
+  quarterlyResults         QuarterlyResult[]
+  stockPrices              StockPrice[]
+  fundamentalIngestionLogs FundamentalIngestionLog[]
+  blockDeals               BlockDeal[]
+  dailyPrices              DailyPrice[]
+  corporateEvents          CorporateEvent[]
+  shareholdingPatterns     ShareholdingPattern[]
+  insiderTrades            InsiderTrade[]
+  news                     StockNews[]
+  aiSummaries              AiSummary[]
+  peerGroups               StockPeerGroup[]
+  resultFetchLogs          ResultFetchLog[]
+  bankingFundamentals      BankingFundamental[]
+  bankingQuarterlyResults  BankingQuarterlyResult[]
+  nbfcFundamentals         NbfcFundamental[]
+  nbfcQuarterlyResults     NbfcQuarterlyResult[]
+  liFundamentals           LifeInsuranceFundamental[]
+  liQuarterlyResults       LifeInsuranceQuarterlyResult[]
+  giFundamentals           GeneralInsuranceFundamental[]
+  giQuarterlyResults       GeneralInsuranceQuarterlyResult[]
+
+  @@index([industryType])
+  @@map("stocks")
+}
+
+enum IndustryType {
+  non_financial
+  banking
+  nbfc
+  life_insurance
+  general_insurance
+}
+
+enum FiscalYearEnd {
+  march
+  december
+}
+
+// ─────────────────────────────────────────────
+// FUNDAMENTAL — Annual fundamentals for non-financial companies.
+// One row per stock per fiscal year.
+// Source: NSE Reg 33 Annual XBRL (Ind-AS taxonomy).
+// All monetary values in ₹ Crore. Ratios as decimals (0.15 = 15%).
+// ─────────────────────────────────────────────
+model Fundamental {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  fiscalYear String @map("fiscal_year") // "FY24", "FY25", etc.
+
+  // ── Filing metadata ──
+  reportDate   DateTime @map("report_date") // qe_Date (year-end)
+  filingDate   DateTime @map("filing_date") // broadcast_Date
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type") // "standalone" | "consolidated"
+  source       String // "nse_xbrl_annual" | "nse_xbrl_annual_legacy"
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy") // Decision #19
+
+  // ── P&L ──
+  revenue                Decimal? @db.Decimal(18, 2)
+  otherIncome            Decimal? @map("other_income") @db.Decimal(18, 2)
+  expenses               Decimal? @db.Decimal(18, 2)
+  employeeBenefitExpense Decimal? @map("employee_benefit_expense") @db.Decimal(18, 2)
+  financeCosts           Decimal? @map("finance_costs") @db.Decimal(18, 2)
+  depreciation           Decimal? @db.Decimal(18, 2)
+  profitBeforeTax        Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax                    Decimal? @db.Decimal(18, 2)
+  netProfit              Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── BS — Equity ──
+  equityShareCapital         Decimal? @map("equity_share_capital") @db.Decimal(18, 2)
+  otherEquity                Decimal? @map("other_equity") @db.Decimal(18, 2)
+  totalEquity                Decimal? @map("total_equity") @db.Decimal(18, 2)
+  equityAttributableToOwners Decimal? @map("equity_attributable_to_owners") @db.Decimal(18, 2)
+
+  // ── BS — Liabilities ──
+  borrowingsCurrent                   Decimal? @map("borrowings_current") @db.Decimal(18, 2)
+  borrowingsNoncurrent                Decimal? @map("borrowings_noncurrent") @db.Decimal(18, 2)
+  tradePayablesCurrent                Decimal? @map("trade_payables_current") @db.Decimal(18, 2)
+  tradePayablesNoncurrent             Decimal? @map("trade_payables_noncurrent") @db.Decimal(18, 2)
+  otherCurrentLiabilities             Decimal? @map("other_current_liabilities") @db.Decimal(18, 2)
+  otherNoncurrentLiabilities          Decimal? @map("other_noncurrent_liabilities") @db.Decimal(18, 2)
+  otherCurrentFinancialLiabilities    Decimal? @map("other_current_financial_liabilities") @db.Decimal(18, 2)
+  otherNoncurrentFinancialLiabilities Decimal? @map("other_noncurrent_financial_liabilities") @db.Decimal(18, 2)
+  provisionsCurrent                   Decimal? @map("provisions_current") @db.Decimal(18, 2)
+  provisionsNoncurrent                Decimal? @map("provisions_noncurrent") @db.Decimal(18, 2)
+  currentTaxLiabilities               Decimal? @map("current_tax_liabilities") @db.Decimal(18, 2)
+  deferredTaxLiabilitiesNet           Decimal? @map("deferred_tax_liabilities_net") @db.Decimal(18, 2)
+  currentLiabilities                  Decimal? @map("current_liabilities") @db.Decimal(18, 2)
+  noncurrentLiabilities               Decimal? @map("noncurrent_liabilities") @db.Decimal(18, 2)
+  totalDebt                           Decimal? @map("total_debt") @db.Decimal(18, 2) // derived
+
+  // ── BS — Non-current Assets ──
+  propertyPlantAndEquipment        Decimal? @map("property_plant_and_equipment") @db.Decimal(18, 2)
+  capitalWorkInProgress            Decimal? @map("capital_work_in_progress") @db.Decimal(18, 2)
+  goodwill                         Decimal? @db.Decimal(18, 2)
+  otherIntangibleAssets            Decimal? @map("other_intangible_assets") @db.Decimal(18, 2)
+  intangibleAssetsUnderDevelopment Decimal? @map("intangible_assets_under_development") @db.Decimal(18, 2)
+  noncurrentInvestments            Decimal? @map("noncurrent_investments") @db.Decimal(18, 2)
+  loansNoncurrent                  Decimal? @map("loans_noncurrent") @db.Decimal(18, 2)
+  otherNoncurrentFinancialAssets   Decimal? @map("other_noncurrent_financial_assets") @db.Decimal(18, 2)
+  otherNoncurrentAssets            Decimal? @map("other_noncurrent_assets") @db.Decimal(18, 2)
+  deferredTaxAssetsNet             Decimal? @map("deferred_tax_assets_net") @db.Decimal(18, 2)
+  investmentProperty               Decimal? @map("investment_property") @db.Decimal(18, 2)
+  investmentsEquityMethod          Decimal? @map("investments_equity_method") @db.Decimal(18, 2)
+  noncurrentAssets                 Decimal? @map("noncurrent_assets") @db.Decimal(18, 2)
+
+  // ── BS — Current Assets ──
+  inventories                 Decimal? @db.Decimal(18, 2)
+  currentInvestments          Decimal? @map("current_investments") @db.Decimal(18, 2)
+  tradeReceivablesCurrent     Decimal? @map("trade_receivables_current") @db.Decimal(18, 2)
+  tradeReceivablesNoncurrent  Decimal? @map("trade_receivables_noncurrent") @db.Decimal(18, 2)
+  cashAndCashEquivalents      Decimal? @map("cash_and_cash_equivalents") @db.Decimal(18, 2)
+  bankBalanceOther            Decimal? @map("bank_balance_other") @db.Decimal(18, 2)
+  loansCurrent                Decimal? @map("loans_current") @db.Decimal(18, 2)
+  otherCurrentFinancialAssets Decimal? @map("other_current_financial_assets") @db.Decimal(18, 2)
+  otherCurrentAssets          Decimal? @map("other_current_assets") @db.Decimal(18, 2)
+  currentTaxAssets            Decimal? @map("current_tax_assets") @db.Decimal(18, 2)
+  noncurrentAssetsHeldForSale Decimal? @map("noncurrent_assets_held_for_sale") @db.Decimal(18, 2)
+  currentAssets               Decimal? @map("current_assets") @db.Decimal(18, 2)
+
+  totalAssets Decimal? @map("total_assets") @db.Decimal(18, 2)
+
+  // ── Cash Flow Statement ──
+  cashFromOperating      Decimal? @map("cash_from_operating") @db.Decimal(18, 2)
+  cashFromInvesting      Decimal? @map("cash_from_investing") @db.Decimal(18, 2)
+  cashFromFinancing      Decimal? @map("cash_from_financing") @db.Decimal(18, 2)
+  netCashFlow            Decimal? @map("net_cash_flow") @db.Decimal(18, 2)
+  capex                  Decimal? @db.Decimal(18, 2)
+  proceedsFromBorrowings Decimal? @map("proceeds_from_borrowings") @db.Decimal(18, 2)
+  repaymentsOfBorrowings Decimal? @map("repayments_of_borrowings") @db.Decimal(18, 2)
+  dividendsPaid          Decimal? @map("dividends_paid") @db.Decimal(18, 2)
+  interestPaid           Decimal? @map("interest_paid") @db.Decimal(18, 2)
+  fcf                    Decimal? @db.Decimal(18, 2) // derived
+
+  // ── Per-Share ──
+  basicEps            Decimal? @map("basic_eps") @db.Decimal(10, 4)
+  dilutedEps          Decimal? @map("diluted_eps") @db.Decimal(10, 4)
+  faceValueShare      Decimal? @map("face_value_share") @db.Decimal(10, 4)
+  paidUpEquityCapital Decimal? @map("paid_up_equity_capital") @db.Decimal(18, 2)
+
+  // ── Derived ratios & metrics ──
+  ebitda            Decimal? @db.Decimal(18, 2)
+  netMargin         Decimal? @map("net_margin") @db.Decimal(8, 4) // percent
+  operatingMargin   Decimal? @map("operating_margin") @db.Decimal(8, 4) // percent
+  netWorth          Decimal? @map("net_worth") @db.Decimal(18, 2)
+  bookValuePerShare Decimal? @map("book_value_per_share") @db.Decimal(10, 4)
+  debtToEquity      Decimal? @map("debt_to_equity") @db.Decimal(8, 4)
+  roe               Decimal? @db.Decimal(8, 4) // percent
+  roce              Decimal? @db.Decimal(8, 4) // percent
+  interestCoverage  Decimal? @map("interest_coverage") @db.Decimal(10, 4)
+  receivablesDays   Decimal? @map("receivables_days") @db.Decimal(10, 2)
+  inventoryTurnover Decimal? @map("inventory_turnover") @db.Decimal(10, 4)
+  assetTurnover     Decimal? @map("asset_turnover") @db.Decimal(10, 4)
+
+  // ── YoY growth ──
+  revenueGrowthYoy Decimal? @map("revenue_growth_yoy") @db.Decimal(8, 4)
+  profitGrowthYoy  Decimal? @map("profit_growth_yoy") @db.Decimal(8, 4)
+  epsGrowthYoy     Decimal? @map("eps_growth_yoy") @db.Decimal(8, 4)
+
+  // ── Forward-compat slot for non-XBRL supplements ──
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("fundamentals")
+}
+
+// ─────────────────────────────────────────────
+// QUARTERLY RESULT — Quarterly P&L for non-financial companies.
+// One row per stock per quarter.
+// Source: NSE Reg 33 Quarterly XBRL (Ind-AS taxonomy).
+// ─────────────────────────────────────────────
+model QuarterlyResult {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  quarter    String // "Q1" | "Q2" | "Q3" | "Q4"
+  fiscalYear String @map("fiscal_year") // "FY26"
+
+  // ── Filing metadata ──
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type") // "standalone" | "consolidated"
+  source       String // "nse_xbrl_quarterly" | "nse_xbrl_quarterly_legacy"
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── P&L ──
+  revenue         Decimal? @db.Decimal(18, 2)
+  otherIncome     Decimal? @map("other_income") @db.Decimal(18, 2)
+  expenses        Decimal? @db.Decimal(18, 2)
+  depreciation    Decimal? @db.Decimal(18, 2)
+  interest        Decimal? @db.Decimal(18, 2) // FinanceCosts
+  profitBeforeTax Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax             Decimal? @db.Decimal(18, 2)
+  netProfit       Decimal? @map("net_profit") @db.Decimal(18, 2)
+  operatingProfit Decimal? @map("operating_profit") @db.Decimal(18, 2)
+
+  // ── Derived ──
+  operatingMargin Decimal? @map("operating_margin") @db.Decimal(8, 4)
+  netMargin       Decimal? @map("net_margin") @db.Decimal(8, 4)
+
+  revenueQoq Decimal? @map("revenue_qoq") @db.Decimal(8, 4)
+  revenueYoy Decimal? @map("revenue_yoy") @db.Decimal(8, 4)
+  profitQoq  Decimal? @map("profit_qoq") @db.Decimal(8, 4)
+  profitYoy  Decimal? @map("profit_yoy") @db.Decimal(8, 4)
+
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, quarter, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("quarterly_results")
+}
+
+// ─────────────────────────────────────────────
+// STOCK PRICES (snapshot — latest per stock)
+// Populated from the Meta row in screener CSV.
+// Will be refreshed by yfinance later.
+// ─────────────────────────────────────────────
+model StockPrice {
+  id           String    @id @default(uuid())
+  stockId      String    @unique @map("stock_id")
+  price        Decimal   @db.Decimal(10, 2)
+  marketCap    Decimal?  @map("market_cap") @db.Decimal(20, 2)
+  faceValue    Decimal?  @map("face_value") @db.Decimal(10, 2)
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  open         Decimal?  @db.Decimal(12, 2)
+  high         Decimal?  @db.Decimal(12, 2) // today's high
+  low          Decimal?  @db.Decimal(12, 2) // today's low
+  prevClose    Decimal?  @map("prev_close") @db.Decimal(12, 2)
+  dayChangePct Decimal?  @map("day_change_pct") @db.Decimal(8, 4)
+  volume       BigInt?
+  week52High   Decimal?  @map("week_52_high") @db.Decimal(12, 2)
+  week52Low    Decimal?  @map("week_52_low") @db.Decimal(12, 2)
+  return1m     Decimal?  @map("return_1m") @db.Decimal(12, 4)
+  return3m     Decimal?  @map("return_3m") @db.Decimal(12, 4)
+  return6m     Decimal?  @map("return_6m") @db.Decimal(12, 4)
+  return1y     Decimal?  @map("return_1y") @db.Decimal(12, 4)
+  sparkline    Json? // last 30 close prices array
+  priceDate    DateTime? @map("price_date") @db.Date
+  provider     String    @default("nse-bhavcopy-csv")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@map("stock_prices")
+}
+
+// ─────────────────────────────────────────────
+// INGESTION LOG
+// Every CSV upload is recorded here.
+// Enables idempotent re-runs & audit trail.
+// ─────────────────────────────────────────────
+model FundamentalIngestionLog {
+  id           String   @id @default(uuid())
+  stockId      String?  @map("stock_id")
+  stockSymbol  String   @map("stock_symbol")
+  filename     String
+  status       String // success | partial | failed
+  rowsInserted Int      @default(0) @map("rows_inserted")
+  rowsUpdated  Int      @default(0) @map("rows_updated")
+  errors       Json? // array of {field, message}
+  uploadedAt   DateTime @default(now()) @map("uploaded_at")
+
+  stock Stock? @relation(fields: [stockId], references: [id])
+
+  @@index([stockSymbol])
+  @@index([uploadedAt])
+  @@map("fundamental_logs")
+}
+
+model ResultFetchLog {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+  symbol  String // denormalised for debugging without joins
+
+  quarter    String? // "Q1" | "Q2" | "Q3" | "Q4" — null if fetch failed before parse
+  fiscalYear String? @map("fiscal_year") // "FY25" — null if fetch failed before parse
+  resultType String? @map("result_type") // "consolidated" | "standalone"
+
+  fetchedAt  DateTime @default(now()) @map("fetched_at")
+  durationMs Int?     @map("duration_ms")
+
+  source String // "nse_filings_api" | "nse_xbrl"
+  status String // see below
+  // status values:
+  //   "success"           — filing fetched, parsed, upserted
+  //   "no_new_filing"     — scanner found nothing new for this stock
+  //   "already_ingested"  — filing already stored with same resultType (idempotent skip)
+  //   "standalone_kept"   — stored Standalone; Consolidated not yet available
+  //   "upgraded"          — replaced existing Standalone row with Consolidated
+  //   "skipped"           — intentional skip (e.g., stock outside universe)
+  //   "failed"            — error during fetch/parse/ingest (see `error`)
+
+  xbrlUrl    String?   @map("xbrl_url")
+  filingDate DateTime? @map("filing_date") // only set when filing metadata parsed
+
+  error String? @db.Text
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, quarter, fiscalYear])
+  @@index([stockId, fetchedAt])
+  @@index([status, fetchedAt])
+  @@index([symbol, quarter, fiscalYear])
+  @@map("result_fetch_logs")
+}
+
+// ─────────────────────────────────────────────
+// BLOCK DEALS
+// Stores bulk + block deals for stocks in your
+// universe. Filtered at ingest — not all stocks.
+// ─────────────────────────────────────────────
+model BlockDeal {
+  id              String   @id @default(uuid())
+  stockId         String   @map("stock_id")
+  dealDate        DateTime @map("deal_date") @db.Date
+  dealType        String   @map("deal_type") // "bulk" | "block"
+  clientName      String   @map("client_name")
+  transactionType String   @map("transaction_type") // "buy" | "sell"
+  quantity        BigInt
+  price           Decimal  @db.Decimal(12, 2)
+  valueCr         Decimal? @map("value_cr") @db.Decimal(14, 4) // qty × price / 1e7
+  remarks         String?
+  source          String   @default("nse")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  // Deduplication: same deal can't be inserted twice
+  @@unique([stockId, dealDate, clientName, transactionType, quantity], name: "block_deal_unique")
+  @@index([stockId])
+  @@index([dealDate])
+  @@index([stockId, dealDate])
+  @@map("block_deals")
+}
+
+// ─────────────────────────────────────────────
+// DEAL FETCH LOG
+// Tracks every daily/backfill fetch attempt.
+// Prevents double-fetching and aids debugging.
+// ─────────────────────────────────────────────
+model DealFetchLog {
+  id            String   @id @default(uuid())
+  fetchDate     DateTime @map("fetch_date") @db.Date // date we fetched deals FOR
+  fetchType     String   @map("fetch_type") // "daily" | "backfill"
+  status        String // "success" | "partial" | "failed"
+  totalFetched  Int      @default(0) @map("total_fetched") // from NSE
+  totalInserted Int      @default(0) @map("total_inserted") // after universe filter
+  totalSkipped  Int      @default(0) @map("total_skipped") // not in universe
+  error         String?
+  durationMs    Int?     @map("duration_ms")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([fetchDate, fetchType])
+  @@index([fetchDate])
+  @@map("deal_fetch_logs")
+}
+
+// ─────────────────────────────────────────────
+// DAILY PRICES (history)
+// One row per stock per trading day.
+// Used for: return calculations, sparklines,
+// 52W high/low, health score valuation.
+// Append-only — never update past rows.
+// ─────────────────────────────────────────────
+model DailyPrice {
+  id          String   @id @default(uuid())
+  stockId     String   @map("stock_id")
+  isin        String?
+  date        DateTime @db.Date // trading date UTC midnight
+  open        Decimal  @db.Decimal(12, 2)
+  high        Decimal  @db.Decimal(12, 2)
+  low         Decimal  @db.Decimal(12, 2)
+  close       Decimal  @db.Decimal(12, 2)
+  prevClose   Decimal? @map("prev_close") @db.Decimal(12, 2)
+  volume      BigInt
+  tradedValue Decimal? @map("traded_value") @db.Decimal(16, 4) // ₹ Cr
+  provider    String   @default("nse-bhavcopy-csv")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, date])
+  @@index([stockId])
+  @@index([date])
+  @@index([stockId, date(sort: Desc)]) // for "latest N prices" queries
+  @@map("daily_prices")
+}
+
+// ─────────────────────────────────────────────
+// PRICE FETCH LOG
+// Tracks every EOD fetch. Enables idempotency
+// and provider-level monitoring.
+// ─────────────────────────────────────────────
+model PriceFetchLog {
+  id            String   @id @default(uuid())
+  priceDate     DateTime @map("price_date") @db.Date
+  provider      String
+  status        String // success | partial | failed | market_closed
+  totalFetched  Int      @default(0) @map("total_fetched") // from provider
+  totalInserted Int      @default(0) @map("total_inserted") // after universe filter
+  totalSkipped  Int      @default(0) @map("total_skipped")
+  durationMs    Int?     @map("duration_ms")
+  error         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([priceDate, provider])
+  @@index([priceDate])
+  @@map("price_fetch_logs")
+}
+
+// ─────────────────────────────────────────────
+// CORPORATE EVENTS
+// Upcoming + historical earnings dates,
+// dividend ex-dates, AGMs, board meetings,
+// bonus/split announcements.
+//
+// Design decisions:
+// - Universe-filtered: only stocks in your DB
+// - Upsert on (stockId, eventType, eventDate)
+//   so re-running the weekly job is safe
+// - Separate fields for event-specific data
+//   (dividendAmount for dividends, ratio for bonus)
+// - impactLevel derived during ingestion
+// ─────────────────────────────────────────────
+model CorporateEvent {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+  symbol  String // denormalised for fast queries without join
+
+  eventType String @map("event_type")
+  // Enum values:
+  //   earnings           — quarterly/annual results board meeting
+  //   dividend           — dividend declaration (use exDate for ex-dividend)
+  //   agm                — annual general meeting
+  //   board_meeting      — board meeting (non-results)
+  //   bonus              — bonus share issue
+  //   split              — stock split
+  //   rights             — rights issue
+  //   buyback            — share buyback
+  //   record_date        — record date for any corporate action
+
+  eventDate  DateTime  @map("event_date") @db.Date // the actual event date
+  exDate     DateTime? @map("ex_date") @db.Date // ex-date (dividends, bonus, split)
+  recordDate DateTime? @map("record_date") @db.Date
+
+  description String? // raw NSE description text
+  isConfirmed Boolean @default(true) @map("is_confirmed")
+  impactLevel String  @default("medium") @map("impact_level") // high | medium | low
+
+  // Event-specific data
+  dividendAmount Decimal? @map("dividend_amount") @db.Decimal(10, 2) // ₹ per share
+  dividendType   String?  @map("dividend_type") // interim | final | special
+  bonusRatio     String?  @map("bonus_ratio") // "1:1", "1:2" etc
+  splitRatio     String?  @map("split_ratio") // "2:1", "5:1" etc
+  purpose        String? // raw NSE purpose field
+
+  source    String   @default("nse")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  // Upsert key: same stock + same type + same date = same event
+  @@unique([stockId, eventType, eventDate], name: "corporate_event_unique")
+  @@index([stockId])
+  @@index([eventDate])
+  @@index([eventType])
+  @@index([stockId, eventDate]) // stock timeline queries
+  @@index([eventDate, eventType]) // calendar view queries
+  @@map("corporate_events")
+}
+
+// ─────────────────────────────────────────────
+// EVENTS FETCH LOG
+// Weekly job tracking
+// ─────────────────────────────────────────────
+model EventFetchLog {
+  id            String   @id @default(uuid())
+  fetchType     String   @map("fetch_type") // weekly | backfill | manual
+  fromDate      DateTime @map("from_date") @db.Date
+  toDate        DateTime @map("to_date") @db.Date
+  status        String // success | partial | failed
+  totalFetched  Int      @default(0) @map("total_fetched")
+  totalInserted Int      @default(0) @map("total_inserted")
+  totalUpdated  Int      @default(0) @map("total_updated")
+  totalSkipped  Int      @default(0) @map("total_skipped")
+  durationMs    Int?     @map("duration_ms")
+  error         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("event_fetch_logs")
+}
+
+// ─────────────────────────────────────────────
+// SHAREHOLDING PATTERNS
+// One row per stock per quarter.
+// Append-only — never update past rows.
+// Source: NSE XBRL XML files (fully automated).
+//
+// FII = Foreign Portfolio Investors (Cat I + II)
+// DII = Mutual Funds + Insurance + Banks + FIs
+// Retail = Public (B) - FII - DII
+// ─────────────────────────────────────────────
+model ShareholdingPattern {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+  symbol  String // denormalised for fast queries
+
+  // Quarter identifiers
+  quarter    String // "Q1", "Q2", "Q3", "Q4"
+  fiscalYear String   @map("fiscal_year") // "FY26"
+  asOnDate   DateTime @map("as_on_date") @db.Date // 2025-12-31
+
+  // ── Top-level buckets (%) ──────────────────
+  promoterPct      Decimal @map("promoter_pct") @db.Decimal(8, 4)
+  publicPct        Decimal @map("public_pct") @db.Decimal(8, 4)
+  employeeTrustPct Decimal @default(0) @map("employee_trust_pct") @db.Decimal(8, 4)
+
+  // ── Public breakdown (%) ───────────────────
+  fiiPct    Decimal? @map("fii_pct") @db.Decimal(8, 4) // Foreign Portfolio Investors
+  diiPct    Decimal? @map("dii_pct") @db.Decimal(8, 4) // MF + Insurance + Banks + FIs
+  retailPct Decimal? @map("retail_pct") @db.Decimal(8, 4) // publicPct - fiiPct - diiPct - others
+  othersPct Decimal? @map("others_pct") @db.Decimal(8, 4) // NBFCs, trusts, HNIs etc.
+
+  // ── DII sub-breakdown (%) ─────────────────
+  mutualFundPct Decimal? @map("mutual_fund_pct") @db.Decimal(8, 4)
+  insurancePct  Decimal? @map("insurance_pct") @db.Decimal(8, 4)
+  banksFisPct   Decimal? @map("banks_fis_pct") @db.Decimal(8, 4)
+
+  // ── Pledging (CRITICAL for health score) ──
+  promoterPledgedPct       Decimal? @map("promoter_pledged_pct") @db.Decimal(8, 4)
+  // % of promoter shares that are pledged
+  promoterPledgedSharesPct Decimal? @map("promoter_pledged_shares_pct") @db.Decimal(8, 4)
+  // % of total company shares that are pledged by promoters
+
+  // ── Share counts (for cross-validation) ───
+  totalShares    BigInt? @map("total_shares")
+  promoterShares BigInt? @map("promoter_shares")
+  pledgedShares  BigInt? @map("pledged_shares")
+
+  // ── Source metadata ───────────────────────
+  xbrlUrl    String?  @map("xbrl_url") // the XML file that was parsed
+  sourceDate DateTime @map("source_date") @db.Date // submission date
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, asOnDate])
+  @@index([stockId])
+  @@index([asOnDate])
+  @@index([stockId, asOnDate(sort: Desc)])
+  @@map("shareholding_patterns")
+}
+
+// ─────────────────────────────────────────────
+// SHAREHOLDING FETCH LOG
+// Tracks every XBRL fetch per stock per quarter.
+// ─────────────────────────────────────────────
+model ShareholdingFetchLog {
+  id               String   @id @default(uuid())
+  stockSymbol      String   @map("stock_symbol")
+  stockId          String?  @map("stock_id")
+  fetchType        String   @map("fetch_type") // quarterly | backfill | manual
+  quartersFound    Int      @default(0) @map("quarters_found")
+  quartersInserted Int      @default(0) @map("quarters_inserted")
+  quartersSkipped  Int      @default(0) @map("quarters_skipped")
+  status           String // success | partial | failed
+  error            String?
+  durationMs       Int?     @map("duration_ms")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([stockSymbol])
+  @@index([createdAt])
+  @@map("shareholding_fetch_logs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// INSIDER TRADES
+// SEBI PIT (Prohibition of Insider Trading) Regulations 2015
+// Disclosures under Regulation 7(2) — directors/employees
+// and Regulation 29 — holders of >5% shareholding
+//
+// Source: NSE corporate filings PIT page
+// Frequency: Daily (T+2 disclosure window per SEBI mandate)
+// Append-only — never update past rows
+// ─────────────────────────────────────────────────────────────
+model InsiderTrade {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+  symbol  String // denormalised for fast queries without join
+
+  // ── Disclosure metadata ───────────────────
+  regulation String @map("regulation")
+  // "7(2)"  = director / KMP / designated employee
+  // "29(1)" = acquirer holding ≥ 2% of total shares
+  // "29(2)" = non-promoter creeping acquisition
+  // "30"    = annual disclosure (Reg 30)
+  // "31"    = event-based disclosure (Reg 31)
+
+  intimationDate DateTime @map("intimation_date") @db.Date
+  // Date NSE received / published the disclosure
+
+  // ── Person who traded ─────────────────────
+  personName     String @map("person_name")
+  personCategory String @map("person_category")
+  // "promoter" | "promoter_group" | "director" |
+  // "kmp" | "designated_employee" | "immediate_relative" | "other"
+
+  // ── Transaction detail ────────────────────
+  transactionType String @map("transaction_type")
+  // "buy" | "sell" | "pledge" | "revoke_pledge" |
+  // "inter_se_transfer" | "esos" | "other"
+
+  securityType String @map("security_type")
+  // "equity_shares" | "warrants" | "convertible_debentures" | "other"
+
+  tradeDate DateTime? @map("trade_date") @db.Date
+  // Actual date of trade. Can differ from intimation date.
+  // Nullable — some disclosures don't specify exact trade date.
+
+  // ── Quantity and value ────────────────────
+  securitiesPre Decimal? @map("securities_pre") @db.Decimal(18, 0)
+  // Number of securities held BEFORE this transaction
+
+  securitiesTraded Decimal? @map("securities_traded") @db.Decimal(18, 0)
+  // Number of securities bought/sold in this transaction
+
+  securitiesPost Decimal? @map("securities_post") @db.Decimal(18, 0)
+  // Number of securities held AFTER this transaction
+
+  holdingPctPre   Decimal? @map("holding_pct_pre") @db.Decimal(8, 4)
+  holdingPctPost  Decimal? @map("holding_pct_post") @db.Decimal(8, 4)
+  holdingPctDelta Decimal? @map("holding_pct_delta") @db.Decimal(8, 4)
+  // Computed: holdingPctPost - holdingPctPre
+
+  tradePrice Decimal? @map("trade_price") @db.Decimal(12, 2)
+  // Price per security if disclosed. Not always provided.
+
+  tradeValueCr Decimal? @map("trade_value_cr") @db.Decimal(16, 4)
+  // Computed: (securitiesTraded * tradePrice) / 1e7 — in ₹ Crore
+
+  // ── Acquisition mode ─────────────────────
+  acquisitionMode String? @map("acquisition_mode")
+  // "market" | "off_market" | "preferential_allotment" |
+  // "inter_se_transfer" | "esos" | "rights" | "other"
+
+  // ── Raw NSE data ──────────────────────────
+  remarks     String? // free text from NSE filing
+  exchangeRef String? @map("exchange_ref")
+  // NSE's internal reference number — used for deduplication
+
+  source    String   @default("nse_pit")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  // ── Deduplication key ─────────────────────
+  // Same person, same stock, same trade date, same quantity
+  // cannot appear twice even if NSE re-publishes.
+  // exchangeRef is the strongest dedup key when available.
+  @@unique([stockId, personName, transactionType, tradeDate, securitiesTraded], name: "insider_trade_unique")
+  @@index([stockId])
+  @@index([tradeDate])
+  @@index([intimationDate])
+  @@index([personCategory])
+  @@index([transactionType])
+  @@index([stockId, tradeDate(sort: Desc)]) // stock timeline
+  @@index([stockId, personCategory]) // health score queries
+  @@index([intimationDate, transactionType]) // daily job dedup check
+  @@map("insider_trades")
+}
+
+// ─────────────────────────────────────────────────────────────
+// INSIDER TRADE FETCH LOG
+// Tracks every fetch attempt. Prevents double-fetching.
+// One row per date per fetch type.
+// ─────────────────────────────────────────────────────────────
+model InsiderTradeFetchLog {
+  id        String   @id @default(uuid())
+  fetchDate DateTime @map("fetch_date") @db.Date
+  // The "as of" date we fetched trades FOR (not the run date)
+
+  fetchType String @map("fetch_type")
+  // "daily" | "backfill" | "manual"
+
+  status String
+  // "success" | "partial" | "failed" | "no_data"
+
+  totalFetched Int @default(0) @map("total_fetched")
+  // Records returned by NSE (before universe filter)
+
+  totalInserted Int @default(0) @map("total_inserted")
+  // New records inserted into insider_trades
+
+  totalSkipped Int @default(0) @map("total_skipped")
+  // Skipped: stock not in universe OR already exists (dedup)
+
+  totalFiltered Int @default(0) @map("total_filtered")
+  // Fetched but stock not in our 100-stock universe
+
+  error      String?
+  durationMs Int?     @map("duration_ms")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([fetchDate, fetchType])
+  @@index([fetchDate])
+  @@index([createdAt])
+  @@map("insider_trade_fetch_logs")
+}
+
+// ─────────────────────────────────────────────
+// STOCK NEWS
+// Two sources: NSE announcements + Google News RSS.
+//
+// Content extraction strategy:
+//   NSE high-impact: fetch PDF → extract text → store in contentText
+//   Google non-paywalled: fetch article → extract body → store in contentText
+//   Google paywalled: store RSS snippet in contentText immediately
+//   Always store pdfUrl + externalUrl regardless of extraction
+// ─────────────────────────────────────────────
+model StockNews {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+  symbol  String
+
+  // ── Source ───────────────────────────────
+  sourceType String @map("source_type")
+  // "nse_announcement" | "google_news"
+  sourceId   String @map("source_id")
+  // NSE seqId | Google News RSS GUID
+
+  // ── Raw content (always populated) ──────
+  headline String
+  summary  String?
+  // NSE: attchmntText field (50-100 word excerpt)
+  // Google: RSS description snippet (3-5 sentences)
+
+  // ── Extracted full content (for AI) ─────
+  contentText String? @map("content_text")
+  // NSE high-impact: full PDF text (500-3000 words)
+  // Google non-paywalled: article body text (300-800 words)
+  // Google paywalled: same as summary (RSS snippet)
+  // null = extraction pending or not applicable
+
+  contentSource String? @map("content_source")
+  // "pdf_extracted"    → NSE PDF was fetched and parsed
+  // "article_scraped"  → full article body was scraped
+  // "rss_snippet"      → only RSS description available (paywall)
+  // "pending"          → queued for extraction, not yet done
+  // null               → not attempted (non-high-impact)
+
+  contentTokens Int? @map("content_tokens")
+  // Rough token estimate (chars/4) for Gemini context planning
+  // Used to decide whether to use context caching
+
+  // ── Links (always stored) ─────────────────
+  pdfUrl String? @map("pdf_url")
+  // NSE PDF attachment — direct link to nsearchives.nseindia.com
+  // Pass directly to Gemini OR use stored contentText
+
+  externalUrl String? @map("external_url")
+  // Google News article URL (may be paywalled)
+  // Always stored for reference even if article wasn't scraped
+
+  // ── Classification ────────────────────────
+  category String?
+  // NSE: official category ("Results", "Dividend", "SEBI", etc.)
+  // Google: publication name ("Economic Times", "Mint", etc.)
+
+  subcategory String? @map("subcategory")
+  // NSE sub_category field
+
+  sentiment String?
+  // "positive" | "negative" | "neutral"
+  // Filled by AI in Phase 2, null at ingest time
+
+  isHighImpact Boolean @default(false) @map("is_high_impact")
+
+  // ── Extraction lifecycle ──────────────────
+  extractionStatus String @default("not_applicable") @map("extraction_status")
+  // "not_applicable"  → low-impact item, no extraction needed
+  // "pending"         → high-impact, queued for extraction
+  // "extracted"       → contentText populated successfully
+  // "failed"          → extraction attempted but failed
+  // "skipped"         → paywalled or no PDF
+
+  extractionAttempts Int     @default(0) @map("extraction_attempts")
+  extractionError    String? @map("extraction_error")
+
+  // ── Timestamps ────────────────────────────
+  publishedAt DateTime  @map("published_at")
+  fetchedAt   DateTime  @default(now()) @map("fetched_at")
+  extractedAt DateTime? @map("extracted_at")
+
+  stock       Stock       @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  aiSummaries AiSummary[]
+
+  @@unique([stockId, sourceId])
+  @@index([stockId])
+  @@index([publishedAt(sort: Desc)])
+  @@index([stockId, publishedAt(sort: Desc)])
+  @@index([sourceType])
+  @@index([isHighImpact])
+  @@index([extractionStatus]) // worker queries this to find pending items
+  @@map("stock_news")
+}
+
+// ─────────────────────────────────────────────
+// AI SUMMARIES
+// Gemini-generated summaries linked to news items.
+// Stored separately so:
+//   - Raw content never gets mutated by AI processing
+//   - Summaries can be regenerated (model upgrade, prompt change)
+//   - Context cache hits are tracked for cost optimisation
+//   - Multiple summary types per stock (daily brief, event, earnings)
+// ─────────────────────────────────────────────
+model AiSummary {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+
+  // Which news items were used to generate this summary
+  newsItems StockNews[]
+
+  summaryType String @map("summary_type")
+  // "event_summary"      → single announcement summarised
+  // "daily_brief"        → all news for a stock today (~3 items)
+  // "earnings_analysis"  → deep quarterly results breakdown
+  // "stock_overview"     → rolling narrative for stock page
+
+  content   String // AI-generated markdown text
+  headline  String? // AI-generated 1-line headline (optional)
+  keyPoints Json?   @map("key_points")
+  // Array of bullet points extracted from content
+  // e.g. ["Revenue up 15% YoY", "Management guides for 12% growth"]
+
+  // AI metadata for cost tracking
+  modelVersion String  @map("model_version")
+  promptTokens Int?    @map("prompt_tokens")
+  outputTokens Int?    @map("output_tokens")
+  cacheHit     Boolean @default(false) @map("cache_hit")
+  cachedTokens Int?    @map("cached_tokens")
+  // Tokens served from Gemini context cache (billed at 4x lower rate)
+
+  // Quality
+  isApproved    Boolean @default(true) @map("is_approved")
+  feedbackScore Int?    @map("feedback_score") // -1 | 0 | 1
+
+  generatedAt DateTime @default(now()) @map("generated_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@index([stockId])
+  @@index([summaryType])
+  @@index([generatedAt(sort: Desc)])
+  @@index([stockId, summaryType])
+  @@map("ai_summaries")
+}
+
+// ─────────────────────────────────────────────
+// NEWS FETCH LOG
+// ─────────────────────────────────────────────
+model NewsFetchLog {
+  id               String   @id @default(uuid())
+  fetchType        String   @map("fetch_type")
+  // "nse_daily" | "google_news_daily" | "backfill" | "extraction_worker"
+  status           String
+  stocksProcessed  Int      @default(0) @map("stocks_processed")
+  itemsInserted    Int      @default(0) @map("items_inserted")
+  itemsSkipped     Int      @default(0) @map("items_skipped")
+  itemsExtracted   Int      @default(0) @map("items_extracted")
+  extractionFailed Int      @default(0) @map("extraction_failed")
+  durationMs       Int?     @map("duration_ms")
+  error            String?
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("news_fetch_logs")
+}
+
+// ─────────────────────────────────────────────
+// PEER GROUPS
+// A peer group is a named cluster of stocks
+// within a sector that share the same business
+// model and compete directly. Used for:
+//   - Relative valuation (P/E vs peer avg)
+//   - Health score sector deviation scoring
+//   - UI "Compare with peers" feature
+//
+// Examples:
+//   Sector: Financials
+//   Peer Groups: Large-Cap Private Banks,
+//                PSU Banks, NBFCs — Lending …
+// ─────────────────────────────────────────────
+model PeerGroup {
+  id          String @id @default(uuid())
+  name        String // "Large-Cap Private Banks"
+  displayName String @map("display_name")
+  sectorId    String @map("sector_id")
+  stockCount  Int    @default(0) @map("stock_count")
+
+  // Build order — determines Screener upload sequence
+  // Stocks in the same peer group share a build order number
+  buildOrder Int? @map("build_order")
+
+  // Peer group averages — computed by health score engine
+  // Stored here so they don't need to be recalculated per request
+  avgPeRatio       Decimal?  @map("avg_pe_ratio") @db.Decimal(10, 4)
+  avgPbRatio       Decimal?  @map("avg_pb_ratio") @db.Decimal(10, 4)
+  avgRoe           Decimal?  @map("avg_roe") @db.Decimal(8, 4)
+  avgRoce          Decimal?  @map("avg_roce") @db.Decimal(8, 4)
+  avgNetMargin     Decimal?  @map("avg_net_margin") @db.Decimal(8, 4)
+  avgDebtToEquity  Decimal?  @map("avg_debt_to_equity") @db.Decimal(8, 4)
+  avgRevenueGrowth Decimal?  @map("avg_revenue_growth") @db.Decimal(8, 4)
+  metricsUpdatedAt DateTime? @map("metrics_updated_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sector Sector           @relation(fields: [sectorId], references: [id])
+  stocks StockPeerGroup[]
+
+  @@unique([sectorId, name])
+  @@index([sectorId])
+  @@map("peer_groups")
+}
+
+// ─────────────────────────────────────────────
+// STOCK PEER GROUP (join table)
+// Many-to-many: a stock can technically appear
+// in multiple peer groups across sectors
+// (rare, but e.g. a conglomerate).
+// In practice one stock → one peer group.
+// ─────────────────────────────────────────────
+model StockPeerGroup {
+  id          String @id @default(uuid())
+  stockId     String @map("stock_id")
+  peerGroupId String @map("peer_group_id")
+
+  stock     Stock     @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  peerGroup PeerGroup @relation(fields: [peerGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, peerGroupId])
+  @@index([stockId])
+  @@index([peerGroupId])
+  @@map("stock_peer_groups")
+}
+
+// ─────────────────────────────────────────────
+// PEER GROUP COMPUTATION LOG
+// Tracks every metrics computation run.
+// Both scheduled and manually triggered runs
+// are recorded here for audit + debugging.
+// ─────────────────────────────────────────────
+model PeerGroupComputationLog {
+  id String @id @default(uuid())
+
+  // Scope of this run
+  runType String @map("run_type")
+  // "full"         → all peer groups recomputed
+  // "single"       → one specific peer group
+  // "sector"       → all groups in one sector
+
+  triggerType String @map("trigger_type")
+  // "scheduled"    → cron job
+  // "post_upload"  → triggered after Screener CSV upload
+  // "manual_api"   → admin triggered via API
+  // "manual_seed"  → triggered after initial seeding
+
+  // What was computed
+  peerGroupId String? @map("peer_group_id") // null for full runs
+  sectorId    String? @map("sector_id") // null for single runs
+  fiscalYear  String? @map("fiscal_year") // "FY25" — which year's data was used
+
+  // Results
+  groupsComputed Int @default(0) @map("groups_computed")
+  groupsSkipped  Int @default(0) @map("groups_skipped")
+  // skipped = peer group has < 2 stocks with data (can't compute avg)
+
+  status     String // "success" | "partial" | "failed"
+  error      String?
+  durationMs Int?    @map("duration_ms")
+
+  // Snapshot of computed values (for audit trail)
+  // JSON array of { peerGroupId, name, metrics }
+  computedSnapshot Json? @map("computed_snapshot")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([runType])
+  @@index([peerGroupId])
+  @@map("peer_group_computation_logs")
+}
+
+// ─────────────────────────────────────────────────────────────
+// BACKGROUND JOB SCHEMA
+//
+// A single table for all asynchronous work in the system.
+// Job types covered initially:
+//   - screener_bulk_ingest
+//   - nse_results_scan         (cron-triggered)
+//   - nse_results_backfill     (manual / one-stock backfill)
+//   - health_score_recompute   (post-ingest hook)
+//
+// Add new types as you migrate more pipelines. Type strings live
+// in `src/jobs/types.ts` to avoid magic strings in the codebase.
+// ─────────────────────────────────────────────────────────────
+
+model BackgroundJob {
+  id String @id @default(uuid())
+
+  // Identity / dispatch
+  type     String // e.g. "screener_bulk_ingest"
+  status   String @default("pending") // see status values below
+  priority Int    @default(100) // lower = sooner (default 100, urgent jobs use 10)
+
+  // Inputs / outputs
+  payload      Json // job-specific input (typed per job type)
+  result       Json? // job-specific output summary
+  errorMessage String? @db.Text
+  errorStack   String? @db.Text
+
+  // Progress
+  progress     Int     @default(0) // 0–100
+  progressNote String? // human-readable status line
+
+  // Cancellation (cooperative — handler must check)
+  cancelRequested Boolean @default(false) @map("cancel_requested")
+
+  // Lifecycle
+  createdAt  DateTime  @default(now()) @map("created_at")
+  startedAt  DateTime? @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  durationMs Int?      @map("duration_ms")
+
+  // Audit
+  triggeredBy String // "user:aman" | "cron" | "admin_route" | "hook:result_ingested"
+  attempts    Int    @default(0) // bumped each time the worker picks it up
+  maxAttempts Int    @default(1) @map("max_attempts") // 1 = no retry; >1 = retry on failure
+
+  // Indexes for the worker's "find next pending job" query and for the admin list view
+  @@index([status, priority, createdAt])
+  @@index([type, status])
+  @@index([createdAt])
+  @@map("background_jobs")
+}
+
+// ── Status values (string literals, validated in code) ──
+//
+//   "pending"    — waiting to be picked up
+//   "running"    — worker has claimed it
+//   "succeeded"  — completed without error
+//   "failed"     — error thrown; will not retry (or retries exhausted)
+//   "cancelled"  — user requested cancel; handler honoured it
+//   "abandoned"  — server restarted while running; on next worker boot, stuck "running"
+//                   jobs older than 10 min are marked abandoned
+
+model BankingFundamental {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── P&L (full year) ──
+  interestEarned            Decimal? @map("interest_earned") @db.Decimal(18, 2)
+  interestExpended          Decimal? @map("interest_expended") @db.Decimal(18, 2)
+  interestOnAdvances        Decimal? @map("interest_on_advances") @db.Decimal(18, 2)
+  revenueOnInvestments      Decimal? @map("revenue_on_investments") @db.Decimal(18, 2)
+  interestOnRbiBalances     Decimal? @map("interest_on_rbi_balances") @db.Decimal(18, 2)
+  otherInterest             Decimal? @map("other_interest") @db.Decimal(18, 2)
+  otherIncome               Decimal? @map("other_income") @db.Decimal(18, 2)
+  employeesCost             Decimal? @map("employees_cost") @db.Decimal(18, 2)
+  operatingExpenses         Decimal? @map("operating_expenses") @db.Decimal(18, 2)
+  otherOperatingExpenses    Decimal? @map("other_operating_expenses") @db.Decimal(18, 2)
+  expenditureExclProvisions Decimal? @map("expenditure_excl_provisions") @db.Decimal(18, 2)
+  ppop                      Decimal? @db.Decimal(18, 2)
+  provisions                Decimal? @db.Decimal(18, 2)
+  exceptionalItems          Decimal? @map("exceptional_items") @db.Decimal(18, 2)
+  extraordinaryItems        Decimal? @map("extraordinary_items") @db.Decimal(18, 2)
+  profitBeforeTax           Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax                       Decimal? @db.Decimal(18, 2)
+  profitAfterTax            Decimal? @map("profit_after_tax") @db.Decimal(18, 2)
+  netProfit                 Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── BS (year-end) ──
+  capital                Decimal? @db.Decimal(18, 2)
+  reservesAndSurplus     Decimal? @map("reserves_and_surplus") @db.Decimal(18, 2)
+  reserveExclRevaluation Decimal? @map("reserve_excl_revaluation") @db.Decimal(18, 2)
+  deposits               Decimal? @db.Decimal(18, 2)
+  borrowings             Decimal? @db.Decimal(18, 2)
+  otherLiabilities       Decimal? @map("other_liabilities") @db.Decimal(18, 2)
+  capitalAndLiabilities  Decimal? @map("capital_and_liabilities") @db.Decimal(18, 2)
+  cashAndBalancesWithRbi Decimal? @map("cash_and_balances_with_rbi") @db.Decimal(18, 2)
+  balancesWithBanks      Decimal? @map("balances_with_banks") @db.Decimal(18, 2)
+  investments            Decimal? @db.Decimal(18, 2)
+  advances               Decimal? @db.Decimal(18, 2)
+  fixedAssets            Decimal? @map("fixed_assets") @db.Decimal(18, 2)
+  otherAssets            Decimal? @map("other_assets") @db.Decimal(18, 2)
+  totalAssets            Decimal? @map("total_assets") @db.Decimal(18, 2)
+
+  // ── Cash Flow ──
+  cashFromOperating Decimal? @map("cash_from_operating") @db.Decimal(18, 2)
+  cashFromInvesting Decimal? @map("cash_from_investing") @db.Decimal(18, 2)
+  cashFromFinancing Decimal? @map("cash_from_financing") @db.Decimal(18, 2)
+  netCashFlow       Decimal? @map("net_cash_flow") @db.Decimal(18, 2)
+
+  // ── Asset Quality ──
+  gnpaAbsolute Decimal? @map("gnpa_absolute") @db.Decimal(18, 2)
+  nnpaAbsolute Decimal? @map("nnpa_absolute") @db.Decimal(18, 2)
+  gnpaPct      Decimal? @map("gnpa_pct") @db.Decimal(8, 6) // ratio
+  nnpaPct      Decimal? @map("nnpa_pct") @db.Decimal(8, 6) // ratio
+  pcr          Decimal? @db.Decimal(8, 6) // derived: 1 - (NNPA/GNPA)
+
+  // ── Capital Adequacy ──
+  cet1Ratio            Decimal? @map("cet1_ratio") @db.Decimal(8, 6)
+  additionalTier1Ratio Decimal? @map("additional_tier1_ratio") @db.Decimal(8, 6)
+  tier1Ratio           Decimal? @map("tier1_ratio") @db.Decimal(8, 6) // derived
+
+  // ── Profitability disclosed ──
+  roaDisclosed Decimal? @map("roa_disclosed") @db.Decimal(8, 6)
+
+  // ── Per-Share ──
+  basicEps            Decimal? @map("basic_eps") @db.Decimal(10, 4)
+  dilutedEps          Decimal? @map("diluted_eps") @db.Decimal(10, 4)
+  faceValueShare      Decimal? @map("face_value_share") @db.Decimal(10, 4)
+  paidUpEquityCapital Decimal? @map("paid_up_equity_capital") @db.Decimal(18, 2)
+
+  // ── Derived ──
+  nii                Decimal? @db.Decimal(18, 2)
+  totalIncome        Decimal? @map("total_income") @db.Decimal(18, 2)
+  netInterestMargin  Decimal? @map("net_interest_margin") @db.Decimal(8, 6) // ratio
+  costToIncomeRatio  Decimal? @map("cost_to_income_ratio") @db.Decimal(8, 6)
+  creditCostPct      Decimal? @map("credit_cost_pct") @db.Decimal(8, 6)
+  roe                Decimal? @db.Decimal(8, 6)
+  creditDepositRatio Decimal? @map("credit_deposit_ratio") @db.Decimal(8, 6)
+  netWorth           Decimal? @map("net_worth") @db.Decimal(18, 2)
+  bookValuePerShare  Decimal? @map("book_value_per_share") @db.Decimal(10, 4)
+
+  niiGrowthYoy     Decimal? @map("nii_growth_yoy") @db.Decimal(8, 4)
+  patGrowthYoy     Decimal? @map("pat_growth_yoy") @db.Decimal(8, 4)
+  depositGrowthYoy Decimal? @map("deposit_growth_yoy") @db.Decimal(8, 4)
+  advanceGrowthYoy Decimal? @map("advance_growth_yoy") @db.Decimal(8, 4)
+  assetGrowthYoy   Decimal? @map("asset_growth_yoy") @db.Decimal(8, 4)
+
+  // ── Forward-compat: CASA, Slippage, RWA, total CAR, etc. ──
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("banking_fundamentals")
+}
+
+model BankingQuarterlyResult {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  quarter    String
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── P&L (quarter) ──
+  interestEarned            Decimal? @map("interest_earned") @db.Decimal(18, 2)
+  interestExpended          Decimal? @map("interest_expended") @db.Decimal(18, 2)
+  otherIncome               Decimal? @map("other_income") @db.Decimal(18, 2)
+  employeesCost             Decimal? @map("employees_cost") @db.Decimal(18, 2)
+  operatingExpenses         Decimal? @map("operating_expenses") @db.Decimal(18, 2)
+  expenditureExclProvisions Decimal? @map("expenditure_excl_provisions") @db.Decimal(18, 2)
+  ppop                      Decimal? @db.Decimal(18, 2)
+  provisions                Decimal? @db.Decimal(18, 2)
+  exceptionalItems          Decimal? @map("exceptional_items") @db.Decimal(18, 2)
+  profitBeforeTax           Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax                       Decimal? @db.Decimal(18, 2)
+  profitAfterTax            Decimal? @map("profit_after_tax") @db.Decimal(18, 2)
+  netProfit                 Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── Asset Quality (NULL when audit-pending — Decision #12) ──
+  gnpaAbsolute Decimal? @map("gnpa_absolute") @db.Decimal(18, 2)
+  nnpaAbsolute Decimal? @map("nnpa_absolute") @db.Decimal(18, 2)
+  gnpaPct      Decimal? @map("gnpa_pct") @db.Decimal(8, 6)
+  nnpaPct      Decimal? @map("nnpa_pct") @db.Decimal(8, 6)
+  pcr          Decimal? @db.Decimal(8, 6) // derived
+
+  // ── Capital Adequacy (NULL when audit-pending) ──
+  cet1Ratio            Decimal? @map("cet1_ratio") @db.Decimal(8, 6)
+  additionalTier1Ratio Decimal? @map("additional_tier1_ratio") @db.Decimal(8, 6)
+  tier1Ratio           Decimal? @map("tier1_ratio") @db.Decimal(8, 6)
+
+  // ── Profitability disclosed (NULL when audit-pending) ──
+  roaQuarterly Decimal? @map("roa_quarterly") @db.Decimal(8, 6)
+
+  // ── Audit gating flag ──
+  auditPending Boolean @default(false) @map("audit_pending")
+
+  // ── Derived ──
+  nii               Decimal? @db.Decimal(18, 2)
+  totalIncome       Decimal? @map("total_income") @db.Decimal(18, 2)
+  costToIncomeRatio Decimal? @map("cost_to_income_ratio") @db.Decimal(8, 6)
+  netMargin         Decimal? @map("net_margin") @db.Decimal(8, 4)
+
+  niiQoq Decimal? @map("nii_qoq") @db.Decimal(8, 4)
+  niiYoy Decimal? @map("nii_yoy") @db.Decimal(8, 4)
+  patQoq Decimal? @map("pat_qoq") @db.Decimal(8, 4)
+  patYoy Decimal? @map("pat_yoy") @db.Decimal(8, 4)
+
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, quarter, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("banking_quarterly_results")
+}
+
+model NbfcFundamental {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── P&L (full year) ──
+  revenue                          Decimal? @db.Decimal(18, 2)
+  interestIncome                   Decimal? @map("interest_income") @db.Decimal(18, 2)
+  feeAndCommissionIncome           Decimal? @map("fee_and_commission_income") @db.Decimal(18, 2)
+  netGainOnFairValueChanges        Decimal? @map("net_gain_on_fair_value_changes") @db.Decimal(18, 2)
+  otherIncome                      Decimal? @map("other_income") @db.Decimal(18, 2)
+  totalIncome                      Decimal? @map("total_income") @db.Decimal(18, 2)
+  financeCosts                     Decimal? @map("finance_costs") @db.Decimal(18, 2)
+  feeAndCommissionExpense          Decimal? @map("fee_and_commission_expense") @db.Decimal(18, 2)
+  impairmentOnFinancialInstruments Decimal? @map("impairment_on_financial_instruments") @db.Decimal(18, 2)
+  employeeBenefitExpense           Decimal? @map("employee_benefit_expense") @db.Decimal(18, 2)
+  depreciation                     Decimal? @db.Decimal(18, 2)
+  otherExpenses                    Decimal? @map("other_expenses") @db.Decimal(18, 2)
+  totalExpenses                    Decimal? @map("total_expenses") @db.Decimal(18, 2)
+  profitBeforeTax                  Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax                              Decimal? @db.Decimal(18, 2)
+  netProfit                        Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── BS (year-end) ──
+  // Equity
+  equityShareCapital Decimal? @map("equity_share_capital") @db.Decimal(18, 2)
+  otherEquity        Decimal? @map("other_equity") @db.Decimal(18, 2)
+  totalEquity        Decimal? @map("total_equity") @db.Decimal(18, 2)
+
+  // Financial Assets
+  cashAndCashEquivalents    Decimal? @map("cash_and_cash_equivalents") @db.Decimal(18, 2)
+  bankBalanceOther          Decimal? @map("bank_balance_other") @db.Decimal(18, 2)
+  loans                     Decimal? @db.Decimal(18, 2) // AUM
+  investments               Decimal? @db.Decimal(18, 2)
+  derivativeFinancialAssets Decimal? @map("derivative_financial_assets") @db.Decimal(18, 2)
+  receivablesTrade          Decimal? @map("receivables_trade") @db.Decimal(18, 2)
+  otherFinancialAssets      Decimal? @map("other_financial_assets") @db.Decimal(18, 2)
+  financialAssets           Decimal? @map("financial_assets") @db.Decimal(18, 2)
+
+  // Non-Financial Assets
+  currentTaxAssetsNet              Decimal? @map("current_tax_assets_net") @db.Decimal(18, 2)
+  deferredTaxAssetsNet             Decimal? @map("deferred_tax_assets_net") @db.Decimal(18, 2)
+  propertyPlantAndEquipment        Decimal? @map("property_plant_and_equipment") @db.Decimal(18, 2)
+  capitalWorkInProgress            Decimal? @map("capital_work_in_progress") @db.Decimal(18, 2)
+  intangibleAssetsUnderDevelopment Decimal? @map("intangible_assets_under_development") @db.Decimal(18, 2)
+  goodwill                         Decimal? @db.Decimal(18, 2)
+  otherIntangibleAssets            Decimal? @map("other_intangible_assets") @db.Decimal(18, 2)
+  otherNonFinancialAssets          Decimal? @map("other_non_financial_assets") @db.Decimal(18, 2)
+  nonFinancialAssets               Decimal? @map("non_financial_assets") @db.Decimal(18, 2)
+
+  totalAssets Decimal? @map("total_assets") @db.Decimal(18, 2)
+
+  // Financial Liabilities
+  derivativeFinancialLiabilities Decimal? @map("derivative_financial_liabilities") @db.Decimal(18, 2)
+  payables                       Decimal? @db.Decimal(18, 2)
+  debtSecurities                 Decimal? @map("debt_securities") @db.Decimal(18, 2)
+  borrowings                     Decimal? @db.Decimal(18, 2) // ex debt securities
+  depositsLiabilities            Decimal? @map("deposits_liabilities") @db.Decimal(18, 2)
+  subordinatedLiabilities        Decimal? @map("subordinated_liabilities") @db.Decimal(18, 2)
+  otherFinancialLiabilities      Decimal? @map("other_financial_liabilities") @db.Decimal(18, 2)
+  financialLiabilities           Decimal? @map("financial_liabilities") @db.Decimal(18, 2)
+
+  // Non-Financial Liabilities
+  currentTaxLiabilitiesNet     Decimal? @map("current_tax_liabilities_net") @db.Decimal(18, 2)
+  provisions                   Decimal? @db.Decimal(18, 2)
+  deferredTaxLiabilitiesNet    Decimal? @map("deferred_tax_liabilities_net") @db.Decimal(18, 2)
+  otherNonFinancialLiabilities Decimal? @map("other_non_financial_liabilities") @db.Decimal(18, 2)
+  nonFinancialLiabilities      Decimal? @map("non_financial_liabilities") @db.Decimal(18, 2)
+
+  totalLiabilities Decimal? @map("total_liabilities") @db.Decimal(18, 2)
+
+  // ── Cash Flow ──
+  cashFromOperating Decimal? @map("cash_from_operating") @db.Decimal(18, 2)
+  cashFromInvesting Decimal? @map("cash_from_investing") @db.Decimal(18, 2)
+  cashFromFinancing Decimal? @map("cash_from_financing") @db.Decimal(18, 2)
+  netCashFlow       Decimal? @map("net_cash_flow") @db.Decimal(18, 2)
+
+  // ── Per-Share ──
+  basicEps            Decimal? @map("basic_eps") @db.Decimal(10, 4)
+  dilutedEps          Decimal? @map("diluted_eps") @db.Decimal(10, 4)
+  faceValueShare      Decimal? @map("face_value_share") @db.Decimal(10, 4)
+  paidUpEquityCapital Decimal? @map("paid_up_equity_capital") @db.Decimal(18, 2)
+
+  // ── Derived NBFC-specific ratios ──
+  nim                  Decimal? @db.Decimal(8, 6) // NII / avg(AUM)
+  costToIncomeRatio    Decimal? @map("cost_to_income_ratio") @db.Decimal(8, 6)
+  creditCostPct        Decimal? @map("credit_cost_pct") @db.Decimal(8, 6) // ECL / avg(AUM)
+  spread               Decimal? @db.Decimal(8, 6) // (intInc/avgAUM) - (financeCost/avgBorrowings)
+  capitalToAssetsRatio Decimal? @map("capital_to_assets_ratio") @db.Decimal(8, 6) // proxy for CRAR
+  borrowingsToEquity   Decimal? @map("borrowings_to_equity") @db.Decimal(8, 4) // leverage
+  netWorth             Decimal? @map("net_worth") @db.Decimal(18, 2)
+  bookValuePerShare    Decimal? @map("book_value_per_share") @db.Decimal(10, 4)
+  roe                  Decimal? @db.Decimal(8, 6)
+
+  aumGrowthYoy     Decimal? @map("aum_growth_yoy") @db.Decimal(8, 4)
+  revenueGrowthYoy Decimal? @map("revenue_growth_yoy") @db.Decimal(8, 4)
+  patGrowthYoy     Decimal? @map("pat_growth_yoy") @db.Decimal(8, 4)
+
+  // ── Forward-compat: ECL Stage 1/2/3, GNPA-equivalent, Tier 1, etc. ──
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("nbfc_fundamentals")
+}
+
+model NbfcQuarterlyResult {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  quarter    String
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── P&L (quarter only — no BS for NBFC quarterlies) ──
+  revenue                          Decimal? @db.Decimal(18, 2)
+  interestIncome                   Decimal? @map("interest_income") @db.Decimal(18, 2)
+  feeAndCommissionIncome           Decimal? @map("fee_and_commission_income") @db.Decimal(18, 2)
+  netGainOnFairValueChanges        Decimal? @map("net_gain_on_fair_value_changes") @db.Decimal(18, 2)
+  otherIncome                      Decimal? @map("other_income") @db.Decimal(18, 2)
+  totalIncome                      Decimal? @map("total_income") @db.Decimal(18, 2)
+  financeCosts                     Decimal? @map("finance_costs") @db.Decimal(18, 2)
+  impairmentOnFinancialInstruments Decimal? @map("impairment_on_financial_instruments") @db.Decimal(18, 2)
+  employeeBenefitExpense           Decimal? @map("employee_benefit_expense") @db.Decimal(18, 2)
+  depreciation                     Decimal? @db.Decimal(18, 2)
+  otherExpenses                    Decimal? @map("other_expenses") @db.Decimal(18, 2)
+  totalExpenses                    Decimal? @map("total_expenses") @db.Decimal(18, 2)
+  profitBeforeTax                  Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax                              Decimal? @db.Decimal(18, 2)
+  netProfit                        Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── Derived ──
+  nii       Decimal? @db.Decimal(18, 2) // intIncome - financeCosts
+  netMargin Decimal? @map("net_margin") @db.Decimal(8, 4)
+
+  revenueQoq Decimal? @map("revenue_qoq") @db.Decimal(8, 4)
+  revenueYoy Decimal? @map("revenue_yoy") @db.Decimal(8, 4)
+  patQoq     Decimal? @map("pat_qoq") @db.Decimal(8, 4)
+  patYoy     Decimal? @map("pat_yoy") @db.Decimal(8, 4)
+
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, quarter, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("nbfc_quarterly_results")
+}
+
+model LifeInsuranceFundamental {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── Revenue Account (Policyholders) ──
+  grossPremiumIncome        Decimal? @map("gross_premium_income") @db.Decimal(18, 2)
+  netPremiumIncome          Decimal? @map("net_premium_income") @db.Decimal(18, 2)
+  incomeFirstYearPremium    Decimal? @map("income_first_year_premium") @db.Decimal(18, 2)
+  incomeRenewalPremium      Decimal? @map("income_renewal_premium") @db.Decimal(18, 2)
+  incomeSinglePremium       Decimal? @map("income_single_premium") @db.Decimal(18, 2)
+  reinsuranceCeded          Decimal? @map("reinsurance_ceded") @db.Decimal(18, 2)
+  incomeFromInvestments     Decimal? @map("income_from_investments") @db.Decimal(18, 2)
+  otherIncomePolicyholders  Decimal? @map("other_income_policyholders") @db.Decimal(18, 2)
+  totalRevenuePolicyholders Decimal? @map("total_revenue_policyholders") @db.Decimal(18, 2)
+
+  // ── Commission expenses ──
+  commissionFirstYearPremium Decimal? @map("commission_first_year_premium") @db.Decimal(18, 2)
+  commissionRenewalPremium   Decimal? @map("commission_renewal_premium") @db.Decimal(18, 2)
+  commissionSinglePremium    Decimal? @map("commission_single_premium") @db.Decimal(18, 2)
+  totalCommission            Decimal? @map("total_commission") @db.Decimal(18, 2)
+
+  // ── Operating expenses ──
+  employeesRemuneration     Decimal? @map("employees_remuneration") @db.Decimal(18, 2)
+  administrationExpenses    Decimal? @map("administration_expenses") @db.Decimal(18, 2)
+  advertisementAndPublicity Decimal? @map("advertisement_and_publicity") @db.Decimal(18, 2)
+  totalOperatingExpenses    Decimal? @map("total_operating_expenses") @db.Decimal(18, 2)
+
+  // ── Benefits paid & change in reserves ──
+  benefitsPaidNet                  Decimal? @map("benefits_paid_net") @db.Decimal(18, 2)
+  changeInValuationOfLiabilities   Decimal? @map("change_in_valuation_of_liabilities") @db.Decimal(18, 2)
+  allocationOfBonusToPolicyholders Decimal? @map("allocation_of_bonus_to_policyholders") @db.Decimal(18, 2)
+
+  // ── Surplus from Revenue Account ──
+  surplusFromRevenueAccount Decimal? @map("surplus_from_revenue_account") @db.Decimal(18, 2)
+
+  // ── P&L (Shareholders' account) ──
+  transferFromPolicyholders         Decimal? @map("transfer_from_policyholders") @db.Decimal(18, 2)
+  incomeFromInvestmentsShareholders Decimal? @map("income_from_investments_shareholders") @db.Decimal(18, 2)
+  otherIncomeShareholders           Decimal? @map("other_income_shareholders") @db.Decimal(18, 2)
+  shareholdersExpenses              Decimal? @map("shareholders_expenses") @db.Decimal(18, 2)
+  profitBeforeTax                   Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax                               Decimal? @db.Decimal(18, 2)
+  netProfit                         Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── BS (year-end) ──
+  // Sources of Funds
+  shareCapital                 Decimal? @map("share_capital") @db.Decimal(18, 2)
+  reservesAndSurplus           Decimal? @map("reserves_and_surplus") @db.Decimal(18, 2)
+  fairValueChangeAccount       Decimal? @map("fair_value_change_account") @db.Decimal(18, 2)
+  borrowings                   Decimal? @db.Decimal(18, 2)
+  policyholdersFunds           Decimal? @map("policyholders_funds") @db.Decimal(18, 2)
+  fundsForFutureAppropriations Decimal? @map("funds_for_future_appropriations") @db.Decimal(18, 2)
+  totalSourcesOfFunds          Decimal? @map("total_sources_of_funds") @db.Decimal(18, 2)
+
+  // Application of Funds
+  investmentsShareholders            Decimal? @map("investments_shareholders") @db.Decimal(18, 2)
+  investmentsPolicyholders           Decimal? @map("investments_policyholders") @db.Decimal(18, 2)
+  assetsHeldToCoverLinkedLiabilities Decimal? @map("assets_held_to_cover_linked_liabilities") @db.Decimal(18, 2)
+  loansApplicationOfFunds            Decimal? @map("loans_application_of_funds") @db.Decimal(18, 2)
+  fixedAssets                        Decimal? @map("fixed_assets") @db.Decimal(18, 2)
+  cashAndBankBalances                Decimal? @map("cash_and_bank_balances") @db.Decimal(18, 2)
+  advancesAndOtherAssets             Decimal? @map("advances_and_other_assets") @db.Decimal(18, 2)
+  currentLiabilities                 Decimal? @map("current_liabilities") @db.Decimal(18, 2)
+  provisions                         Decimal? @db.Decimal(18, 2)
+  miscellaneousExpenditure           Decimal? @map("miscellaneous_expenditure") @db.Decimal(18, 2)
+  debitBalanceProfitAndLoss          Decimal? @map("debit_balance_profit_and_loss") @db.Decimal(18, 2)
+  totalApplicationOfFunds            Decimal? @map("total_application_of_funds") @db.Decimal(18, 2)
+  totalAssets                        Decimal? @map("total_assets") @db.Decimal(18, 2)
+
+  // ── Disclosed insurance-specific ratios ──
+  solvencyRatio           Decimal? @map("solvency_ratio") @db.Decimal(8, 4) // multiple, e.g. 1.77x
+  persistencyRatio13Month Decimal? @map("persistency_ratio_13_month") @db.Decimal(8, 6) // ratio
+  persistencyRatio25Month Decimal? @map("persistency_ratio_25_month") @db.Decimal(8, 6)
+  persistencyRatio37Month Decimal? @map("persistency_ratio_37_month") @db.Decimal(8, 6)
+  persistencyRatio49Month Decimal? @map("persistency_ratio_49_month") @db.Decimal(8, 6)
+  persistencyRatio61Month Decimal? @map("persistency_ratio_61_month") @db.Decimal(8, 6)
+
+  // ── Per-Share ──
+  basicEps            Decimal? @map("basic_eps") @db.Decimal(10, 4)
+  dilutedEps          Decimal? @map("diluted_eps") @db.Decimal(10, 4)
+  faceValueShare      Decimal? @map("face_value_share") @db.Decimal(10, 4)
+  paidUpEquityCapital Decimal? @map("paid_up_equity_capital") @db.Decimal(18, 2)
+
+  // ── Derived ──
+  netWorth          Decimal? @map("net_worth") @db.Decimal(18, 2)
+  bookValuePerShare Decimal? @map("book_value_per_share") @db.Decimal(10, 4)
+  roe               Decimal? @db.Decimal(8, 6)
+
+  // Premium-mix indicator: first-year / total
+  newBusinessPremiumPct Decimal? @map("new_business_premium_pct") @db.Decimal(8, 6)
+
+  // Expense efficiency: opex / total premium
+  expenseRatioPolicyholders Decimal? @map("expense_ratio_policyholders") @db.Decimal(8, 6)
+
+  premiumGrowthYoy Decimal? @map("premium_growth_yoy") @db.Decimal(8, 4)
+  patGrowthYoy     Decimal? @map("pat_growth_yoy") @db.Decimal(8, 4)
+
+  // ── Forward-compat: Embedded Value, VNB, VNB margin, APE ──
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("life_insurance_fundamentals")
+}
+
+model LifeInsuranceQuarterlyResult {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  quarter    String
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── Revenue Account (Policyholders) ──
+  grossPremiumIncome        Decimal? @map("gross_premium_income") @db.Decimal(18, 2)
+  netPremiumIncome          Decimal? @map("net_premium_income") @db.Decimal(18, 2)
+  incomeFirstYearPremium    Decimal? @map("income_first_year_premium") @db.Decimal(18, 2)
+  incomeRenewalPremium      Decimal? @map("income_renewal_premium") @db.Decimal(18, 2)
+  incomeSinglePremium       Decimal? @map("income_single_premium") @db.Decimal(18, 2)
+  reinsuranceCeded          Decimal? @map("reinsurance_ceded") @db.Decimal(18, 2)
+  incomeFromInvestments     Decimal? @map("income_from_investments") @db.Decimal(18, 2)
+  totalRevenuePolicyholders Decimal? @map("total_revenue_policyholders") @db.Decimal(18, 2)
+
+  // ── Commission ──
+  totalCommission Decimal? @map("total_commission") @db.Decimal(18, 2)
+
+  // ── Operating expenses ──
+  totalOperatingExpenses Decimal? @map("total_operating_expenses") @db.Decimal(18, 2)
+
+  // ── Benefits paid ──
+  benefitsPaidNet                Decimal? @map("benefits_paid_net") @db.Decimal(18, 2)
+  changeInValuationOfLiabilities Decimal? @map("change_in_valuation_of_liabilities") @db.Decimal(18, 2)
+
+  // ── P&L (Shareholders' account) ──
+  profitBeforeTax Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax             Decimal? @db.Decimal(18, 2)
+  netProfit       Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── Disclosed ratios (when present in quarterly XBRL) ──
+  solvencyRatio           Decimal? @map("solvency_ratio") @db.Decimal(8, 4)
+  persistencyRatio13Month Decimal? @map("persistency_ratio_13_month") @db.Decimal(8, 6)
+  persistencyRatio25Month Decimal? @map("persistency_ratio_25_month") @db.Decimal(8, 6)
+  persistencyRatio37Month Decimal? @map("persistency_ratio_37_month") @db.Decimal(8, 6)
+  persistencyRatio49Month Decimal? @map("persistency_ratio_49_month") @db.Decimal(8, 6)
+  persistencyRatio61Month Decimal? @map("persistency_ratio_61_month") @db.Decimal(8, 6)
+
+  // ── Derived ──
+  newBusinessPremiumPct     Decimal? @map("new_business_premium_pct") @db.Decimal(8, 6)
+  expenseRatioPolicyholders Decimal? @map("expense_ratio_policyholders") @db.Decimal(8, 6)
+  netMargin                 Decimal? @map("net_margin") @db.Decimal(8, 4)
+
+  premiumQoq Decimal? @map("premium_qoq") @db.Decimal(8, 4)
+  premiumYoy Decimal? @map("premium_yoy") @db.Decimal(8, 4)
+  patQoq     Decimal? @map("pat_qoq") @db.Decimal(8, 4)
+  patYoy     Decimal? @map("pat_yoy") @db.Decimal(8, 4)
+
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, quarter, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("life_insurance_quarterly_results")
+}
+
+model GeneralInsuranceFundamental {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── Revenue Account (Premium) ──
+  grossPremiumsWritten         Decimal? @map("gross_premiums_written") @db.Decimal(18, 2)
+  netPremiumWritten            Decimal? @map("net_premium_written") @db.Decimal(18, 2)
+  netPremium                   Decimal? @map("net_premium") @db.Decimal(18, 2)
+  premiumEarned                Decimal? @map("premium_earned") @db.Decimal(18, 2)
+  reinsuranceCeded             Decimal? @map("reinsurance_ceded") @db.Decimal(18, 2)
+  reinsuranceAccepted          Decimal? @map("reinsurance_accepted") @db.Decimal(18, 2)
+  changeInUnexpiredRiskReserve Decimal? @map("change_in_unexpired_risk_reserve") @db.Decimal(18, 2)
+
+  // ── Investment income ──
+  incomeFromInvestments Decimal? @map("income_from_investments") @db.Decimal(18, 2)
+  otherIncome           Decimal? @map("other_income") @db.Decimal(18, 2)
+  totalRevenue          Decimal? @map("total_revenue") @db.Decimal(18, 2)
+
+  // ── Claims ──
+  claimsPaid                    Decimal? @map("claims_paid") @db.Decimal(18, 2)
+  changeInOutstandingClaims     Decimal? @map("change_in_outstanding_claims") @db.Decimal(18, 2)
+  incurredClaims                Decimal? @map("incurred_claims") @db.Decimal(18, 2)
+  reinsuranceRecoveriesOnClaims Decimal? @map("reinsurance_recoveries_on_claims") @db.Decimal(18, 2)
+
+  // ── Commission ──
+  commissionPaid                    Decimal? @map("commission_paid") @db.Decimal(18, 2)
+  commissionReceivedFromReinsurance Decimal? @map("commission_received_from_reinsurance") @db.Decimal(18, 2)
+  netCommission                     Decimal? @map("net_commission") @db.Decimal(18, 2)
+
+  // ── Operating expenses ──
+  employeesRemuneration                    Decimal? @map("employees_remuneration") @db.Decimal(18, 2)
+  rentRatesAndTaxes                        Decimal? @map("rent_rates_and_taxes") @db.Decimal(18, 2)
+  legalAndProfessionalCharges              Decimal? @map("legal_and_professional_charges") @db.Decimal(18, 2)
+  advertisementAndPublicity                Decimal? @map("advertisement_and_publicity") @db.Decimal(18, 2)
+  totalOperatingExpensesRelatedToInsurance Decimal? @map("total_operating_expenses_related_to_insurance") @db.Decimal(18, 2)
+
+  // ── Underwriting result ──
+  premiumDeficiency        Decimal? @map("premium_deficiency") @db.Decimal(18, 2)
+  underwritingProfitOrLoss Decimal? @map("underwriting_profit_or_loss") @db.Decimal(18, 2)
+
+  // ── P&L (Shareholders' account) ──
+  profitBeforeTax Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax             Decimal? @db.Decimal(18, 2)
+  netProfit       Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── BS (year-end) ──
+  shareCapital           Decimal? @map("share_capital") @db.Decimal(18, 2)
+  reservesAndSurplus     Decimal? @map("reserves_and_surplus") @db.Decimal(18, 2)
+  fairValueChangeAccount Decimal? @map("fair_value_change_account") @db.Decimal(18, 2)
+  borrowings             Decimal? @db.Decimal(18, 2)
+  totalSourcesOfFunds    Decimal? @map("total_sources_of_funds") @db.Decimal(18, 2)
+
+  investments             Decimal? @db.Decimal(18, 2)
+  loansApplicationOfFunds Decimal? @map("loans_application_of_funds") @db.Decimal(18, 2)
+  fixedAssets             Decimal? @map("fixed_assets") @db.Decimal(18, 2)
+  cashAndBankBalances     Decimal? @map("cash_and_bank_balances") @db.Decimal(18, 2)
+  advancesAndOtherAssets  Decimal? @map("advances_and_other_assets") @db.Decimal(18, 2)
+  currentLiabilities      Decimal? @map("current_liabilities") @db.Decimal(18, 2)
+  provisions              Decimal? @db.Decimal(18, 2)
+  totalApplicationOfFunds Decimal? @map("total_application_of_funds") @db.Decimal(18, 2)
+  totalAssets             Decimal? @map("total_assets") @db.Decimal(18, 2)
+
+  // ── Disclosed insurance-specific ratios ──
+  combinedRatio             Decimal? @map("combined_ratio") @db.Decimal(8, 6)
+  incurredClaimRatio        Decimal? @map("incurred_claim_ratio") @db.Decimal(8, 6) // = loss ratio
+  expensesOfManagementRatio Decimal? @map("expenses_of_management_ratio") @db.Decimal(8, 6)
+  netRetentionRatio         Decimal? @map("net_retention_ratio") @db.Decimal(8, 6)
+  solvencyRatio             Decimal? @map("solvency_ratio") @db.Decimal(8, 4)
+
+  // ── Per-Share ──
+  basicEps            Decimal? @map("basic_eps") @db.Decimal(10, 4)
+  dilutedEps          Decimal? @map("diluted_eps") @db.Decimal(10, 4)
+  faceValueShare      Decimal? @map("face_value_share") @db.Decimal(10, 4)
+  paidUpEquityCapital Decimal? @map("paid_up_equity_capital") @db.Decimal(18, 2)
+
+  // ── Derived ──
+  netWorth              Decimal? @map("net_worth") @db.Decimal(18, 2)
+  bookValuePerShare     Decimal? @map("book_value_per_share") @db.Decimal(10, 4)
+  roe                   Decimal? @db.Decimal(8, 6)
+  netUnderwritingMargin Decimal? @map("net_underwriting_margin") @db.Decimal(8, 6) // (1 - combinedRatio)
+
+  gpwGrowthYoy Decimal? @map("gpw_growth_yoy") @db.Decimal(8, 4)
+  patGrowthYoy Decimal? @map("pat_growth_yoy") @db.Decimal(8, 4)
+
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("general_insurance_fundamentals")
+}
+
+model GeneralInsuranceQuarterlyResult {
+  id         String @id @default(cuid())
+  stockId    String @map("stock_id")
+  quarter    String
+  fiscalYear String @map("fiscal_year")
+
+  reportDate   DateTime @map("report_date")
+  filingDate   DateTime @map("filing_date")
+  xbrlUrl      String   @map("xbrl_url")
+  resultType   String   @map("result_type")
+  source       String
+  xbrlTaxonomy String   @default("in_capmkt") @map("xbrl_taxonomy")
+
+  // ── Premium ──
+  grossPremiumsWritten Decimal? @map("gross_premiums_written") @db.Decimal(18, 2)
+  netPremiumWritten    Decimal? @map("net_premium_written") @db.Decimal(18, 2)
+  netPremium           Decimal? @map("net_premium") @db.Decimal(18, 2)
+  premiumEarned        Decimal? @map("premium_earned") @db.Decimal(18, 2)
+
+  // ── Investment income ──
+  incomeFromInvestments Decimal? @map("income_from_investments") @db.Decimal(18, 2)
+  otherIncome           Decimal? @map("other_income") @db.Decimal(18, 2)
+  totalRevenue          Decimal? @map("total_revenue") @db.Decimal(18, 2)
+
+  // ── Claims ──
+  claimsPaid     Decimal? @map("claims_paid") @db.Decimal(18, 2)
+  incurredClaims Decimal? @map("incurred_claims") @db.Decimal(18, 2)
+
+  // ── Commission ──
+  netCommission Decimal? @map("net_commission") @db.Decimal(18, 2)
+
+  // ── Operating expenses ──
+  totalOperatingExpensesRelatedToInsurance Decimal? @map("total_operating_expenses_related_to_insurance") @db.Decimal(18, 2)
+
+  // ── Underwriting result ──
+  underwritingProfitOrLoss Decimal? @map("underwriting_profit_or_loss") @db.Decimal(18, 2)
+
+  // ── P&L ──
+  profitBeforeTax Decimal? @map("profit_before_tax") @db.Decimal(18, 2)
+  tax             Decimal? @db.Decimal(18, 2)
+  netProfit       Decimal? @map("net_profit") @db.Decimal(18, 2)
+
+  // ── Disclosed ratios ──
+  combinedRatio             Decimal? @map("combined_ratio") @db.Decimal(8, 6)
+  incurredClaimRatio        Decimal? @map("incurred_claim_ratio") @db.Decimal(8, 6)
+  expensesOfManagementRatio Decimal? @map("expenses_of_management_ratio") @db.Decimal(8, 6)
+  netRetentionRatio         Decimal? @map("net_retention_ratio") @db.Decimal(8, 6)
+  solvencyRatio             Decimal? @map("solvency_ratio") @db.Decimal(8, 4)
+
+  // ── Derived ──
+  netUnderwritingMargin Decimal? @map("net_underwriting_margin") @db.Decimal(8, 6)
+  netMargin             Decimal? @map("net_margin") @db.Decimal(8, 4)
+
+  gpwQoq Decimal? @map("gpw_qoq") @db.Decimal(8, 4)
+  gpwYoy Decimal? @map("gpw_yoy") @db.Decimal(8, 4)
+  patQoq Decimal? @map("pat_qoq") @db.Decimal(8, 4)
+  patYoy Decimal? @map("pat_yoy") @db.Decimal(8, 4)
+
+  extraMetrics Json? @map("extra_metrics")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, quarter, fiscalYear])
+  @@index([stockId, fiscalYear])
+  @@map("general_insurance_quarterly_results")
+}

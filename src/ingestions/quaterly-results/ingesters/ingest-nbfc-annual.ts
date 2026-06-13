@@ -16,8 +16,8 @@ import {
 
 export async function ingestNbfcAnnual(
   input: { stockId: string; parsed: ParsedNbfcAnnual; source: string },
-  decision: "ingest" | "upgrade" | "refresh",
-): Promise<{ status: "success" | "upgraded" | "refreshed"; rowId: string }> {
+  decision: "ingest" | "refresh",
+): Promise<{ status: "success" | "refreshed"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
 
   // ── Derived NBFC ratios ──
@@ -37,7 +37,13 @@ export async function ingestNbfcAnnual(
   // Avg AUM (Loans) for ratios that require it
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.nbfcFundamental.findUnique({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: priorFY } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: priorFY,
+        resultType: p.resultType, // compare same basis
+      },
+    },
     select: {
       revenue: true,
       netProfit: true,
@@ -265,18 +271,19 @@ export async function ingestNbfcAnnual(
   };
 
   const row = await prisma.nbfcFundamental.upsert({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: p.fiscalYear } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: p.fiscalYear,
+        resultType: p.resultType,
+      },
+    },
     create: data,
     update: data,
   });
 
   return {
-    status:
-      decision === "upgrade"
-        ? "upgraded"
-        : decision === "refresh"
-          ? "refreshed"
-          : "success",
+    status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
   };
 }

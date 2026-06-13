@@ -72,6 +72,15 @@ model Stock {
   giFundamentals           GeneralInsuranceFundamental[]
   giQuarterlyResults       GeneralInsuranceQuarterlyResult[]
 
+  // ── Scoring layer back-relations (additive only; no columns added to `stocks`) ──
+  // These are virtual Prisma relation fields; the FK constraints live on the
+  // score_* child tables. Required so the per-stock scoring relations validate
+  // with onDelete: Cascade (per scoring-schema-design §0).
+  scoringStates   StockScoringState[]
+  scoreSnapshots  ScoreSnapshot[]
+  pillarScores    PillarScore[]
+  guardrailEvents GuardrailEvent[]
+
   @@index([industryType])
   @@map("stocks")
 }
@@ -217,7 +226,7 @@ model Fundamental {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, fiscalYear])
+  @@unique([stockId, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("fundamentals")
 }
@@ -267,7 +276,7 @@ model QuarterlyResult {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, quarter, fiscalYear])
+  @@unique([stockId, quarter, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("quarterly_results")
 }
@@ -342,14 +351,16 @@ model ResultFetchLog {
 
   source String // "nse_filings_api" | "nse_xbrl"
   status String // see below
-  // status values:
+  // status values (dual-basis: BOTH standalone & consolidated are stored; nothing is discarded):
   //   "success"           — filing fetched, parsed, upserted
   //   "no_new_filing"     — scanner found nothing new for this stock
-  //   "already_ingested"  — filing already stored with same resultType (idempotent skip)
-  //   "standalone_kept"   — stored Standalone; Consolidated not yet available
-  //   "upgraded"          — replaced existing Standalone row with Consolidated
-  //   "skipped"           — intentional skip (e.g., stock outside universe)
+  //   "already_ingested"  — every basis for this period already stored (idempotent skip)
+  //   "stored"            — one basis newly stored for this period (only one basis filed at source)
+  //   "both_stored"       — both standalone AND consolidated stored/present for this period
+  //   "refreshed"         — an existing basis row replaced by a newer-dated filing (revision)
+  //   "skipped"           — intentional skip (e.g., stock outside universe / industry mismatch)
   //   "failed"            — error during fetch/parse/ingest (see `error`)
+  //   (retired: "upgraded"/"standalone_kept" — the old discard-and-replace model, no longer emitted)
 
   xbrlUrl    String?   @map("xbrl_url")
   filingDate DateTime? @map("filing_date") // only set when filing metadata parsed
@@ -1217,7 +1228,7 @@ model BankingFundamental {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, fiscalYear])
+  @@unique([stockId, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("banking_fundamentals")
 }
@@ -1285,7 +1296,7 @@ model BankingQuarterlyResult {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, quarter, fiscalYear])
+  @@unique([stockId, quarter, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("banking_quarterly_results")
 }
@@ -1402,7 +1413,7 @@ model NbfcFundamental {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, fiscalYear])
+  @@unique([stockId, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("nbfc_fundamentals")
 }
@@ -1452,7 +1463,7 @@ model NbfcQuarterlyResult {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, quarter, fiscalYear])
+  @@unique([stockId, quarter, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("nbfc_quarterly_results")
 }
@@ -1569,7 +1580,7 @@ model LifeInsuranceFundamental {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, fiscalYear])
+  @@unique([stockId, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("life_insurance_fundamentals")
 }
@@ -1636,7 +1647,7 @@ model LifeInsuranceQuarterlyResult {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, quarter, fiscalYear])
+  @@unique([stockId, quarter, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("life_insurance_quarterly_results")
 }
@@ -1739,7 +1750,7 @@ model GeneralInsuranceFundamental {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, fiscalYear])
+  @@unique([stockId, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("general_insurance_fundamentals")
 }
@@ -1808,7 +1819,843 @@ model GeneralInsuranceQuarterlyResult {
   updatedAt DateTime @updatedAt @map("updated_at")
   stock     Stock    @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@unique([stockId, quarter, fiscalYear])
+  @@unique([stockId, quarter, fiscalYear, resultType]) // dual-basis: one row per (period, standalone|consolidated)
   @@index([stockId, fiscalYear])
   @@map("general_insurance_quarterly_results")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// VYTAL HEALTH SCORE — SCORING-PERSISTENCE LAYER
+// Implements docs/scoring-schema-design.md (LOCKED) + the final rulings.
+// ADDITIVE ONLY. Reads the input tables, never modifies them.
+//
+// Layer-wide conventions (match the append-only exemplars DailyPrice /
+// ShareholdingPattern):
+//   • uuid PKs; @map/@@map snake_case; `score_` table-name prefix.
+//   • APPEND-ONLY: `createdAt` only, NEVER `updatedAt`. A correction/recompute
+//     is a NEW row — rows are never updated in place. An updatedAt column in
+//     this layer would itself be a bug.
+//   • peerGroupId / barPath / sectorId are stored as PLAIN strings captured at
+//     stamp time (frozen — a later PG reshuffle must not rewrite history), NOT
+//     live FKs. This matches the PeerGroupComputationLog precedent and avoids
+//     touching the off-limits PeerGroup/Sector tables.
+//   • Decimal policy: 0–100 scores / weights / percentages → Decimal(8,4);
+//     native metric magnitudes (raw values, bar thresholds, μ/σ, ₹Cr flows,
+//     caps) → Decimal(18,4) to span both ratio- and crore-scale metrics.
+//
+// CADENCE (the rule that shapes the keys — final ruling, overrides the doc's
+// snapshot-owns-pillars draft):
+//   • A pillar (PillarScore + its leaves) is written ONLY when that pillar's
+//     inputs change. It is stock-grain and versioned, NOT a per-snapshot child.
+//   • A ScoreSnapshot REFERENCES the four in-force pillar rows by FK
+//     (foundation/momentum/market/ownershipPillarId). It does NOT own a fresh
+//     copy of all four pillars each recompute.
+//   • Foundation cannot write a duplicate daily row: enforced structurally by
+//     PillarScore @@unique([stockId, pillar, inputsFingerprint]). On a
+//     price-only day Foundation's fingerprint is unchanged → the insert is a
+//     no-op and the new snapshot REUSES the existing Foundation pillar id.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─────────────────────────────────────────────────────────────
+// GROUP 1 — VERSIONING / REPRODUCIBILITY SPINE
+// The four decoupled version axes + the run that stamps every score.
+// ─────────────────────────────────────────────────────────────
+
+enum ScoringRunType {
+  quarterly
+  live
+}
+
+enum ScoringTriggerType {
+  scheduled
+  post_ingest
+  manual_api
+}
+
+enum ScoringRunStatus {
+  running
+  success
+  partial
+  failed
+}
+
+enum BarDirection {
+  higher_better
+  lower_better
+}
+
+// Layer A/B/C derivation evidence tier (kept lowercase per repo enum style).
+enum DerivationLayer {
+  layer_a
+  layer_b
+  layer_c
+}
+
+enum MarketSubComponent {
+  range_52w
+  vs_200dma
+  volatility_vs_sector
+  trend_4q
+}
+
+// §5.3.1 / §5.4.1 anchor-lift rule that fired when computing the L2 anchor.
+enum AnchorLiftRule {
+  rule_5_3_1
+  rule_5_4_1
+}
+
+// The §-numbered methodology in force. Bumped only when the methodology changes.
+model ScoringSpecVersion {
+  id            String   @id @default(uuid())
+  version       String // e.g. "2026.1"
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  notes         String?
+  checksum      String? // checksum of the spec doc
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  runs                  ScoringRun[]
+  metricBarSets         MetricBarSet[]
+  marketBandSets        MarketBandSet[]
+  ownershipFlowBandSets OwnershipFlowBandSet[]
+  snapshots             ScoreSnapshot[]
+  pillarScores          PillarScore[]
+  sectorHealthCaches    SectorHealthCache[]
+
+  @@unique([version])
+  @@map("score_spec_versions")
+}
+
+// One computation run. The computationRunId every score row FKs back to.
+model ScoringRun {
+  id               String             @id @default(uuid())
+  runType          ScoringRunType     @map("run_type")
+  triggerType      ScoringTriggerType @map("trigger_type")
+  specVersionId    String             @map("spec_version_id")
+  asOfDate         DateTime           @map("as_of_date") @db.Date
+  status           ScoringRunStatus   @default(running)
+  startedAt        DateTime?          @map("started_at")
+  finishedAt       DateTime?          @map("finished_at")
+  durationMs       Int?               @map("duration_ms")
+  stocksScored     Int                @default(0) @map("stocks_scored")
+  stocksSuppressed Int                @default(0) @map("stocks_suppressed")
+  error            String?
+  createdAt        DateTime           @default(now()) @map("created_at")
+
+  specVersion        ScoringSpecVersion  @relation(fields: [specVersionId], references: [id])
+  snapshots          ScoreSnapshot[]
+  pillarScores       PillarScore[]
+  peerStats          PeerStatsSnapshot[]
+  sectorHealthCaches SectorHealthCache[]
+
+  @@index([runType, asOfDate])
+  @@map("score_runs")
+}
+
+// Versioned 5-threshold L1 bar set, per (barPath, metric, version).
+// 5 thresholds are HOT relational columns. Score rows reference the exact
+// version in force at their snapshot date; a re-derivation writes a NEW
+// version and never overwrites.
+//
+// BANKING UNIFIED BARS (final ruling 8): inheritance is BAR-SET-ONLY.
+// `inheritsFromPeerGroupId` lets PG6 inherit PG5's Lens-1 metric bar-set.
+// This is the ONLY inheritance pointer in the whole scoring layer — peer-stats
+// (PeerStatsSnapshot) deliberately carry NO such pointer, so it is structurally
+// impossible for PG6 to pull PG5's PeerStatsSnapshot through this link.
+model MetricBarSet {
+  id                      String          @id @default(uuid())
+  barPath                 String          @map("bar_path") // a peerGroupId, or a logical path
+  metricKey               String          @map("metric_key")
+  version                 Int
+  direction               BarDirection
+  excellent               Decimal         @db.Decimal(18, 4)
+  good                    Decimal         @db.Decimal(18, 4)
+  acceptable              Decimal         @db.Decimal(18, 4)
+  concerning              Decimal         @db.Decimal(18, 4)
+  distress                Decimal         @db.Decimal(18, 4)
+  inForceFrom             DateTime        @map("in_force_from") @db.Date
+  specVersionId           String          @map("spec_version_id")
+  provenanceId            String          @map("provenance_id")
+  derivationLayer         DerivationLayer @map("derivation_layer")
+  inheritsFromPeerGroupId String?         @map("inherits_from_peer_group_id") // ruling 8: bar-set only
+  createdAt               DateTime        @default(now()) @map("created_at")
+
+  specVersion  ScoringSpecVersion @relation(fields: [specVersionId], references: [id])
+  provenance   BarProvenance      @relation(fields: [provenanceId], references: [id])
+  metricScores MetricScore[]
+
+  @@unique([barPath, metricKey, version])
+  @@index([barPath, metricKey, inForceFrom(sort: Desc)]) // "bar version in force at snapshot date"
+  @@map("score_metric_bar_sets")
+}
+
+// COLD Layer A/B/C derivation evidence — referenced by a bar set, NOT
+// normalised per-observation. Not indexed for hot reads.
+model BarProvenance {
+  id              String          @id @default(uuid())
+  derivationLayer DerivationLayer @map("derivation_layer")
+  method          String
+  sampleWindow    String?         @map("sample_window")
+  evidence        Json? // the cold blob
+  derivedAt       DateTime        @map("derived_at")
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  barSets MetricBarSet[]
+
+  @@map("score_bar_provenance")
+}
+
+// Versioned band cuts for the 4 Market sub-components.
+// FINAL RULING 7: Market sub-component band cuts ARE per-PG (§10.4) → keyed by
+// peerGroupId. (Overrides the design draft, which keyed only by subComponent.)
+// Cuts stored as explicit ordered columns (p15/p35/p65/p85) for the
+// "crossed a market band" universe scan.
+model MarketBandSet {
+  id            String             @id @default(uuid())
+  peerGroupId   String             @map("peer_group_id") // ruling 7: per-PG
+  subComponent  MarketSubComponent @map("sub_component")
+  version       Int
+  p15           Decimal            @db.Decimal(18, 4)
+  p35           Decimal            @db.Decimal(18, 4)
+  p65           Decimal            @db.Decimal(18, 4)
+  p85           Decimal            @db.Decimal(18, 4)
+  inForceFrom   DateTime           @map("in_force_from") @db.Date
+  specVersionId String             @map("spec_version_id")
+  createdAt     DateTime           @default(now()) @map("created_at")
+
+  specVersion     ScoringSpecVersion @relation(fields: [specVersionId], references: [id])
+  marketSubScores MarketSubScore[]
+
+  @@unique([peerGroupId, subComponent, version])
+  @@index([peerGroupId, subComponent, inForceFrom(sort: Desc)])
+  @@map("score_market_band_sets")
+}
+
+// FINAL RULING 7: the Ownership FLOW band-cut / point values are ONE UNIVERSAL
+// set for every stock — explicitly NOT keyed by peerGroup. Heterogeneous across
+// the band types (Category C net-insider bands, Category D net-block bands,
+// trend-bonus values), so the ordered cut→point pairs are stored as JSON.
+// OwnershipFlowCategory references the version it used (reproducibility).
+model OwnershipFlowBandSet {
+  id            String                @id @default(uuid())
+  bandType      OwnershipFlowBandType @map("band_type")
+  version       Int
+  cuts          Json // ordered { cut, points } pairs — universal, not per-PG
+  inForceFrom   DateTime              @map("in_force_from") @db.Date
+  specVersionId String                @map("spec_version_id")
+  createdAt     DateTime              @default(now()) @map("created_at")
+
+  specVersion    ScoringSpecVersion      @relation(fields: [specVersionId], references: [id])
+  flowCategories OwnershipFlowCategory[]
+
+  @@unique([bandType, version])
+  @@index([bandType, inForceFrom(sort: Desc)])
+  @@map("score_ownership_flow_band_sets")
+}
+
+enum OwnershipFlowBandType {
+  c_net_insider
+  d_net_block
+  trend_bonus
+}
+
+// L2 peer μ/σ per (peerGroup, metric, run). PG-grain, shared by all PG members.
+// FINAL RULING 8: keyed STRICTLY per-PG with NO inheritance pointer — PG6
+// always computes its own Lens-2 / Lens-3. (The draft's inheritsFromPeerGroupId
+// was removed from here and lives only on MetricBarSet.)
+model PeerStatsSnapshot {
+  id              String          @id @default(uuid())
+  peerGroupId     String          @map("peer_group_id")
+  barPath         String          @map("bar_path")
+  metricKey       String          @map("metric_key")
+  runId           String          @map("run_id")
+  asOfDate        DateTime        @map("as_of_date") @db.Date
+  mean            Decimal         @db.Decimal(18, 4)
+  stdDev          Decimal         @map("std_dev") @db.Decimal(18, 4)
+  sampleN         Int             @map("sample_n")
+  anchorLiftFired Boolean         @default(false) @map("anchor_lift_fired") // §5.3.1 / §5.4.1
+  anchorLiftRule  AnchorLiftRule? @map("anchor_lift_rule")
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  run          ScoringRun    @relation(fields: [runId], references: [id])
+  metricScores MetricScore[]
+
+  @@unique([peerGroupId, metricKey, runId])
+  @@index([runId, metricKey])
+  @@map("score_peer_stats")
+}
+
+// Single source of truth for band → label → colour → numeric cut ranges.
+// Each ScoreSnapshot pins the mapping version that produced its band, so a
+// future re-band writes a NEW mapping and old snapshots keep their old mapping.
+model BandMappingVersion {
+  id            String   @id @default(uuid())
+  version       String
+  mapping       Json // band → { label, colour, range }
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  snapshots ScoreSnapshot[]
+
+  @@unique([version])
+  @@map("score_band_mappings")
+}
+
+// ─────────────────────────────────────────────────────────────
+// GROUP 2 — PER-STOCK SCORING STATE (satellite of the off-limits Stock)
+// ─────────────────────────────────────────────────────────────
+
+enum CoverageState {
+  scored
+  covered
+  off_platform
+}
+
+// Coverage state, independent of PG assignment. Lives here because Stock is
+// input-layer and off-limits.
+// APPEND-ONLY (ruling 1): NOT 1:1 — a coverage change writes a NEW row;
+// newest-by-createdAt wins on read. (The draft proposed @@unique([stockId])
+// 1:1, but a single mutable row contradicts the no-update rule.)
+model StockScoringState {
+  id              String        @id @default(uuid())
+  stockId         String        @map("stock_id")
+  symbol          String // denormalised for join-free coverage scans
+  coverageState   CoverageState @map("coverage_state")
+  coverageReason  String?       @map("coverage_reason")
+  lastScoredRunId String?       @map("last_scored_run_id") // plain ref (run id)
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@index([stockId, createdAt(sort: Desc)]) // latest coverage per stock
+  @@index([coverageState])
+  @@map("score_stock_states")
+}
+
+// ─────────────────────────────────────────────────────────────
+// GROUP 3 — THE SCORE SPINE (composite → pillar → leaf)
+// ─────────────────────────────────────────────────────────────
+
+enum SnapshotType {
+  quarterly
+  live
+}
+
+enum LabelBand {
+  fragile
+  below_par
+  steady
+  healthy
+  pristine
+}
+
+enum WeightRedistributionReason {
+  none
+  market_unavailable
+  missing_pillar
+  guardrail_suppression
+}
+
+enum Pillar {
+  foundation
+  momentum
+  market
+  ownership
+}
+
+enum PillarState {
+  scored
+  unavailable_redistributed
+}
+
+// L1 landing band — fixed 5-tier naming (only the threshold VALUES version).
+enum MetricBand {
+  excellent
+  good
+  acceptable
+  concerning
+  distress
+}
+
+// Market sub-component landing band, named by the percentile cut it fell in.
+enum MarketBand {
+  p0_p15
+  p15_p35
+  p35_p65
+  p65_p85
+  p85_p100
+}
+
+enum LensFallback {
+  none
+  l2_to_l1
+  l3_insufficient_history
+}
+
+// FINAL RULING 5 — the three not-scored states + genuine, distinguishable from
+// (scoreState, effectiveWeight, includedInPeerStats):
+//   scored         : effectiveWeight = nominal, includedInPeerStats = true
+//   suppressed     : effectiveWeight = 0,       includedInPeerStats = FALSE (leaves peer μ/σ)
+//   missing_renorm : effectiveWeight = 0,       includedInPeerStats = false
+//   neutral_hold   : score = 60, effectiveWeight = FULL (kept, NOT renormalised),
+//                    includedInPeerStats = TRUE (stays in peer μ/σ — the opposite of suppressed)
+enum MetricScoreState {
+  scored
+  suppressed
+  missing_renorm
+  neutral_hold
+}
+
+// Threshold is 8 consecutive trailing quarters of shareholding data (§11.10-fix
+// supersedes the "3 quarters" line in §11.5).
+enum OwnershipBaselineReason {
+  insufficient_history_60 // < 8 consecutive trailing quarters present — data-absent neutral baseline
+  established_75 // ≥ 8 consecutive trailing quarters present — elevated baseline
+}
+
+enum FlowCategory {
+  A_promoter
+  B_institutional
+  C_insider
+  D_block
+}
+
+// FINAL RULING 6 — dormant ≠ zero. A dormant category contributes 0 WITH the
+// state recorded, never a silent 0. Convention (set by the write path, since a
+// per-category column default is not expressible): Categories C & D default to
+// dormant_no_feed (PIT / bhavcopy not wired yet); A & B to scored.
+enum FlowCategoryState {
+  scored
+  dormant_no_feed
+  dormant_no_data
+}
+
+enum FlowTrendState {
+  accelerating
+  steady
+  reversing
+}
+
+// THE COMPOSITE ROW. References the four in-force pillar rows by FK (ruling 2);
+// it does NOT own a fresh copy of the pillars. Pillar subtotals, applied
+// weights, divergence, and label are denormalised here so the trajectory view
+// (QP2) and "latest live per stock" (req 4) are a single index range scan —
+// safe because the snapshot is immutable, so the copies can never drift.
+//
+// SUPERSEDE / NEWEST-WINS (ruling 3, reconciled with append-only ruling 1):
+// a restated quarter writes a NEW `version` and points `supersedesId` at the
+// prior row. Nothing is overwritten; reads take MAX(version) per
+// (stock, type, periodKey). No mutable isCurrent flag, because flipping it would
+// be an in-place update — forbidden by ruling 1.
+model ScoreSnapshot {
+  id            String       @id @default(uuid())
+  stockId       String       @map("stock_id")
+  symbol        String // denormalised
+  snapshotType  SnapshotType @map("snapshot_type")
+  periodKey     String       @map("period_key") // quarterly: "FY26Q1"; live: "LIVE:<runId>"
+  asOfDate      DateTime     @map("as_of_date") @db.Date
+  runId         String       @map("run_id")
+  specVersionId String       @map("spec_version_id")
+
+  // Supersede / version chain (append-only; newest version wins on read)
+  version      Int     @default(1)
+  supersedesId String? @map("supersedes_id")
+
+  // Membership captured at stamp time — frozen so a PG reshuffle never rewrites history
+  peerGroupId  String @map("peer_group_id")
+  barPath      String @map("bar_path")
+  industryPath String @map("industry_path") // "non_financial" | "banking"
+
+  // Composite + label (ruling 13: band is a cache pinned to its mapping version)
+  composite            Decimal   @db.Decimal(8, 4)
+  labelBand            LabelBand @map("label_band")
+  bandMappingVersionId String    @map("band_mapping_version_id")
+
+  // The four in-force pillar references (ruling 2 — approach (a))
+  foundationPillarId String @map("foundation_pillar_id")
+  momentumPillarId   String @map("momentum_pillar_id")
+  marketPillarId     String @map("market_pillar_id")
+  ownershipPillarId  String @map("ownership_pillar_id")
+
+  // Denormalised pillar subtotals (immutable copies — QP2 trajectory scan)
+  foundationSubtotal Decimal @map("foundation_subtotal") @db.Decimal(8, 4)
+  momentumSubtotal   Decimal @map("momentum_subtotal") @db.Decimal(8, 4)
+  marketSubtotal     Decimal @map("market_subtotal") @db.Decimal(8, 4)
+  ownershipSubtotal  Decimal @map("ownership_subtotal") @db.Decimal(8, 4)
+
+  // Applied weight set inline (§14.4 redistribution) — per-snapshot, NOT versioned
+  wFoundation                Decimal                    @map("w_foundation") @db.Decimal(8, 4)
+  wMomentum                  Decimal                    @map("w_momentum") @db.Decimal(8, 4)
+  wMarket                    Decimal                    @map("w_market") @db.Decimal(8, 4)
+  wOwnership                 Decimal                    @map("w_ownership") @db.Decimal(8, 4)
+  weightRedistributionReason WeightRedistributionReason @default(none) @map("weight_redistribution_reason")
+
+  divergence Decimal @db.Decimal(8, 4) // per-snapshot scalar; "widening" computed on read
+
+  // Skip-identical fingerprint (ruling 3) — engine-side no-op check for composites
+  inputsFingerprint String @map("inputs_fingerprint")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  stock              Stock              @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  run                ScoringRun         @relation(fields: [runId], references: [id])
+  specVersion        ScoringSpecVersion @relation(fields: [specVersionId], references: [id])
+  bandMappingVersion BandMappingVersion @relation(fields: [bandMappingVersionId], references: [id])
+
+  foundationPillar PillarScore @relation("FoundationPillar", fields: [foundationPillarId], references: [id], onDelete: Cascade)
+  momentumPillar   PillarScore @relation("MomentumPillar", fields: [momentumPillarId], references: [id], onDelete: Cascade)
+  marketPillar     PillarScore @relation("MarketPillar", fields: [marketPillarId], references: [id], onDelete: Cascade)
+  ownershipPillar  PillarScore @relation("OwnershipPillar", fields: [ownershipPillarId], references: [id], onDelete: Cascade)
+
+  supersedes   ScoreSnapshot? @relation("SnapshotSupersede", fields: [supersedesId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  supersededBy ScoreSnapshot? @relation("SnapshotSupersede")
+
+  patterns        ScorePattern[]
+  redFlags        RedFlag[]
+  guardrailEvents GuardrailEvent[]
+
+  @@unique([stockId, snapshotType, periodKey, version]) // immutability + version history retained
+  @@unique([supersedesId]) // a row supersedes at most one prior version (clean chain)
+  @@index([stockId, snapshotType, asOfDate(sort: Desc)]) // req 4: latest live per stock; QP1/QP2
+  @@index([peerGroupId, periodKey]) // QP3: PG panel for one snapshot
+  @@index([periodKey, composite]) // QP5: universe band scans
+  @@index([asOfDate, labelBand]) // QP5
+  @@map("score_snapshots")
+}
+
+// COMPOSITE → PILLAR level. STOCK-GRAIN, append-only, EVENT-DRIVEN versioned
+// (ruling 2): a new row only when this pillar's inputs change. Reused across
+// every snapshot whose inputs are unchanged. Composite-relative weighting is
+// NOT stored here (it differs per snapshot and lives inline on ScoreSnapshot);
+// this row carries only the pillar's intrinsic subtotal/state and owns its
+// leaves.
+//
+// THE structural guard for ruling 2: @@unique([stockId, pillar, inputsFingerprint]).
+// inputsFingerprint hashes the pillar's full input set INCLUDING sourcePeriod,
+// so identical inputs (e.g. a price-only day for Foundation) cannot insert a
+// second row — Foundation is physically incapable of a duplicate daily row —
+// while a genuine input change yields a new fingerprint → a new version.
+model PillarScore {
+  id                String      @id @default(uuid())
+  stockId           String      @map("stock_id")
+  symbol            String // denormalised
+  pillar            Pillar
+  subtotal          Decimal     @db.Decimal(8, 4)
+  pillarState       PillarState @default(scored) @map("pillar_state")
+  sourcePeriod      String      @map("source_period") // "FY25" / "FY26Q1" / price date
+  asOfDate          DateTime    @map("as_of_date") @db.Date
+  runId             String      @map("run_id")
+  specVersionId     String      @map("spec_version_id")
+  inputsFingerprint String      @map("inputs_fingerprint")
+  createdAt         DateTime    @default(now()) @map("created_at")
+
+  stock       Stock              @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  run         ScoringRun         @relation(fields: [runId], references: [id])
+  specVersion ScoringSpecVersion @relation(fields: [specVersionId], references: [id])
+
+  // Leaves hang off the pillar (reused with it), NOT off the snapshot
+  metricScores    MetricScore[]
+  marketSubScores MarketSubScore[]
+  ownershipScore  OwnershipScore?
+
+  // The four snapshot reference relations (a snapshot points here)
+  foundationSnapshots ScoreSnapshot[] @relation("FoundationPillar")
+  momentumSnapshots   ScoreSnapshot[] @relation("MomentumPillar")
+  marketSnapshots     ScoreSnapshot[] @relation("MarketPillar")
+  ownershipSnapshots  ScoreSnapshot[] @relation("OwnershipPillar")
+
+  @@unique([stockId, pillar, inputsFingerprint], name: "score_pillar_input_identity") // ruling 2 guard
+  @@index([stockId, pillar, asOfDate(sort: Desc)]) // resolve the in-force pillar at a date
+  @@map("score_pillars")
+}
+
+// 3-LENS LEAF (Foundation + Momentum). ONE row per (pillar version, metric),
+// L1/L2/L3 as columns (ruling 9). Physically owned by the pillar; logically one
+// row per (snapshot, metric) via the snapshot's pillar FK — reused, never
+// rewritten, on an unchanged day.
+//
+// Anchor reconstructability (ruling 9): l2/l3 store BOTH the anchor-fired flag
+// AND the anchor value actually applied (60 or lifted 75), so "why a 75 not a
+// 60" is answerable from the row without re-deriving the 75% count.
+model MetricScore {
+  id            String @id @default(uuid())
+  pillarScoreId String @map("pillar_score_id")
+  pillar        Pillar // denormalised for join-free filtering
+  metricKey     String @map("metric_key")
+
+  rawValue    Decimal  @map("raw_value") @db.Decimal(18, 4)
+  l1Score     Decimal? @map("l1_score") @db.Decimal(8, 4)
+  l2Score     Decimal? @map("l2_score") @db.Decimal(8, 4)
+  l3Score     Decimal? @map("l3_score") @db.Decimal(8, 4)
+  metricScore Decimal  @map("metric_score") @db.Decimal(8, 4) // = (L1+L2+L3)/3, stored
+
+  // L1 landing + the exact bar VERSION used
+  l1Band         MetricBand? @map("l1_band")
+  metricBarSetId String?     @map("metric_bar_set_id")
+
+  // L2 link + anchor reconstructability
+  l2AnchorFired       Boolean  @default(false) @map("l2_anchor_fired")
+  l2AnchorApplied     Decimal? @map("l2_anchor_applied") @db.Decimal(8, 4) // 60 or lifted 75
+  peerStatsSnapshotId String?  @map("peer_stats_snapshot_id")
+
+  // L3 own-history inline (STOCK-grain — never shared) + anchor reconstructability
+  l3Mean          Decimal? @map("l3_mean") @db.Decimal(18, 4)
+  l3StdDev        Decimal? @map("l3_std_dev") @db.Decimal(18, 4)
+  l3WindowN       Int?     @map("l3_window_n")
+  l3AnchorFired   Boolean  @default(false) @map("l3_anchor_fired")
+  l3AnchorApplied Decimal? @map("l3_anchor_applied") @db.Decimal(8, 4)
+
+  // Lens availability / fallback fact
+  l1Available         Boolean      @default(true) @map("l1_available")
+  l2Available         Boolean      @default(true) @map("l2_available")
+  l3Available         Boolean      @default(true) @map("l3_available")
+  lensFallbackApplied LensFallback @default(none) @map("lens_fallback_applied")
+
+  // Intra-pillar weighting + not-scored state (ruling 5)
+  nominalWeight       Decimal          @map("nominal_weight") @db.Decimal(8, 4)
+  effectiveWeight     Decimal          @map("effective_weight") @db.Decimal(8, 4)
+  contribution        Decimal          @db.Decimal(8, 4)
+  scoreState          MetricScoreState @map("score_state")
+  includedInPeerStats Boolean          @map("included_in_peer_stats")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  pillarScore  PillarScore        @relation(fields: [pillarScoreId], references: [id], onDelete: Cascade)
+  metricBarSet MetricBarSet?      @relation(fields: [metricBarSetId], references: [id])
+  peerStats    PeerStatsSnapshot? @relation(fields: [peerStatsSnapshotId], references: [id])
+
+  @@unique([pillarScoreId, metricKey]) // QP6: one row joins to bars + peer-stats
+  @@index([pillarScoreId])
+  @@index([metricKey, scoreState]) // universe metric scans
+  @@map("score_metrics")
+}
+
+// The 4 rule-based Market sub-components, band-scored. Owned by the Market pillar.
+model MarketSubScore {
+  id              String             @id @default(uuid())
+  pillarScoreId   String             @map("pillar_score_id")
+  subComponent    MarketSubComponent @map("sub_component")
+  rawValue        Decimal            @map("raw_value") @db.Decimal(18, 4)
+  bandScore       Decimal            @map("band_score") @db.Decimal(8, 4)
+  bandLanded      MarketBand         @map("band_landed")
+  marketBandSetId String             @map("market_band_set_id")
+  createdAt       DateTime           @default(now()) @map("created_at")
+
+  pillarScore   PillarScore   @relation(fields: [pillarScoreId], references: [id], onDelete: Cascade)
+  marketBandSet MarketBandSet @relation(fields: [marketBandSetId], references: [id])
+
+  @@unique([pillarScoreId, subComponent])
+  @@index([pillarScoreId])
+  @@map("score_market_subs")
+}
+
+// Ownership primary sublayer + flow rollup. 1:1 with the Ownership pillar.
+// Every term is a stored fact → primarySubtotal and finalOwnership are both
+// re-derivable; a 0 penalty is a real stored 0, not an absence.
+model OwnershipScore {
+  id                    String                  @id @default(uuid())
+  pillarScoreId         String                  @map("pillar_score_id")
+  baseline              Decimal                 @db.Decimal(8, 4) // 60 or 75
+  baselineReason        OwnershipBaselineReason @map("baseline_reason")
+  pledgingAdjustment    Decimal                 @map("pledging_adjustment") @db.Decimal(8, 4)
+  penaltyR2             Decimal                 @map("penalty_r2") @db.Decimal(8, 4)
+  penaltyR6             Decimal                 @map("penalty_r6") @db.Decimal(8, 4)
+  penaltyProlongedFii   Decimal                 @map("penalty_prolonged_fii") @db.Decimal(8, 4)
+  primarySubtotal       Decimal                 @map("primary_subtotal") @db.Decimal(8, 4)
+  flowAdjustmentRaw     Decimal                 @map("flow_adjustment_raw") @db.Decimal(8, 4)
+  flowAdjustmentClamped Decimal                 @map("flow_adjustment_clamped") @db.Decimal(8, 4) // clamp(raw, -12, +12)
+  finalOwnership        Decimal                 @map("final_ownership") @db.Decimal(8, 4) // clamp(primary + flowClamped, 40, 100)
+  createdAt             DateTime                @default(now()) @map("created_at")
+
+  pillarScore    PillarScore             @relation(fields: [pillarScoreId], references: [id], onDelete: Cascade)
+  flowCategories OwnershipFlowCategory[]
+
+  @@unique([pillarScoreId])
+  @@map("score_ownership")
+}
+
+// The 4 flow categories. RULING 6: each carries categoryState — a dormant
+// category contributes a real 0 WITH the reason recorded (dormant_no_feed vs
+// dormant_no_data), distinct from a scored neutral 0. References the universal
+// flow band-set version it used (ruling 7) for reproducibility.
+model OwnershipFlowCategory {
+  id               String            @id @default(uuid())
+  ownershipScoreId String            @map("ownership_score_id")
+  category         FlowCategory
+  rawSubScore      Decimal           @map("raw_sub_score") @db.Decimal(8, 4)
+  capApplied       Decimal           @map("cap_applied") @db.Decimal(8, 4)
+  cappedSubScore   Decimal           @map("capped_sub_score") @db.Decimal(8, 4) // summed into flowAdjustmentRaw
+  categoryState    FlowCategoryState @map("category_state") // ruling 6
+  bandLanded       String?           @map("band_landed") // label/key from the in-force universal band-set
+  netFlowValue     Decimal?          @map("net_flow_value") @db.Decimal(18, 4) // signed ₹Cr or %
+  trendState       FlowTrendState?   @map("trend_state")
+  flowBandSetId    String?           @map("flow_band_set_id")
+  createdAt        DateTime          @default(now()) @map("created_at")
+
+  ownershipScore OwnershipScore        @relation(fields: [ownershipScoreId], references: [id], onDelete: Cascade)
+  flowBandSet    OwnershipFlowBandSet? @relation(fields: [flowBandSetId], references: [id])
+
+  @@unique([ownershipScoreId, category])
+  @@index([ownershipScoreId])
+  @@map("score_ownership_flows")
+}
+
+// ─────────────────────────────────────────────────────────────
+// GROUP 4 — SIGNALS, GUARDRAILS, CACHES
+// ─────────────────────────────────────────────────────────────
+
+enum GuardrailOutcome {
+  O1
+  O2
+  O3
+  O4
+  O5
+  O6
+}
+
+enum GuardrailTier {
+  auto
+  review
+}
+
+enum GuardrailRuling {
+  upheld
+  overridden
+  deferred
+}
+
+// First-class detected patterns (divergence, trajectory structure).
+model ScorePattern {
+  id         String   @id @default(uuid())
+  snapshotId String   @map("snapshot_id")
+  symbol     String // denormalised
+  asOfDate   DateTime @map("as_of_date") @db.Date // denormalised
+  patternKey String   @map("pattern_key")
+  direction  String?
+  severity   String?
+  evidence   Json? // the underlying values
+  metricRefs Json?    @map("metric_refs") // array of metricKeys
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  snapshot ScoreSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@index([asOfDate, patternKey]) // QP5: "every widening divergence"
+  @@index([snapshotId]) // QP1
+  @@map("score_patterns")
+}
+
+// First-class red flags, universe-queryable.
+model RedFlag {
+  id               String        @id @default(uuid())
+  snapshotId       String        @map("snapshot_id")
+  symbol           String // denormalised
+  asOfDate         DateTime      @map("as_of_date") @db.Date // denormalised
+  flagKey          String        @map("flag_key")
+  severity         String?
+  tier             GuardrailTier
+  triggeringValues Json?         @map("triggering_values")
+  guardrailEventId String?       @map("guardrail_event_id") // set when the flag came from a guardrail
+  createdAt        DateTime      @default(now()) @map("created_at")
+
+  snapshot       ScoreSnapshot   @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  guardrailEvent GuardrailEvent? @relation(fields: [guardrailEventId], references: [id], onDelete: Cascade)
+
+  @@index([asOfDate, flagKey]) // QP5: "every red flag this quarter"
+  @@index([snapshotId]) // QP1
+  @@index([tier])
+  @@map("score_red_flags")
+}
+
+// Every guardrail signature that fired: triggering values + outcome (O1–O6) +
+// tier. To find which metrics this event suppressed, query score_suppressions
+// WHERE source_guardrail_event_id = <this id> — that table is the sole authority.
+model GuardrailEvent {
+  id               String           @id @default(uuid())
+  stockId          String           @map("stock_id")
+  snapshotId       String           @map("snapshot_id")
+  signatureKey     String           @map("signature_key")
+  triggeringValues Json?            @map("triggering_values")
+  outcome          GuardrailOutcome
+  tier             GuardrailTier
+  createdAt        DateTime         @default(now()) @map("created_at")
+
+  stock    Stock         @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  snapshot ScoreSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  reviews               GuardrailReview[]
+  suppressionDirectives SuppressionDirective[]
+  redFlags              RedFlag[]
+
+  @@unique([snapshotId, signatureKey]) // a signature fires at most once per snapshot
+  @@index([snapshotId])
+  @@index([signatureKey, outcome]) // universe guardrail scans
+  @@map("score_guardrail_events")
+}
+
+// THE SINGLE SEAM (rulings 8a, 12 / req 14). The one canonical, PG-AGNOSTIC
+// representation of "this metric is suppressed for this stock at this snapshot."
+// Written by Layer 1 (guardrail eval); read by BOTH the Layer-2 scoring core
+// AND the peer-stats builder from the SAME row. That single coupling point is
+// what forces a suppressed metric to drop from own-score AND from every peer's
+// μ/σ together (CN-1 anti-drift):
+//   • the scoring core reads excludeFromOwnScore → MetricScore.scoreState=suppressed
+//   • the PEER-STATS BUILDER, when computing PeerStatsSnapshot.mean/stdDev for a
+//     (PG, metric), excludes every member whose directive has
+//     excludeFromPeerMean=true for that (snapshotKey, metric).
+// stockId is a plain captured key (PG-agnostic lookup); provenance + teardown
+// run through sourceGuardrailEventId.
+model SuppressionDirective {
+  id                     String           @id @default(uuid())
+  stockId                String           @map("stock_id")
+  snapshotKey            String           @map("snapshot_key") // runId (live) | periodKey (quarterly)
+  metricKey              String           @map("metric_key")
+  sourceGuardrailEventId String           @map("source_guardrail_event_id")
+  outcome                GuardrailOutcome
+  excludeFromOwnScore    Boolean          @default(true) @map("exclude_from_own_score")
+  excludeFromPeerMean    Boolean          @default(true) @map("exclude_from_peer_mean")
+  createdAt              DateTime         @default(now()) @map("created_at")
+
+  sourceGuardrailEvent GuardrailEvent @relation(fields: [sourceGuardrailEventId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, snapshotKey, metricKey])
+  @@index([snapshotKey, metricKey]) // the peer-stats builder's "who to exclude from this metric's μ/σ"
+  @@map("score_suppressions")
+}
+
+// Append-only operator ruling for review-tier flags. A changed ruling is a NEW
+// row; latest ruledAt wins on read (consistent with the no-update rule).
+model GuardrailReview {
+  id               String          @id @default(uuid())
+  guardrailEventId String          @map("guardrail_event_id")
+  operatorId       String          @map("operator_id")
+  ruling           GuardrailRuling
+  reason           String?
+  ruledAt          DateTime        @map("ruled_at")
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  guardrailEvent GuardrailEvent @relation(fields: [guardrailEventId], references: [id], onDelete: Cascade)
+
+  @@index([guardrailEventId, ruledAt(sort: Desc)]) // latest ruling on read
+  @@map("score_guardrail_reviews")
+}
+
+// Sector Health = arithmetic MEAN of member composites (ruling 15). A
+// REGENERABLE cache stamped with the run that produced it — NOT a source of
+// truth. Everything else cross-sectional (median, dispersion, ranks) is
+// read-time. sectorId is a plain captured key (matches PeerGroupComputationLog).
+model SectorHealthCache {
+  id            String   @id @default(uuid())
+  sectorId      String   @map("sector_id")
+  runId         String   @map("run_id")
+  asOfDate      DateTime @map("as_of_date") @db.Date
+  meanComposite Decimal  @map("mean_composite") @db.Decimal(8, 4)
+  memberCount   Int      @map("member_count")
+  specVersionId String   @map("spec_version_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  run         ScoringRun         @relation(fields: [runId], references: [id])
+  specVersion ScoringSpecVersion @relation(fields: [specVersionId], references: [id])
+
+  @@unique([sectorId, runId])
+  @@index([asOfDate])
+  @@map("score_sector_health")
 }

@@ -328,8 +328,7 @@ async function processOneLeg(
           "Quarterly",
         );
 
-        if (result.status === "upgraded") summary.upgraded++;
-        else if (result.status === "refreshed") summary.refreshed++;
+        if (result.status === "refreshed") summary.refreshed++;
         else summary.ingested++;
       } else {
         const v2 = parseAnnualResultXbrl(xml, filingMeta);
@@ -351,8 +350,7 @@ async function processOneLeg(
           "Annual",
         );
 
-        if (result.status === "upgraded") summary.upgraded++;
-        else if (result.status === "refreshed") summary.refreshed++;
+        if (result.status === "refreshed") summary.refreshed++;
         else summary.ingested++;
       }
     } catch (err) {

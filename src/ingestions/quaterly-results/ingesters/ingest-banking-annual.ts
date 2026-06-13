@@ -16,8 +16,8 @@ import {
 
 export async function ingestBankingAnnual(
   input: { stockId: string; parsed: ParsedBankingAnnual; source: string },
-  decision: "ingest" | "upgrade" | "refresh",
-): Promise<{ status: "success" | "upgraded" | "refreshed"; rowId: string }> {
+  decision: "ingest" | "refresh",
+): Promise<{ status: "success" | "refreshed"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
 
   // ── Derived ──
@@ -65,7 +65,12 @@ export async function ingestBankingAnnual(
       : null;
 
   // Credit Cost
-  const avgAdvances = await fetchAvgAdvances(stockId, p.fiscalYear, p.advances);
+  const avgAdvances = await fetchAvgAdvances(
+    stockId,
+    p.fiscalYear,
+    p.advances,
+    p.resultType,
+  );
   const creditCostPct =
     p.provisions !== null && avgAdvances !== null && avgAdvances !== 0
       ? p.provisions / avgAdvances
@@ -77,6 +82,7 @@ export async function ingestBankingAnnual(
     p.fiscalYear,
     p.advances,
     p.investments,
+    p.resultType,
   );
   const netInterestMargin =
     nii !== null &&
@@ -88,7 +94,13 @@ export async function ingestBankingAnnual(
   // ROE — use prior year for averaging
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.bankingFundamental.findUnique({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: priorFY } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: priorFY,
+        resultType: p.resultType, // compare same basis
+      },
+    },
     select: {
       capital: true,
       reservesAndSurplus: true,
@@ -122,7 +134,10 @@ export async function ingestBankingAnnual(
     priorRow && priorRow.interestEarned !== null
       ? null // We don't have prior NII directly stored for this purpose in priorRow select; recompute
       : null;
-  const niiGrowthYoy = pctChange(nii, await fetchPriorNii(stockId, priorFY));
+  const niiGrowthYoy = pctChange(
+    nii,
+    await fetchPriorNii(stockId, priorFY, p.resultType),
+  );
   const patGrowthYoy = pctChange(
     p.netProfit,
     priorRow?.netProfit?.toNumber() ?? null,
@@ -224,18 +239,19 @@ export async function ingestBankingAnnual(
   };
 
   const row = await prisma.bankingFundamental.upsert({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: p.fiscalYear } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: p.fiscalYear,
+        resultType: p.resultType,
+      },
+    },
     create: data,
     update: data,
   });
 
   return {
-    status:
-      decision === "upgrade"
-        ? "upgraded"
-        : decision === "refresh"
-          ? "refreshed"
-          : "success",
+    status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
   };
 }
@@ -247,11 +263,14 @@ async function fetchAvgAdvances(
   stockId: string,
   currentFY: string,
   currentAdvances: number | null,
+  resultType: string,
 ): Promise<number | null> {
   if (currentAdvances === null) return null;
   const priorFY = decrementFY(currentFY);
   const prior = await prisma.bankingFundamental.findUnique({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: priorFY } },
+    where: {
+      stockId_fiscalYear_resultType: { stockId, fiscalYear: priorFY, resultType },
+    },
     select: { advances: true },
   });
   if (!prior || prior.advances === null) return currentAdvances;
@@ -266,6 +285,7 @@ async function fetchAvgInterestEarningAssets(
   currentFY: string,
   currentAdvances: number | null,
   currentInvestments: number | null,
+  resultType: string,
 ): Promise<number | null> {
   const currentIEA =
     currentAdvances !== null && currentInvestments !== null
@@ -275,7 +295,9 @@ async function fetchAvgInterestEarningAssets(
 
   const priorFY = decrementFY(currentFY);
   const prior = await prisma.bankingFundamental.findUnique({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: priorFY } },
+    where: {
+      stockId_fiscalYear_resultType: { stockId, fiscalYear: priorFY, resultType },
+    },
     select: { advances: true, investments: true },
   });
   if (!prior) return currentIEA;
@@ -290,9 +312,12 @@ async function fetchAvgInterestEarningAssets(
 async function fetchPriorNii(
   stockId: string,
   priorFY: string,
+  resultType: string,
 ): Promise<number | null> {
   const prior = await prisma.bankingFundamental.findUnique({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: priorFY } },
+    where: {
+      stockId_fiscalYear_resultType: { stockId, fiscalYear: priorFY, resultType },
+    },
     select: { nii: true },
   });
   return prior?.nii?.toNumber() ?? null;

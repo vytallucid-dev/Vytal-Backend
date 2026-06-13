@@ -14,8 +14,8 @@ import {
 
 export async function ingestBankingQuarterly(
   input: { stockId: string; parsed: ParsedBankingQuarterly; source: string },
-  decision: "ingest" | "upgrade" | "refresh",
-): Promise<{ status: "success" | "upgraded" | "refreshed"; rowId: string }> {
+  decision: "ingest" | "refresh",
+): Promise<{ status: "success" | "refreshed"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
 
   // ── Derived ──
@@ -58,10 +58,11 @@ export async function ingestBankingQuarterly(
   const priorRow = priorQ
     ? await prisma.bankingQuarterlyResult.findUnique({
         where: {
-          stockId_quarter_fiscalYear: {
+          stockId_quarter_fiscalYear_resultType: {
             stockId,
             quarter: priorQ.quarter,
             fiscalYear: priorQ.fiscalYear,
+            resultType: p.resultType, // compare same basis
           },
         },
         select: { nii: true, netProfit: true },
@@ -71,10 +72,11 @@ export async function ingestBankingQuarterly(
   const yearAgoFY = decrementFY(p.fiscalYear);
   const yearAgoRow = await prisma.bankingQuarterlyResult.findUnique({
     where: {
-      stockId_quarter_fiscalYear: {
+      stockId_quarter_fiscalYear_resultType: {
         stockId,
         quarter: p.quarter,
         fiscalYear: yearAgoFY,
+        resultType: p.resultType, // compare same basis
       },
     },
     select: { nii: true, netProfit: true },
@@ -140,10 +142,11 @@ export async function ingestBankingQuarterly(
 
   const row = await prisma.bankingQuarterlyResult.upsert({
     where: {
-      stockId_quarter_fiscalYear: {
+      stockId_quarter_fiscalYear_resultType: {
         stockId,
         quarter: p.quarter,
         fiscalYear: p.fiscalYear,
+        resultType: p.resultType,
       },
     },
     create: data,
@@ -151,12 +154,7 @@ export async function ingestBankingQuarterly(
   });
 
   return {
-    status:
-      decision === "upgrade"
-        ? "upgraded"
-        : decision === "refresh"
-          ? "refreshed"
-          : "success",
+    status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
   };
 }

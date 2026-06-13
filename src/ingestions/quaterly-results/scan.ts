@@ -4,7 +4,7 @@ import { prisma } from "../../db/prisma.js";
 import { fetchFilingsList, groupFilingsByPeriod } from "./results/discovery.js";
 // import { fetchXbrlFile } from "./xbrl/fetcher.js";
 import { parseQuarterly, parseAnnual } from "./xbrl/parser.js";
-import { pickBestFilingForQuarter, decideIngest } from "./picker.js";
+import { pickFilingsPerBasis, decideIngest } from "./picker.js";
 import {
   dispatchQuarterlyIngest,
   dispatchAnnualIngest,
@@ -163,23 +163,13 @@ export async function scanSymbol(
         filingType,
         options,
       );
-      switch (outcome.status) {
-        case "ingested":
-          result.ingested++;
-          break;
-        case "upgraded":
-          result.upgraded++;
-          break;
-        case "refreshed":
-          result.refreshed++;
-          break;
-        case "skipped":
-          result.skipped++;
-          break;
-        case "no_pick":
-          result.skipped++;
-          break;
-      }
+      // Dual-basis: a group can store up to two rows (standalone + consolidated),
+      // so processGroup returns per-basis tallies rather than a single status.
+      result.ingested += outcome.ingested;
+      result.refreshed += outcome.refreshed;
+      result.skipped += outcome.skipped;
+      // result.upgraded is retained for API/UI back-compat but is always 0 now —
+      // the "upgrade-and-discard" path no longer exists (both bases are stored).
     } catch (err) {
       result.failed++;
       result.errors.push({ qeDate, filingType, error: String(err) });
@@ -200,94 +190,158 @@ export async function scanSymbol(
 }
 
 interface ProcessGroupOutcome {
-  status: "ingested" | "upgraded" | "refreshed" | "skipped" | "no_pick";
+  ingested: number; // basis rows newly inserted
+  refreshed: number; // basis rows replaced by a newer-dated revision
+  skipped: number; // basis already present, industry mismatch, or no pick
+}
+
+type BasisOutcome = "ingested" | "refreshed" | "skipped";
+
+interface BasisIngestResult {
+  outcome: BasisOutcome;
+  quarter: string; // "Q1".."Q4" for quarterly; "Y" for annual fundamentals
+  resultType: string; // basis actually parsed/written
   rowId?: string;
 }
 
+/**
+ * Process one (qeDate, filingType) group. DUAL-BASIS: store EVERY basis that
+ * was filed (Standalone and/or Consolidated) — nothing is discarded for being
+ * the non-preferred basis. Each basis is a distinct XBRL document, so we
+ * fetch / detect taxonomy / parse once per basis.
+ */
 async function processGroup(
   stock: Pick<Stock, "id" | "symbol" | "industryType">,
   candidates: NseFilingEntry[],
   filingType: "quarterly" | "annual",
   options: ScanSymbolOptions,
 ): Promise<ProcessGroupOutcome> {
-  const pick = pickBestFilingForQuarter(candidates, stock.industryType);
-  if (!pick) return { status: "no_pick" };
-  const filing = pick.filing;
-
-  // ── Fetch + parse once, then dispatch to one or both tables ──
-  const xml = await fetchXbrlFile(filing.xbrl);
-  const taxonomy = detectTaxonomy(xml, filing.xbrl);
-  const detectedIndustry = industryForTaxonomy(taxonomy);
-  if (detectedIndustry !== stock.industryType) {
-    await logFetch(
-      stock.id,
-      stock.symbol,
-      filing.qeDate,
-      filingType,
-      null,
-      "skipped",
-      filingType === "annual" ? "nse_xbrl_annual" : "nse_xbrl_quarterly",
-      `Industry mismatch: stock=${stock.industryType}, xbrl=${detectedIndustry}`,
-    );
-    return { status: "skipped" };
+  const picks = pickFilingsPerBasis(candidates);
+  if (picks.length === 0) {
+    return { ingested: 0, refreshed: 0, skipped: 1 };
   }
 
-  const ctx = {
-    symbol: stock.symbol,
-    xbrl: filing.xbrl,
-    consolidated: filing.consolidated,
+  const tally: ProcessGroupOutcome = { ingested: 0, refreshed: 0, skipped: 0 };
+
+  // One ResultFetchLog row exists per (stock, quarter, fiscalYear) — its unique
+  // key has no resultType — so we aggregate both bases into a single status
+  // ("both_stored") instead of letting the second basis overwrite the first.
+  const logBuckets = new Map<string, { bases: string[]; outcomes: string[] }>();
+  const addLog = (quarter: string, basis: string, outcome: string) => {
+    const b = logBuckets.get(quarter) ?? { bases: [], outcomes: [] };
+    b.bases.push(basis);
+    b.outcomes.push(outcome);
+    logBuckets.set(quarter, b);
+  };
+  const bump = (outcome: BasisOutcome) => {
+    if (outcome === "ingested") tally.ingested++;
+    else if (outcome === "refreshed") tally.refreshed++;
+    else tally.skipped++;
   };
 
-  if (filingType === "quarterly") {
-    return await ingestQuarterly(stock, filing, xml, taxonomy, ctx, options);
+  for (const pick of picks) {
+    const filing = pick.filing;
+
+    const xml = await fetchXbrlFile(filing.xbrl);
+    const taxonomy = detectTaxonomy(xml, filing.xbrl);
+    const detectedIndustry = industryForTaxonomy(taxonomy);
+    if (detectedIndustry !== stock.industryType) {
+      tally.skipped++;
+      await logFetch(
+        stock.id,
+        stock.symbol,
+        filing.qeDate,
+        filingType,
+        null,
+        "skipped",
+        filingType === "annual" ? "nse_xbrl_annual" : "nse_xbrl_quarterly",
+        `Industry mismatch (${pick.basis}): stock=${stock.industryType}, xbrl=${detectedIndustry}`,
+        pick.basis,
+      );
+      continue;
+    }
+
+    const ctx = {
+      symbol: stock.symbol,
+      xbrl: filing.xbrl,
+      consolidated: filing.consolidated,
+    };
+
+    if (filingType === "quarterly") {
+      const r = await ingestQuarterly(stock, filing, xml, taxonomy, ctx, options);
+      bump(r.outcome);
+      addLog(r.quarter, pick.basis, r.outcome);
+      continue;
+    }
+
+    // ── Annual: write BOTH fundamentals AND derived Q4 quarterly, per basis ──
+    // The same Mar-31 XBRL contains both annual (FourD) and Q4 (OneD) data.
+    const annual = await ingestAnnual(stock, filing, xml, taxonomy, ctx, options);
+    bump(annual.outcome);
+    addLog("Y", pick.basis, annual.outcome);
+
+    // Derive Q4 from the same Mar-31 filing. Log only (don't double-count in the
+    // tally) and never fail the whole group if Q4 P&L is absent.
+    try {
+      const q4 = await ingestQuarterly(stock, filing, xml, taxonomy, ctx, options);
+      addLog("Q4", pick.basis, q4.outcome);
+    } catch (err) {
+      addLog("Q4", pick.basis, "skipped");
+      await logFetch(
+        stock.id,
+        stock.symbol,
+        filing.qeDate,
+        "quarterly",
+        "Q4",
+        "skipped",
+        "nse_xbrl_quarterly",
+        `Q4 derivation (${pick.basis}) from Mar-31 failed (annual write ok): ${String(
+          err,
+        ).slice(0, 160)}`,
+        pick.basis,
+      );
+    }
   }
 
-  // ── Annual: write BOTH fundamentals AND Q4 quarterly ──
-  // The same Mar-31 XBRL contains both annual (FourD) and Q4 (OneD) data.
-  const annualOutcome = await ingestAnnual(
-    stock,
-    filing,
-    xml,
-    taxonomy,
-    ctx,
-    options,
-  );
-
-  // Also try Q4 quarterly. If it fails (e.g. some Mar-31 filings don't have
-  // OneD-context P&L), log it but don't fail the whole group.
-  try {
-    const q4Outcome = await ingestQuarterly(
-      stock,
-      filing,
-      xml,
-      taxonomy,
-      ctx,
-      options,
-    );
+  // ── Flush aggregated per-period logs (one row per quarter label) ──
+  for (const [quarter, bucket] of logBuckets) {
+    const isDerivedQ4 = filingType === "annual" && quarter !== "Y";
+    const source =
+      filingType === "annual" && !isDerivedQ4
+        ? "nse_xbrl_annual"
+        : "nse_xbrl_quarterly";
+    const resultTypeLabel =
+      bucket.bases.length >= 2 ? "both" : (bucket.bases[0] ?? null);
     await logFetch(
       stock.id,
       stock.symbol,
-      filing.qeDate,
-      "quarterly",
-      "Q4",
-      q4Outcome.status === "skipped" ? "already_ingested" : "success",
-      "nse_xbrl_quarterly",
-      `Q4 derived from Mar-31 annual filing (taxonomy=${taxonomy})`,
-    );
-  } catch (err) {
-    await logFetch(
-      stock.id,
-      stock.symbol,
-      filing.qeDate,
-      "quarterly",
-      "Q4",
-      "skipped",
-      "nse_xbrl_quarterly",
-      `Q4 derivation from Mar-31 failed (annual write succeeded): ${String(err).slice(0, 200)}`,
+      picks[0].filing.qeDate,
+      isDerivedQ4 ? "quarterly" : filingType,
+      quarter,
+      aggregateStatus(bucket.outcomes),
+      source,
+      `bases=[${bucket.bases.join(",")}] outcomes=[${bucket.outcomes.join(",")}]` +
+        (isDerivedQ4 ? " (Q4 derived from Mar-31 annual)" : ""),
+      resultTypeLabel,
     );
   }
 
-  return annualOutcome;
+  return tally;
+}
+
+/**
+ * Roll up per-basis outcomes for one period into a single ResultFetchLog status:
+ *   "both_stored"      — both bases present after this run (≥1 newly stored)
+ *   "stored"           — a single basis newly stored (only one basis was filed)
+ *   "refreshed"        — a revision replaced an existing basis row
+ *   "already_ingested" — every basis was already present (idempotent no-op)
+ */
+function aggregateStatus(outcomes: string[]): string {
+  if (outcomes.some((o) => o === "refreshed")) return "refreshed";
+  if (outcomes.some((o) => o === "ingested")) {
+    return outcomes.length >= 2 ? "both_stored" : "stored";
+  }
+  return "already_ingested";
 }
 
 // Split-out helpers
@@ -302,7 +356,7 @@ async function ingestQuarterly(
     consolidated: NseFilingEntry["consolidated"];
   },
   options: ScanSymbolOptions,
-): Promise<ProcessGroupOutcome> {
+): Promise<BasisIngestResult> {
   const source = "nse_xbrl_quarterly";
   const parsed = parseQuarterly(xml, ctx, stock.industryType);
   const period = {
@@ -312,20 +366,15 @@ async function ingestQuarterly(
   const table = pickerTableFor(taxonomy, "quarterly");
   const decision = options.forceRefresh
     ? { decision: "refresh" as const, reason: "forceRefresh" }
-    : await decideIngest(stock.id, table, period, filing, stock.industryType);
+    : await decideIngest(stock.id, table, period, filing);
 
   if (decision.decision === "skip") {
-    await logFetch(
-      stock.id,
-      stock.symbol,
-      filing.qeDate,
-      "quarterly",
-      parsed.data.quarter,
-      "already_ingested",
-      source,
-      decision.reason,
-    );
-    return { status: "skipped" };
+    // This basis already stored at same-or-later filingDate — idempotent no-op.
+    return {
+      outcome: "skipped",
+      quarter: parsed.data.quarter,
+      resultType: parsed.data.resultType,
+    };
   }
 
   const ingest = await dispatchQuarterlyIngest(
@@ -334,23 +383,10 @@ async function ingestQuarterly(
     source,
     decision.decision,
   );
-  await logFetch(
-    stock.id,
-    stock.symbol,
-    filing.qeDate,
-    "quarterly",
-    parsed.data.quarter,
-    ingest.status,
-    source,
-    `${decision.reason} (taxonomy=${taxonomy})`,
-  );
   return {
-    status:
-      ingest.status === "upgraded"
-        ? "upgraded"
-        : ingest.status === "refreshed"
-          ? "refreshed"
-          : "ingested",
+    outcome: ingest.status === "refreshed" ? "refreshed" : "ingested",
+    quarter: parsed.data.quarter,
+    resultType: parsed.data.resultType,
     rowId: ingest.rowId,
   };
 }
@@ -366,27 +402,21 @@ async function ingestAnnual(
     consolidated: NseFilingEntry["consolidated"];
   },
   options: ScanSymbolOptions,
-): Promise<ProcessGroupOutcome> {
+): Promise<BasisIngestResult> {
   const source = "nse_xbrl_annual";
   const parsed = parseAnnual(xml, ctx, stock.industryType);
   const period = { fiscalYear: parsed.data.fiscalYear };
   const table = pickerTableFor(taxonomy, "annual");
   const decision = options.forceRefresh
     ? { decision: "refresh" as const, reason: "forceRefresh" }
-    : await decideIngest(stock.id, table, period, filing, stock.industryType);
+    : await decideIngest(stock.id, table, period, filing);
 
   if (decision.decision === "skip") {
-    await logFetch(
-      stock.id,
-      stock.symbol,
-      filing.qeDate,
-      "annual",
-      "Y",
-      "already_ingested",
-      source,
-      decision.reason,
-    );
-    return { status: "skipped" };
+    return {
+      outcome: "skipped",
+      quarter: "Y",
+      resultType: parsed.data.resultType,
+    };
   }
 
   const ingest = await dispatchAnnualIngest(
@@ -395,23 +425,10 @@ async function ingestAnnual(
     source,
     decision.decision,
   );
-  await logFetch(
-    stock.id,
-    stock.symbol,
-    filing.qeDate,
-    "annual",
-    "Y",
-    ingest.status,
-    source,
-    `${decision.reason} (taxonomy=${taxonomy})`,
-  );
   return {
-    status:
-      ingest.status === "upgraded"
-        ? "upgraded"
-        : ingest.status === "refreshed"
-          ? "refreshed"
-          : "ingested",
+    outcome: ingest.status === "refreshed" ? "refreshed" : "ingested",
+    quarter: "Y",
+    resultType: parsed.data.resultType,
     rowId: ingest.rowId,
   };
 }
@@ -425,6 +442,7 @@ async function logFetch(
   status: string,
   source: string,
   notes: string,
+  resultType: string | null = null, // "standalone" | "consolidated" | "both"
 ): Promise<void> {
   const fiscalYear = qeDate ? deriveFiscalYearFromQeDate(qeDate) : null;
   await prisma.resultFetchLog.upsert({
@@ -438,6 +456,7 @@ async function logFetch(
     update: {
       status,
       source,
+      resultType,
       filingDate: qeDate ? parseQeDate(qeDate) : null,
       error: notes ? notes.slice(0, 500) : null,
     },
@@ -446,6 +465,7 @@ async function logFetch(
       symbol,
       quarter: quarter ?? "",
       fiscalYear: fiscalYear ?? "",
+      resultType,
       filingDate: qeDate ? parseQeDate(qeDate) : null,
       status,
       source,

@@ -12,13 +12,13 @@ import { ingestLifeInsuranceAnnual } from "./ingest-li-annual.js";
 import { ingestGeneralInsuranceQuarterly } from "./ingest-gi-quarterly.js";
 import { ingestGeneralInsuranceAnnual } from "./ingest-gi-annual.js";
 
-export type IngestStatus = "success" | "upgraded" | "refreshed";
+export type IngestStatus = "success" | "refreshed";
 
 export async function dispatchQuarterlyIngest(
   stockId: string,
   parsed: ParsedQuarterly,
   source: string,
-  decision: "ingest" | "upgrade" | "refresh",
+  decision: "ingest" | "refresh",
 ): Promise<{ status: IngestStatus; rowId: string; taxonomy: string }> {
   switch (parsed.taxonomy) {
     case "indas":
@@ -68,7 +68,7 @@ export async function dispatchAnnualIngest(
   stockId: string,
   parsed: ParsedAnnual,
   source: string,
-  decision: "ingest" | "upgrade" | "refresh",
+  decision: "ingest" | "refresh",
 ): Promise<{ status: IngestStatus; rowId: string; taxonomy: string }> {
   switch (parsed.taxonomy) {
     case "indas":

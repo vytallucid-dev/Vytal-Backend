@@ -21,8 +21,8 @@ export interface IngestIndAsAnnualInput {
 
 export async function ingestIndAsAnnual(
   input: IngestIndAsAnnualInput,
-  decision: "ingest" | "upgrade" | "refresh",
-): Promise<{ status: "success" | "upgraded" | "refreshed"; rowId: string }> {
+  decision: "ingest" | "refresh",
+): Promise<{ status: "success" | "refreshed"; rowId: string }> {
   const { stockId, parsed, source } = input;
   const p = parsed;
 
@@ -84,7 +84,13 @@ export async function ingestIndAsAnnual(
   // ── ROE & ROCE — need prior-year for averaging ──
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.fundamental.findUnique({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: priorFY } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: priorFY,
+        resultType: p.resultType, // compare same basis
+      },
+    },
     select: {
       revenue: true,
       netProfit: true,
@@ -287,18 +293,19 @@ export async function ingestIndAsAnnual(
   };
 
   const row = await prisma.fundamental.upsert({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: p.fiscalYear } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: p.fiscalYear,
+        resultType: p.resultType,
+      },
+    },
     create: data,
     update: data,
   });
 
   return {
-    status:
-      decision === "upgrade"
-        ? "upgraded"
-        : decision === "refresh"
-          ? "refreshed"
-          : "success",
+    status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
   };
 }

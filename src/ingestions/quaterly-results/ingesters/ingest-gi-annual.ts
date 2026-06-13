@@ -20,8 +20,8 @@ export async function ingestGeneralInsuranceAnnual(
     parsed: ParsedGeneralInsuranceAnnual;
     source: string;
   },
-  decision: "ingest" | "upgrade" | "refresh",
-): Promise<{ status: "success" | "upgraded" | "refreshed"; rowId: string }> {
+  decision: "ingest" | "refresh",
+): Promise<{ status: "success" | "refreshed"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
 
   const netWorth = sumNonNull(
@@ -58,7 +58,13 @@ export async function ingestGeneralInsuranceAnnual(
 
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.generalInsuranceFundamental.findUnique({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: priorFY } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: priorFY,
+        resultType: p.resultType, // compare same basis
+      },
+    },
     select: {
       shareCapital: true,
       reservesAndSurplus: true,
@@ -174,18 +180,19 @@ export async function ingestGeneralInsuranceAnnual(
   };
 
   const row = await prisma.generalInsuranceFundamental.upsert({
-    where: { stockId_fiscalYear: { stockId, fiscalYear: p.fiscalYear } },
+    where: {
+      stockId_fiscalYear_resultType: {
+        stockId,
+        fiscalYear: p.fiscalYear,
+        resultType: p.resultType,
+      },
+    },
     create: data,
     update: data,
   });
 
   return {
-    status:
-      decision === "upgrade"
-        ? "upgraded"
-        : decision === "refresh"
-          ? "refreshed"
-          : "success",
+    status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
   };
 }

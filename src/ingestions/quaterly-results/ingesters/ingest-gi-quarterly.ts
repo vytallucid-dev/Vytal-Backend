@@ -18,8 +18,8 @@ export async function ingestGeneralInsuranceQuarterly(
     parsed: ParsedGeneralInsuranceQuarterly;
     source: string;
   },
-  decision: "ingest" | "upgrade" | "refresh",
-): Promise<{ status: "success" | "upgraded" | "refreshed"; rowId: string }> {
+  decision: "ingest" | "refresh",
+): Promise<{ status: "success" | "refreshed"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
 
   const netUnderwritingMargin =
@@ -33,10 +33,11 @@ export async function ingestGeneralInsuranceQuarterly(
   const priorRow = priorQ
     ? await prisma.generalInsuranceQuarterlyResult.findUnique({
         where: {
-          stockId_quarter_fiscalYear: {
+          stockId_quarter_fiscalYear_resultType: {
             stockId,
             quarter: priorQ.quarter,
             fiscalYear: priorQ.fiscalYear,
+            resultType: p.resultType, // compare same basis
           },
         },
         select: { grossPremiumsWritten: true, netProfit: true },
@@ -45,10 +46,11 @@ export async function ingestGeneralInsuranceQuarterly(
   const yearAgoFY = decrementFY(p.fiscalYear);
   const yearAgoRow = await prisma.generalInsuranceQuarterlyResult.findUnique({
     where: {
-      stockId_quarter_fiscalYear: {
+      stockId_quarter_fiscalYear_resultType: {
         stockId,
         quarter: p.quarter,
         fiscalYear: yearAgoFY,
+        resultType: p.resultType, // compare same basis
       },
     },
     select: { grossPremiumsWritten: true, netProfit: true },
@@ -121,10 +123,11 @@ export async function ingestGeneralInsuranceQuarterly(
 
   const row = await prisma.generalInsuranceQuarterlyResult.upsert({
     where: {
-      stockId_quarter_fiscalYear: {
+      stockId_quarter_fiscalYear_resultType: {
         stockId,
         quarter: p.quarter,
         fiscalYear: p.fiscalYear,
+        resultType: p.resultType,
       },
     },
     create: data,
@@ -132,12 +135,7 @@ export async function ingestGeneralInsuranceQuarterly(
   });
 
   return {
-    status:
-      decision === "upgrade"
-        ? "upgraded"
-        : decision === "refresh"
-          ? "refreshed"
-          : "success",
+    status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
   };
 }

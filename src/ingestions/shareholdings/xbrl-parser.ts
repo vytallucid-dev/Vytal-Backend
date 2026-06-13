@@ -78,6 +78,50 @@ function stripNs(name: string): string {
 
 type Fact = { contextRef: string; value: number | null };
 
+// ── Dual-vintage context resolution ────────────────────────────
+// SEBI Reg-31 XBRL ships in multiple taxonomy vintages whose category context
+// IDs differ. The 2025 layouts (2025-05-31, 2025-10-31) use
+// "<Category>_ContextI"; the 2022-09-30 layout drops the underscore + "Context"
+// → "<Category>I", and changes a couple of tokens' casing (UTI → Uti). For each
+// lookup we try the 2025 primary first, then the 2022 fallback — so a 2025 file
+// resolves exactly the same context as before, and a 2022 file now resolves too.
+// Object candidates with {pattern:true} preserve the original byCtxPattern
+// (substring) matching; bare strings use exact contextRef match.
+type CtxCand = string | { ref: string; pattern: true };
+
+const VINTAGE_CTX: Record<string, CtxCand[]> = {
+  // 2025 primary (_ContextI)                       → 2022 fallback (I-suffix)
+  promoter: [
+    "ShareholdingOfPromoterAndPromoterGroup_ContextI",
+    "ShareholdingOfPromoterAndPromoterGroupI",
+  ],
+  public: ["PublicShareholding_ContextI", "PublicShareholdingI"],
+  fii: ["InstitutionsForeign_ContextI", "InstitutionsForeignI"],
+  dii: ["InstitutionsDomestic_ContextI", "InstitutionsDomesticI"],
+  mutualFund: ["MutualFundsOrUTI_ContextI", "MutualFundsOrUtiI"], // UTI → Uti
+  insurance: ["InsuranceCompanies_ContextI", "InsuranceCompaniesI"],
+  // Banks: 2025 keeps the legacy substring match; the 2022 fallback uses EXACT
+  // match so "BanksI" does not also hit "IndianFinancialInstitutionsOrBanksI".
+  banks: [{ ref: "Banks_ContextI", pattern: true }, "BanksI"],
+  // FinancialInstitutions: substring match intentionally catches
+  // "OtherFinancialInstitutions(_ContextI|I)" in both vintages.
+  financialInstitutions: [
+    { ref: "FinancialInstitutions_ContextI", pattern: true },
+    { ref: "FinancialInstitutionsI", pattern: true },
+  ],
+  nonInstitutions: ["NonInstitutions_ContextI", "NonInstitutionsI"],
+  total: ["ShareholdingPattern_ContextI", "ShareholdingPatternI"], // totalShares
+  // Employee trust is outside the FII/DII scope but resolved the same way; the
+  // 2022 "I" variant is added for consistency. Still defaults to 0 when absent.
+  employeeTrust: [
+    { ref: "EmployeeTrust_ContextI", pattern: true },
+    { ref: "EmployeeBenefitTrust", pattern: true },
+    { ref: "EmployeeTrustI", pattern: true },
+  ],
+};
+
+const round4 = (v: number): number => Math.round(v * 10000) / 10000;
+
 // ── Main parser ────────────────────────────────────────────────
 
 export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
@@ -183,56 +227,86 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
     return null;
   }
 
-  // ── Extract shareholding percentages ───────────────────────
+  /**
+   * Vintage-aware lookup: try each candidate context in order, return the first
+   * that resolves. String candidates use exact contextRef match (byCtx); object
+   * candidates with {pattern:true} use substring match (byCtxPattern). The
+   * vintage map (VINTAGE_CTX) keeps all 2025↔2022 context naming in one place.
+   */
+  function byCtxV(keywords: string[], cands: CtxCand[]): number | null {
+    for (const c of cands) {
+      const v =
+        typeof c === "string"
+          ? byCtx(keywords, c)
+          : byCtxPattern(keywords, c.ref);
+      if (v !== null) return v;
+    }
+    return null;
+  }
+
+  // ── Extract shareholding percentages (dual-vintage + scale-normalised) ──
   // in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares is the primary
-  // percentage element. Category aggregates use context IDs ending in _ContextI.
+  // percentage element. byCtxV resolves the 2025 (_ContextI) context first, then
+  // the 2022 (I-suffix) fallback (see VINTAGE_CTX).
   const PCT = ["shareholding", "percentage", "total", "shares"];
 
-  const promoterPct =
-    byCtx(PCT, "ShareholdingOfPromoterAndPromoterGroup_ContextI") ?? 0;
-  const publicPct = byCtx(PCT, "PublicShareholding_ContextI") ?? 0;
+  // Raw category percentages, in whatever unit the filing happens to use.
+  const promoterPctRaw = byCtxV(PCT, VINTAGE_CTX.promoter) ?? 0;
+  const publicPctRaw = byCtxV(PCT, VINTAGE_CTX.public) ?? 0;
+  const employeeTrustRaw = byCtxV(PCT, VINTAGE_CTX.employeeTrust) ?? 0;
+  const fiiRaw = byCtxV(PCT, VINTAGE_CTX.fii);
+  const diiRaw = byCtxV(PCT, VINTAGE_CTX.dii);
+  const mutualFundRaw = byCtxV(PCT, VINTAGE_CTX.mutualFund);
+  const insuranceRaw = byCtxV(PCT, VINTAGE_CTX.insurance);
+  const banksRaw = byCtxV(PCT, VINTAGE_CTX.banks);
+  const fiRaw = byCtxV(PCT, VINTAGE_CTX.financialInstitutions);
+  const nonInstRaw = byCtxV(PCT, VINTAGE_CTX.nonInstitutions);
 
-  // Employee benefit trust — present only in some filings
-  const employeeTrustPct =
-    byCtxPattern(PCT, "EmployeeTrust_ContextI") ??
-    byCtxPattern(PCT, "EmployeeBenefitTrust") ??
-    0;
+  // ── Scale detection → normalise every category % to PERCENT (0–100) ──
+  // The 2025-10-31 taxonomy expresses these as FRACTIONS (0–1); 2025-05-31 and
+  // 2022-09-30 use PERCENT (0–100). Promoter + Public partition the register, so
+  // their raw sum is ≈1 (fraction filing) or ≈100 (percent filing). We use that
+  // to rescale, so fiiPct/diiPct/etc. are single-unit across all vintages and
+  // the downstream "percentage delta" signals compare like with like.
+  const scaleSum = promoterPctRaw + publicPctRaw;
+  const toPct = scaleSum > 0 && scaleSum < 1.5 ? 100 : 1;
+  const sc = (v: number | null): number | null => (v == null ? null : v * toPct);
 
-  // FII: use combined foreign institutions aggregate (Cat I + Cat II)
-  const fiiPct = byCtx(PCT, "InstitutionsForeign_ContextI");
+  const promoterPct = promoterPctRaw * toPct;
+  const publicPct = publicPctRaw * toPct;
+  const employeeTrustPct = employeeTrustRaw * toPct;
 
+  // FII: combined foreign institutions aggregate (Cat I + Cat II)
+  const fiiPct = sc(fiiRaw);
   // DII: domestic institutions aggregate (MF + AIF + Insurance + Banks/FIs)
-  const diiPct = byCtx(PCT, "InstitutionsDomestic_ContextI");
+  const diiPct = sc(diiRaw);
 
   // DII sub-breakdown
-  const mutualFundPct = byCtx(PCT, "MutualFundsOrUTI_ContextI");
-  const insurancePct = byCtx(PCT, "InsuranceCompanies_ContextI");
+  const mutualFundPct = sc(mutualFundRaw);
+  const insurancePct = sc(insuranceRaw);
 
   // Banks & FIs may not have their own context in every filing
-  const banksPct = byCtxPattern(PCT, "Banks_ContextI");
-  const fiPct = byCtxPattern(PCT, "FinancialInstitutions_ContextI");
+  const banksPct = sc(banksRaw);
+  const fiPct = sc(fiRaw);
   const banksFisPct =
     banksPct != null || fiPct != null
-      ? Math.round(((banksPct ?? 0) + (fiPct ?? 0)) * 10000) / 10000
+      ? round4((banksPct ?? 0) + (fiPct ?? 0))
       : null;
 
   // Others / retail = public − FII − DII (non-institutional residual)
-  const nonInstPct = byCtx(PCT, "NonInstitutions_ContextI");
+  const nonInstPct = sc(nonInstRaw);
   const othersPct =
     fiiPct != null && diiPct != null
-      ? Math.max(0, Math.round((publicPct - fiiPct - diiPct) * 10000) / 10000)
+      ? Math.max(0, round4(publicPct - fiiPct - diiPct))
       : nonInstPct != null
-        ? Math.round(nonInstPct * 10000) / 10000
+        ? round4(nonInstPct)
         : null;
   const retailPct = othersPct;
 
-  // ── Share counts ───────────────────────────────────────────
+  // ── Share counts (absolute integers — NOT scaled) ──────────
   const SHARES = ["fullypaid", "equity"];
-  const totalShares = byCtx(SHARES, "ShareholdingPattern_ContextI");
-  const promoterShares = byCtx(
-    SHARES,
-    "ShareholdingOfPromoterAndPromoterGroup_ContextI",
-  );
+  const totalShares = byCtxV(SHARES, VINTAGE_CTX.total);
+  const promoterShares = byCtxV(SHARES, VINTAGE_CTX.promoter);
 
   // ── Pledge / encumbrance ───────────────────────────────────
   // When no shares are pledged, these elements may be absent or zero.
@@ -274,16 +348,18 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
   pledgedShares = pledgedShares ?? 0;
 
   return {
-    promoterPct: Math.round(promoterPct * 10000) / 10000,
-    publicPct: Math.round(publicPct * 10000) / 10000,
-    employeeTrustPct: Math.round(employeeTrustPct * 10000) / 10000,
-    fiiPct,
-    diiPct,
-    retailPct: retailPct != null ? Math.round(retailPct * 10000) / 10000 : null,
-    othersPct: othersPct != null ? Math.round(othersPct * 10000) / 10000 : null,
-    mutualFundPct,
-    insurancePct,
+    promoterPct: round4(promoterPct),
+    publicPct: round4(publicPct),
+    employeeTrustPct: round4(employeeTrustPct),
+    fiiPct: fiiPct != null ? round4(fiiPct) : null,
+    diiPct: diiPct != null ? round4(diiPct) : null,
+    retailPct: retailPct != null ? round4(retailPct) : null,
+    othersPct: othersPct != null ? round4(othersPct) : null,
+    mutualFundPct: mutualFundPct != null ? round4(mutualFundPct) : null,
+    insurancePct: insurancePct != null ? round4(insurancePct) : null,
     banksFisPct,
+    // Pledge percentages are deliberately left un-rescaled (out of the FII/DII
+    // scope; their unit convention across vintages is unverified).
     promoterPledgedPct,
     promoterPledgedSharesPct,
     totalShares: totalShares ? Math.round(totalShares) : null,

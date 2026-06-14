@@ -81,6 +81,9 @@ model Stock {
   pillarScores    PillarScore[]
   guardrailEvents GuardrailEvent[]
 
+  // ── Manual supplementary banking figures (CASA, Tier-1 history) ──
+  bankSupplementary BankSupplementary[]
+
   @@index([industryType])
   @@map("stocks")
 }
@@ -2230,9 +2233,10 @@ enum FlowCategoryState {
 }
 
 enum FlowTrendState {
-  accelerating
-  steady
-  reversing
+  three_up
+  three_down
+  mixed
+  neutral
 }
 
 // THE COMPOSITE ROW. References the four in-force pillar rows by FK (ruling 2);
@@ -2464,6 +2468,15 @@ model OwnershipScore {
   flowAdjustmentRaw     Decimal                 @map("flow_adjustment_raw") @db.Decimal(8, 4)
   flowAdjustmentClamped Decimal                 @map("flow_adjustment_clamped") @db.Decimal(8, 4) // clamp(raw, -12, +12)
   finalOwnership        Decimal                 @map("final_ownership") @db.Decimal(8, 4) // clamp(primary + flowClamped, 40, 100)
+
+  // R1 pledge red-flag FIRING RECORD (the breach is a red flag, NOT a pillar nudge).
+  // The score_red_flags ROW stays deferred (it needs a ScoreSnapshot, snapshot_id
+  // NOT NULL → out-of-scope pillars), but R1's firing is recorded HERE so that row
+  // is later RECONSTRUCTABLE from stored facts, never recomputed. triggeringValues
+  // captures { pledgeRatioQ, pledgeRatioQ1, qoqRisePp, breaches[] }.
+  r1Fired            Boolean @default(false) @map("r1_fired")
+  r1TriggeringValues Json?   @map("r1_triggering_values")
+
   createdAt             DateTime                @default(now()) @map("created_at")
 
   pillarScore    PillarScore             @relation(fields: [pillarScoreId], references: [id], onDelete: Cascade)
@@ -2658,4 +2671,69 @@ model SectorHealthCache {
   @@unique([sectorId, runId])
   @@index([asOfDate])
   @@map("score_sector_health")
+}
+
+// ─────────────────────────────────────────────────────────────
+// BANK SUPPLEMENTARY — manually-entered banking figures that are NOT in the
+// Reg-33 XBRL (CASA ratio; pre-FY23 Tier-1 capital). These are disclosed only
+// in bank investor presentations / press releases, so they are hand-entered
+// WITH a source citation. The "verified figure or explicit MISSING, never a
+// guess" discipline: a value with no source is rejected at ingest (sourceCitation
+// is non-null by design).
+//
+// APPEND-ONLY + SUPERSEDE (same mechanic as score_snapshots, rulings 1/3): a
+// corrected re-entry writes a NEW `version` and points `supersedesId` at the
+// prior row. Nothing is updated in place (no updatedAt). Reads take MAX(version)
+// per cell — newest wins.
+//
+// General & metric-keyed so multiple supplementary metrics coexist (CASA now,
+// Tier-1 history now, others later) WITHOUT a new migration.
+// ─────────────────────────────────────────────────────────────
+enum BankSupplementaryMetric {
+  casa_pct // CASA ratio — unit = PERCENT (e.g. 43.82 means 43.82%)
+  tier1_pct // Tier-1 capital ratio — unit = PERCENT (e.g. 14.50 means 14.50%)
+}
+
+model BankSupplementary {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+  symbol  String // denormalised (repo convention) — bank ticker, e.g. "HDFCBANK"
+
+  metric BankSupplementaryMetric
+
+  // Period key — matches how BankingFundamental keys periods (fiscalYear) plus a
+  // nullable quarter. quarter = null means an ANNUAL figure.
+  fiscalYear String  @map("fiscal_year") // "FY24"
+  quarter    String? // "Q1".."Q4"; null = annual figure
+
+  // The figure as a PERCENT, NOT a fraction: CASA 43.82 = 43.82%, Tier-1
+  // 14.50 = 14.50%. (Banking ratio unit discipline — never store a fraction.)
+  value Decimal @db.Decimal(8, 4)
+
+  // Source traceability — REQUIRED (non-null). The disclosure this value came
+  // from, e.g. "Q3FY26 Investor Presentation, slide 14" or a URL. A sourceless
+  // value must be rejectable at ingest, hence non-null here.
+  sourceCitation String   @map("source_citation")
+  sourceDate     DateTime @map("source_date") @db.Date // date the disclosure was published/dated
+
+  // Append-only supersede chain (newest version wins on read)
+  version      Int     @default(1)
+  supersedesId String? @map("supersedes_id")
+
+  enteredBy String   @map("entered_by") // audit — "user:aman"
+  createdAt DateTime @default(now()) @map("created_at")
+
+  stock        Stock              @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  supersedes   BankSupplementary? @relation("BankSupplementarySupersede", fields: [supersedesId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  supersededBy BankSupplementary? @relation("BankSupplementarySupersede")
+
+  // A corrected re-entry (new version) coexists with the prior; the same version
+  // can't duplicate a cell. CAVEAT: Postgres treats NULL as DISTINCT in unique
+  // indexes, so for ANNUAL rows (quarter = null) this does NOT enforce
+  // uniqueness — the ingest route's read-before-write supersede check inside a
+  // transaction is the authoritative guard for those rows. See FLAGS / format doc.
+  @@unique([stockId, metric, fiscalYear, quarter, version])
+  @@unique([supersedesId]) // a row supersedes at most one prior version (clean chain)
+  @@index([stockId, metric, fiscalYear, quarter, version(sort: Desc)]) // "latest version for this cell" read path
+  @@map("bank_supplementary")
 }

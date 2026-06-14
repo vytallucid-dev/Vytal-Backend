@@ -23,6 +23,7 @@ import {
   pricesRouter,
 } from "./routes/ingestion/prices-route.js";
 import { resultsScanRouter } from "./routes/ingestion/results-scan-route.js";
+import { adminBankSupplementaryRouter } from "./routes/ingestion/bank-supplementary-route.js";
 import { legacyBackfillRouter } from "./routes/ingestion/legacy-backfill-route.js";
 import {
   adminShareholdingRouter,
@@ -53,6 +54,7 @@ export const createApp = () => {
   app.use("/api/v1/peer-groups", peerGroupsRouter);
   app.use("/api/v1/admin/peer-metrics", adminPeerMetricsRouter);
   app.use("/api/v1/admin/results-scan", resultsScanRouter);
+  app.use("/api/v1/admin/bank-supplementary", adminBankSupplementaryRouter);
   app.use("/api/v1/admin/legacy-backfill", legacyBackfillRouter);
   app.use("/api/v1/admin/jobs", jobsRouter);
 

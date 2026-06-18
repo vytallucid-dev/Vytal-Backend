@@ -11,9 +11,10 @@
 // It CALLS the verified lens math (computeLens1/2/3, combineLenses) — never
 // reimplements it. Weighting/renormalization is the NEXT piece and is not done here.
 
-import { computeLens1, type Lens1Result, type AbsoluteBars } from "../lenses/lens-bars.js";
+import { computeLens1, scoreL1, type Lens1Result, type AbsoluteBars, type StockOverride } from "../lenses/lens-bars.js";
 import { computeLens2, computeLens3, type ZLensResult } from "../lenses/lens-zscore.js";
 import { combineLenses } from "../lenses/composite.js";
+import { assertUnitMatch, type LiveUnit } from "./unit-guard.js";
 import type { BarDirection } from "../lenses/types.js";
 import { computePeerStats, decideLift531, decideLift541 } from "./peer-stats.js";
 import { normalizeSuppression } from "./types.js";
@@ -47,6 +48,18 @@ export interface CrossSectionInput {
   direction: BarDirection;
   bars: AbsoluteBars;
   barNote: string; // THROWAWAY label in verification
+  /** The unit the live raw values are computed in. When supplied together with
+   *  barUnit, the §8 unit-match guard runs once before scoring and THROWS on a
+   *  mismatch (never scores). Optional ⇒ existing callers are unchanged. */
+  liveUnit?: LiveUnit;
+  /** The unit the bar-set is expressed in (defaults to the engine registry unit
+   *  for metricKey inside assertUnitMatch when omitted). */
+  barUnit?: "%" | "ratio" | "x" | "days" | "years";
+  /** OPTIONAL per-stock 3-anchor SSCU override (handoff §7). When supplied, any
+   *  member whose symbol is in `sscu.scope` is L1-scored against the 3-anchor
+   *  override instead of the standard 5 bars (others unchanged). Omitted ⇒ every
+   *  member uses the standard bars (existing callers are byte-identical). */
+  sscu?: StockOverride | null;
   members: CrossSectionMember[];
   /** Single predicate (legacy = O2 both-effects) OR two predicates (O2/O4
    *  independent — own-score and peer-mean honored separately). */
@@ -56,6 +69,13 @@ export interface CrossSectionInput {
 
 export function scoreMetricCrossSection(input: CrossSectionInput): CrossSectionResult {
   const { members, config, bars, direction, metricKey } = input;
+
+  // §8 UNIT-MATCH GUARD — once per metric, BEFORE any value meets the bars. A live
+  // value in a different scale than the bars (e.g. a ratio value against percent
+  // bars) silently corrupts L1; this THROWS instead of scoring. Runs only when the
+  // caller supplies the live unit (additive — existing callers are unaffected).
+  if (input.liveUnit !== undefined) assertUnitMatch(metricKey, input.liveUnit, input.barUnit);
+
   const sup = normalizeSuppression(input.suppression); // two independent predicates
 
   // 1. partition. The two booleans drive two INDEPENDENT effects from the one row:
@@ -75,9 +95,13 @@ export function scoreMetricCrossSection(input: CrossSectionInput): CrossSectionR
   const l2AvailableCommon = commonStats.sampleN >= config.peerMinN;
 
   // 3. L1 for every scored member (L1 needs only the own value); §5.3.1 lift over
-  //    the common cross-section (the peer-excluded values are not counted).
+  //    the common cross-section (the peer-excluded values are not counted). SSCU
+  //    (handoff §7): scoreL1 applies the per-stock 3-anchor override when the
+  //    member's symbol is in scope; with no override it is exactly computeLens1
+  //    (the verified 5-bar path) — so non-SSCU callers are byte-identical.
+  const override = input.sscu ?? null;
   const l1Map = new Map<string, Lens1Result>();
-  for (const m of scoredSet) l1Map.set(m.stockId, computeLens1(m.rawValue as number, bars, direction));
+  for (const m of scoredSet) l1Map.set(m.stockId, scoreL1(m.rawValue as number, bars, direction, { stock: m.symbol, override }));
   const lift531 = decideLift531(peerSetCommon.map((m) => l1Map.get(m.stockId)!.score));
 
   // 4 + 5. per member
@@ -170,6 +194,7 @@ function buildScored(
     l1Score: l1.score,
     l1Band: l1.band,
     l1Saturated: l1.saturated,
+    l1BarSetUsed: l1.barSetUsed,
     barDirection: direction,
     barNote: input.barNote,
     l2Available: l2?.available ?? false,
@@ -210,7 +235,7 @@ function buildNotScored(
     scoreState: state,
     includedInPeerStats: false, // suppress=false, missing=excluded
     unavailableReason: reason,
-    l1Available: false, l1Score: null, l1Band: null, l1Saturated: false,
+    l1Available: false, l1Score: null, l1Band: null, l1Saturated: false, l1BarSetUsed: null,
     barDirection: input.direction, barNote: input.barNote,
     l2Available: false, l2Score: null, l2Z: null, l2AnchorApplied: null, l2AnchorFired: false,
     peerStats: null,
@@ -236,7 +261,7 @@ export function buildNeutralHold(input: CrossSectionInput, m: CrossSectionMember
     scoreState: "neutral_hold",
     includedInPeerStats: true, // stays in peer μ/σ — the opposite of suppress
     unavailableReason: "neutral_hold (banking supplementary absent)",
-    l1Available: false, l1Score: null, l1Band: null, l1Saturated: false,
+    l1Available: false, l1Score: null, l1Band: null, l1Saturated: false, l1BarSetUsed: null,
     barDirection: input.direction, barNote: input.barNote,
     l2Available: false, l2Score: null, l2Z: null, l2AnchorApplied: null, l2AnchorFired: false,
     peerStats: null,

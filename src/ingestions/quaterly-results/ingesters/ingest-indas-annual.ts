@@ -19,12 +19,57 @@ export interface IngestIndAsAnnualInput {
   source: string;
 }
 
+// A derived ratio / per-share column has limited precision; a corrupt SOURCE
+// input (e.g. a mis-tagged face value in the XBRL) can push a derived value past
+// the column range and reject the ENTIRE row — discarding real financials over a
+// display field. A display-only ratio must never do that, so out-of-range → null
+// + warn. The scoring engine recomputes its metrics from raw ₹Cr lines and does
+// not read these stored ratio columns for any affected metric (CN-8: no score
+// shift). maxIntDigits = (precision − scale): Decimal(8,4)→4, Decimal(10,4)→6,
+// Decimal(10,2)→8.
+function boundDerived(
+  v: Prisma.Decimal | null,
+  maxIntDigits: number,
+  field: string,
+  tag: string,
+): Prisma.Decimal | null {
+  if (v === null) return null;
+  const max = new Prisma.Decimal(10).pow(maxIntDigits);
+  if (v.abs().greaterThanOrEqualTo(max)) {
+    console.warn(
+      `[ingest-indas-annual] ${tag}: derived ${field}=${v.toString()} out of column range ` +
+        `(|v|≥${max.toString()}) → stored null (display field; scoring reads raw lines, not this column).`,
+    );
+    return null;
+  }
+  return v;
+}
+
+// Indian equity face values are 1/2/5/10 (occasionally up to 100). A value far
+// outside that range is corrupt source data (seen in integrated-filing XBRL where
+// a price or other figure is mis-tagged as nominal value). Drop it so it can't
+// poison its consumers: the derived bookValuePerShare, and the F3 ESC-buyback
+// quantifier in scoring (which reads faceValueShare, gated on an ESC drop).
+const PLAUSIBLE_FACE_VALUE_MAX = 1000;
+function plausibleFaceValue(v: number | null): number | null {
+  if (v === null) return null;
+  if (v <= 0 || v > PLAUSIBLE_FACE_VALUE_MAX) return null;
+  return v;
+}
+
 export async function ingestIndAsAnnual(
   input: IngestIndAsAnnualInput,
   decision: "ingest" | "refresh",
 ): Promise<{ status: "success" | "refreshed"; rowId: string }> {
   const { stockId, parsed, source } = input;
   const p = parsed;
+  const tag = `${p.fiscalYear}/${p.resultType} stock=${stockId.slice(0, 8)}`;
+  // Sanitised face value — corrupt source (e.g. 44539 where the real value is 10)
+  // would otherwise compute a nonsensical bookValuePerShare and reject the row.
+  const faceValueSane = plausibleFaceValue(p.faceValueShare);
+  if (faceValueSane === null && p.faceValueShare !== null) {
+    console.warn(`[ingest-indas-annual] ${tag}: implausible faceValueShare=${p.faceValueShare} → treated as null.`);
+  }
 
   // ── Derived totals ──
   const totalDebt = sumNonNull(p.borrowingsCurrent, p.borrowingsNoncurrent);
@@ -66,10 +111,10 @@ export async function ingestIndAsAnnual(
     netWorth !== null &&
     p.paidUpEquityCapital !== null &&
     p.paidUpEquityCapital > 0 &&
-    p.faceValueShare !== null &&
-    p.faceValueShare > 0
+    faceValueSane !== null &&
+    faceValueSane > 0
   ) {
-    const sharesOutstandingCr = p.paidUpEquityCapital / p.faceValueShare; // (₹Cr) / (₹/share) → Cr-shares
+    const sharesOutstandingCr = p.paidUpEquityCapital / faceValueSane; // (₹Cr) / (₹/share) → Cr-shares
     if (sharesOutstandingCr > 0) {
       bookValuePerShare = netWorth / sharesOutstandingCr;
     }
@@ -267,29 +312,31 @@ export async function ingestIndAsAnnual(
     interestPaid: safeNumber(p.interestPaid),
     fcf: safeNumber(fcf),
 
-    // Per Share
-    basicEps: decimalPerShare(p.basicEps),
-    dilutedEps: decimalPerShare(p.dilutedEps),
-    faceValueShare: decimalPerShare(p.faceValueShare),
+    // Per Share — bounded to Decimal(10,4) (6 int digits); faceValue sanitised
+    basicEps: boundDerived(decimalPerShare(p.basicEps), 6, "basicEps", tag),
+    dilutedEps: boundDerived(decimalPerShare(p.dilutedEps), 6, "dilutedEps", tag),
+    faceValueShare: decimalPerShare(faceValueSane),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
-    // Derived
+    // Derived — ratio/pct columns are Decimal(8,4) (4 int digits); per-share &
+    // turnover columns Decimal(10,4) (6); receivablesDays Decimal(10,2) (8).
+    // bound* clamps a corrupt-input blowup to null rather than rejecting the row.
     ebitda: safeNumber(ebitda),
-    netMargin: decimalPct(netMargin),
-    operatingMargin: decimalPct(operatingMargin),
+    netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
+    operatingMargin: boundDerived(decimalPct(operatingMargin), 4, "operatingMargin", tag),
     netWorth: safeNumber(netWorth),
-    bookValuePerShare: decimalPerShare(bookValuePerShare),
-    debtToEquity: decimalPct(debtToEquity !== null ? debtToEquity * 100 : null), // store as percent
-    roe: decimalPct(roe),
-    roce: decimalPct(roce),
-    interestCoverage: decimalPerShare(interestCoverage),
-    receivablesDays: safeNumber(receivablesDays, 2),
-    inventoryTurnover: decimalPerShare(inventoryTurnover),
-    assetTurnover: decimalPerShare(assetTurnover),
+    bookValuePerShare: boundDerived(decimalPerShare(bookValuePerShare), 6, "bookValuePerShare", tag),
+    debtToEquity: boundDerived(decimalPct(debtToEquity !== null ? debtToEquity * 100 : null), 4, "debtToEquity", tag), // store as percent
+    roe: boundDerived(decimalPct(roe), 4, "roe", tag),
+    roce: boundDerived(decimalPct(roce), 4, "roce", tag),
+    interestCoverage: boundDerived(decimalPerShare(interestCoverage), 6, "interestCoverage", tag),
+    receivablesDays: boundDerived(safeNumber(receivablesDays, 2), 8, "receivablesDays", tag),
+    inventoryTurnover: boundDerived(decimalPerShare(inventoryTurnover), 6, "inventoryTurnover", tag),
+    assetTurnover: boundDerived(decimalPerShare(assetTurnover), 6, "assetTurnover", tag),
 
-    revenueGrowthYoy: decimalPct(revenueGrowthYoy),
-    profitGrowthYoy: decimalPct(profitGrowthYoy),
-    epsGrowthYoy: decimalPct(epsGrowthYoy),
+    revenueGrowthYoy: boundDerived(decimalPct(revenueGrowthYoy), 4, "revenueGrowthYoy", tag),
+    profitGrowthYoy: boundDerived(decimalPct(profitGrowthYoy), 4, "profitGrowthYoy", tag),
+    epsGrowthYoy: boundDerived(decimalPct(epsGrowthYoy), 4, "epsGrowthYoy", tag),
   };
 
   const row = await prisma.fundamental.upsert({

@@ -310,7 +310,7 @@ export interface OwnershipFullWritePlan {
 
 /** Fingerprint over shareholding-data hash + spec version + a deterministic flow
  * summary, so any flow-affecting input change → new PillarScore version. */
-function fullInputsFingerprint(result: OwnershipResult): string {
+export function fullInputsFingerprint(result: OwnershipResult): string {
   const flow = (["A", "B", "C", "D"] as const).map((k) => {
     const c = result.flow[k];
     return { k, s: c.state, v: c.cappedSubScore, r: c.firedRule, b: c.bandLanded, n: c.netFlowValue, t: c.trendState };
@@ -341,10 +341,62 @@ function toFlowPlan(c: FlowCategoryResult): FlowCategoryPlan {
 
 /** Which universal flow band set a category references (A/B use explicit rule
  * points → none; C/D use the universal banded cuts). */
-function bandTypeFor(cat: FlowCategoryResult["category"]): "c_net_insider" | "d_net_block" | null {
+export function bandTypeFor(cat: FlowCategoryResult["category"]): "c_net_insider" | "d_net_block" | null {
   if (cat === "C_insider") return "c_net_insider";
   if (cat === "D_block") return "d_net_block";
   return null;
+}
+
+/** The universal (NOT per-PG) flow band-set cuts, by band type. Single-sourced so
+ *  the standalone writer and the scoring-pass orchestrator get-or-create identically. */
+export const FLOW_BAND_CUTS: Record<"c_net_insider" | "d_net_block" | "trend_bonus", unknown> = {
+  c_net_insider: { unit: "inr_cr_net_30d", pairs: [{ gt: 3, points: 3 }, { gt: 1, points: 2 }, { gte: -1, points: 0 }, { gte: -3, points: -2 }, { else: true, points: -4 }] },
+  d_net_block: { unit: "pct_of_mcap_net_30d", pairs: [{ gt: 0.5, points: 6 }, { gt: 0.1, points: 3 }, { gte: -0.1, points: 0 }, { gte: -0.5, points: -3 }, { else: true, points: -6 }] },
+  trend_bonus: { unit: "trend_90d", pairs: [{ state: "three_up", points: 2 }, { state: "three_down", points: -2 }, { state: "mixed_or_neutral", points: 0 }] },
+};
+
+/** Pure builder: the OwnershipScore data (Primary terms + Flow rollup + R1 firing
+ *  record) from an OwnershipResult. Single-sourced by writeOwnershipFull and the
+ *  scoring-pass orchestrator so the row shape cannot drift. */
+export function buildOwnershipScoreData(result: OwnershipResult) {
+  const p = result.primary;
+  const r1 = p.redFlags.find((f) => f.flagKey === "ownership_R1_pledge");
+  const r1Fired = !!r1;
+  const r1TriggeringValues = r1 ? { ...r1.triggeringValues, breaches: r1.reasons } : null;
+  return {
+    r1Fired,
+    r1TriggeringValues,
+    ownershipScore: {
+      baseline: p.baseline.baseline,
+      baselineReason: p.baseline.reason,
+      pledgingAdjustment: p.pledging.ladderAdjustment,
+      penaltyR2: p.r2.penalty,
+      penaltyR6: p.r6.penalty,
+      penaltyProlongedFii: p.prolongedFii.penalty,
+      primarySubtotal: p.primarySubtotal,
+      flowAdjustmentRaw: result.flowAdjustmentRaw,
+      flowAdjustmentClamped: result.flowAdjustmentClamped,
+      finalOwnership: result.finalOwnership,
+      r1Fired,
+      r1TriggeringValues,
+    },
+  };
+}
+
+/** Pure builder: the 4 OwnershipFlowCategory create rows (flowBandSetId resolved by
+ *  the caller from the get-or-created band sets). */
+export function buildFlowCategoryRows(result: OwnershipResult) {
+  return [result.flow.A, result.flow.B, result.flow.C, result.flow.D].map((c) => ({
+    category: c.category,
+    rawSubScore: c.rawSubScore,
+    capApplied: c.cappedSubScore - c.rawSubScore,
+    cappedSubScore: c.cappedSubScore,
+    categoryState: c.state,
+    bandLanded: c.bandLanded,
+    netFlowValue: c.netFlowValue,
+    trendState: c.trendState,
+    bandType: bandTypeFor(c.category),
+  }));
 }
 
 export async function writeOwnershipFull(

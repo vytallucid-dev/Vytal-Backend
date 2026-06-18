@@ -1894,11 +1894,25 @@ enum DerivationLayer {
   layer_c
 }
 
+// Universal Market sub-components (CN-1): A=positioning (A1 52w-range, A2 3y-range),
+// B=trend (B1 vs-200DMA, B2 4Q HH/HL, B3 recent-move), C=relative (C1 vs sector),
+// D=risk (D1 vol-ratio). Replaced the Phase-4 4-component set on the universal-Market build.
 enum MarketSubComponent {
-  range_52w
-  vs_200dma
-  volatility_vs_sector
-  trend_4q
+  A1
+  A2
+  B1
+  B2
+  B3
+  C1
+  D1
+}
+
+// The §5 category a Market sub-component rolls into (equal-by-category weighting).
+enum MarketCategory {
+  A
+  B
+  C
+  D
 }
 
 // §5.3.1 / §5.4.1 anchor-lift rule that fired when computing the L2 anchor.
@@ -1918,7 +1932,6 @@ model ScoringSpecVersion {
 
   runs                  ScoringRun[]
   metricBarSets         MetricBarSet[]
-  marketBandSets        MarketBandSet[]
   ownershipFlowBandSets OwnershipFlowBandSet[]
   snapshots             ScoreSnapshot[]
   pillarScores          PillarScore[]
@@ -2012,26 +2025,11 @@ model BarProvenance {
 // peerGroupId. (Overrides the design draft, which keyed only by subComponent.)
 // Cuts stored as explicit ordered columns (p15/p35/p65/p85) for the
 // "crossed a market band" universe scan.
-model MarketBandSet {
-  id            String             @id @default(uuid())
-  peerGroupId   String             @map("peer_group_id") // ruling 7: per-PG
-  subComponent  MarketSubComponent @map("sub_component")
-  version       Int
-  p15           Decimal            @db.Decimal(18, 4)
-  p35           Decimal            @db.Decimal(18, 4)
-  p65           Decimal            @db.Decimal(18, 4)
-  p85           Decimal            @db.Decimal(18, 4)
-  inForceFrom   DateTime           @map("in_force_from") @db.Date
-  specVersionId String             @map("spec_version_id")
-  createdAt     DateTime           @default(now()) @map("created_at")
-
-  specVersion     ScoringSpecVersion @relation(fields: [specVersionId], references: [id])
-  marketSubScores MarketSubScore[]
-
-  @@unique([peerGroupId, subComponent, version])
-  @@index([peerGroupId, subComponent, inForceFrom(sort: Desc)])
-  @@map("score_market_band_sets")
-}
+// RETIRED on the universal-Market build (2026-06-19). The Phase-4 Market used per-PG
+// percentile band sets (score_market_band_sets); the universal Market scores via an
+// in-code CUTS table (CN-1: one universal mechanism, no per-PG band rows). The model
+// + table are dropped (mirrors the Phase-4 Market code deletion). MarketSubScore no
+// longer FKs here.
 
 // FINAL RULING 7: the Ownership FLOW band-cut / point values are ONE UNIVERSAL
 // set for every stock — explicitly NOT keyed by peerGroup. Heterogeneous across
@@ -2180,13 +2178,10 @@ enum MetricBand {
 }
 
 // Market sub-component landing band, named by the percentile cut it fell in.
-enum MarketBand {
-  p0_p15
-  p15_p35
-  p35_p65
-  p65_p85
-  p85_p100
-}
+// RETIRED on the universal-Market build (2026-06-19). The Phase-4 Market landed on a
+// distributional percentile bucket (p0_p15…p85_p100); the universal Market lands on the
+// Lens-1 quality band (MetricBand: excellent..distress), so MarketSubScore.band reuses
+// MetricBand. This percentile enum is no longer referenced and is dropped.
 
 enum LensFallback {
   none
@@ -2433,19 +2428,31 @@ model MetricScore {
   @@map("score_metrics")
 }
 
-// The 4 rule-based Market sub-components, band-scored. Owned by the Market pillar.
+// The 7 universal Market sub-components, Lens-1-scored. Owned by the Market pillar.
+// CN-6: EVERY sub-component is stored — a scoreable one carries raw/score/band; an
+// EXCLUDED one (min-history / no peer pool) carries available=false + reason with null
+// raw/score/band. A quarantined/excluded Market pillar still writes all 7 rows (the
+// honest decomposition), never a silent drop.
 model MarketSubScore {
-  id              String             @id @default(uuid())
-  pillarScoreId   String             @map("pillar_score_id")
-  subComponent    MarketSubComponent @map("sub_component")
-  rawValue        Decimal            @map("raw_value") @db.Decimal(18, 4)
-  bandScore       Decimal            @map("band_score") @db.Decimal(8, 4)
-  bandLanded      MarketBand         @map("band_landed")
-  marketBandSetId String             @map("market_band_set_id")
-  createdAt       DateTime           @default(now()) @map("created_at")
+  id            String             @id @default(uuid())
+  pillarScoreId String             @map("pillar_score_id")
+  subComponent  MarketSubComponent @map("sub_component") // A1/A2/B1/B2/B3/C1/D1
+  category      MarketCategory // A/B/C/D — the §5 category this sub rolls into
 
-  pillarScore   PillarScore   @relation(fields: [pillarScoreId], references: [id], onDelete: Cascade)
-  marketBandSet MarketBandSet @relation(fields: [marketBandSetId], references: [id])
+  available Boolean // false = excluded (min-history / no peer pool)
+  reason    String? // exclusion reason when !available (CN-6)
+
+  // Universal Market scores via Lens-1 mechanics (CN-1: one in-code CUTS table, no
+  // per-PG band set). raw/score/band are null when the sub-component is excluded.
+  rawValue  Decimal?    @map("raw_value") @db.Decimal(18, 4)
+  score     Decimal?    @db.Decimal(8, 4) // 0–100 Lens-1 score
+  band      MetricBand? // excellent..distress (Lens-1 quality band)
+  saturated Boolean     @default(false) // ±10/band-width saturation fired
+  capped    Boolean     @default(false) // B2 categorical hit the 90 cap
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  pillarScore PillarScore @relation(fields: [pillarScoreId], references: [id], onDelete: Cascade)
 
   @@unique([pillarScoreId, subComponent])
   @@index([pillarScoreId])

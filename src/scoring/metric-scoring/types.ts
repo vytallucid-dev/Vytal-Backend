@@ -55,6 +55,13 @@ export interface MetricBarSetInput {
   illustrative: boolean;
   barPath?: string | null; // the peerGroupId / logical path the bars belong to
   metricBarSetId?: string | null; // FK to score_metric_bar_sets (production)
+  /** The unit the bars are expressed in (engine vocabulary "%"|"ratio"|"x"|…).
+   *  Surfaced by the Phase-6 loader; consumed by the §8 unit-match guard. */
+  unit?: "%" | "ratio" | "x" | "days" | "years";
+  /** Optional per-stock 3-anchor SSCU override (handoff §7) + its stock scope. */
+  sscu?: { bars: { distress: number; good: number; excellent: number }; scope: string[] } | null;
+  /** When this set was inherited (PG6→PG5), the effective source bar path. */
+  resolvedFromBarPath?: string | null;
 }
 
 // ── Suppression hook (Phase-5 guardrail) ────────────────────────────────────────
@@ -117,6 +124,9 @@ export interface ScoredMetric {
   l1Score: number | null;
   l1Band: MetricBand | null;
   l1Saturated: boolean;
+  /** Which bar-set produced L1 (handoff §7 decomposability): the standard 5-bar
+   *  set, or a per-stock 3-anchor SSCU override. null when L1 was not computed. */
+  l1BarSetUsed: "standard" | "sscu" | null;
   barDirection: BarDirection | null;
   barNote: string; // carries the THROWAWAY label in verification
 

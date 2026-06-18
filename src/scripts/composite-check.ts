@@ -1,13 +1,14 @@
 // Verification harness for the SNAPSHOT-LEVEL COMPOSITE — the convergence point.
 // For ONE peer group (Large-Cap Pharma) it computes all FOUR real pillars at a
-// recent snapshot (Foundation/Momentum on illustrative bars, Market on illustrative
-// per-PG cuts, Ownership full Primary+Flow+clamp), blends them into the Health
-// Score, labels it, and assembles the complete ScoreSnapshot. DRY-RUN: commits
-// NOTHING (the first committed write waits for Phase-6 real bars).
+// recent snapshot (Foundation/Momentum on illustrative bars, Market on the UNIVERSAL
+// mechanism, Ownership full Primary+Flow+clamp), blends them into the Health Score,
+// labels it, and assembles the complete ScoreSnapshot. DRY-RUN: commits NOTHING.
 //
 //   npx tsx src/scripts/composite-check.ts
 //
-// ⚠ NUMBERS are on ILLUSTRATIVE bars/cuts → not final. The CHAIN is what is proven:
+// ⚠ Foundation/Momentum numbers are on ILLUSTRATIVE bars → not final.
+// Market uses the real universal mechanism (orchestrate → universal-subcomponents →
+// market-universal → §14.4 cascade). The CHAIN is what is proven:
 // four pillars → blend → §14.4 redistribution → label → snapshot.
 
 import { prisma } from "../db/prisma.js";
@@ -21,10 +22,8 @@ import { ILLUSTRATIVE_BARS } from "../scoring/metric-scoring/illustrative-bars.j
 import { NO_SUPPRESSION, type WiringConfig, type ScoredMetric } from "../scoring/metric-scoring/types.js";
 import { assemblePillar } from "../scoring/pillars/assemble.js";
 import type { PillarScoreResult } from "../scoring/pillars/types.js";
-// Market
-import { assembleMarketForPG, type MarketMemberInput } from "../scoring/market/market.js";
-import { illustrativeMarketBandSet } from "../scoring/market/illustrative-band-set.js";
-import type { MarketPillarResult } from "../scoring/market/types.js";
+// Market — UNIVERSAL mechanism
+import { scoreMarketForPg } from "../scoring/market/orchestrate.js";
 // Ownership
 import { computeOwnership, type OwnershipContext } from "../scoring/ownership/ownership.js";
 import type { OwnershipQuarter } from "../scoring/ownership/types.js";
@@ -33,7 +32,6 @@ import { rangePositionAsOf, MIN_TRAILING_DAYS, type DailyClose } from "../scorin
 // Composite
 import { assembleComposite } from "../scoring/composite/composite.js";
 import { writeComposite } from "../scoring/composite/persist.js";
-import { PILLAR_WEIGHTS } from "../scoring/composite/weights.js";
 import { labelFor } from "../scoring/composite/label.js";
 import type { CompositeResult, Pillar, PillarInput } from "../scoring/composite/types.js";
 
@@ -51,7 +49,7 @@ const modal = (xs: string[]): string => {
   return [...c.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
 };
 
-// ── Foundation/Momentum helpers (from pillar-assembly-check) ─────────────────────
+// ── Foundation/Momentum helpers ───────────────────────────────────────────────
 interface MemberData { stockId: string; symbol: string; fSnap: ReturnType<typeof computeFoundation>; fSeries: Map<string, number[]>; mSnap: ReturnType<typeof computeMomentum>; mSeries: Map<string, number[]>; }
 function foundationSeries(rows: Awaited<ReturnType<typeof loadFoundationStandalone>>): Map<string, number[]> {
   const sorted = [...rows].sort((a, b) => a.fyOrdinal - b.fyOrdinal); const series = new Map<string, number[]>();
@@ -72,7 +70,7 @@ function scorePillarMetrics(data: MemberData[], keys: string[], pillar: "foundat
   return byStock;
 }
 
-// ── Ownership helpers (from ownership-full-check) ────────────────────────────────
+// ── Ownership helpers ─────────────────────────────────────────────────────────
 const num = (d: unknown): number | null => d === null || d === undefined ? null : typeof d === "number" ? d : typeof (d as { toNumber?: () => number }).toNumber === "function" ? (d as { toNumber: () => number }).toNumber() : Number(d);
 function rowToQuarter(r: any): OwnershipQuarter { return { asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear, promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares, promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct) }; }
 function makePriceProbe(series: DailyClose[]): PriceProbe {
@@ -100,7 +98,7 @@ async function main() {
   const pg = await prisma.peerGroup.findFirst({ where: { name: PG_NAME }, include: { stocks: { include: { stock: true } } } });
   if (!pg) { console.log(`PG "${PG_NAME}" not found`); await prisma.$disconnect(); return; }
   console.log(`${"═".repeat(124)}\nSNAPSHOT COMPOSITE — PG: ${PG_NAME} (${pg.stocks.length} members)`);
-  console.log(`⚠ DRY-RUN; illustrative bars/cuts. Pillar weights F .35 / M .25 / Mkt .20 / Own .20 (CN-1 locked).`);
+  console.log(`⚠ DRY-RUN; illustrative Foundation/Momentum bars; universal Market (real). Weights F .35 / M .25 / Mkt .20 / Own .20.`);
 
   // ── Foundation + Momentum ──
   const data: MemberData[] = [];
@@ -120,18 +118,19 @@ async function main() {
     mPillar.set(d.stockId, assemblePillar({ pillar: "momentum", stockId: d.stockId, symbol: d.symbol, snapshot: mSnapQ, metrics: mByStock.get(d.stockId)! }));
   }
 
-  // ── Market ──
-  const marketMembers: MarketMemberInput[] = []; let asOf = new Date(0);
-  for (const d of data) { const series = await loadDailySeries(d.stockId); marketMembers.push({ stockId: d.stockId, symbol: d.symbol, series }); const last = series.at(-1)?.date; if (last && last > asOf) asOf = last; }
-  const { results: marketResults } = assembleMarketForPG(marketMembers, asOf, illustrativeMarketBandSet(pg.id), asOf.toISOString().slice(0, 10));
-  const mktPillar = new Map(marketResults.map((r) => [r.stockId, r]));
+  // ── Market — UNIVERSAL mechanism ──
+  const pgMkt = await scoreMarketForPg(PG_NAME);
+  const mktBySym = new Map((pgMkt?.members ?? []).map((m) => [m.symbol, m.result]));
+  const asOf = pgMkt?.asOf ?? new Date(0);
+  console.log(`  Market: universal mechanism asOf=${asOf.toISOString().slice(0, 10)}, sector1yr median=${pgMkt?.sectorMedian1yr?.toFixed(1) ?? "—"}%, baselineVol=${pgMkt?.sectorBaselineVol != null ? (pgMkt.sectorBaselineVol * 100).toFixed(1) + "%" : "—"} (pool n=${pgMkt?.poolN ?? 0})`);
 
   // ── Ownership ──
   const ownPillar = new Map<string, ReturnType<typeof computeOwnership>>();
   for (const d of data) {
     const rows = (await prisma.shareholdingPattern.findMany({ where: { stockId: d.stockId }, orderBy: { asOnDate: "asc" }, select: { asOnDate: true, quarter: true, fiscalYear: true, promoterShares: true, totalShares: true, pledgedShares: true, promoterPct: true, fiiPct: true, diiPct: true, retailPct: true } })).map(rowToQuarter);
     if (rows.length === 0) { ownPillar.set(d.stockId, null); continue; }
-    const probe = makePriceProbe(marketMembers.find((m) => m.stockId === d.stockId)!.series);
+    const priceSeries = await loadDailySeries(d.stockId);
+    const probe = makePriceProbe(priceSeries);
     const ctx: OwnershipContext = { priceProbe: probe, feeds: DORMANT_FEEDS };
     ownPillar.set(d.stockId, computeOwnership(d.symbol, rows, ctx));
   }
@@ -139,17 +138,20 @@ async function main() {
   // ── Build composites ──
   const periodKey = mSnapQ || fSnapFy || "FY26Q4";
   const composites: CompositeResult[] = data.map((d) => {
-    const f = fPillar.get(d.stockId)!; const m = mPillar.get(d.stockId)!; const mk = mktPillar.get(d.stockId)!; const ow = ownPillar.get(d.stockId);
+    const f = fPillar.get(d.stockId)!; const m = mPillar.get(d.stockId)!;
+    const mr = mktBySym.get(d.symbol);
+    const mktSub = mr && mr.state === "scored" ? mr.subtotal : null;
+    const ow = ownPillar.get(d.stockId);
     const pillars: PillarInput[] = [
       pillarInput("foundation", f.subtotal, f.pillarState, f.snapshot),
       pillarInput("momentum", m.subtotal, m.pillarState, m.snapshot),
-      pillarInput("market", mk.subtotal, mk.pillarState, mk.snapshot),
+      pillarInput("market", mktSub, mktSub != null ? "scored" : "unavailable_redistributed", mktSub != null ? "PRICE" : "MARKET_EXCLUDED"),
       pillarInput("ownership", ow ? ow.finalOwnership : null, ow ? "scored" : "unavailable_redistributed", ow?.snapshot.periodKey ?? "—"),
     ];
     return assembleComposite(d.stockId, d.symbol, pillars, { snapshotType: "quarterly", periodKey, asOfDate: asOf });
   });
 
-  // ── HEALTH SCORE TABLE (the first end-to-end scores!) ──
+  // ── HEALTH SCORE TABLE ──
   console.log(`\n${"─".repeat(124)}\nHEALTH SCORE — snapshot ${periodKey} @ ${asOf.toISOString().slice(0, 10)} (F=${fSnapFy} M=${mSnapQ} Mkt-price Own-quarterly)\n`);
   for (const r of [...composites].sort((a, b) => (b.composite ?? -1) - (a.composite ?? -1))) printComposite(r);
 
@@ -179,7 +181,6 @@ async function main() {
     const pillars = basePillars.map((p) => p.pillar === "market" ? { ...p, subtotal: null, state: "unavailable_redistributed" as const } : p);
     const r = reassemble(pillars); const w = r.appliedWeights;
     const ok = Math.abs(w.foundation - 0.4375) < 1e-9 && Math.abs(w.momentum - 0.3125) < 1e-9 && Math.abs(w.ownership - 0.25) < 1e-9 && w.market === 0 && r.redistributionReason === "market_unavailable";
-    // composite uses the rescaled weights
     const g = (p: Pillar) => basePillars.find((x) => x.pillar === p)!.subtotal as number;
     const expected = 0.4375 * g("foundation") + 0.3125 * g("momentum") + 0.25 * g("ownership");
     checks.push({ name: "(a) §14.4 Market unavailable → F .4375 / M .3125 / Own .25 (FY21/FY22 case)", ok: ok && Math.abs((r.composite ?? NaN) - expected) < 1e-9, detail: `w=[${w.foundation.toFixed(4)},${w.momentum.toFixed(4)},${w.market},${w.ownership.toFixed(4)}] reason=${r.redistributionReason} composite=${r.composite?.toFixed(4)} (=${expected.toFixed(4)})` });
@@ -189,9 +190,7 @@ async function main() {
   {
     const pillars = basePillars.map((p) => p.pillar === "momentum" ? { ...p, subtotal: null, state: "unavailable_redistributed" as const } : p);
     const r = reassemble(pillars); const w = r.appliedWeights;
-    // surviving F .35 / Mkt .20 / Own .20 (sum .75) → .4667 / .2667 / .2667
     const ok = Math.abs(w.foundation - 0.35 / 0.75) < 1e-9 && Math.abs(w.market - 0.2 / 0.75) < 1e-9 && Math.abs(w.ownership - 0.2 / 0.75) < 1e-9 && w.momentum === 0 && r.redistributionReason === "missing_pillar";
-    // relative proportions preserved: market/ownership stay equal; foundation/market stays .35/.20 = 1.75
     const ratioPreserved = Math.abs((w.foundation / w.market) - (0.35 / 0.2)) < 1e-9;
     checks.push({ name: "(b) general redistribution: Momentum unavailable → missing_pillar, relative proportions preserved", ok: ok && ratioPreserved, detail: `w=[${w.foundation.toFixed(4)},0,${w.market.toFixed(4)},${w.ownership.toFixed(4)}] reason=${r.redistributionReason}; F/Mkt ratio ${(w.foundation / w.market).toFixed(4)}==1.75` });
   }
@@ -212,8 +211,6 @@ async function main() {
 
   // (d) label boundary handling (lower-bound-inclusive, on full precision)
   {
-    // Near-boundary: 61.7 rounds to 62 (display) but MUST band as below_par (full precision < 62).
-    // 54.7 rounds to 55 (display) but MUST band as fragile (full precision < 55).
     const cases: [number, string][] = [[54.99, "fragile"], [54.7, "fragile"], [55, "below_par"], [61.7, "below_par"], [61.99, "below_par"], [62, "steady"], [68, "healthy"], [73.99, "healthy"], [74, "pristine"], [90, "pristine"]];
     const ok = cases.every(([v, b]) => labelFor(v).band === b);
     checks.push({ name: "(d) label boundary: <55 fragile, [55,62) below_par, [62,68) steady, [68,74) healthy, ≥74 pristine", ok, detail: cases.map(([v, b]) => `${v}→${labelFor(v).band}${labelFor(v).band === b ? "" : "✗"}`).join(" ") });
@@ -244,19 +241,6 @@ async function main() {
   console.log(`  labels:        ${tally(composites.filter((c) => c.state === "scored").map((c) => c.labelBand!))}`);
   console.log(`  redistribution:${tally(composites.map((c) => c.redistributionReason))}`);
   console.log(`  unavailable composites: ${composites.filter((c) => c.state === "unavailable").length}`);
-
-  // ── FLAGS ──
-  console.log(`\n${"═".repeat(124)}\nFLAGS\n`);
-  for (const fl of [
-    "MINIMUM-PILLARS-TO-SCORE RULE: composite requires (1) FOUNDATION available (the anchor — heaviest .35, the fundamentals bedrock) AND (2) ≥2 of 4 pillars surviving. Below either → composite UNAVAILABLE (recorded, NO ScoreSnapshot row — never a fabricated number from one pillar). ≥2 matches the ≥50%-present boundary used at the metric/sub-component floors. Justification: with one pillar the 'composite' is that pillar renormalized to 1.0 (relabelled), which misleads. A stricter ≥3 is a one-line change (MIN_SURVIVING_PILLARS) — flagged for the team.",
-    "LABEL-BAND BOUNDARY: LOWER-BOUND-INCLUSIVE, upper-exclusive — <55 Fragile, [55,62) Below Par, [62,68) Steady, [68,74) Healthy, ≥74 Pristine. So 55→Below Par, 62→Steady, 68→Healthy, 74→Pristine. The label is derived from the FULL-PRECISION composite, not the rounded display value, so the stored band is reproducible from the stored Decimal composite (e.g. 54.7 is Fragile even though it DISPLAYS as 55). Mapping+colour live at a SINGLE source (label.ts) and the band is stored WITH its mapping version (cache-with-provenance) so a future re-band never makes history lie.",
-    "§14.4 REDISTRIBUTION reason mapping: none (all 4 present) | market_unavailable (ONLY Market dropped — the FY21/FY22 no-price case) | missing_pillar (any non-Market pillar dropped, with or without Market). guardrail_suppression is RESERVED for the not-yet-wired guardrail path. Applied weights are STORED per snapshot (wFoundation/…/wOwnership), never assumed from the global constant. Relative proportions of survivors are preserved (w_i / Σ surviving).",
-    "OWNERSHIP never goes unavailable in practice (it has a 40–100 clamp, always scores) — so the unavailable-pillar cases come from Market (no price history) and Foundation/Momentum (<50% metrics → §14.4 pillar floor). On THIS live pharma PG all four pillars score for every member → reason 'none' throughout; the redistribution paths are exercised by forced synthetic cases (a/b/c/c2).",
-    "DIVERGENCE (score_snapshots.divergence is a required column, but NOT specified in this build's scope): implemented as Market − (renormalized non-market blend of surviving F/M/Own) — a price-vs-business scalar; null (stored 0) when Market or all non-market pillars are unavailable. FLAGGED as an interpretation/placeholder pending its own spec section (it is a first-class 'widening divergence' pattern per score_patterns). Does not affect the composite.",
-    "DRY-RUN GATE: writeComposite builds the FULL chain (get-or-create spec/run/band-mapping → ScoreSnapshot(4 pillar FKs) → R1 red flag) but with dryRun=true mutates NOTHING (verification e: row counts unchanged). Flip dryRun=false at Phase 6 and the same path commits. The two staged Ownership migrations (add_ownership_r1_record, fix_flow_trend_state_enum) apply at first real write, not now.",
-    "DEFERRED OWNERSHIP R1: the R1 pledge red flag needs a ScoreSnapshot (snapshot_id NOT NULL) — which now exists. R1's FIRING is already recorded on OwnershipScore (r1Fired + r1TriggeringValues); writeComposite wires the score_red_flags ROW to write referencing the new snapshot when dryRun=false (deferred-but-ready). No pharma member fired R1 this run (none breach the pledge ladder).",
-    "PILLAR-SCORE FKs: each pillar layer OWNS and writes its own PillarScore (+children); the composite resolves the four pillarScoreIds and writes only the ScoreSnapshot + R1. In dry-run the FKs are planned placeholders. The snapshot denormalizes the four subtotals + applied weights (immutable copies — safe because the snapshot is immutable).",
-  ]) console.log("  • " + fl + "\n");
 
   await prisma.$disconnect();
   if (!allPass) process.exitCode = 1;

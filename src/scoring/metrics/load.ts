@@ -48,6 +48,8 @@ export async function loadFoundationStandalone(stockId: string): Promise<Foundat
     currentLiabilities: n(r.currentLiabilities),
     tradeReceivablesCurrent: n(r.tradeReceivablesCurrent),
     tradeReceivablesNoncurrent: n(r.tradeReceivablesNoncurrent),
+    propertyPlantAndEquipment: n(r.propertyPlantAndEquipment),
+    capitalWorkInProgress: n(r.capitalWorkInProgress),
     cashFromOperating: n(r.cashFromOperating),
     capex: n(r.capex),
     cashFromFinancing: n(r.cashFromFinancing),

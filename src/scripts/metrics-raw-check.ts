@@ -102,11 +102,12 @@ async function main() {
     const m5 = get(mres.metrics, "M5").value!;
     sc.push({ check: "M5 TTM IC == annual F5 IC (FY26 full year)", expect: f5.toFixed(2), got: m5.toFixed(2), ok: approx(m5, f5) });
 
-    // 4. M1 OPM (EBIT-excl-OI) reconciles to annual EBITDA OPM via dep+OI gap
-    //    (NOT a bug): annualOPM 14.90% − M1 7.12% ≈ (TTM dep + TTM OI)/rev.
+    // 4. M1 OPM is now EBITDA-based (model-wide OPM fix) and RECONCILES to the annual
+    //    EBITDA OPM: TTM(FY26 Q1–Q4) == FY26 full year, SAME EBITDA definition
+    //    (PBT+interest+depreciation, OI left in). RELIANCE FY26: 14.8987% == 14.8987%.
     const m1 = get(mres.metrics, "M1").value!;
     const annualOpmStored = f26.stored.operatingMargin!; // 14.8987 (EBITDA-based, incl OI)
-    sc.push({ check: "M1 OPM (EBIT excl OI) < annual EBITDA OPM (definitional, not a bug)", expect: `<${annualOpmStored.toFixed(2)}%`, got: m1.toFixed(2) + "%", ok: m1 < annualOpmStored });
+    sc.push({ check: "M1 OPM (EBITDA) reconciles to annual EBITDA OPM (same definition, post-fix)", expect: `≈${annualOpmStored.toFixed(2)}%`, got: m1.toFixed(2) + "%", ok: approx(m1, annualOpmStored, 0.01) });
 
     // 5. NPM in a sane 0–40% band (units sanity — a 200% NPM = units bug).
     const m2 = get(mres.metrics, "M2").value!;
@@ -127,8 +128,8 @@ async function main() {
   // ── FLAGS roll-up ──
   console.log(`\n${"═".repeat(96)}\nFLAGS (interpretations, ambiguities, stored-column disagreements)\n`);
   const STATIC_FLAGS = [
-    "EBIT has TWO definitions used deliberately: (a) operating profit = PBT+interest−otherIncome (EXCLUDES other income) drives M1 OPM; (b) EBIT = PBT+interest (INCLUDES other income) drives ROCE(F1), interest coverage (F5, M5). Standard: operating margin excludes non-op income; coverage/ROCE include all earnings.",
-    "Quarterly operatingProfit (parser: PBT+interest−otherIncome, EBIT-based) ≠ annual operatingMargin (EBITDA-based, incl OI). M1 vs annual OPM differ by ~dep+OI — definitional, verified reconciled on RELIANCE, NOT a bug.",
+    "OPM is EBITDA-based MODEL-WIDE: M1 TTM OPM = Σ4Q(PBT+interest+depreciation)/Σrev×100 (PRE-depreciation, other income left in) — the SHARED definition for all 11 non-financial PGs, mirroring the annual EBITDA operating margin (F1_OPM). PG8's M1_OPM_TTM emit-renames the same fn. (Pre-fix M1 used the EBIT operating-profit column = PBT+interest−otherIncome — a model-wide definitional mismatch vs the EBITDA-derived bars; CORRECTED.)",
+    "DELIBERATE asymmetry preserved: OPM is PRE-depreciation (EBITDA, M1); ROCE (F1) and interest coverage (F5, M5) are POST-depreciation (EBIT = PBT+interest, includes other income). M1 TTM OPM now RECONCILES to annual EBITDA OPM (verified RELIANCE FY26: 14.8987% == 14.8987%).",
     "F2 ROE uses YEAR-END net worth per spec; the stored `roe` column uses 2-YEAR AVERAGE equity. They differ legitimately — we report the spec value and do not cross-check against stored.",
     "F3 buyback path (i) financing-line is structurally UNAVAILABLE (schema's cashFromFinancing has no separable buyback line). Path (ii) ΔESC detects the SIGNAL but the ₹ amount needs a buyback-period weighted-avg price feed we don't have — detected buybacks are left UNQUANTIFIED (amount null, flagged), value computed with buyback=0. Most sample stocks show ESC stable → confirmed_zero.",
     "Net worth derivation uses totalEquity (else ESC+otherEquity); we deliberately skip equityAttributableToOwners (a consolidated concept; equals totalEquity on standalone rows — verified).",

@@ -11,7 +11,11 @@
 //                   reproduce the stored `roce` exactly on RELIANCE standalone)
 //   Net worth     = totalEquity (else ESC+otherEquity)
 //   Total debt    = current + non-current borrowings
-//   FCF           = cash from operating − capex
+//   FCF (F8)      = cash from operating − CAPEX-PROXY, where
+//                   Capex-proxy = ΔNet Block + Depreciation + ΔCWIP  (a balance-sheet
+//                   derivation, NOT the direct CF PP&E-purchase line and NOT full
+//                   Investing Cash Flow). This matches the bar-derivation basis for
+//                   FCF/PAT (vytal_pg_bars_*: "Capex=dNetBlock+Dep+dCWIP").
 // Where we DERIVE a metric that also has a stored column, we cross-check and FLAG
 // any disagreement (a stored value computed on the wrong basis at ingestion would
 // surface here).
@@ -250,37 +254,61 @@ export function f7AssetTurnover(r: FoundationAnnual): MetricValue {
 }
 
 // ── F8 FCF/PAT — 4-YEAR AVERAGE OF RATIOS (avg of ratios, not ratio of avgs) ────
+// Per-year FCF = OCF − CAPEX-PROXY, where the capex-proxy is the canonical balance-
+// sheet derivation Capex = ΔNet Block + Depreciation + ΔCWIP (NOT the direct CF
+// PP&E-purchase line `capex`, NOT full Investing Cash Flow). ΔNet Block / ΔCWIP need
+// the PRIOR fiscal year, so a window year whose immediate predecessor is absent is
+// skipped (flagged). CWIP absent in a year contributes ΔCWIP=0 (flagged). This makes
+// the live value match the bar-derivation basis ("Capex=dNetBlock+Dep+dCWIP").
 export const F8_WINDOW_YEARS = 4;
 export function f8FcfPatAvg(rows: FoundationAnnual[], snapshotOrdinal: number): MetricValue {
   // Window = the 4 fiscal years ENDING at the snapshot (by calendar ordinal).
   const windowOrdinals = [0, 1, 2, 3].map((k) => snapshotOrdinal - k);
   const byOrd = new Map(rows.map((r) => [r.fyOrdinal, r]));
   const flags: string[] = [];
-  const perYear: { fy: string; fcf: number; pat: number; ratio: number }[] = [];
+  const perYear: { fy: string; fcf: number; pat: number; ratio: number; capex: number }[] = [];
   const absentYears: number[] = [];
+  const noPriorYears: number[] = [];
   for (const ord of windowOrdinals) {
     const row = byOrd.get(ord);
     if (!row) { absentYears.push(ord); continue; }
-    const fcf = row.cashFromOperating !== null && row.capex !== null ? row.cashFromOperating - row.capex : null;
-    if (fcf === null || row.netProfit === null || row.netProfit === 0) {
-      flags.push(`FY${ord}: skipped (FCF or PAT missing/zero)`);
+    const prior = byOrd.get(ord - 1) ?? null; // ΔNet Block / ΔCWIP need FY-1
+    // Capex-proxy = ΔNet Block + Depreciation + ΔCWIP. Net Block & Depreciation are
+    // essential; CWIP absent → its delta contributes 0 (flagged).
+    if (prior === null || row.propertyPlantAndEquipment === null || prior.propertyPlantAndEquipment === null || row.depreciation === null) {
+      if (prior === null) noPriorYears.push(ord);
+      flags.push(`FY${ord}: skipped (capex-proxy needs FY-1 + net block + depreciation; one is absent)`);
       continue;
     }
-    if (row.netProfit < 0) flags.push(`FY${ord}: PAT<0 — ratio ${(row.netProfit ? (fcf / row.netProfit) : 0).toFixed(2)} sign-distorted`);
-    perYear.push({ fy: row.fiscalYear, fcf, pat: row.netProfit, ratio: fcf / row.netProfit });
+    const dNetBlock = row.propertyPlantAndEquipment - prior.propertyPlantAndEquipment;
+    let dCwip = 0;
+    if (row.capitalWorkInProgress !== null && prior.capitalWorkInProgress !== null) {
+      dCwip = row.capitalWorkInProgress - prior.capitalWorkInProgress;
+    } else {
+      flags.push(`FY${ord}: CWIP absent in a year → ΔCWIP treated as 0`);
+    }
+    const capexProxy = dNetBlock + row.depreciation + dCwip;
+    const fcf = row.cashFromOperating !== null ? row.cashFromOperating - capexProxy : null;
+    if (fcf === null || row.netProfit === null || row.netProfit === 0) {
+      flags.push(`FY${ord}: skipped (OCF or PAT missing/zero)`);
+      continue;
+    }
+    if (row.netProfit < 0) flags.push(`FY${ord}: PAT<0 — ratio ${(fcf / row.netProfit).toFixed(2)} sign-distorted`);
+    perYear.push({ fy: row.fiscalYear, fcf, pat: row.netProfit, ratio: fcf / row.netProfit, capex: capexProxy });
   }
   if (absentYears.length > 0)
     flags.push(`standalone absent for ${absentYears.map((o) => "FY" + o).join(", ")} (excluded from the 4y window)`);
   const n = perYear.length;
   if (n === 0)
-    return unavailable("F8", "FCF/PAT (4y avg)", "ratio", absentYears.length === F8_WINDOW_YEARS ? "standalone_absent" : "missing_line_item",
-      "no usable year in the trailing-4 window", { windowYears: F8_WINDOW_YEARS, absent: absentYears.length });
+    return unavailable("F8", "FCF/PAT (4y avg)", "ratio",
+      absentYears.length === F8_WINDOW_YEARS || noPriorYears.length > 0 ? "standalone_absent" : "missing_line_item",
+      "no usable year in the trailing-4 window (capex-proxy needs net block + FY-1 + depreciation)", { windowYears: F8_WINDOW_YEARS, absent: absentYears.length });
   if (n < F8_WINDOW_YEARS) flags.push(`only ${n} of ${F8_WINDOW_YEARS} window years usable — averaged available N`);
   const value = perYear.reduce((a, b) => a + b.ratio, 0) / n;
   return {
     key: "F8", label: "FCF/PAT (4y avg)", available: true, value, unit: "ratio", source: "derived",
-    formula: `mean of ${n} yearly (FCF/PAT): ${perYear.map((y) => `${y.fy} ${r2(y.fcf)}/${r2(y.pat)}=${r2(y.ratio)}`).join(" ; ")} → ${r2(value)}`,
-    inputs: { nUsed: n, windowYears: F8_WINDOW_YEARS, years: perYear.map((y) => y.fy).join(",") },
+    formula: `mean of ${n} yearly (FCF/PAT), FCF=OCF−(ΔNetBlock+Dep+ΔCWIP): ${perYear.map((y) => `${y.fy} ${r2(y.fcf)}/${r2(y.pat)}=${r2(y.ratio)}`).join(" ; ")} → ${r2(value)}`,
+    inputs: { nUsed: n, windowYears: F8_WINDOW_YEARS, years: perYear.map((y) => y.fy).join(","), capexBasis: "proxy:dNetBlock+Dep+dCWIP" },
     reason: null, flags,
   };
 }
@@ -340,6 +368,31 @@ export function f10Revenue3yCagr(rows: FoundationAnnual[], snapshotOrdinal: numb
     inputs: { endRevenue: r2(end.revenue), beginRevenue: r2(begin.revenue), endFy: end.fiscalYear, beginFy: begin.fiscalYear },
     reason: null,
     flags: ["true CAGR (no cap here; the ≤10% intra-pillar WEIGHT cap is a pillar-layer concern, not a value cap)"],
+  };
+}
+
+// ── F1_OPM Operating Margin % — PG8's EXTRA Foundation metric (EBITDA-based) ─────
+// PG8 (Power/Utilities) scores Operating Margin as an ADDITIONAL Foundation metric
+// (engine key F1_OPM) alongside ROCE (F1). The value REUSES the EBITDA-based
+// operating margin already computed at ingestion (operatingMargin = EBITDA/Revenue
+// ×100, from the STANDALONE row — the same column the rest of the engine reads);
+// CN-8: no new derivation, no value tuned. Unit percent (matches the PG8 F1_OPM
+// bars). This is NOT part of computeFoundation's universal F1..F10 list — only the
+// PG-aware dispatch calls it, and only for a PG whose metric set contains F1_OPM
+// (today: PG8). So the 11 standard non-financial PGs are entirely unaffected.
+export function fOpmOperatingMargin(r: FoundationAnnual): MetricValue {
+  const om = r.stored.operatingMargin;
+  if (om === null)
+    return unavailable("F1_OPM", "Operating Margin % (PG8)", "%", "missing_line_item",
+      "stored operatingMargin (EBITDA/Revenue) is null on the standalone row",
+      { ebitda: r.stored.ebitda, revenue: r.revenue });
+  return {
+    key: "F1_OPM", label: "Operating Margin % (PG8)", available: true, value: om, unit: "%",
+    source: "stored_column",
+    formula: `Operating Margin = EBITDA ${r.stored.ebitda === null ? "?" : r2(r.stored.ebitda)} / revenue ${r.revenue === null ? "?" : r2(r.revenue)} × 100 = ${r2(om)}% (stored standalone column)`,
+    inputs: { operatingMargin: r2(om), ebitda: r.stored.ebitda === null ? null : r2(r.stored.ebitda), revenue: r.revenue === null ? null : r2(r.revenue) },
+    reason: null,
+    flags: ["F1_OPM = EBITDA-based operating margin (stored STANDALONE column EBITDA/Revenue×100); reused as PG8's 11th Foundation metric — CN-8: no new derivation"],
   };
 }
 

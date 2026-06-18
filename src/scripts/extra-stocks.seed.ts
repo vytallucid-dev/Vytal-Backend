@@ -160,4 +160,36 @@ export const EXTRA_STOCKS = [
     verified: true,
     peerContext: "A10 — Large-Cap Housing Finance",
   },
+  // ── Data-block unlock 2026-06-18: the 4 stocks blocking PG10/11/12/14 ───────
+  // These are scored peer-group MEMBERS (not benchmarks), but they live outside
+  // the Nifty-200 core seed, so they ride the extra-stocks path. Symbols
+  // operator-confirmed. seed-extra-stocks.ts creates them isActive:true.
+  {
+    symbol: "PETRONET",
+    name: "Petronet LNG Ltd",
+    sectorKey: "oil_gas_energy",
+    verified: true,
+    peerContext: "PG10 — Large-Cap Oil & Gas",
+  },
+  {
+    symbol: "RAMCOCEM",
+    name: "The Ramco Cements Ltd",
+    sectorKey: "cement_construction",
+    verified: true,
+    peerContext: "PG12 — Large-Cap Cement",
+  },
+  {
+    symbol: "HONAUT",
+    name: "Honeywell Automation India Ltd",
+    sectorKey: "capital_goods_engineering",
+    verified: true,
+    peerContext: "PG11 — Large-Cap Capital Goods & Industrial",
+  },
+  {
+    symbol: "GRSE",
+    name: "Garden Reach Shipbuilders & Engineers Ltd",
+    sectorKey: "capital_goods_engineering",
+    verified: true,
+    peerContext: "PG14 — Large-Cap Defense",
+  },
 ];

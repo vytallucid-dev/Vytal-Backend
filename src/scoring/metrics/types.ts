@@ -78,9 +78,11 @@ export interface FoundationAnnual {
   currentLiabilities: number | null;
   tradeReceivablesCurrent: number | null;
   tradeReceivablesNoncurrent: number | null;
+  propertyPlantAndEquipment: number | null; // NET block (carrying amount) — for the F8 capex-proxy
+  capitalWorkInProgress: number | null; // CWIP — for the F8 capex-proxy
   // Cash flow
   cashFromOperating: number | null;
-  capex: number | null;
+  capex: number | null; // direct CF PP&E-purchase line (kept for provenance/cross-check; F8 uses the proxy)
   cashFromFinancing: number | null;
   faceValueShare: number | null;
   // Pre-computed columns — used ONLY for cross-check (we derive, then compare).

@@ -10,6 +10,21 @@
 //   101–110 alternate groups (post-launch)
 // ─────────────────────────────────────────────────────────────
 
+// An explicit, VISIBLE gated state for a PG whose CORRECTED roster cannot be applied
+// yet because one or more confirmed peers are not in the Stock table. Analogous to the
+// dispatch layer's BANK_DATA_PIPELINE_PENDING — never a silent absence. A gated PG keeps
+// its OLD stocks[] (do NOT seed a partial/wrong corrected roster); the reconcile + seed
+// scripts SKIP it, and roster-status.ts surfaces it. `intendedRoster` is the confirmed
+// corrected set to apply once `missingStocks` land in the DB (a later milestone).
+export const ROSTER_PENDING_STOCK_DATA = "pending_stock_data_ingestion";
+
+export interface RosterGate {
+  status: typeof ROSTER_PENDING_STOCK_DATA;
+  missingStocks: string[]; // confirmed peers NOT yet in the Stock table — block correction
+  intendedRoster: string[]; // the spec-confirmed corrected roster (apply once stocks land)
+  note?: string;
+}
+
 export interface PeerGroupSeed {
   key: string;
   name: string;
@@ -17,6 +32,7 @@ export interface PeerGroupSeed {
   sectorKey: string; // → Sector.name
   buildOrder: number;
   stocks: string[]; // NSE symbols
+  gated?: RosterGate; // present ⇒ roster correction is BLOCKED on stock-data ingestion
 }
 
 export const PEER_GROUPS: PeerGroupSeed[] = [
@@ -48,10 +64,11 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Pharma",
     sectorKey: "pharma_healthcare",
     buildOrder: 3,
+    // ROSTER FIX 2026-06-18: −ALKEM +GLENMARK. ALKEM was a Layer-A derivation-pool
+    // member wrongly seeded as a scored peer; GLENMARK is the confirmed §B.9 peer.
     stocks: [
-      "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB",
-      "TORNTPHARM", "MANKIND", "ZYDUSLIFE", "LUPIN",
-      "AUROPHARMA", "ALKEM",
+      "SUNPHARMA", "CIPLA", "DRREDDY", "LUPIN", "AUROPHARMA",
+      "TORNTPHARM", "ZYDUSLIFE", "DIVISLAB", "GLENMARK", "MANKIND",
     ],
   },
   {
@@ -60,9 +77,11 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Auto OEMs",
     sectorKey: "automobile",
     buildOrder: 4,
+    // ROSTER FIX 2026-06-18: −TATAMOTORS. Tata Motors was a Layer-A derivation-pool
+    // member, not a scored OEM peer in §B.9. Confirmed roster = 7.
     stocks: [
-      "MARUTI", "M&M", "TATAMOTORS", "BAJAJ-AUTO",
-      "HEROMOTOCO", "TVSMOTOR", "EICHERMOT", "ASHOKLEY",
+      "MARUTI", "M&M", "BAJAJ-AUTO", "HEROMOTOCO",
+      "EICHERMOT", "TVSMOTOR", "ASHOKLEY",
     ],
   },
   {
@@ -103,9 +122,15 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Power & Utilities",
     sectorKey: "power",
     buildOrder: 8,
+    // 7 derivation peers per the locked PG8 Rev4 cohort. ADANIGREEN was a
+    // sector-adjacent BENCHMARK constituent (12-constituent benchmark = 7 peers + 5
+    // adjacent incl AGEL), not a peer — it was wrongly seeded as a member. TORNTPOWER
+    // is the real 7th peer (in the LB per-stock means / §B.9 7-col Foundation table,
+    // and an SSCU Pool-1 stock with TataPower). Bars were derived WITH TorrentPower, so
+    // this matches roster→bars (CN-8 clean — not a cohort change).
     stocks: [
       "NTPC", "POWERGRID", "ADANIPOWER", "TATAPOWER",
-      "JSWENERGY", "ADANIGREEN", "NHPC",
+      "JSWENERGY", "NHPC", "TORNTPOWER",
     ],
   },
   {
@@ -114,9 +139,13 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Metals & Mining",
     sectorKey: "metals_mining",
     buildOrder: 9,
+    // ROSTER FIX 2026-06-18: −COALINDIA,NMDC,APLAPOLLO +SAIL,NATIONALUM,HINDZINC.
+    // The removed three (coal miner, iron-ore miner, steel-tube maker) were Layer-A
+    // derivation-pool members polluting the peer mean; SAIL/NATIONALUM/HINDZINC are the
+    // confirmed §B.9 integrated metals peers. Confirmed roster = 8.
     stocks: [
-      "TATASTEEL", "JSWSTEEL", "JINDALSTEL", "HINDALCO",
-      "VEDL", "COALINDIA", "NMDC", "APLAPOLLO",
+      "TATASTEEL", "JSWSTEEL", "JINDALSTEL", "SAIL",
+      "HINDALCO", "VEDL", "NATIONALUM", "HINDZINC",
     ],
   },
   {
@@ -125,7 +154,9 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Oil & Gas",
     sectorKey: "oil_gas_energy",
     buildOrder: 10,
-    stocks: ["RELIANCE", "ONGC", "IOC", "BPCL", "HINDPETRO", "GAIL"],
+    // ROSTER UNBLOCKED 2026-06-19: +OIL +PETRONET (PETRONET ingested). Confirmed roster = 8.
+    // (OIL was already in the DB; PETRONET — Petronet LNG — now is.)
+    stocks: ["RELIANCE", "ONGC", "OIL", "IOC", "BPCL", "HINDPETRO", "GAIL", "PETRONET"],
   },
   {
     key: "pg11_capital_goods",
@@ -133,10 +164,12 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Capital Goods & Industrial",
     sectorKey: "capital_goods_engineering",
     buildOrder: 11,
-    // Bosch placed here, not in A6 (per "if not in Auto Ancillary" note)
+    // ROSTER UNBLOCKED 2026-06-19: −BEL −HAL −BOSCHLTD +BHEL +POWERINDIA +HONAUT → 8.
+    // (HONAUT ingested; BHEL/POWERINDIA already in DB. BEL/HAL move to PG14 Defense;
+    // BOSCHLTD belongs in A6 Auto Ancillaries.)
     stocks: [
-      "LT", "SIEMENS", "ABB", "BEL", "HAL",
-      "CUMMINSIND", "THERMAX", "BOSCHLTD",
+      "ABB", "SIEMENS", "CUMMINSIND", "THERMAX",
+      "LT", "BHEL", "POWERINDIA", "HONAUT",
     ],
   },
   {
@@ -145,9 +178,11 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Cement",
     sectorKey: "cement_construction",
     buildOrder: 12,
+    // ROSTER UNBLOCKED 2026-06-19: −GRASIM +RAMCOCEM → 7 (RAMCOCEM ingested).
+    // (GRASIM is a diversified conglomerate, not a pure-play cement peer.)
     stocks: [
-      "ULTRACEMCO", "GRASIM", "SHREECEM",
-      "AMBUJACEM", "ACC", "DALBHARAT", "JKCEMENT",
+      "ULTRACEMCO", "AMBUJACEM", "ACC", "SHREECEM",
+      "DALBHARAT", "JKCEMENT", "RAMCOCEM",
     ],
   },
   {
@@ -156,20 +191,29 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Consumer Durables & Electrical",
     sectorKey: "consumer_discretionary_retail",
     buildOrder: 13,
+    // ROSTER FIX 2026-06-18: −WHIRLPOOL +DIXON. Whirlpool was a Layer-A derivation-pool
+    // member; DIXON is the confirmed §B.9 consumer-durables/electronics peer.
     stocks: [
-      "HAVELLS", "VOLTAS", "WHIRLPOOL",
-      "BLUESTARCO", "CROMPTON", "POLYCAB",
+      "HAVELLS", "POLYCAB", "VOLTAS",
+      "CROMPTON", "BLUESTARCO", "DIXON",
     ],
   },
   {
-    key: "pg14_insurance",
-    name: "Large-Cap Insurance",
-    displayName: "Large-Cap Insurance",
-    sectorKey: "insurance",
+    // STRUCTURAL RE-KEY 2026-06-19 (Insurance→Defense): the spec's PG14 is DEFENSE, not
+    // Insurance. GRSE now ingested → unblocked. This slot is now the canonical Large-Cap
+    // Defense group. The DB-side reconcile PROMOTES the existing a7_defense row (which
+    // already holds (capital_goods_engineering, "Large-Cap Defense") + 5 of these 7) to
+    // buildOrder 14, adds GRSE+SOLARINDS, and RETIRES the old Insurance row. The separate
+    // a7_defense seed entry is removed (its identity is subsumed here) to avoid the
+    // @@unique([sectorId,name]) collision. (BEL/HAL arrive from PG11.)
+    key: "pg14_defense",
+    name: "Large-Cap Defense",
+    displayName: "Large-Cap Defense",
+    sectorKey: "capital_goods_engineering",
     buildOrder: 14,
     stocks: [
-      "HDFCLIFE", "SBILIFE", "ICICIGI",
-      "MFSL", "LICI", "ICICIPRULI",
+      "HAL", "BEL", "BDL", "MAZDOCK",
+      "COCHINSHIP", "GRSE", "SOLARINDS",
     ],
   },
 
@@ -231,15 +275,10 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
       "EXIDEIND", "BALKRISIND", "APOLLOTYRE",
     ],
   },
-  {
-    key: "a7_defense",
-    name: "Large-Cap Defense",
-    displayName: "Large-Cap Defense",
-    sectorKey: "capital_goods_engineering",
-    buildOrder: 107,
-    // HAL + BEL intentionally in both PG11 and A7 — schema supports M2M
-    stocks: ["HAL", "BEL", "BDL", "MAZDOCK", "COCHINSHIP"],
-  },
+  // a7_defense REMOVED 2026-06-19 — promoted to the core Large-Cap Defense group
+  // (pg14_defense, buildOrder 14) when PG14 was re-keyed Insurance→Defense. Keeping a
+  // separate alternate entry with the same (sectorKey,name) would violate
+  // @@unique([sectorId,name]).
   {
     key: "a8_hospitals",
     name: "Large-Cap Hospitals & Diagnostics",

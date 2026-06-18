@@ -10,13 +10,20 @@
 // (this feeds the L3-insufficient / missing-data handling later).
 //
 // DEFINITIONS (stated):
-//   Operating profit (M1) = the stored quarterly `operatingProfit`
-//                         = PBT + interest − other income  (operating EBIT, EXCLUDES
-//                           other income; NOT EBITDA — no depreciation add-back).
-//                           This is a DIFFERENT definition from the annual
-//                           EBITDA-based operating margin — see FLAG in the harness.
+//   Operating profit (M1) = EBITDA, PRE-depreciation     = PBT + interest + depreciation
+//                           (depreciation ADDED BACK; interest added back; OTHER INCOME
+//                           left IN — PBT already includes it and it is NOT subtracted).
+//                           This MIRRORS the annual EBITDA operating-margin derivation
+//                           term-for-term (ingest-indas-annual.ts: ebitda = PBT +
+//                           financeCosts + depreciation) so the TTM live value matches
+//                           the bar's derivation basis. SHARED across ALL 11 non-financial
+//                           PGs (PG8's M1_OPM_TTM emit-renames this same fn — there is NO
+//                           separate PG8 OPM function). Quarterly `interest` IS the
+//                           finance-costs line (see types.ts MomentumQuarter.interest).
 //   EBIT (M5)             = PBT + interest                 (INCLUDES other income;
-//                           the coverage convention, matches annual F5).
+//                           the coverage convention, matches annual F5). NOTE the
+//                           DELIBERATE asymmetry: OPM is PRE-depreciation (EBITDA);
+//                           coverage (M5/F5) and ROCE (F1) are POST-depreciation (EBIT).
 
 import {
   quarterOrdinal,
@@ -58,33 +65,41 @@ function ttmSum(qs: MomentumQuarter[], pick: (q: MomentumQuarter) => number | nu
   return sum;
 }
 
-const opProfit = (q: MomentumQuarter): number | null =>
-  q.operatingProfitStored !== null
-    ? q.operatingProfitStored
-    : q.profitBeforeTax !== null && q.interest !== null
-      ? q.profitBeforeTax + q.interest - (q.otherIncome ?? 0)
-      : null;
+// EBITDA operating profit (the SHARED OPM basis): PBT + interest + depreciation.
+// Depreciation is ADDED BACK (pre-depreciation), interest added back, OTHER INCOME
+// left IN (PBT includes it; NOT subtracted) — mirrors the annual EBITDA derivation
+// term-for-term. Does NOT use operatingProfitStored (that column is EBIT, excl OI).
+const opEbitda = (q: MomentumQuarter): number | null =>
+  q.profitBeforeTax !== null && q.interest !== null && q.depreciation !== null
+    ? q.profitBeforeTax + q.interest + q.depreciation
+    : null;
 
 const ebit = (q: MomentumQuarter): number | null =>
   q.profitBeforeTax !== null && q.interest !== null ? q.profitBeforeTax + q.interest : null;
 
 const span = (qs: MomentumQuarter[]) => `${qs[0].fiscalYear}${qs[0].quarter}…${qs[qs.length - 1].fiscalYear}${qs[qs.length - 1].quarter}`;
 
-// ── M1 TTM OPM % = TTM operating profit / TTM revenue × 100 ─────────────────────
+// ── M1 TTM OPM % = TTM EBITDA operating profit / TTM revenue × 100 ───────────────
+// EBITDA basis (PRE-depreciation): Σ4Q(PBT+interest+depreciation) / Σ4Q(revenue) × 100.
+// This is the SHARED OPM function for ALL 11 non-financial PGs. PG8's M1_OPM_TTM key
+// emit-renames THIS SAME function (see live-dispatch.ts emitAs) — there is no separate
+// PG8 OPM fn. It mirrors the annual EBITDA operating-margin derivation (F1_OPM) so the
+// live TTM value scores against bars derived on the same basis (was EBIT before — a
+// model-wide definitional mismatch that floored EBITDA-derived stocks like NTPC).
 export function m1TtmOpm(run: MomentumQuarter[]): MetricValue {
   if (run.length < 4) return unavailable("M1", "TTM OPM %", "%", "insufficient_history", `need 4 consecutive quarters, have ${run.length}`, { consecutive: run.length });
   const ttm = run.slice(-4);
-  const op = ttmSum(ttm, opProfit);
+  const op = ttmSum(ttm, opEbitda);
   const rev = ttmSum(ttm, (q) => q.revenue);
-  if (op === null || rev === null) return unavailable("M1", "TTM OPM %", "%", "missing_line_item", "operating profit or revenue null in a TTM quarter");
+  if (op === null || rev === null) return unavailable("M1", "TTM OPM %", "%", "missing_line_item", "PBT, interest, depreciation, or revenue null in a TTM quarter");
   if (rev === 0) return unavailable("M1", "TTM OPM %", "%", "divide_by_zero", "TTM revenue = 0");
   const value = (op / rev) * 100;
   return {
     key: "M1", label: "TTM OPM %", available: true, value, unit: "%", source: "derived",
-    formula: `TTM OPM = Σop ${r2(op)} / Σrev ${r2(rev)} × 100 = ${r2(value)}%  (${span(ttm)})`,
-    inputs: { ttmOperatingProfit: r2(op), ttmRevenue: r2(rev), window: span(ttm) },
+    formula: `TTM OPM (EBITDA) = Σ(PBT+interest+depr) ${r2(op)} / Σrev ${r2(rev)} × 100 = ${r2(value)}%  (${span(ttm)})`,
+    inputs: { ttmEbitda: r2(op), ttmRevenue: r2(rev), window: span(ttm) },
     reason: null,
-    flags: ["operating profit EXCLUDES other income & is EBIT-based (not EBITDA) — differs from annual EBITDA OPM definition"],
+    flags: ["TTM OPM = EBITDA-based (PBT+interest+depreciation)/revenue — PRE-depreciation, other income left in; mirrors the annual EBITDA OPM (F1_OPM) derivation. SHARED across all 11 non-financial PGs; PG8 M1_OPM_TTM emit-renames this same fn"],
   };
 }
 

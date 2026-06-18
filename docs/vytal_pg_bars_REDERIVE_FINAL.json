@@ -1,0 +1,3218 @@
+{
+  "specVersionFramework": "v5.5.1",
+  "extractionDate": "2026-06-17",
+  "peerGroups": [
+    {
+      "pgId": "PG1",
+      "pgName": "IT Services",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG1_v5_3_Supplementary_Specification_Rev3.docx",
+      "specVersionStated": "v5.3 Rev3",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 28.45,
+            "good": 25.88,
+            "acceptable": 24.97,
+            "concerning": -2.65,
+            "distress": -30.27
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation table, ROCE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 23.05,
+            "good": 20.55,
+            "acceptable": 19.92,
+            "concerning": 17.3,
+            "distress": 14.68
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation table, ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Cash Conversion §7.5.1 (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.4014,
+            "good": 1.1931,
+            "acceptable": 1.1931,
+            "concerning": 0.606,
+            "distress": 0.019
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation table, Cash Conversion row | scale normalized to ratio per loader-canonical convention (was percent, /100).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Asset Turnover",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.41,
+            "good": 1.21,
+            "acceptable": 1.21,
+            "concerning": 0.69,
+            "distress": 0.16
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Foundation table, Asset Turnover row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Interest Coverage",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 35.21,
+            "good": 26.71,
+            "acceptable": 24.74,
+            "concerning": 12.06,
+            "distress": -0.62
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Foundation table, Interest Coverage row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Receivables Days",
+          "specMetricKey": null,
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 60.58,
+            "good": 66.87,
+            "acceptable": 66.87,
+            "concerning": 194.92,
+            "distress": 322.96
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.3 Foundation table, Receivables Days row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT 4y avg (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.76,
+            "good": 0.49,
+            "acceptable": 0.42,
+            "concerning": 0.39,
+            "distress": 0.36
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation table, FCF/PAT 4y avg row | scale normalized to ratio per loader-canonical convention (was percent, /100). | bars re-derived to canonical formula per PG1_Recompute.md — FCF/PAT 4y avg (%) aligned model-wide (capex-proxy FCF (Capex=dNetBlock+Dep+dCWIP), 4y trailing mean-of-ratios).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Revenue 3y CAGR (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 25.47,
+            "good": 20.19,
+            "acceptable": 20.19,
+            "concerning": -11.02,
+            "distress": -42.24
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation table, Revenue 3y CAGR row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E",
+          "specMetricKey": null,
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.05,
+            "good": 0.17,
+            "acceptable": 0.17,
+            "concerning": 0.24,
+            "distress": 0.3
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation table, D/E row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCF Consistency (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 80,
+            "distress": 60
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation table, OCF Consistency row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM Operating Margin (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 17.56,
+            "good": 15.71,
+            "acceptable": 15.49,
+            "concerning": 11.18,
+            "distress": 6.87
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum table, TTM Operating Margin row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM Net Margin (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 11.72,
+            "good": 10.74,
+            "acceptable": 10.45,
+            "concerning": 7.32,
+            "distress": 4.18
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum table, TTM Net Margin row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Revenue YoY (TTM, v5.1.1 §8.6.1)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 34.03,
+            "good": 15.86,
+            "acceptable": 15.86,
+            "concerning": -17.98,
+            "distress": -51.81
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum table, Revenue YoY (TTM) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Net Profit YoY (TTM, v5.1.1 §8.6.1)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 45.18,
+            "good": 13.25,
+            "acceptable": 13.25,
+            "concerning": 1.35,
+            "distress": -10.54
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum table, Net Profit YoY (TTM) row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "Foundation collapsed to equal weights per MSR-PG1 (prior non-equal weights were judgment, not data-derived; CN-4). Equal 10% via engine renormalization. Momentum: equal 25% each (= default).",
+      "extractionNotes": "Market band cuts present (B.6, full bands stated). No continuous Ownership bars (B.7 is the universal baseline-table 60->75 mechanic + Part A confirms 'no level bars on promoter holding') -> no discard flag. No F#/M# metric keys in Part B -> specMetricKey null. UNIT SCALE FLAG: Cash Conversion and FCF/PAT stated in PERCENT here (CashConv 1.90-140.14; FCF/PAT -19.82-123.33), i.e. ~100x the ratio-scale used by PG2/PG3/PG4 for the same metrics - loader must reconcile scale."
+    },
+    {
+      "pgId": "PG2",
+      "pgName": "FMCG",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG2_FMCG_Supplementary_Specification_v5_3_Rev3.docx",
+      "specVersionStated": "v5.3 Rev3",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 55.044,
+            "good": 33.7,
+            "acceptable": 19.646,
+            "concerning": 15.966,
+            "distress": 12.285
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F1 ROCE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE",
+          "specMetricKey": "F2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 40.694,
+            "good": 29.84,
+            "acceptable": 19.234,
+            "concerning": 13.543,
+            "distress": 7.852
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F2 ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "CashConv",
+          "specMetricKey": "F3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 2.375,
+            "good": 1.443,
+            "acceptable": 1.25,
+            "concerning": 0.781,
+            "distress": 0.313
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F3 CashConv row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "DE",
+          "specMetricKey": "F4",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0,
+            "good": 0.005,
+            "acceptable": 0.181,
+            "concerning": 0.766,
+            "distress": 1.351
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F4 DE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "IC",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 137.367,
+            "good": 76.138,
+            "acceptable": 36.96,
+            "concerning": 19.85,
+            "distress": 2.74
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F5 IC row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RecvDays",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 2.62,
+            "good": 11.9,
+            "acceptable": 43.2,
+            "concerning": 67.562,
+            "distress": 91.925
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F6 RecvDays row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "AssetTurnover",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.478,
+            "good": 1.263,
+            "acceptable": 1.263,
+            "concerning": 0.838,
+            "distress": 0.414
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F7 AssetTurnover row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF_PAT_4yavg",
+          "specMetricKey": "F8",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.25,
+            "good": 1.082,
+            "acceptable": 0.786,
+            "concerning": 0.291,
+            "distress": -0.203
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F8 FCF_PAT_4yavg row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCFConsistency",
+          "specMetricKey": "F9",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 97.5,
+            "distress": 95
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F9 OCFConsistency row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev3yCAGR",
+          "specMetricKey": "F10",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 9.8,
+            "good": 6.62,
+            "acceptable": 6.457,
+            "concerning": 3.568,
+            "distress": 0.68
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Bars table, F10 Rev3yCAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTMOpm",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 26.536,
+            "good": 21.668,
+            "acceptable": 14.694,
+            "concerning": 9.938,
+            "distress": 5.182
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Bars table, M1 TTMOpm row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTMNpm",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 20.213,
+            "good": 16.648,
+            "acceptable": 11.936,
+            "concerning": 7.648,
+            "distress": 3.36
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Bars table, M2 TTMNpm row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RevYoY_TTM",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 23.675,
+            "good": 14.307,
+            "acceptable": 7.256,
+            "concerning": 0.225,
+            "distress": -6.806
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Bars table, M3 RevYoY_TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NpYoY_TTM",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 75.094,
+            "good": 29.974,
+            "acceptable": 19.604,
+            "concerning": -3.13,
+            "distress": -25.864
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Bars table, M4 NpYoY_TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTMIC",
+          "specMetricKey": "M5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 96.7,
+            "good": 81.73,
+            "acceptable": 24.241,
+            "concerning": 13.765,
+            "distress": 3.29
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.4 Momentum Bars table, M5 TTMIC row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (no per-metric weight column in B.3/B.4). F7 + F10 derived under Layer A sub-pool override (B.3.1); F7 has Good=Acceptable collapsed at 1.263 per §6.2 (bar values transcribed as stated).",
+      "extractionNotes": "Market sub-components present (B.5; full band tables retained in Rev2 doc, not restated here). No continuous Ownership bars (none found). F# keys used. UNIT SCALE FLAG: F3 CashConv and F8 FCF_PAT_4yavg stated as RATIOS (0.31-2.38 / -0.20-1.25), not percent -> differs from PG1 (percent). F4 DE Excellent=0 transcribed verbatim."
+    },
+    {
+      "pgId": "PG3",
+      "pgName": "Pharma",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG3_v5_3_Supplementary_Specification_Rev3.docx",
+      "specVersionStated": "v5.3 Rev3",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 22.3,
+            "good": 16.93,
+            "acceptable": 16.93,
+            "concerning": 13.06,
+            "distress": 9.18
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, ROCE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 19.31,
+            "good": 13.55,
+            "acceptable": 13.55,
+            "concerning": 8.88,
+            "distress": 4.22
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Cash Conversion (OCF+Buyback)/PAT v5.1.2 §7.5.2",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.77,
+            "good": 1.43,
+            "acceptable": 1.43,
+            "concerning": 1.06,
+            "distress": 0.7
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, Cash Conversion row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E Ratio",
+          "specMetricKey": null,
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.04,
+            "good": 0.19,
+            "acceptable": 0.19,
+            "concerning": 0.51,
+            "distress": 0.83
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, D/E Ratio row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Interest Coverage (annual)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 74.26,
+            "good": 24.48,
+            "acceptable": 24.48,
+            "concerning": 13.61,
+            "distress": 2.74
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, Interest Coverage row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Receivables Days",
+          "specMetricKey": null,
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 64.8,
+            "good": 87.75,
+            "acceptable": 89.32,
+            "concerning": 106.23,
+            "distress": 123.14
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, Receivables Days row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Asset Turnover",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.78,
+            "good": 0.71,
+            "acceptable": 0.71,
+            "concerning": 0.58,
+            "distress": 0.46
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, Asset Turnover row | bars re-derived to canonical formula per PG3_Recompute.md — Asset Turnover aligned model-wide (total-asset turnover (Sales/Total Assets)).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT (4-yr avg)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.78,
+            "good": 0.32,
+            "acceptable": 0.27,
+            "concerning": -0.44,
+            "distress": -1.14
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, FCF/PAT (4-yr avg) row | bars re-derived to canonical formula per PG3_Recompute.md — FCF/PAT (4-yr avg) aligned model-wide (capex-proxy FCF, mean-of-ratios).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCF Consistency (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 100,
+            "distress": 100
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, OCF Consistency row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "3-Year Revenue CAGR (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 17.83,
+            "good": 13.29,
+            "acceptable": 13.29,
+            "concerning": 7.28,
+            "distress": 1.28
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Foundation Lens 1 Bar Values, 3-Year Revenue CAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM Operating Margin (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 22.59,
+            "good": 20.23,
+            "acceptable": 19.75,
+            "concerning": 17.82,
+            "distress": 15.9
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4b Momentum Lens 1 Bar Values, TTM Operating Margin row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM Net Profit Margin (%)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 16.64,
+            "good": 10.71,
+            "acceptable": 8.34,
+            "concerning": 6.05,
+            "distress": 3.76
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4b Momentum Lens 1 Bar Values, TTM Net Profit Margin row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Revenue YoY (TTM, v5.1.1 §8.6.1; v5.1.2 §6.6 annual cadence)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 21.19,
+            "good": 14.05,
+            "acceptable": 14.05,
+            "concerning": 7.44,
+            "distress": 0.83
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4b Momentum Lens 1 Bar Values, Revenue YoY (TTM) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Net Profit YoY (TTM, v5.1.1 §8.6.1; v5.1.2 §6.6 annual cadence)",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 39.06,
+            "good": 20.57,
+            "acceptable": 20.57,
+            "concerning": -9.76,
+            "distress": -40.09
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4b Momentum Lens 1 Bar Values, Net Profit YoY (TTM) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM Interest Coverage",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 25.1,
+            "good": 14.32,
+            "acceptable": 13.61,
+            "concerning": 7.95,
+            "distress": 2.29
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.4b Momentum Lens 1 Bar Values, TTM Interest Coverage row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (no per-metric weight column in B.4/B.4b).",
+      "extractionNotes": "Market present (B.5 pattern/Market thresholds referenced). No continuous Ownership bars (none found). No F#/M# keys in Part B -> specMetricKey null. OCF Consistency all five bars = 100.00 (transcribed verbatim; collapsed). UNIT SCALE FLAG: Cash Conversion and FCF/PAT stated as RATIOS (matches PG2/PG4, differs from PG1 percent)."
+    },
+    {
+      "pgId": "PG4",
+      "pgName": "Auto OEM",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG4_Auto_OEM_Supplementary_Specification_Rev3_Final.md",
+      "specVersionStated": "Rev3 Final (Master Spec v5.x lineage; B.5 cites universal §14.2)",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 26.85,
+            "good": 14.71,
+            "acceptable": 14.31,
+            "concerning": 9.04,
+            "distress": 3.77
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, ROCE row | bars re-derived to canonical formula per PG4_Recompute.md — ROCE % aligned model-wide (EBIT post-dep (PBT+Interest)).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 20.73,
+            "good": 15.07,
+            "acceptable": 12.09,
+            "concerning": 4.03,
+            "distress": -4.04
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "CashConv",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.41,
+            "good": 0.98,
+            "acceptable": 0.98,
+            "concerning": -0.27,
+            "distress": -1.52
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, CashConv row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E",
+          "specMetricKey": null,
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.02,
+            "good": 0.25,
+            "acceptable": 0.34,
+            "concerning": 1.92,
+            "distress": 3.5
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, D/E row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "IC",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100.95,
+            "good": 6.43,
+            "acceptable": 6.43,
+            "concerning": 2.86,
+            "distress": -0.7
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, IC row | bars re-derived to canonical formula per PG4_Recompute.md — IC aligned model-wide (EBIT post-dep (PBT+Interest)/Interest).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RecvD",
+          "specMetricKey": null,
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 14.76,
+            "good": 21.33,
+            "acceptable": 23.01,
+            "concerning": 37.59,
+            "distress": 52.17
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, RecvD row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "AsstT",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.32,
+            "good": 0.98,
+            "acceptable": 0.98,
+            "concerning": 0.78,
+            "distress": 0.58
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, AsstT row | bars re-derived to canonical formula per PG4_Recompute.md — AsstT aligned model-wide (total-asset turnover (Sales/Total Assets)).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.64,
+            "good": 0.18,
+            "acceptable": -0.02,
+            "concerning": -2.34,
+            "distress": -4.65
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, FCF/PAT row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCFCons %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 80,
+            "acceptable": 64,
+            "concerning": 52,
+            "distress": 40
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, OCFCons row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev3yC %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 23.51,
+            "good": 16.42,
+            "acceptable": 11.8,
+            "concerning": -0.75,
+            "distress": -13.29
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Foundation Lens 1 Bars, Rev3yC row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM OPM %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 18.91,
+            "good": 14.35,
+            "acceptable": 14.34,
+            "concerning": 11.82,
+            "distress": 9.3
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Lens 1 Bars, TTM OPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM NPM %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 12.26,
+            "good": 8.02,
+            "acceptable": 8.02,
+            "concerning": 6.24,
+            "distress": 4.46
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Lens 1 Bars, TTM NPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev YoY %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 23.23,
+            "good": 13.65,
+            "acceptable": 12.61,
+            "concerning": -4.94,
+            "distress": -22.48
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Lens 1 Bars, Rev YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY %",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 33.27,
+            "good": 14.74,
+            "acceptable": 14.74,
+            "concerning": -15.24,
+            "distress": -45.22
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.4 Momentum Lens 1 Bars, NP YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM IC",
+          "specMetricKey": null,
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 106.57,
+            "good": 9.88,
+            "acceptable": 9.88,
+            "concerning": 6.42,
+            "distress": 2.96
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.4 Momentum Lens 1 Bars, TTM IC row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (no per-metric weight column in B.3/B.4).",
+      "extractionNotes": "DIRECTION FLAG: PG4 Part B tables have NO direction column. Directions determined from the spec's own monotonic bar ordering (Excellent=best -> Distress=worst): D/E and RecvD ascend = lower_better; all other metrics descend = higher_better. Unambiguous and consistent with universal metric definitions; not a guess. Source file is .md (not docx). Market present (B.5 weights; B.6 anchor-lift). No continuous Ownership bars (none found). CashConv/D/E/IC/AsstT/FCF-PAT/TTM-IC carry the spec's 'x' notation; IC/AsstT/TTM-IC recorded as times, CashConv/FCF-PAT/D-E as ratio. CashConv/FCF-PAT ratio-scale (matches PG2/PG3, differs from PG1). IC Distress and 'TTM IC' values transcribed verbatim incl '-0.00'."
+    },
+    {
+      "pgId": "PG5",
+      "pgName": "Private Banks",
+      "industryType": "banking",
+      "sourceSpecFile": "PG5_PrivateBanks_SuppSpec_v5_5_1_Rev1.docx",
+      "specVersionStated": "v5.5.1 Rev1",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "Tier-1 %",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 18.8,
+            "good": 16.34,
+            "acceptable": 16.04,
+            "concerning": 14.62,
+            "distress": 13.2
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation Bars, F1 Tier-1 row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "GNPA %",
+          "specMetricKey": "F2",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 1.877,
+            "good": 3.095,
+            "acceptable": 3.258,
+            "concerning": 10.381,
+            "distress": 17.505
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation Bars, F2 GNPA row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NNPA %",
+          "specMetricKey": "F3",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.438,
+            "good": 0.905,
+            "acceptable": 1.303,
+            "concerning": 4.82,
+            "distress": 8.338
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation Bars, F3 NNPA row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "PCR %",
+          "specMetricKey": "F4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 76.42,
+            "good": 72.275,
+            "acceptable": 72.275,
+            "concerning": 62.743,
+            "distress": 53.21
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation Bars, F4 PCR row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROA %",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.415,
+            "good": 0.923,
+            "acceptable": 0.923,
+            "concerning": 0.079,
+            "distress": -0.766
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation Bars, F5 ROA row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "C/I %",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 45.508,
+            "good": 52.105,
+            "acceptable": 52.105,
+            "concerning": 59.085,
+            "distress": 66.066
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation Bars, F6 C/I row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "CASA %",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 43.825,
+            "good": 35.2,
+            "acceptable": 35.2,
+            "concerning": 31.308,
+            "distress": 27.416
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation Bars, F7 CASA row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "NIM TTM %",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 3.946,
+            "good": 3.233,
+            "acceptable": 3.233,
+            "concerning": 2.942,
+            "distress": 2.651
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum Bars, M1 NIM TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "PPOP YoY %",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 21.154,
+            "good": 13.625,
+            "acceptable": 13.625,
+            "concerning": 3.624,
+            "distress": -6.377
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum Bars, M2 PPOP YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NII YoY %",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 14.486,
+            "good": 8.98,
+            "acceptable": 8.809,
+            "concerning": 3.658,
+            "distress": -1.493
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum Bars, M3 NII YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY %",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 25.971,
+            "good": 14.8,
+            "acceptable": 13.254,
+            "concerning": 1.098,
+            "distress": -11.057
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum Bars, M4 NP YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "GNPA TTM %",
+          "specMetricKey": "M5",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 1.685,
+            "good": 2.5,
+            "acceptable": 2.725,
+            "concerning": 3.67,
+            "distress": 4.614
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum Bars, M5 GNPA TTM row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (no per-metric weight column; B.1 'unified bank cohort').",
+      "extractionNotes": "Banking PG. THIS IS THE UNIFIED DEPOSIT-TAKER BAR SET (B.1 'unified bank cohort') that PG6 inherits. All bars in PERCENT (banking convention: engine x100-normalises fraction fields gnpaPct/nnpaPct/cet1/AT1 to percent). Market band cuts present (B.4). No continuous Ownership bars (B.5 is §11 mechanics). NOTE (not a bar): B.5 Ownership used disturbance penalties R2 -15 / R6 -10 / prolonged-FII -8, which differ from Master §11.5 LOCKED (-6/-8/-4) per PG6 flag #08 -- Ownership is universal/out-of-scope so NOT extracted, flagged for awareness only."
+    },
+    {
+      "pgId": "PG6",
+      "pgName": "PSU Banks",
+      "industryType": "banking",
+      "sourceSpecFile": "PG6_PSUBanks_SuppSpec_v5_5_1.docx",
+      "specVersionStated": "v5.5.1 (ratified v6.0 banking architecture)",
+      "inheritsBarsFrom": "PG5",
+      "foundationMetrics": [
+        {
+          "metricLabel": "Tier-1 %",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 18.8,
+            "good": 16.34,
+            "acceptable": 16.04,
+            "concerning": 14.62,
+            "distress": 13.2
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Inherited Foundation bars (reproduced from PG5 §B.1), F1 Tier-1 row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "GNPA %",
+          "specMetricKey": "F2",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 1.877,
+            "good": 3.095,
+            "acceptable": 3.258,
+            "concerning": 10.381,
+            "distress": 17.505
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Inherited Foundation bars (reproduced from PG5 §B.1), F2 GNPA row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NNPA %",
+          "specMetricKey": "F3",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.438,
+            "good": 0.905,
+            "acceptable": 1.303,
+            "concerning": 4.82,
+            "distress": 8.338
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Inherited Foundation bars (reproduced from PG5 §B.1), F3 NNPA row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "PCR %",
+          "specMetricKey": "F4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 76.42,
+            "good": 72.275,
+            "acceptable": 72.275,
+            "concerning": 62.743,
+            "distress": 53.21
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Inherited Foundation bars (reproduced from PG5 §B.1), F4 PCR row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROA %",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.415,
+            "good": 0.923,
+            "acceptable": 0.923,
+            "concerning": 0.079,
+            "distress": -0.766
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Inherited Foundation bars (reproduced from PG5 §B.1), F5 ROA row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "C/I %",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 45.508,
+            "good": 52.105,
+            "acceptable": 52.105,
+            "concerning": 59.085,
+            "distress": 66.066
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Inherited Foundation bars (reproduced from PG5 §B.1), F6 C/I row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "CASA %",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 43.825,
+            "good": 35.2,
+            "acceptable": 35.2,
+            "concerning": 31.308,
+            "distress": 27.416
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Inherited Foundation bars (reproduced from PG5 §B.1), F7 CASA row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "NIM TTM %",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 3.946,
+            "good": 3.233,
+            "acceptable": 3.233,
+            "concerning": 2.942,
+            "distress": 2.651
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Inherited Momentum bars (reproduced from PG5 §B.2), M1 NIM TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "PPOP YoY %",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 21.154,
+            "good": 13.625,
+            "acceptable": 13.625,
+            "concerning": 3.624,
+            "distress": -6.377
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Inherited Momentum bars (reproduced from PG5 §B.2), M2 PPOP YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NII YoY %",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 14.486,
+            "good": 8.98,
+            "acceptable": 8.809,
+            "concerning": 3.658,
+            "distress": -1.493
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Inherited Momentum bars (reproduced from PG5 §B.2), M3 NII YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY %",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 25.971,
+            "good": 14.8,
+            "acceptable": 13.254,
+            "concerning": 1.098,
+            "distress": -11.057
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Inherited Momentum bars (reproduced from PG5 §B.2), M4 NP YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "GNPA TTM %",
+          "specMetricKey": "M5",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 1.685,
+            "good": 2.5,
+            "acceptable": 2.725,
+            "concerning": 3.67,
+            "distress": 4.614
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Inherited Momentum bars (reproduced from PG5 §B.2), M5 GNPA TTM row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (B.1 states 'Equal weight 1/7'; B.2 states 'Equal weight 1/5').",
+      "extractionNotes": "Banking PG. INHERITANCE BUILD: PG6 derives no bars; inherits the PG5 unified deposit-taker set verbatim (Decision 3 Unified Pooling). Bars are physically reproduced in PG6 B.1/B.2 and CROSS-CHECKED here as BYTE-IDENTICAL to PG5 across all 12 metrics (no reproduction drift). inheritsBarsFrom=PG5 set. All percent. Market band cuts present (B.6, PG6 PSU distribution). No continuous Ownership bars (B.8 is §11 government-holding mechanics). NOTE (not a bar): PG6 applied Master §11.5 LOCKED Ownership disturbance penalties (-6/-8/-4), correcting PG5 §B.5's (-15/-10/-8) per flag #08 -- universal/out-of-scope, awareness only."
+    },
+    {
+      "pgId": "PG8",
+      "pgName": "Power/Utilities",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG8_Power_Utilities_Supplementary_Specification_v5_5_Rev4.docx",
+      "specVersionStated": "v5.5 Rev4 (MSR-PG8 Rev4 directive)",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "OPM",
+          "specMetricKey": "F1_OPM",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 71.59,
+            "good": 29.43,
+            "acceptable": 29.43,
+            "concerning": 27.92,
+            "distress": 22.67
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, F1_OPM row. A=G collapse per MSR-PG8 Rev4; PG8 peers structurally below survivor cohort on this metric (real signal).. SSCU conditional set carried in sscuBars/sscuScope fields.",
+          "status": "extracted",
+          "sscuBars": {
+            "excellent": 27,
+            "good": 23.19,
+            "acceptable": null,
+            "concerning": null,
+            "distress": 14.24
+          },
+          "sscuScope": [
+            "TataPower",
+            "TORNTPOWER"
+          ]
+        },
+        {
+          "metricLabel": "ROCE",
+          "specMetricKey": "N1_ROCE",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 16.73,
+            "good": 13.72,
+            "acceptable": 13.72,
+            "concerning": 12.7,
+            "distress": 4.11
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, N1_ROCE row. A=G collapse per MSR-PG8 Rev4; PG8 peers structurally below survivor cohort on this metric (real signal).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE",
+          "specMetricKey": "N2_ROE",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 13.16,
+            "good": 9.21,
+            "acceptable": 9.21,
+            "concerning": 9.05,
+            "distress": -41.78
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, N2_ROE row. A=G collapse per MSR-PG8 Rev4; PG8 peers structurally below survivor cohort on this metric (real signal).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "AssetTurnover",
+          "specMetricKey": "N3_AssetTurnover",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.31,
+            "good": 0.24,
+            "acceptable": 0.24,
+            "concerning": 0.18,
+            "distress": 0.12
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, N3_AssetTurnover row. A=G collapse per MSR-PG8 Rev4; PG8 peers structurally below survivor cohort on this metric (real signal).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RecvDays",
+          "specMetricKey": "N4_RecvDays",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 48.53,
+            "good": 60.92,
+            "acceptable": 66.95,
+            "concerning": 99.47,
+            "distress": 121.86
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, N4_RecvDays row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev3yCAGR",
+          "specMetricKey": "N6_Rev3yCAGR",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 12.63,
+            "good": 12.01,
+            "acceptable": 7.49,
+            "concerning": 3.04,
+            "distress": -7.31
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, N6_Rev3yCAGR row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "DE",
+          "specMetricKey": "F3_DE",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 1,
+            "good": 1.43,
+            "acceptable": 1.47,
+            "concerning": 1.886,
+            "distress": 4.21
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, F3_DE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "IntCov",
+          "specMetricKey": "F4_IntCov",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 6.6,
+            "good": 4.15,
+            "acceptable": 2.55,
+            "concerning": 1.92,
+            "distress": 0.36
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, F4_IntCov row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "CashConv",
+          "specMetricKey": "F5_CashConv",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 3.76,
+            "good": 2.39,
+            "acceptable": 2.25,
+            "concerning": 1.67,
+            "distress": -79.72
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, F5_CashConv row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF_PAT",
+          "specMetricKey": "F6_FCF_PAT",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.41,
+            "good": 0.26,
+            "acceptable": 0.26,
+            "concerning": -1.568,
+            "distress": -3.11
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, F6_FCF_PAT row. A=G collapse per MSR-PG8 Rev4; PG8 peers structurally below survivor cohort on this metric (real signal).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCF Consistency (%)",
+          "specMetricKey": "N5_OCFConsistency",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 100,
+            "distress": 100
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Restored per MSR-PG8-OCF-restore; degenerate-flat-at-100 like PG3/PG10/PG12/PG13; kept-and-scored-flat (value at 100 → higher-tier-wins → Excellent/90; below 100 penalized). Was dropped in Rev4 (N5); restoration returns PG8 Foundation to its pre-drop 11-metric state per §7.6.",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "OPM_TTM",
+          "specMetricKey": "M1_OPM_TTM",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 40.6,
+            "good": 37.55,
+            "acceptable": 35.01,
+            "concerning": 27.7,
+            "distress": 27.04
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, M1_OPM_TTM row. SSCU conditional set carried in sscuBars/sscuScope fields.",
+          "status": "extracted",
+          "sscuBars": {
+            "excellent": 21.46,
+            "good": 17,
+            "acceptable": null,
+            "concerning": null,
+            "distress": 12.12
+          },
+          "sscuScope": [
+            "TataPower",
+            "TORNTPOWER"
+          ]
+        },
+        {
+          "metricLabel": "NPM_TTM",
+          "specMetricKey": "M2_NPM_TTM",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 17.84,
+            "good": 15.53,
+            "acceptable": 11.89,
+            "concerning": 8.82,
+            "distress": -35.99
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, M2_NPM_TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RevYoY",
+          "specMetricKey": "M3_RevYoY",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 21.55,
+            "good": 9.96,
+            "acceptable": 9.96,
+            "concerning": 0.62,
+            "distress": -12.46
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, M3_RevYoY row. A=G collapse per MSR-PG8 Rev4; PG8 peers structurally below survivor cohort on this metric (real signal).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NPYoY",
+          "specMetricKey": "M4_NPYoY",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 29.24,
+            "good": 3.4,
+            "acceptable": 3.4,
+            "concerning": -9.62,
+            "distress": -21.86
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "PG8 Rev4 5-bar set per MSR-PG8 Rev4 directive, M4_NPYoY row. A=G collapse per MSR-PG8 Rev4; PG8 peers structurally below survivor cohort on this metric (real signal).",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (Foundation 10 x 10%, Momentum 4 x 25% via engine renormalization; intraPillarWeight left null per convention).",
+      "extractionNotes": "Rev4: full 5-bar set, 10F + 4M. N5_OCFConsistency and M5_OCF_Consistency DROPPED (removed entirely). SSCU conditional bars now carried as NEW OPTIONAL fields sscuBars + sscuScope on F1_OPM and M1_OPM_TTM ONLY (3-anchor; acceptable/concerning=null; scope=TataPower,TorrentPower) — LOADER MUST READ these two new optional fields; all other metrics have no sscuBars. Rev4: anchor scores normalized to universal 20/40/60/75/90; was 35/75/100. CN-1 restored. 7 A=G band collapses (F1_OPM, N1_ROCE, N2_ROE, N3_AssetTurnover, F6_FCF_PAT, M3_RevYoY, M4_NPYoY) — PG8 peers structurally below survivor cohort on those metrics (real signal). No continuous Ownership bars carried (Ownership universal). CashConv/FCF on canonical ratio scale. NOTE: F5_CashConv distress=-79.72 is an extreme value on ratio scale (vs C/A/G/E of 1.67/2.25/2.39/3.76) — carried over from the original PG8 spec distress anchor and transcribed as instructed; flagged for operator sanity-check. Values supplied via MSR-PG8 Rev4 directive (this chat), not re-read from a docx. OCF Consistency (N5) restored to Foundation per MSR-PG8-OCF-restore — Foundation now 11 metrics (was 10 in Rev4); all-bars-100 degenerate-flat, treated identically to PG3/PG10/PG12/PG13."
+    },
+    {
+      "pgId": "PG9",
+      "pgName": "Metals/Mining",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG9_LargeCap_Metals_Mining_Supplementary_Specification_v5_5_Rev2.docx",
+      "specVersionStated": "v5.5 Rev2 (bars carried unchanged from Rev1/v5.4)",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 28.79,
+            "good": 22.58,
+            "acceptable": 20.57,
+            "concerning": 12.34,
+            "distress": 4.11
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, F1 ROCE row | bars re-derived to canonical formula per PG9_Recompute.md — ROCE aligned model-wide (EBIT post-dep + year-end CapitalEmployed (not averaged)).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE",
+          "specMetricKey": "F2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 23.6,
+            "good": 16.33,
+            "acceptable": 16.33,
+            "concerning": 8.35,
+            "distress": -1.05
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, F2 ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Cash Conv (§7.5.1)",
+          "specMetricKey": "F3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.8565,
+            "good": 1.1315,
+            "acceptable": 1.1315,
+            "concerning": 0.7823,
+            "distress": 0.3307
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Bar Tables, F3 Cash Conv row | scale normalized to ratio per loader-canonical convention (was percent, /100).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E",
+          "specMetricKey": "F4",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0,
+            "good": 0.09,
+            "acceptable": 0.11,
+            "concerning": 1.46,
+            "distress": 2.81
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Bar Tables, F4 D/E row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Interest Coverage (annual)",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 132.69,
+            "good": 30.29,
+            "acceptable": 30.29,
+            "concerning": 22.55,
+            "distress": 1.36
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Bar Tables, F5 Interest Coverage row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Receivables Days",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 21.92,
+            "good": 32.91,
+            "acceptable": 32.91,
+            "concerning": 48.04,
+            "distress": 64.74
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.3 Bar Tables, F6 Receivables Days row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Asset Turnover",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.1,
+            "good": 0.58,
+            "acceptable": 0.55,
+            "concerning": 0.45,
+            "distress": 0.35
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Bar Tables, F7 Asset Turnover row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT (4y avg)",
+          "specMetricKey": "F8",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.7325,
+            "good": 0.4554,
+            "acceptable": 0.4554,
+            "concerning": 0.2642,
+            "distress": 0.0729
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.3 Bar Tables, F8 FCF/PAT row | scale normalized to ratio per loader-canonical convention (was percent, /100). | bars re-derived to canonical formula per PG9_Recompute.md — FCF/PAT (4y avg) aligned model-wide (capex-proxy FCF (OCF-Capex), mean-of-ratios); recompute file gave percent values, divided by 100 to canonical ratio unit.)",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCF Consistency",
+          "specMetricKey": "F9",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 95.31,
+            "distress": 90.62
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, F9 OCF Consistency row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Revenue 3y CAGR",
+          "specMetricKey": "F10",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 22.24,
+            "good": 9.84,
+            "acceptable": 9.84,
+            "concerning": 4.38,
+            "distress": -1.69
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, F10 Revenue 3y CAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM OPM",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 33.33,
+            "good": 27.97,
+            "acceptable": 27.97,
+            "concerning": 18,
+            "distress": 5.87
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, M1 TTM OPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM NPM",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 24.84,
+            "good": 22.37,
+            "acceptable": 22.37,
+            "concerning": 12.06,
+            "distress": 1.65
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, M2 TTM NPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev YoY (TTM)",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 25.57,
+            "good": 9.74,
+            "acceptable": 9.74,
+            "concerning": 3.66,
+            "distress": -8.32
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, M3 Rev YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY (TTM)",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 51.06,
+            "good": 13.21,
+            "acceptable": 13.21,
+            "concerning": -4.07,
+            "distress": -26.92
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Bar Tables, M4 NP YoY row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM Interest Coverage",
+          "specMetricKey": "M5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 97.41,
+            "good": 50.7,
+            "acceptable": 50.7,
+            "concerning": 27.8,
+            "distress": 2.14
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Bar Tables, M5 TTM Interest Coverage row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (no per-metric weight column; standard 10F + 5M).",
+      "extractionNotes": "Clean 5-bar set, 15 metrics (10F + 5M, v5.5 §7.6 standard set). 'Fallbacks' and 'SSCU(a)' columns in B.3 are derivation PROVENANCE (e.g. §6.5 fallback applied, sub-sector coverage universe used) — single final bar shown per metric, NOT dual bars; provenance not extracted. No continuous Ownership bars. UNIT NOTE: F3 Cash Conv and F8 FCF/PAT on PERCENT scale (185.65 / 111.54) — like PG1/PG11, unlike PG2/3/4/8/10 (ratio)."
+    },
+    {
+      "pgId": "PG10",
+      "pgName": "Oil & Gas",
+      "industryType": "non_financial",
+      "sourceSpecFile": "Vytal_PG10_Oil_Gas_Supplementary_Specification_v5_5_Rev1.docx",
+      "specVersionStated": "v5.5 Rev1",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE (%)",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 33.29,
+            "good": 26.46,
+            "acceptable": 25.86,
+            "concerning": 16.85,
+            "distress": 7.84
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F1 ROCE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE (%)",
+          "specMetricKey": "F2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 24.84,
+            "good": 20.2,
+            "acceptable": 19.45,
+            "concerning": 13.36,
+            "distress": 7.26
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F2 ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Cash Conv (x)",
+          "specMetricKey": "F3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.55,
+            "good": 1.37,
+            "acceptable": 1.37,
+            "concerning": 1.24,
+            "distress": 1.11
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F3 Cash Conv (x) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E (x)",
+          "specMetricKey": "F4",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.02,
+            "good": 0.03,
+            "acceptable": 0.05,
+            "concerning": 0.42,
+            "distress": 0.79
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F4 D/E (x) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "IntCov (x)",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 112.08,
+            "good": 59.26,
+            "acceptable": 58.3,
+            "concerning": 30.93,
+            "distress": 3.55
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F5 IntCov (x) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RecvDays",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 21.21,
+            "good": 23.16,
+            "acceptable": 24.03,
+            "concerning": 48.01,
+            "distress": 72
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F6 RecvDays row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "AssetTurn (x)",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.29,
+            "good": 0.97,
+            "acceptable": 0.91,
+            "concerning": 0.78,
+            "distress": 0.65
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F7 AssetTurn (x) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT 4y (x)",
+          "specMetricKey": "F8",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.94,
+            "good": 0.59,
+            "acceptable": 0.59,
+            "concerning": -0.25,
+            "distress": -1.09
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F8 FCF/PAT 4y (x) row | bars re-derived to canonical formula per PG10_Recompute.md — FCF/PAT 4y (x) aligned model-wide (capex-proxy FCF (OCF-Capex) replacing OCF+ICF).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCF Cons (%)",
+          "specMetricKey": "F9",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 100,
+            "distress": 100
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F9 OCF Cons (%) row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev 3y CAGR (%)",
+          "specMetricKey": "F10",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 24.78,
+            "good": 18.29,
+            "acceptable": 18.29,
+            "concerning": 9.12,
+            "distress": -0.06
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 bars, F10 Rev 3y CAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM OPM (%)",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 24.87,
+            "good": 22.45,
+            "acceptable": 22.45,
+            "concerning": 12.42,
+            "distress": 2.39
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 bars, M1 TTM OPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM NPM (%)",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 17.23,
+            "good": 16.47,
+            "acceptable": 16.47,
+            "concerning": 9.12,
+            "distress": 1.77
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 bars, M2 TTM NPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev YoY TTM (%)",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 43.06,
+            "good": 18.43,
+            "acceptable": 18.43,
+            "concerning": 3.79,
+            "distress": -10.86
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 bars, M3 Rev YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY TTM (%)",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 8.91,
+            "good": 6.01,
+            "acceptable": 6.01,
+            "concerning": -8.12,
+            "distress": -22.24
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 bars, M4 NP YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM IntCov (x)",
+          "specMetricKey": "M5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 112.08,
+            "good": 59.26,
+            "acceptable": 58.3,
+            "concerning": 30.93,
+            "distress": 3.55
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 bars, M5 TTM IntCov row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (B-prose: 'Intra-pillar weights: Foundation 1/10 equal; Momentum 1/5 equal').",
+      "extractionNotes": "Clean 5-bar set, 10F + 5M. No continuous Ownership bars (B.x Ownership is post-pattern mechanics). UNIT NOTE: F3 Cash Conv and F8 FCF/PAT explicitly '(x)' = ratio scale (1.1-1.55 / 0.09-0.86) — like PG2/3/4/8, unlike PG1/9/11 (percent). M5 TTM IntCov bars identical to F5 IntCov (both 112.08/59.26/58.30/30.93/3.55) — transcribed as stated."
+    },
+    {
+      "pgId": "PG11",
+      "pgName": "Capital Goods",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG11_LargeCap_CapitalGoods_Industrial_Supplementary_Specification_v5_5_1_Rev1.docx",
+      "specVersionStated": "v5.5.1 Rev1",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE (%)",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 33.91,
+            "good": 27.19,
+            "acceptable": 21.57,
+            "concerning": 17.76,
+            "distress": 13.95
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F1 ROCE row | bars re-derived to canonical formula per PG11_Recompute.md — ROCE (%) aligned model-wide (EBIT post-dep (PBT+Interest), OtherIncome excluded).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE (%)",
+          "specMetricKey": "F2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 21.37,
+            "good": 16.73,
+            "acceptable": 16.19,
+            "concerning": 10.11,
+            "distress": 4.03
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F2 ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "CashConv (%)",
+          "specMetricKey": "F3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.6167,
+            "good": 1.1,
+            "acceptable": 1.1,
+            "concerning": 0.6945,
+            "distress": 0.1921
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F3 CashConv row | scale normalized to ratio per loader-canonical convention (was percent, /100).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E",
+          "specMetricKey": "F4",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.02,
+            "good": 0.13,
+            "acceptable": 0.29,
+            "concerning": 0.72,
+            "distress": 1.16
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F4 D/E row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "IntCov",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 42.29,
+            "good": 16.36,
+            "acceptable": 14.84,
+            "concerning": 7.95,
+            "distress": 1.06
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F5 IntCov row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RecvDays",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 65.29,
+            "good": 89.69,
+            "acceptable": 93.54,
+            "concerning": 127.84,
+            "distress": 162.14
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F6 RecvDays row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "AssetTurn",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.39,
+            "good": 0.99,
+            "acceptable": 0.98,
+            "concerning": 0.8,
+            "distress": 0.62
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F7 AssetTurn row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT",
+          "specMetricKey": "F8",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.7055,
+            "good": 0.553,
+            "acceptable": 0.553,
+            "concerning": 0.396,
+            "distress": 0.227
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F8 FCF/PAT row | scale normalized to ratio per loader-canonical convention (was percent, /100).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCFCons",
+          "specMetricKey": "F9",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 83,
+            "distress": 66
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F9 OCFCons row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev3yCAGR",
+          "specMetricKey": "F10",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 19.39,
+            "good": 14.8,
+            "acceptable": 14.8,
+            "concerning": 10.6,
+            "distress": 5.7
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Lens 1 Bars, F10 Rev3yCAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM OPM (%)",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 13.57,
+            "good": 10.22,
+            "acceptable": 9.94,
+            "concerning": 8.42,
+            "distress": 6.9
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 Bars, M1 TTM OPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM NPM (%)",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 9.19,
+            "good": 7.19,
+            "acceptable": 6.68,
+            "concerning": 4.21,
+            "distress": 1.75
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 Bars, M2 TTM NPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev YoY ann. (%)",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 22.84,
+            "good": 16.95,
+            "acceptable": 16.18,
+            "concerning": 1.24,
+            "distress": -13.7
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 Bars, M3 Rev YoY ann. row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY ann. (%)",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 50.93,
+            "good": 21.58,
+            "acceptable": 21.58,
+            "concerning": -4.3,
+            "distress": -36.05
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 Bars, M4 NP YoY ann. row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM IntCov",
+          "specMetricKey": "M5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 20.51,
+            "good": 16.59,
+            "acceptable": 16.59,
+            "concerning": 9.14,
+            "distress": 1.06
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Momentum Lens 1 Bars, M5 TTM IntCov row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (B.1: 'Foundation 10x10%, Momentum 5x20%').",
+      "extractionNotes": "Clean 5-bar set, 10F + 5M. No continuous Ownership bars (B.6 is §11.5 universal Ownership mechanics; B.8.4 is a pillar-score matrix). UNIT NOTE: F3 CashConv and F8 FCF/PAT explicitly '(%)' = PERCENT scale (161.67 / 70.55) — like PG1/9, unlike PG2/3/4/8/10 (ratio)."
+    },
+    {
+      "pgId": "PG12",
+      "pgName": "Cement",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG12_Cement_Supplementary_Specification_v5_4_Rev2.docx",
+      "specVersionStated": "v5.4 Rev2 (native build)",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE (%)",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 20.76,
+            "good": 11.75,
+            "acceptable": 11.75,
+            "concerning": 8.64,
+            "distress": 5.54
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F1 ROCE row | bars re-derived to canonical formula per PG12_Recompute.md — ROCE (%) aligned model-wide (EBIT post-dep (PBT+Interest)).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE (%)",
+          "specMetricKey": "F2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 16.29,
+            "good": 9.02,
+            "acceptable": 9.02,
+            "concerning": 5.24,
+            "distress": 1.46
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F2 ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Cash Conv §7.5.1 (%)",
+          "specMetricKey": "F3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 5.0585,
+            "good": 2.28,
+            "acceptable": 2.1827,
+            "concerning": 1.7994,
+            "distress": 1.4162
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Bars, F3 Cash Conv row | scale normalized to ratio per loader-canonical convention (was percent, /100).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E (×)",
+          "specMetricKey": "F4",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.02,
+            "good": 0.21,
+            "acceptable": 0.24,
+            "concerning": 0.52,
+            "distress": 0.8
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Bars, F4 D/E row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Interest Coverage (×)",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 25.41,
+            "good": 5.98,
+            "acceptable": 5.98,
+            "concerning": 3.66,
+            "distress": 1.35
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Bars, F5 Interest Coverage row | bars re-derived to canonical formula per PG12_Recompute.md — Interest Coverage (×) aligned model-wide (EBIT post-dep (PBT+Interest)/Interest).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Receivables Days",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 6.73,
+            "good": 14.13,
+            "acceptable": 14.51,
+            "concerning": 36.21,
+            "distress": 57.92
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.2 Foundation Bars, F6 Receivables Days row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Asset Turnover",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1,
+            "good": 0.81,
+            "acceptable": 0.81,
+            "concerning": 0.66,
+            "distress": 0.51
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Bars, F7 Asset Turnover row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT 4y avg (%)",
+          "specMetricKey": "F8",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 2.5671,
+            "good": 1.4426,
+            "acceptable": 1.4426,
+            "concerning": 0.1921,
+            "distress": -1.0584
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Bars, F8 FCF/PAT 4y avg row | scale normalized to ratio per loader-canonical convention (was percent, /100).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCF Consistency (%)",
+          "specMetricKey": "F9",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 100,
+            "distress": 100
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F9 OCF Consistency row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "3y Rev CAGR (%)",
+          "specMetricKey": "F10",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 13.17,
+            "good": 6.52,
+            "acceptable": 6.52,
+            "concerning": 3.88,
+            "distress": 1.23
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F10 3y Rev CAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM OPM (%)",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 19.2,
+            "good": 13.21,
+            "acceptable": 13.21,
+            "concerning": 10.96,
+            "distress": 8.72
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M1 TTM OPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM NPM (%)",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 9.66,
+            "good": 5.12,
+            "acceptable": 5.12,
+            "concerning": 3.33,
+            "distress": 1.55
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M2 TTM NPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev YoY TTM (%)",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 18.92,
+            "good": 7.61,
+            "acceptable": 6.22,
+            "concerning": 0.19,
+            "distress": -5.84
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M3 Rev YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY TTM (%)",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 116.08,
+            "good": -16.86,
+            "acceptable": -16.86,
+            "concerning": -37.34,
+            "distress": -57.81
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M4 NP YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM Interest Coverage (×)",
+          "specMetricKey": "M5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 28.6,
+            "good": 8.83,
+            "acceptable": 8.83,
+            "concerning": 5.53,
+            "distress": 2.22
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Momentum Bars, M5 TTM Interest Coverage row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (B.2/B.3 standard 10F+5M, no per-metric weight column).",
+      "extractionNotes": "Clean 5-bar set, 10F + 5M. No continuous Ownership bars. UNIT NOTE: F3 Cash Conv and F8 FCF/PAT on PERCENT scale (505.85 / 256.71) — like PG1/9/11/13, unlike PG2/3/4/8/10/14 (ratio). M4 NP YoY TTM: Good=Acceptable=-16.86 (both negative), monotone for higher-better, transcribed verbatim."
+    },
+    {
+      "pgId": "PG13",
+      "pgName": "Consumer Durables",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG13_LargeCap_ConsumerDurables_Supplementary_Specification_v5_5_1_Rev1.docx",
+      "specVersionStated": "v5.5.1 Rev1",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 27.27,
+            "good": 21.87,
+            "acceptable": 20.65,
+            "concerning": 16.7,
+            "distress": 12.76
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F1 ROCE row | bars re-derived to canonical formula per PG13_Recompute.md — ROCE aligned model-wide (year-end CapitalEmployed denominator (numerator EBIT unchanged)).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE",
+          "specMetricKey": "F2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 19.59,
+            "good": 16.32,
+            "acceptable": 15.59,
+            "concerning": 12.34,
+            "distress": 9.08
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F2 ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "CashConv",
+          "specMetricKey": "F3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.5309,
+            "good": 1.1671,
+            "acceptable": 1.0904,
+            "concerning": 0.7781,
+            "distress": 0.4659
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Bars, F3 CashConv row | scale normalized to ratio per loader-canonical convention (was percent, /100).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "DE",
+          "specMetricKey": "F4",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.04,
+            "good": 0.08,
+            "acceptable": 0.09,
+            "concerning": 0.39,
+            "distress": 0.69
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Bars, F4 DE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "IC",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 52.76,
+            "good": 37.38,
+            "acceptable": 23.83,
+            "concerning": 13.56,
+            "distress": 3.29
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Bars, F5 IC row | bars re-derived to canonical formula per PG13_Recompute.md — IC aligned model-wide (EBIT post-dep (PBT+Interest)/Interest).",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "RecvDays",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 34.65,
+            "good": 47.08,
+            "acceptable": 47.08,
+            "concerning": 57.38,
+            "distress": 67.67
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.2 Foundation Bars, F6 RecvDays row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "AssetTurn",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.75,
+            "good": 1.23,
+            "acceptable": 1.23,
+            "concerning": 1.09,
+            "distress": 0.95
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Foundation Bars, F7 AssetTurn row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF4y",
+          "specMetricKey": "F8",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.7747,
+            "good": 0.5522,
+            "acceptable": 0.5522,
+            "concerning": 0.2661,
+            "distress": -0.0199
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.2 Foundation Bars, F8 FCF4y row | scale normalized to ratio per loader-canonical convention (was percent, /100). | bars re-derived to canonical formula per PG13_Recompute.md — FCF4y aligned model-wide (capex-proxy FCF (Capex=dNetBlock+Dep+dCWIP), mean-of-ratios); recompute file gave percent values, divided by 100 to canonical ratio unit.)",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCFconsist",
+          "specMetricKey": "F9",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 100,
+            "good": 100,
+            "acceptable": 100,
+            "concerning": 100,
+            "distress": 100
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F9 OCFconsist row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev3yCAGR",
+          "specMetricKey": "F10",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 11.23,
+            "good": 8.21,
+            "acceptable": 8.21,
+            "concerning": 6.12,
+            "distress": 4.03
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Foundation Bars, F10 Rev3yCAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM OPM (%)",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 13.56,
+            "good": 10.52,
+            "acceptable": 8.88,
+            "concerning": 7.58,
+            "distress": 6.28
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M1 TTM OPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM NPM (%)",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 10.05,
+            "good": 7.31,
+            "acceptable": 6.14,
+            "concerning": 4.41,
+            "distress": 2.67
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M2 TTM NPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev YoY TTM (%)",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 15.71,
+            "good": 10.59,
+            "acceptable": 10.59,
+            "concerning": 4.39,
+            "distress": -1.82
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M3 Rev YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY TTM (%)",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 27.42,
+            "good": 11.86,
+            "acceptable": 10.34,
+            "concerning": -14.95,
+            "distress": -40.25
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.3 Momentum Bars, M4 NP YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM IC (×)",
+          "specMetricKey": "M5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 52.76,
+            "good": 37.38,
+            "acceptable": 23.83,
+            "concerning": 13.56,
+            "distress": 3.29
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.3 Momentum Bars, M5 TTM IC row | bars re-derived to canonical formula per PG13_Recompute.md — TTM IC (×) aligned model-wide (EBIT post-dep (PBT+Interest)/Interest).",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (B.4 §5.7: 'Foundation: equal 1/10 = 10%; Momentum: equal 1/5 = 20%'). Collinearity r-values in B.4 are diagnostics; equal weighting retained.",
+      "extractionNotes": "Clean 5-bar set, 10F + 5M. No continuous Ownership bars. UNIT NOTE: F3 CashConv and F8 FCF4y on PERCENT scale (153.09 / 72.74) — like PG1/9/11/12, unlike PG2/3/4/8/10/14 (ratio). M5 TTM IC bars identical to F5 IC (43.90/20.07/20.07/11.91/3.76) — transcribed as stated."
+    },
+    {
+      "pgId": "PG14",
+      "pgName": "Defense/Aerospace",
+      "industryType": "non_financial",
+      "sourceSpecFile": "PG14_Defense_Aerospace_Supplementary_Specification_v5_5_1_Rev1.docx",
+      "specVersionStated": "v5.5.1 Rev1",
+      "inheritsBarsFrom": null,
+      "foundationMetrics": [
+        {
+          "metricLabel": "ROCE %",
+          "specMetricKey": "F1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 17.06,
+            "good": 13.71,
+            "acceptable": 13.43,
+            "concerning": 9.26,
+            "distress": 5.09
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation bars, F1 ROCE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "ROE %",
+          "specMetricKey": "F2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 14.11,
+            "good": 11.67,
+            "acceptable": 10.31,
+            "concerning": -2.83,
+            "distress": -15.97
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation bars, F2 ROE row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Cash Conv (OCF+BB)/PAT",
+          "specMetricKey": "F3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 1.85,
+            "good": 0.64,
+            "acceptable": 0.64,
+            "concerning": 0.36,
+            "distress": -0.5
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.1 Foundation bars, F3 Cash Conv row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "D/E",
+          "specMetricKey": "F4",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 0.15,
+            "good": 0.31,
+            "acceptable": 0.31,
+            "concerning": 3.14,
+            "distress": 6
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.1 Foundation bars, F4 D/E row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Interest Cov (ann)",
+          "specMetricKey": "F5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 10.3,
+            "good": 5.71,
+            "acceptable": 5.71,
+            "concerning": 5.04,
+            "distress": 0.47
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.1 Foundation bars, F5 Interest Cov row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Receivable Days",
+          "specMetricKey": "F6",
+          "direction": "lower_better",
+          "bars": {
+            "excellent": 97.12,
+            "good": 136.32,
+            "acceptable": 145.56,
+            "concerning": 216.1,
+            "distress": 286.65
+          },
+          "intraPillarWeight": null,
+          "unit": "days",
+          "sourceRef": "Part B, B.1 Foundation bars, F6 Receivable Days row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Asset Turnover",
+          "specMetricKey": "F7",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.68,
+            "good": 0.55,
+            "acceptable": 0.52,
+            "concerning": 0.42,
+            "distress": 0.33
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.1 Foundation bars, F7 Asset Turnover row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "FCF/PAT 4y",
+          "specMetricKey": "F8",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 0.72,
+            "good": 0.32,
+            "acceptable": 0.17,
+            "concerning": -0.89,
+            "distress": -1.95
+          },
+          "intraPillarWeight": null,
+          "unit": "ratio",
+          "sourceRef": "Part B, B.1 Foundation bars, F8 FCF/PAT 4y row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "OCF Consistency %",
+          "specMetricKey": "F9",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 80,
+            "good": 80,
+            "acceptable": 70.21,
+            "concerning": 55.1,
+            "distress": 40
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation bars, F9 OCF Consistency row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev 3y CAGR %",
+          "specMetricKey": "F10",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 28.04,
+            "good": 16.31,
+            "acceptable": 14.01,
+            "concerning": 3.08,
+            "distress": -7.84
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.1 Foundation bars, F10 Rev 3y CAGR row",
+          "status": "extracted"
+        }
+      ],
+      "momentumMetrics": [
+        {
+          "metricLabel": "TTM OPM %",
+          "specMetricKey": "M1",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 28.15,
+            "good": 25.11,
+            "acceptable": 24.64,
+            "concerning": 17.3,
+            "distress": 9.96
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum bars, M1 TTM OPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM NPM %",
+          "specMetricKey": "M2",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 18.8,
+            "good": 13.24,
+            "acceptable": 13.24,
+            "concerning": 9.46,
+            "distress": 5.64
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum bars, M2 TTM NPM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "Rev YoY TTM %",
+          "specMetricKey": "M3",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 29.84,
+            "good": 27.19,
+            "acceptable": 27.19,
+            "concerning": 15.54,
+            "distress": 3.88
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum bars, M3 Rev YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "NP YoY TTM %",
+          "specMetricKey": "M4",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 40.15,
+            "good": 25.1,
+            "acceptable": 25.1,
+            "concerning": 2.57,
+            "distress": -19.95
+          },
+          "intraPillarWeight": null,
+          "unit": "percent",
+          "sourceRef": "Part B, B.2 Momentum bars, M4 NP YoY TTM row",
+          "status": "extracted"
+        },
+        {
+          "metricLabel": "TTM Interest Cov",
+          "specMetricKey": "M5",
+          "direction": "higher_better",
+          "bars": {
+            "excellent": 16.31,
+            "good": 7.8,
+            "acceptable": 7.2,
+            "concerning": 5.77,
+            "distress": 4.34
+          },
+          "intraPillarWeight": null,
+          "unit": "times",
+          "sourceRef": "Part B, B.2 Momentum bars, M5 TTM Interest Cov row",
+          "status": "extracted"
+        }
+      ],
+      "intraPillarWeightingNote": "default equal (Momentum stated 1/5 = 20% each; Foundation equal per §5.7 'equal intra-pillar weights retained'). Collinearity r-values are diagnostics.",
+      "extractionNotes": "Clean 5-bar set, 10F + 5M (M5 restored this revision). 'Pool n' column in B.2 is derivation provenance (n=49 for M1/M2/M5; n=4 for M3/M4) — not a bar, not extracted. No continuous Ownership bars. UNIT NOTE: F3 Cash Conv (OCF+BB)/PAT and F8 FCF/PAT 4y on RATIO scale (1.85 / 0.72) — like PG2/3/4/8/10, unlike PG1/9/11/12/13 (percent). M5 sentinel=100 for debt-free peers is engine logic (ODL-PG14-01), not a bar value. F9 OCF Consistency Excellent=Good=80 transcribed verbatim."
+    }
+  ]
+}

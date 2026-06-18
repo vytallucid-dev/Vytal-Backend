@@ -57,6 +57,9 @@ export interface Lens1Result {
    *  interval) or a saturation scale had to fall back to a non-adjacent
    *  band-width. null on the clean path. */
   guard: L1Guard | null;
+  /** Which bar-set produced this score (handoff §7 decomposability): the standard
+   *  5-bar set, or a per-stock 3-anchor SSCU override. */
+  barSetUsed: "standard" | "sscu";
   reasonText: string;
 }
 
@@ -167,6 +170,7 @@ export function computeLens1(
     band,
     saturated,
     guard,
+    barSetUsed: "standard",
     reasonText: buildReason(score, band, saturated, guard, direction),
   };
 }
@@ -186,4 +190,143 @@ function buildReason(
   if (guard === "degenerate_all_bars_equal")
     return `${head} — FLAG: all bars equal; no resolvable scale, returned the anchor score`;
   return head;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// HALF-2 ADDITION — SSCU CONDITIONAL (3-ANCHOR) BARS  (handoff §7)
+//
+// A metric may carry an optional per-stock OVERRIDE bar-set: only the distress,
+// good and excellent anchors are populated (acceptable/concerning are null). The
+// score path is the same universal anchor mapping (D=20, G=75, E=90), just
+// piecewise-linear over THREE anchors instead of five, with the same saturation
+// rule — the band-widths come from the 3 anchors: below-Distress uses
+// (good−distress), above-Excellent uses (excellent−good).
+//
+// ADDITIVE: computeLens1 (the 5-bar path verified by the 105 assertions) is
+// UNTOUCHED. This is a separate function reached only when an override fires.
+// PURE. CN-8: anchors are fixed mechanics, not tuned.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** A 3-anchor SSCU override bar-set (the populated anchors of sscuBars). */
+export interface ThreeAnchorBars {
+  distress: number;
+  good: number;
+  excellent: number;
+}
+
+/** Per-stock SSCU override: the 3-anchor bars + the stock scope they apply to. */
+export interface StockOverride {
+  bars: ThreeAnchorBars;
+  scope: string[];
+}
+
+/** Case-insensitive scope membership (the source scope uses display names like
+ *  "TataPower"; callers may pass NSE symbols like "TATAPOWER"). */
+const inScope = (stock: string, scope: string[]): boolean => {
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const s = norm(stock);
+  return scope.some((x) => norm(x) === s);
+};
+
+/** Derive the landing band from a final score via the fixed anchor thresholds.
+ *  The 3-anchor set has no explicit Acceptable/Concerning bar, so the band is the
+ *  highest anchor tier the SCORE cleared (excellent≥90, good≥75, acceptable≥60,
+ *  concerning≥40, else distress). Documented choice — see the §7 FLAG. */
+function bandFromScore(score: number): MetricBand {
+  if (score >= BAR_SCORE.excellent) return "excellent";
+  if (score >= BAR_SCORE.good) return "good";
+  if (score >= BAR_SCORE.acceptable) return "acceptable";
+  if (score >= BAR_SCORE.concerning) return "concerning";
+  return "distress";
+}
+
+/**
+ * LENS 1 — 3-ANCHOR (SSCU) path. PURE.
+ *
+ * @param value  the metric value being scored
+ * @param bars   the 3 anchors (distress/good/excellent) in the metric's units
+ * @param direction higher_better | lower_better
+ */
+export function computeLens1ThreeAnchor(
+  value: number,
+  bars: ThreeAnchorBars,
+  direction: BarDirection,
+): Lens1Result {
+  const g = toG(value, direction);
+  const gE = toG(bars.excellent, direction);
+  const gG = toG(bars.good, direction);
+  const gD = toG(bars.distress, direction);
+
+  const wTop = gE - gG; // excellent − good (above-Excellent saturation scale)
+  const wBot = gG - gD; // good − distress  (below-Distress saturation scale)
+
+  // Strict inversion (negative width) ⇒ malformed override. Equalities (collapsed
+  // anchors) are handled cleanly by the branch structure below.
+  let guard: L1Guard | null = wTop < 0 || wBot < 0 ? "non_monotonic_bars" : null;
+
+  let score: number;
+  let saturated = false;
+
+  if (g >= gE) {
+    // At/above Excellent → saturate up.
+    if (g === gE) {
+      score = BAR_SCORE.excellent;
+    } else if (wTop > 0) {
+      saturated = true;
+      score = clampScore(BAR_SCORE.excellent + L1_SAT_RATE * ((g - gE) / wTop));
+    } else if (wBot > 0) {
+      saturated = true;
+      score = clampScore(BAR_SCORE.excellent + L1_SAT_RATE * ((g - gE) / wBot));
+      if (guard === null) guard = "collapsed_saturation_scale";
+    } else {
+      score = BAR_SCORE.excellent;
+      if (guard === null) guard = "degenerate_all_bars_equal";
+    }
+  } else if (g >= gG) {
+    // [Good, Excellent) — interpolate Good(75)→Excellent(90). gE−gG>0 here.
+    score = BAR_SCORE.good + (BAR_SCORE.excellent - BAR_SCORE.good) * ((g - gG) / (gE - gG));
+  } else if (g >= gD) {
+    // [Distress, Good) — interpolate Distress(20)→Good(75). gG−gD>0 here.
+    score = BAR_SCORE.distress + (BAR_SCORE.good - BAR_SCORE.distress) * ((g - gD) / (gG - gD));
+  } else {
+    // Below Distress → saturate down.
+    if (wBot > 0) {
+      saturated = true;
+      score = clampScore(BAR_SCORE.distress - L1_SAT_RATE * ((gD - g) / wBot));
+    } else if (wTop > 0) {
+      saturated = true;
+      score = clampScore(BAR_SCORE.distress - L1_SAT_RATE * ((gD - g) / wTop));
+      if (guard === null) guard = "collapsed_saturation_scale";
+    } else {
+      score = BAR_SCORE.distress;
+      if (guard === null) guard = "degenerate_all_bars_equal";
+    }
+  }
+
+  const band = bandFromScore(score);
+  return {
+    available: true, score, band, saturated, guard, barSetUsed: "sscu",
+    reasonText: `L1(sscu 3-anchor)=${score.toFixed(2)} band=${band} (${direction}${saturated ? ", saturated" : ""})` +
+      (guard ? ` — ${guard}` : ""),
+  };
+}
+
+/**
+ * SCORE L1 with optional per-stock SSCU override (handoff §7). General mechanism,
+ * not PG8-hardcoded: if `opts.stock` is in `opts.override.scope`, the value is
+ * scored against the 3-anchor override INSTEAD of the standard 5 bars; otherwise
+ * the standard verified path runs. The returned `barSetUsed` records which set
+ * was applied (decomposability). PURE.
+ */
+export function scoreL1(
+  value: number,
+  bars: AbsoluteBars,
+  direction: BarDirection,
+  opts?: { stock?: string; override?: StockOverride | null },
+): Lens1Result {
+  const ov = opts?.override ?? null;
+  if (ov && opts?.stock && inScope(opts.stock, ov.scope)) {
+    return computeLens1ThreeAnchor(value, ov.bars, direction);
+  }
+  return computeLens1(value, bars, direction);
 }

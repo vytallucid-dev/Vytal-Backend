@@ -17,7 +17,7 @@ import type {
   InsiderTradesDailyPayload,
 } from "../types.js";
 
-import { runEodPriceIngest } from "../../ingestions/prices/ingest-prices.js";
+import { runDailyEodPriceIngest } from "../../ingestions/prices/ingest-prices.js";
 import { runDailyDealIngest } from "../../ingestions/block-deals/ingest-deals.js";
 import {
   runWeeklyEventIngest,
@@ -34,10 +34,17 @@ import { runDailyJob } from "../../ingestions/insider-trades/pit-jobs.js";
 export async function handleEodPricesDaily(
   ctx: JobContext<EodPricesDailyPayload>,
 ) {
-  await ctx.reportProgress(1, "Starting EOD price ingest for today");
-  const result = await runEodPriceIngest();
-  await ctx.reportProgress(100, "EOD price ingest complete");
-  return result;
+  await ctx.reportProgress(1, "Starting EOD price ingest (last few trading days)");
+  const results = await runDailyEodPriceIngest();
+  const inserted = results.reduce((s, r) => s + r.totalInserted, 0);
+  const ingestedDays = results
+    .filter((r) => r.totalInserted > 0)
+    .map((r) => r.priceDate.toISOString().slice(0, 10));
+  await ctx.reportProgress(
+    100,
+    `EOD price ingest complete — ${inserted} rows across ${ingestedDays.length} day(s): ${ingestedDays.join(", ") || "none new"}`,
+  );
+  return results;
 }
 
 // ── Block / Bulk Deals ────────────────────────────────────────

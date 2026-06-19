@@ -46,16 +46,23 @@ export async function getBankSupplementary(
       quarter: quarter ?? null, // null ⇒ matches the annual row (quarter IS NULL)
     },
     orderBy: { version: "desc" }, // newest version wins
-    select: { value: true, sourceCitation: true, sourceDate: true, version: true },
+    select: {
+      value: true,
+      sourceCitation: true,
+      sourceDate: true,
+      version: true,
+      status: true,
+    },
   });
 
-  if (!row) return { present: false };
+  // No row at all, or an explicit-gap row (status="missing") → absent
+  if (!row || row.status === "missing" || row.value === null) return { present: false };
 
   return {
     present: true,
     value: row.value.toNumber(),
-    sourceCitation: row.sourceCitation,
-    sourceDate: row.sourceDate,
+    sourceCitation: row.sourceCitation ?? "",
+    sourceDate: row.sourceDate ?? new Date(0),
     version: row.version,
   };
 }

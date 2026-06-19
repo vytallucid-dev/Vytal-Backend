@@ -1,20 +1,25 @@
-// Fetches SEBI PIT insider trading disclosures from NSE.
+// Fetches SEBI PIT V2.0 insider trading disclosures from NSE.
 //
-// Uses the shared NseClient (nse-client.ts) — same session management
-// pattern as block deals and corporate events pipelines.
+// NSE migrated insider trading to the "gg" endpoint around Apr 2026; the old
+// /api/corporates-pit endpoint is frozen (200 + empty for recent dates).
 //
-// NSE Endpoint: /api/corporates-pit
-// Params built into path string: index=equities&from_date=DD-MM-YYYY&to_date=DD-MM-YYYY
+// Two-step source:
+//   1. /api/corporates-pit-gg  → a filing INDEX (one entry per disclosure),
+//      via the shared NseClient (needs a browser session/cookies).
+//   2. Each entry's `xmlFileName` → an XBRL document on nsearchives
+//      (public CDN, no session) that holds the actual trade detail.
 //
-// NSE returns ALL disclosures across all stocks for the date range.
-// We filter to our 100-stock universe in the ingestion step.
+// NSE returns ALL filings across all stocks for the date range; we filter to
+// our universe in the ingestion step (after the cheap index fetch, before the
+// per-filing XBRL fetch).
 
+import https from "https";
 import { nseClient } from "../../lib/client.js";
-import type { NseInsiderApiResponse, NseInsiderRaw } from "./insider-types.js";
+import type { PitGgApiResponse, PitFilingIndex } from "./insider-types.js";
 
 const CHUNK_DAYS = 7;
 
-// ── Date formatting ───────────────────────────────────────────────────────────
+// ── Date formatting (gg endpoint wants DD-MM-YYYY) ────────────────────────────
 function formatNseDate(date: Date): string {
   const d = String(date.getDate()).padStart(2, "0");
   const m = String(date.getMonth() + 1).padStart(2, "0");
@@ -22,44 +27,73 @@ function formatNseDate(date: Date): string {
   return `${d}-${m}-${y}`;
 }
 
-// ── Single range fetch ────────────────────────────────────────────────────────
-export async function fetchInsiderTradesForRange(
+// ── Filing index fetch (gg endpoint) ──────────────────────────────────────────
+export async function fetchFilingIndexForRange(
   fromDate: Date,
   toDate: Date,
   signal?: AbortSignal,
-): Promise<NseInsiderRaw[]> {
+): Promise<PitFilingIndex[]> {
   const from = formatNseDate(fromDate);
   const to = formatNseDate(toDate);
 
-  // Path with query params as a string — NseClient.get() takes a full path
-  const path = `/api/corporates-pit?index=equities&from_date=${from}&to_date=${to}`;
+  const path = `/api/corporates-pit-gg?index=equities&from_date=${from}&to_date=${to}`;
+  console.log(`[PitFetcher] Fetching filing index ${from} → ${to}`);
 
-  console.log(`[PitFetcher] Fetching ${from} → ${to}`);
+  const response = await nseClient.get<PitGgApiResponse>(path, signal);
 
-  const response = await nseClient.get<NseInsiderApiResponse>(path, signal);
-
-  // NSE returns empty object or null when no data for the period
   if (!response || !Array.isArray(response.data)) {
-    console.log(`[PitFetcher] No data for ${from} → ${to}`);
+    console.log(`[PitFetcher] No filing index for ${from} → ${to}`);
     return [];
   }
 
-  console.log(`[PitFetcher] Received ${response.data.length} records`);
+  console.log(`[PitFetcher] Received ${response.data.length} filings`);
   return response.data;
 }
 
-// ── Single day fetch (daily job) ──────────────────────────────────────────────
-export async function fetchInsiderTradesForDate(
+export async function fetchFilingIndexForDate(
   date: Date,
   signal?: AbortSignal,
-): Promise<NseInsiderRaw[]> {
-  return fetchInsiderTradesForRange(date, date, signal);
+): Promise<PitFilingIndex[]> {
+  return fetchFilingIndexForRange(date, date, signal);
+}
+
+// ── XBRL document fetch (public CDN, no session) ──────────────────────────────
+export function fetchFilingXbrl(url: string, signal?: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      const err = new Error("Request aborted") as NodeJS.ErrnoException;
+      err.name = "AbortError";
+      reject(err);
+      return;
+    }
+    const req = https.get(
+      url,
+      {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+          Referer: "https://www.nseindia.com/",
+        },
+        signal,
+      } as Parameters<typeof https.get>[1],
+      (res) => {
+        if (res.statusCode && res.statusCode >= 400) {
+          res.resume();
+          reject(new Error(`XBRL fetch HTTP ${res.statusCode} for ${url}`));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        res.on("data", (c: Buffer) => chunks.push(c));
+        res.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(30_000, () => req.destroy(new Error("XBRL request timed out after 30s")));
+  });
 }
 
 // ── Chunk range generator ──────────────────────────────────────────────────────
 // Returns the ordered list of {chunkStart, chunkEnd} date pairs that cover
 // [fromDate, toDate] in CHUNK_DAYS-sized windows. No network calls are made.
-// The job orchestrator uses this to drive the fetch → parse → insert loop.
 export function generateChunkRanges(
   fromDate: Date,
   toDate: Date,

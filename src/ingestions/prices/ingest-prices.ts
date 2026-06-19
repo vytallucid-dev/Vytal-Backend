@@ -422,6 +422,33 @@ export async function runEodPriceIngest(
   }
 }
 
+// ── Daily EOD job (self-healing) ───────────────────────────────
+// The weekday cron calls this. Instead of fetching only "today"
+// (which silently leaves a permanent gap if the run fires before
+// NSE publishes the file, or if a run is missed), it re-checks the
+// last few trading days. Every day is idempotent: a day already
+// logged as "success" short-circuits on a cheap DB check before any
+// network call, so the only real fetch is for days still missing.
+export async function runDailyEodPriceIngest(
+  lookBackDays = 3,
+): Promise<IngestPricesResult[]> {
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+
+  const results: IngestPricesResult[] = [];
+  for (let i = 0; i <= lookBackDays; i++) {
+    const d = new Date(today);
+    d.setUTCDate(d.getUTCDate() - i);
+
+    // Skip weekends — no bhavcopy is published.
+    const dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+
+    results.push(await runEodPriceIngest(d));
+  }
+  return results;
+}
+
 // ── Historical backfill ────────────────────────────────────────
 // Fetches EOD prices for the last N trading days.
 // Run once after deployment to seed return calculations.

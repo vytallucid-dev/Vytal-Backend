@@ -8,25 +8,52 @@
 //   changed value/src  → insert version N+1, supersede   ("superseded")
 //
 // Nothing is ever updated in place; reads take MAX(version) per cell.
+//
+// FIELD ADAPTERS (accept both the API shape and the bulk-extract JSON shape):
+//   metric    | metricKey   → stored as metric
+//   sourceDate              → "YYYY-MM-DD" (required for found rows)
+//   periodEnd               → "DD-Mon-YYYY" → converted to YYYY-MM-DD
+//   fiscalYear              → "FY24" | "LIVE" (LIVE = latest live figure)
+//
+// MISSING-ROW SEMANTICS:
+//   status="missing" rows land with value=null, sourceCitation=null,
+//   sourceDate=null. They are explicit gaps the scoring engine reads via the
+//   §5.8 neutral-60 path. They must NOT be dropped.
+//
+// FOUND-INVARIANT (enforced here, not by DB):
+//   status="found" ⟹ value IS NOT NULL ∧ sourceCitation IS NOT NULL
 
 import { prisma } from "../../db/prisma.js";
 import type { BankSupplementaryMetric } from "../../generated/prisma/client.js";
 
-// ── Canonical JSON contract (see docs/bank-supplementary-format.md) ──────────
+// ── Public input contract ─────────────────────────────────────────────────────
 
 export interface BankSupplementaryEntryInput {
   symbol: string;
-  metric: string; // BankSupplementaryMetric value: "casa_pct" | "tier1_pct"
-  fiscalYear: string; // "FY24"
-  quarter?: string | null; // "Q1".."Q4"; omit/null for an annual figure
-  value: number; // PERCENT, e.g. 43.82 (not a fraction)
-  sourceCitation: string; // REQUIRED, non-empty
-  sourceDate: string; // "YYYY-MM-DD"
+  /** "casa_pct" | "tier1_pct" — also accepted as `metricKey` */
+  metric?: string;
+  metricKey?: string;
+  fiscalYear: string; // "FY24" | "LIVE"
+  quarter?: string | null; // "Q1".."Q4"; omit/null for annual
+  /** PERCENT e.g. 43.82. NULL for status="missing" rows. */
+  value: number | null;
+  /** Required for status="found"; null for status="missing". */
+  sourceCitation?: string | null;
+  /** "YYYY-MM-DD". Required for found rows; can be derived from `periodEnd`. */
+  sourceDate?: string | null;
+  /** "DD-Mon-YYYY" alternate date field (bulk extract shape). Converted → sourceDate. */
+  periodEnd?: string | null;
+  /** "A" | "B" | "C" | null */
+  confidence?: string | null;
+  /** "found" | "missing". Defaults to "found". */
+  status?: string | null;
+  /** Free-form annotation. */
+  notes?: string | null;
 }
 
 export interface BankSupplementaryUploadInput {
   enteredBy: string;
-  entries: unknown[]; // validated per-entry below so we can report clean reasons
+  entries: unknown[];
 }
 
 export type EntryAction = "inserted" | "superseded" | "unchanged";
@@ -49,7 +76,7 @@ export interface RejectedEntry {
 }
 
 export interface BankSupplementaryUploadResult {
-  ok: boolean; // false ⇒ at least one entry rejected ⇒ NOTHING was written
+  ok: boolean;
   summary: {
     inserted: number;
     superseded: number;
@@ -57,20 +84,38 @@ export interface BankSupplementaryUploadResult {
     rejected: number;
     total: number;
   };
-  results: AcceptedEntryResult[]; // empty when ok === false
+  results: AcceptedEntryResult[];
   rejected: RejectedEntry[];
 }
 
-// ── Validation constants ─────────────────────────────────────────────────────
+// ── Validation constants ──────────────────────────────────────────────────────
 
 const VALID_METRICS = new Set<string>(["casa_pct", "tier1_pct"]);
-const FY_RE = /^FY\d{2}$/;
+// "FY" + 2 digits OR the literal "LIVE" (latest live figure)
+const FY_RE = /^(FY\d{2}|LIVE)$/;
 const QUARTER_RE = /^Q[1-4]$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_CONFIDENCE = new Set<string>(["A", "B", "C"]);
+const VALID_STATUS = new Set<string>(["found", "missing"]);
 const VALUE_MIN = 0;
-const VALUE_MAX = 100; // CASA & Tier-1 are percentages in [0, 100]
+const VALUE_MAX = 100;
 
-// A fully-validated, resolved entry ready to write.
+// DD-Mon-YYYY → YYYY-MM-DD (e.g. "31-Mar-2017" → "2017-03-31")
+const MONTH_MAP: Record<string, string> = {
+  Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06",
+  Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12",
+};
+
+function parsePeriodEnd(raw: string): string | null {
+  const m = raw.match(/^(\d{2})-([A-Za-z]{3})-(\d{4})$/);
+  if (!m) return null;
+  const mon = MONTH_MAP[m[2]];
+  if (!mon) return null;
+  return `${m[3]}-${mon}-${m[1]}`;
+}
+
+// ── Prepared entry (post-validation, ready to write) ─────────────────────────
+
 interface PreparedEntry {
   index: number;
   stockId: string;
@@ -78,25 +123,23 @@ interface PreparedEntry {
   metric: BankSupplementaryMetric;
   fiscalYear: string;
   quarter: string | null;
-  value: number;
-  sourceCitation: string;
-  sourceDate: Date;
+  value: number | null;
+  sourceCitation: string | null;
+  sourceDate: Date | null;
+  confidence: string | null;
+  status: string;
+  notes: string | null;
 }
 
-/**
- * Validate + ingest a bank-supplementary JSON upload.
- *
- * ALL-OR-NOTHING: if ANY entry fails validation, nothing is written and the
- * result carries `ok: false` with a per-entry `rejected` list. Only when every
- * entry is valid do we open a transaction and apply the supersede writes.
- */
+// ── Main function ─────────────────────────────────────────────────────────────
+
 export async function ingestBankSupplementary(
   input: BankSupplementaryUploadInput,
 ): Promise<BankSupplementaryUploadResult> {
   const rejected: RejectedEntry[] = [];
   const entries = input.entries;
 
-  // ── Resolve every referenced symbol once (must be an existing BANK) ──
+  // Resolve all symbols in one query
   const symbols = new Set<string>();
   for (const raw of entries) {
     const s = (raw as Record<string, unknown> | null)?.symbol;
@@ -108,8 +151,9 @@ export async function ingestBankSupplementary(
   });
   const stockBySymbol = new Map(stocks.map((s) => [s.symbol, s]));
 
-  // ── Per-entry validation ──
+  // Per-entry validation
   const prepared: PreparedEntry[] = [];
+
   for (let index = 0; index < entries.length; index++) {
     const e = entries[index] as Record<string, unknown> | null;
     const reasons: string[] = [];
@@ -119,72 +163,136 @@ export async function ingestBankSupplementary(
       continue;
     }
 
-    // symbol → must resolve to an existing Stock with industryType "banking"
+    // symbol → existing Stock with industryType "banking"
     const symbolRaw = typeof e.symbol === "string" ? e.symbol.trim().toUpperCase() : "";
     let stockId = "";
     if (!symbolRaw) {
       reasons.push("symbol is required");
     } else {
       const stock = stockBySymbol.get(symbolRaw);
-      if (!stock) reasons.push(`unknown symbol "${symbolRaw}" (no such Stock)`);
-      else if (stock.industryType !== "banking")
+      if (!stock) {
+        reasons.push(`unknown symbol "${symbolRaw}" (no such Stock)`);
+      } else if (stock.industryType !== "banking") {
         reasons.push(
-          `symbol "${symbolRaw}" is not a bank (industryType=${stock.industryType}); CASA/Tier-1 are bank-only`,
+          `symbol "${symbolRaw}" is not a bank (industryType=${stock.industryType})`,
         );
-      else stockId = stock.id;
+      } else {
+        stockId = stock.id;
+      }
     }
 
-    // metric → must be a valid enum value
-    const metric = typeof e.metric === "string" ? e.metric : "";
-    if (!VALID_METRICS.has(metric))
+    // metric — accept `metric` or `metricKey` (bulk-extract shape)
+    const metricRaw =
+      typeof e.metric === "string"
+        ? e.metric
+        : typeof e.metricKey === "string"
+          ? e.metricKey
+          : "";
+    if (!VALID_METRICS.has(metricRaw)) {
       reasons.push(
-        `metric must be one of [${[...VALID_METRICS].join(", ")}], got ${JSON.stringify(e.metric)}`,
+        `metric/metricKey must be one of [${[...VALID_METRICS].join(", ")}], got ${JSON.stringify(e.metric ?? e.metricKey)}`,
       );
+    }
 
-    // fiscalYear → "FY" + 2 digits
-    const fiscalYear = typeof e.fiscalYear === "string" ? e.fiscalYear : "";
-    if (!FY_RE.test(fiscalYear))
-      reasons.push(`fiscalYear must match /^FY\\d{2}$/, got ${JSON.stringify(e.fiscalYear)}`);
+    // fiscalYear — "FYxx" or "LIVE"
+    const fiscalYear = typeof e.fiscalYear === "string" ? e.fiscalYear.trim() : "";
+    if (!FY_RE.test(fiscalYear)) {
+      reasons.push(
+        `fiscalYear must match /^(FY\\d{2}|LIVE)$/, got ${JSON.stringify(e.fiscalYear)}`,
+      );
+    }
 
-    // quarter → optional; null/omitted = annual; else Q1..Q4
+    // quarter — optional; null/omitted = annual
     let quarter: string | null = null;
     if (e.quarter !== undefined && e.quarter !== null) {
       if (typeof e.quarter === "string" && QUARTER_RE.test(e.quarter)) {
         quarter = e.quarter;
       } else {
-        reasons.push(`quarter must be Q1..Q4 or null/omitted, got ${JSON.stringify(e.quarter)}`);
+        reasons.push(
+          `quarter must be Q1..Q4 or null/omitted, got ${JSON.stringify(e.quarter)}`,
+        );
       }
     }
 
-    // value → number within [0, 100] (percent)
-    const value = e.value;
-    if (typeof value !== "number" || Number.isNaN(value)) {
-      reasons.push(`value must be a number (percent), got ${JSON.stringify(value)}`);
-    } else if (value < VALUE_MIN || value > VALUE_MAX) {
-      reasons.push(`value ${value} out of range [${VALUE_MIN}, ${VALUE_MAX}] (percent)`);
+    // status — default "found"
+    const statusRaw =
+      e.status === null || e.status === undefined
+        ? "found"
+        : typeof e.status === "string"
+          ? e.status
+          : "";
+    if (!VALID_STATUS.has(statusRaw)) {
+      reasons.push(`status must be "found" or "missing", got ${JSON.stringify(e.status)}`);
     }
+    const isMissing = statusRaw === "missing";
 
-    // sourceCitation → REQUIRED, non-empty (the hard "no sourceless values" rule)
-    const sourceCitation = typeof e.sourceCitation === "string" ? e.sourceCitation.trim() : "";
-    if (!sourceCitation) reasons.push("sourceCitation is required and must be non-empty");
-
-    // sourceDate → "YYYY-MM-DD"
-    let sourceDate: Date | null = null;
-    const sd = e.sourceDate;
-    if (typeof sd !== "string" || !DATE_RE.test(sd)) {
-      reasons.push(`sourceDate must be "YYYY-MM-DD", got ${JSON.stringify(sd)}`);
+    // value — null allowed only for missing rows
+    let value: number | null = null;
+    if (e.value === null || e.value === undefined) {
+      if (!isMissing) {
+        reasons.push(`value is required for status="found"`);
+      }
+    } else if (typeof e.value !== "number" || Number.isNaN(e.value)) {
+      reasons.push(`value must be a number (percent), got ${JSON.stringify(e.value)}`);
+    } else if (e.value < VALUE_MIN || e.value > VALUE_MAX) {
+      reasons.push(`value ${e.value} out of range [${VALUE_MIN}, ${VALUE_MAX}] (percent)`);
     } else {
-      const d = new Date(`${sd}T00:00:00.000Z`);
-      if (Number.isNaN(d.getTime())) reasons.push(`sourceDate is not a valid date: ${sd}`);
-      else sourceDate = d;
+      value = e.value;
     }
+
+    // sourceCitation — required for found, null for missing
+    let sourceCitation: string | null = null;
+    if (!isMissing) {
+      const sc = typeof e.sourceCitation === "string" ? e.sourceCitation.trim() : "";
+      if (!sc) {
+        reasons.push(`sourceCitation is required and must be non-empty for status="found"`);
+      } else {
+        sourceCitation = sc;
+      }
+    }
+    // for missing rows: sourceCitation stays null regardless of what the entry has
+
+    // sourceDate — resolve from sourceDate or periodEnd; required for found rows only
+    let sourceDate: Date | null = null;
+    if (!isMissing) {
+      let sdStr: string | null = null;
+      if (typeof e.sourceDate === "string" && DATE_RE.test(e.sourceDate)) {
+        sdStr = e.sourceDate;
+      } else if (typeof e.periodEnd === "string") {
+        sdStr = parsePeriodEnd(e.periodEnd);
+      }
+      if (!sdStr) {
+        reasons.push(
+          `sourceDate (YYYY-MM-DD) or periodEnd (DD-Mon-YYYY) required for status="found"`,
+        );
+      } else {
+        const d = new Date(`${sdStr}T00:00:00.000Z`);
+        if (Number.isNaN(d.getTime())) {
+          reasons.push(`sourceDate is not a valid date: ${sdStr}`);
+        } else {
+          sourceDate = d;
+        }
+      }
+    }
+
+    // confidence — A/B/C or null
+    let confidence: string | null = null;
+    if (e.confidence !== null && e.confidence !== undefined) {
+      if (typeof e.confidence === "string" && VALID_CONFIDENCE.has(e.confidence)) {
+        confidence = e.confidence;
+      } else {
+        reasons.push(
+          `confidence must be "A", "B", "C", or null/omitted, got ${JSON.stringify(e.confidence)}`,
+        );
+      }
+    }
+
+    // notes — free text; null/empty both fine
+    const notes =
+      typeof e.notes === "string" && e.notes.trim() ? e.notes.trim() : null;
 
     if (reasons.length > 0) {
-      rejected.push({
-        index,
-        symbol: symbolRaw || undefined,
-        reason: reasons.join("; "),
-      });
+      rejected.push({ index, symbol: symbolRaw || undefined, reason: reasons.join("; ") });
       continue;
     }
 
@@ -192,16 +300,19 @@ export async function ingestBankSupplementary(
       index,
       stockId,
       symbol: symbolRaw,
-      metric: metric as BankSupplementaryMetric,
+      metric: metricRaw as BankSupplementaryMetric,
       fiscalYear,
       quarter,
-      value: value as number,
+      value,
       sourceCitation,
-      sourceDate: sourceDate as Date,
+      sourceDate,
+      confidence,
+      status: statusRaw,
+      notes,
     });
   }
 
-  // ── ALL-OR-NOTHING: any rejection ⇒ write nothing ──
+  // ALL-OR-NOTHING: any rejection ⇒ write nothing
   if (rejected.length > 0) {
     return {
       ok: false,
@@ -217,12 +328,13 @@ export async function ingestBankSupplementary(
     };
   }
 
-  // ── Apply supersede writes atomically ──
+  // Apply supersede writes atomically. 264 entries × 2 queries each can exceed
+  // the default 5s interactive-tx timeout when routed via a connection pooler
+  // (Supabase PgBouncer adds latency per query). 60s covers the worst case.
   const results = await prisma.$transaction(async (tx) => {
     const out: AcceptedEntryResult[] = [];
+
     for (const p of prepared) {
-      // Latest existing version for this exact cell. `quarter: null` compiles to
-      // `quarter IS NULL`, so annual rows match annual rows only.
       const latest = await tx.bankSupplementary.findFirst({
         where: {
           stockId: p.stockId,
@@ -231,7 +343,13 @@ export async function ingestBankSupplementary(
           quarter: p.quarter,
         },
         orderBy: { version: "desc" },
-        select: { id: true, version: true, value: true, sourceCitation: true },
+        select: {
+          id: true,
+          version: true,
+          value: true,
+          sourceCitation: true,
+          status: true,
+        },
       });
 
       if (!latest) {
@@ -245,6 +363,9 @@ export async function ingestBankSupplementary(
             value: p.value,
             sourceCitation: p.sourceCitation,
             sourceDate: p.sourceDate,
+            confidence: p.confidence,
+            status: p.status,
+            notes: p.notes,
             version: 1,
             enteredBy: input.enteredBy,
           },
@@ -254,8 +375,15 @@ export async function ingestBankSupplementary(
         continue;
       }
 
-      const sameValue = latest.value.equals(p.value);
+      // Equality check: both null → same; else Decimal.equals for values
+      const sameValue =
+        p.value === null && latest.value === null
+          ? true
+          : p.value !== null && latest.value !== null
+            ? latest.value.equals(p.value)
+            : false;
       const sameSource = latest.sourceCitation === p.sourceCitation;
+
       if (sameValue && sameSource) {
         out.push(accepted(p, "unchanged", latest.version, latest.id));
         continue;
@@ -271,6 +399,9 @@ export async function ingestBankSupplementary(
           value: p.value,
           sourceCitation: p.sourceCitation,
           sourceDate: p.sourceDate,
+          confidence: p.confidence,
+          status: p.status,
+          notes: p.notes,
           version: latest.version + 1,
           supersedesId: latest.id,
           enteredBy: input.enteredBy,
@@ -279,8 +410,9 @@ export async function ingestBankSupplementary(
       });
       out.push(accepted(p, "superseded", row.version, row.id));
     }
+
     return out;
-  });
+  }, { timeout: 60_000 });
 
   const inserted = results.filter((r) => r.action === "inserted").length;
   const superseded = results.filter((r) => r.action === "superseded").length;

@@ -85,9 +85,15 @@ interface ScheduledJob {
 
 const SCHEDULED_JOBS: ScheduledJob[] = [
   // ── Prices ─────────────────────────────────────────────────
+  // NOTE: NSE publishes the full security-wise bhavcopy
+  // (sec_bhavdata_full_*.csv, with delivery data) only ~6 PM IST.
+  // The old 4:30 PM IST slot fetched the file before it existed →
+  // 404 → mislabelled "market_closed" → silent daily gap.
+  // Run at 7:00 PM IST; the handler also re-checks the prior few
+  // trading days so a late file or a missed run self-heals.
   {
     name: "daily-eod-prices",
-    schedule: "0 11 * * 1-5", // 4:30 PM IST, Mon–Fri
+    schedule: "30 13 * * 1-5", // 7:00 PM IST, Mon–Fri
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.EOD_PRICES_DAILY,

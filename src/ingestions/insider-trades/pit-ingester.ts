@@ -181,7 +181,13 @@ async function writeFetchLog(result: FetchJobResult): Promise<void> {
 }
 
 // ── Check if date was already fetched successfully ────────────────────────────
-// Used by the daily job to skip already-processed dates
+// Used by the daily job to skip already-processed dates.
+//
+// Only a "success" log counts as done. "no_data" is deliberately NOT treated as
+// done: under PIT V2.0 it means the gg endpoint returned zero filings market-
+// wide, which is abnormal on a trading day — so the day is re-attempted on the
+// next run (self-healing). This is what lets the daily job recover days that
+// were wrongly logged "no_data" while the old endpoint was frozen.
 export async function wasDateFetchedSuccessfully(
   date: Date,
   fetchType: "daily" | "backfill" | "manual",
@@ -193,5 +199,40 @@ export async function wasDateFetchedSuccessfully(
     select: { status: true },
   });
 
-  return log?.status === "success" || log?.status === "no_data";
+  return log?.status === "success";
+}
+
+// ── Alert: detect a multi-day market-wide blackout ────────────────────────────
+// "no_data" means the gg endpoint returned ZERO filings for a trading day —
+// abnormal, since the whole market files something every session. N consecutive
+// such daily runs signals the upstream feed broke again (e.g. another NSE
+// endpoint migration), the exact failure that previously went unnoticed for
+// weeks. The daily job throws on this so the run surfaces as a FAILED job.
+export interface NoDataStreak {
+  detected: boolean;
+  noDataCount: number;
+  dates: string[];
+}
+
+export async function checkNoDataStreak(threshold = 3): Promise<NoDataStreak> {
+  const recent = await prisma.insiderTradeFetchLog.findMany({
+    where: { fetchType: "daily" },
+    orderBy: { fetchDate: "desc" },
+    take: threshold,
+    select: { fetchDate: true, status: true },
+  });
+
+  const dates = recent.map((r) => r.fetchDate.toISOString().slice(0, 10));
+  const noDataCount = recent.filter((r) => r.status === "no_data").length;
+  const detected = recent.length >= threshold && recent.every((r) => r.status === "no_data");
+
+  if (detected) {
+    console.error(
+      `[PitDaily][ALERT] Insider-trade feed returned NO DATA for ${threshold} consecutive ` +
+        `trading days (${dates.join(", ")}). Either the NSE corporates-pit-gg endpoint changed ` +
+        `again, or the market was closed for this stretch. Investigate the PIT pipeline.`,
+    );
+  }
+
+  return { detected, noDataCount, dates };
 }

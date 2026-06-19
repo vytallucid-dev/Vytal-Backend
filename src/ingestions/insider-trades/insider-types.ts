@@ -2,50 +2,51 @@
 // All types for the insider trading pipeline.
 // Mirrors the Prisma schema exactly so there's no impedance mismatch.
 
-// ─── Raw NSE API response ─────────────────────────────────────────────────────
-// NSE PIT endpoint returns an array of these objects.
-// Field names are exactly as returned by the API — ugly but accurate.
-export interface NseInsiderRaw {
-  symbol: string                  // "HDFCBANK"
-  company: string                 // "HDFC Bank Limited"
-  anex: string                    // regulation: "7(2)", "29(1)" etc. (NSE calls it "anex")
-  acqName: string                 // "Sashidhar Jagdishan"
-  personCategory: string          // "Promoter Group" | "Director" | "KMP" etc.
-  intimDt: string                 // "20-Apr-2026" — intimation date (DD-Mon-YYYY)
-  date: string                    // "20-Apr-2026 19:20" — trade date/time (sometimes blank)
-  acqfromDt: string               // trade from date "18-Apr-2026"
-  acqtoDt: string                 // trade to date
-  befAcqSharesNo: string          // shares held before ("Nil" or number string)
-  afterAcqSharesNo: string        // shares held after
-  secAcq: string                  // securities acquired/disposed
-  noOfSharesAcq?: string          // duplicate of secAcq in some responses
-  secType: string                 // "Equity Shares"
-  tdpTransactionType: string      // "Buy" | "Sell" | "Pledge" etc.
-  befAcqSharesPer: string         // % holding before: "0.01"
-  afterAcqSharesPer: string       // % holding after: "3.65"
-  acqMode: string                 // "Preferential Offer" | "Market Purchase" etc.
-  remarks: string                 // free text
-  exchange: string                // NSE exchange ref (can be "NA")
-  xbrl?: string                   // XBRL filing URL
-  // Less common fields — may or may not be present
-  pid?: string
-  did?: string
-  tkdAcqm?: string | null
-  buyValue?: string
-  sellValue?: string
-  buyQuantity?: string
-  sellquantity?: string
-  secVal?: string
-  securitiesTypePost?: string
-  tdpDerivativeContractType?: string
-  derivativeType?: string
+// ─── NSE PIT V2.0 endpoint: /api/corporates-pit-gg ────────────────────────────
+// NSE migrated insider trading disclosures to "PIT V2.0" around Apr 2026. The
+// old /api/corporates-pit endpoint froze (returns 200 + empty for dates after
+// ~02-May-2026). The gg endpoint returns a FILING INDEX — one entry per
+// disclosure filing. The actual trade detail (acquirer, quantities, holdings,
+// dates, mode) lives in the linked XBRL document, not in this JSON.
+export interface PitFilingIndex {
+  appId: string                   // unique filing id — used as exchangeRef / dedup hint
+  symbol: string                  // "AXISBANK"
+  companyName: string             // "Axis Bank Limited"
+  regulation: string              // "Regulation 7 (2)"
+  broadcastDateTime: string       // "19-Jun-2026 23:09:12" — NSE dissemination time
+  exchdisstime?: string
+  typeOfSubmission?: string       // "Original" | "Revised"
+  revisionRemark?: string | null
+  xmlFileName: string             // URL to the XBRL XML (the trade detail)
+  ixbrl?: string                  // URL to the human-readable iXBRL HTML
   xbrlFileSize?: string
+  ixbrlFileSize?: string
+  prevAppId?: string | null
 }
 
-// ─── NSE API wrapper response ─────────────────────────────────────────────────
-export interface NseInsiderApiResponse {
-  data: NseInsiderRaw[]
-  total: number
+// ─── gg API wrapper response ──────────────────────────────────────────────────
+export interface PitGgApiResponse {
+  data: PitFilingIndex[]
+}
+
+// ─── A single parsed disclosure row from an XBRL filing ───────────────────────
+// One filing (PitFilingIndex) can contain multiple disclosure rows
+// (one per transaction), each keyed by an XBRL "DisclosureN" context.
+export interface PitXbrlRow {
+  personName: string | null
+  personCategory: string | null   // raw, e.g. "Promoter Group" | "Connected Person"
+  securityType: string | null     // raw "TypeOfInstrument", e.g. "Equity"
+  transactionType: string | null  // raw "Buy" | "Sell"
+  acquisitionMode: string | null  // raw "Market Purchase" | "Market Sale" | "ESOP" …
+  tradeFromDate: string | null    // ISO "YYYY-MM-DD"
+  tradeToDate: string | null      // ISO "YYYY-MM-DD"
+  securitiesPre: string | null
+  securitiesTraded: string | null
+  securitiesPost: string | null
+  holdingPctPre: string | null
+  holdingPctPost: string | null
+  valueOfSecurity: string | null  // total rupee value of the transaction
+  remarks: string | null
 }
 
 // ─── Normalised record (after parsing) ───────────────────────────────────────

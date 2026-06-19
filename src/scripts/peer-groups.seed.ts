@@ -90,9 +90,13 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap Private Banks",
     sectorKey: "banks",
     buildOrder: 5,
+    // Reconciled 2026-06-20 to the committed-bar DERIVATION COHORT (the 12-bank
+    // BankSupplementary set's 6 private banks). Was [.., IDFCFIRSTB, YESBANK] — the
+    // stale pre-reconciliation roster; swapped to FEDERALBNK (which has full CASA/
+    // Tier-1 + the bars were derived WITH it). IDFCFIRSTB/YESBANK had no CASA/Tier-1.
     stocks: [
       "HDFCBANK", "ICICIBANK", "AXISBANK", "KOTAKBANK",
-      "INDUSINDBK", "IDFCFIRSTB", "YESBANK",
+      "INDUSINDBK", "FEDERALBNK",
     ],
   },
   {

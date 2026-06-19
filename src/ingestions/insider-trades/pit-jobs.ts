@@ -11,16 +11,13 @@
 //   - Fetches in 7-day chunks with 2s delay between chunks
 //   - Recommended initial backfill: last 12 months
 
-import {
-  fetchInsiderTradesForDate,
-  fetchInsiderTradesForRange,
-  generateChunkRanges,
-} from "./nse-pit-fetcher.js";
-import { parseInsiderTradesBatch } from "./pit-parser.js";
+import { generateChunkRanges } from "./nse-pit-fetcher.js";
+import { fetchAndParseInsiderTrades } from "./pit-source.js";
 import {
   ingestInsiderTrades,
   loadStockUniverse,
   wasDateFetchedSuccessfully,
+  checkNoDataStreak,
 } from "./pit-ingester.js";
 import type { FetchJobResult } from "./insider-types.js";
 import type { PrismaClient } from "../../generated/prisma/client.js";
@@ -72,8 +69,7 @@ export async function runDailyJob(): Promise<void> {
     }
 
     try {
-      const rawRecords = await fetchInsiderTradesForDate(date);
-      const parseResult = parseInsiderTradesBatch(rawRecords, stockMap);
+      const parseResult = await fetchAndParseInsiderTrades(date, date, stockMap);
       const result = await ingestInsiderTrades(parseResult, date, "daily");
       logResult(result);
     } catch (err: any) {
@@ -101,6 +97,16 @@ export async function runDailyJob(): Promise<void> {
   }
 
   console.log("[PitDaily] Daily job complete.");
+
+  // Surface a multi-day market-wide blackout as a failed job so it doesn't go
+  // unnoticed (as the previous endpoint freeze did for ~6 weeks).
+  const alert = await checkNoDataStreak();
+  if (alert.detected) {
+    throw new Error(
+      `Insider-trade feed blackout: ${alert.dates.length} consecutive daily runs returned ` +
+        `no data (${alert.dates.join(", ")}). NSE corporates-pit-gg may have changed again — investigate.`,
+    );
+  }
 }
 
 // ── Backfill job ──────────────────────────────────────────────────────────────
@@ -140,11 +146,8 @@ export async function runBackfillJob(): Promise<FetchJobResult[]> {
     const { chunkStart, chunkEnd } = chunkRanges[idx];
 
     try {
-      // 1. Fetch
-      const rawRecords = await fetchInsiderTradesForRange(chunkStart, chunkEnd);
-
-      // 2. Parse
-      const parseResult = parseInsiderTradesBatch(rawRecords, stockMap);
+      // 1. Fetch index + XBRL → 2. parse → normalised records
+      const parseResult = await fetchAndParseInsiderTrades(chunkStart, chunkEnd, stockMap);
 
       // 3. Insert + log
       const result = await ingestInsiderTrades(parseResult, chunkStart, "backfill");
@@ -218,11 +221,8 @@ export async function runManualFetch(
     const { chunkStart, chunkEnd } = chunkRanges[idx];
 
     try {
-      // 1. Fetch
-      const rawRecords = await fetchInsiderTradesForRange(chunkStart, chunkEnd, signal);
-
-      // 2. Parse
-      const parseResult = parseInsiderTradesBatch(rawRecords, stockMap);
+      // 1. Fetch index + XBRL → 2. parse → normalised records
+      const parseResult = await fetchAndParseInsiderTrades(chunkStart, chunkEnd, stockMap, signal);
 
       // 3. Insert + log
       const result = await ingestInsiderTrades(parseResult, chunkStart, "manual");

@@ -29,6 +29,8 @@ import {
   m1TtmOpm, m2TtmNpm, m3RevenueYoyTtm, m4NetProfitYoyTtm, m5TtmInterestCoverage,
   consecutiveTail,
 } from "../metrics/momentum.js";
+import { computeBankingLiveValues } from "../metrics/banking.js";
+import type { BankingCtx } from "../metrics/banking-types.js";
 import type { FoundationAnnual, MomentumQuarter, MetricValue } from "../metrics/types.js";
 import type { IndustryType, Pillar } from "../bars-loader/label-map.js";
 
@@ -84,10 +86,16 @@ export const MOMENTUM_DISPATCH: Record<string, MomentumFn> = {
   M1_OPM_TTM: emitAs("M1_OPM_TTM", "TTM OPM % (EBITDA)", (c) => m1TtmOpm(c.run)),
 };
 
-// Banking keys: DECLARED so the table is complete + auditable, but NOT built.
+// Banking keys (now BUILT — see metrics/banking.ts). Foundation 7 / Momentum 5.
 export const BANKING_FOUNDATION_KEYS = ["Tier1", "GNPA", "NNPA", "PCR", "ROA", "CI", "CASA"];
 export const BANKING_MOMENTUM_KEYS = ["NIM", "PPOP", "NII", "NPyoy", "GNPAttm"];
 export const BANK_DATA_PIPELINE_PENDING = "scoring_pending_bank_data_pipeline";
+
+// Human fn names for the printable table (banking).
+const BANKING_FN_NAME: Record<string, string> = {
+  Tier1: "f1Tier1", GNPA: "f2Gnpa", NNPA: "f3Nnpa", PCR: "f4Pcr", ROA: "f5Roa", CI: "f6CostIncome", CASA: "f7Casa",
+  NIM: "m1NimTtm", PPOP: "m2PpopYoy", NII: "m3NiiYoy", NPyoy: "m4NpYoy", GNPAttm: "m5GnpaTtm",
+};
 
 // ── The printable artifact (one row per dispatchable key) ────────────────────────
 export type DispatchStatus = "implemented" | "new" | "reuse_rekey" | "deferred_bank_pipeline";
@@ -118,9 +126,9 @@ export const DISPATCH_TABLE: DispatchEntry[] = [
   { key: "M4",  pillar: "momentum",   industry: "non_financial", fn: "m4NetProfitYoyTtm",   status: "implemented", note: "Net Profit YoY (TTM) %" },
   { key: "M5",  pillar: "momentum",   industry: "non_financial", fn: "m5TtmInterestCoverage", status: "implemented", note: "TTM Interest Coverage (x)" },
   { key: "M1_OPM_TTM", pillar: "momentum", industry: "non_financial", fn: "m1TtmOpm", status: "reuse_rekey", note: "PG8 OPM = the SHARED EBITDA m1TtmOpm, emit-renamed to M1_OPM_TTM. Same computation as M1 (model-wide OPM fix; no separate PG8 fn)" },
-  // Banking — declared, gated (NOT built; awaits the bank-data pipeline).
-  ...BANKING_FOUNDATION_KEYS.map((k): DispatchEntry => ({ key: k, pillar: "foundation", industry: "banking", fn: "NOT_YET_IMPLEMENTED", status: "deferred_bank_pipeline", note: "awaits bank-data pipeline" })),
-  ...BANKING_MOMENTUM_KEYS.map((k): DispatchEntry => ({ key: k, pillar: "momentum", industry: "banking", fn: "NOT_YET_IMPLEMENTED", status: "deferred_bank_pipeline", note: "awaits bank-data pipeline" })),
+  // Banking — BUILT (metrics/banking.ts). Computed when a BankingCtx is supplied.
+  ...BANKING_FOUNDATION_KEYS.map((k): DispatchEntry => ({ key: k, pillar: "foundation", industry: "banking", fn: BANKING_FN_NAME[k], status: "implemented", note: "banking foundation live-value" })),
+  ...BANKING_MOMENTUM_KEYS.map((k): DispatchEntry => ({ key: k, pillar: "momentum", industry: "banking", fn: BANKING_FN_NAME[k], status: "implemented", note: "banking momentum live-value" })),
 ];
 
 /** Print the mapping table (the reviewable artifact). */
@@ -146,12 +154,16 @@ export interface DispatchInput {
   foundationRows: FoundationAnnual[];
   momentumQuarters: MomentumQuarter[];
   periodAvgPrice?: number | null;
+  /** Banking compute context (BankingFundamental + Quarterly + BankSupplementary).
+   *  Required when industryType="banking"; ignored otherwise. When absent on a
+   *  banking PG, the dispatcher returns the legacy gated state (back-compat). */
+  bankingCtx?: BankingCtx | null;
 }
 
 export type DispatchOutput =
   | {
       status: "computed";
-      industryType: "non_financial";
+      industryType: IndustryType;
       foundation: MetricValue[]; // one per selected foundation key, in key order
       momentum: MetricValue[]; // one per selected momentum key, in key order
       snapshotFy: string | null;
@@ -188,17 +200,22 @@ function noData(key: string, reason: "standalone_absent"): MetricValue {
  * selected keys via the mapping table. PURE.
  */
 export function dispatchLiveValues(input: DispatchInput): DispatchOutput {
-  // GATE: banking is recognized and returned as an explicit deferred state. Bars
-  // load fine elsewhere; scoring is pending the unbuilt bank-data pipeline — NEVER
-  // a silent zero or a fabricated score.
+  // BANKING: compute via the banking live-value module when a BankingCtx is supplied
+  // (UNGATED — metrics/banking.ts is built). Without a ctx, return the legacy gated
+  // state so any caller that hasn't wired banking data still gets an honest deferral
+  // (never a silent zero / fabricated score).
   if (input.industryType === "banking") {
-    return {
-      status: "scoring_pending_bank_data_pipeline",
-      industryType: "banking",
-      foundationKeys: input.foundationKeys,
-      momentumKeys: input.momentumKeys,
-      note: "banking live-value computations depend on the unbuilt bank-data pipeline; PG5/PG6 bars LOAD but the metrics are NOT scoreable yet (gated state, not a score)",
-    };
+    if (!input.bankingCtx) {
+      return {
+        status: "scoring_pending_bank_data_pipeline",
+        industryType: "banking",
+        foundationKeys: input.foundationKeys,
+        momentumKeys: input.momentumKeys,
+        note: "banking PG dispatched without a BankingCtx — supply input.bankingCtx to compute (metrics/banking.ts is built)",
+      };
+    }
+    const b = computeBankingLiveValues(input.bankingCtx, input.foundationKeys, input.momentumKeys);
+    return { status: "computed", industryType: "banking", foundation: b.foundation, momentum: b.momentum, snapshotFy: b.snapshotFy, snapshotQuarter: b.snapshotQuarter };
   }
 
   // NON-FINANCIAL: build the contexts once, then compute exactly the selected keys.

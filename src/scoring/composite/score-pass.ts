@@ -26,8 +26,12 @@
 import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../../db/prisma.js";
 import { loadFoundationStandalone, loadMomentumStandalone } from "../metrics/load.js";
+import { loadBankingCtx } from "../metrics/banking-load.js";
+import { bankingSeriesForKey } from "../metrics/banking.js";
+import type { BankingCtx } from "../metrics/banking-types.js";
 import { dispatchLiveValues } from "../metric-scoring/live-dispatch.js";
-import { loadBarSet } from "../metric-scoring/bars.js";
+import { loadBarSet, resolveBarPath } from "../metric-scoring/bars.js";
+import { canonicalMetric, type IndustryType } from "../bars-loader/label-map.js";
 import { scoreMetricCrossSection, type CrossSectionMember } from "../metric-scoring/wire.js";
 import { NO_SUPPRESSION, type WiringConfig, type ScoredMetric } from "../metric-scoring/types.js";
 import { assemblePillar } from "../pillars/assemble.js";
@@ -35,7 +39,7 @@ import type { PillarScoreResult } from "../pillars/types.js";
 import { toPillarScoreRow } from "../pillars/persist.js";
 import { toMetricScoreRow } from "../metric-scoring/persist.js";
 import { metricWeightColumnsByKey, completeMetricScoreRow } from "../pillars/persist.js";
-import type { FoundationAnnual, MomentumQuarter } from "../metrics/types.js";
+import type { FoundationAnnual, MomentumQuarter, MetricValue } from "../metrics/types.js";
 import { scoreMarketForPg, type MemberMarket } from "../market/orchestrate.js";
 import type { MarketUniversalResult } from "../market/market-universal.js";
 import { toMarketPillarScoreRow, marketSubScoreRows, marketInputsFingerprint } from "../market/persist.js";
@@ -98,9 +102,17 @@ export interface MemberComputed {
   own: OwnershipResult | null;
   composite: CompositeResult;
 }
-export interface PgComputed { ref: PgRef; peerGroupId: string; asOf: Date; periodKey: string; members: MemberComputed[] }
+export interface PgComputed { ref: PgRef; peerGroupId: string; asOf: Date; periodKey: string; industry: IndustryType; members: MemberComputed[] }
 
-export async function computePgScores(ref: PgRef): Promise<PgComputed> {
+export interface ComputeOpts {
+  /** Non-destructive roster OVERRIDE (symbols) — score this exact member set instead
+   *  of the DB roster, WITHOUT touching peer_group_stocks. Used for the banking dry
+   *  run to score the bar-derivation cohort (PG5 incl FEDERALBNK) before the roster is
+   *  reconciled. Members are resolved by symbol; order is preserved. */
+  rosterOverride?: string[];
+}
+
+export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promise<PgComputed> {
   const pgRow = await prisma.peerGroup.findFirst({ where: { name: ref.pgName }, include: { stocks: { include: { stock: { select: { id: true, symbol: true } } } } } });
   if (!pgRow) throw new Error(`computePgScores: PG '${ref.pgName}' not found`);
 
@@ -115,27 +127,67 @@ export async function computePgScores(ref: PgRef): Promise<PgComputed> {
   // separately as the Market pillar's sourcePeriod (PRICE:<date>).
   const asOf = new Date();
 
-  // Which metric keys this PG actually has committed bars for.
-  const keyRows = await prisma.metricBarSet.findMany({ where: { barPath: ref.pgId }, select: { metricKey: true }, distinct: ["metricKey"] });
-  const fKeys = keyRows.map((r) => r.metricKey).filter((k) => k.startsWith("F")).sort();
-  const mKeys = keyRows.map((r) => r.metricKey).filter((k) => k.startsWith("M")).sort();
+  // Which metric keys this PG actually has committed bars for. resolveBarPath follows
+  // PG6→PG5 inheritance so an inheriting bank PG finds the parent's keys.
+  const barPath = resolveBarPath(ref.pgId);
+  const keyRows = await prisma.metricBarSet.findMany({ where: { barPath }, select: { metricKey: true }, distinct: ["metricKey"] });
+  const allKeys = keyRows.map((r) => r.metricKey);
+  // Industry-aware pillar classification via the engine registry (NOT an F/M prefix —
+  // banking keys are Tier1/GNPA/…/NIM, classified by canonicalMetric.pillar).
+  const fKeys = allKeys.filter((k) => canonicalMetric(k)?.pillar === "foundation").sort();
+  const mKeys = allKeys.filter((k) => canonicalMetric(k)?.pillar === "momentum").sort();
+  const industry: IndustryType = canonicalMetric(fKeys[0] ?? mKeys[0] ?? "")?.industry ?? "non_financial";
 
-  // Load each member's Foundation / Momentum rows + raw daily closes (for ownership probe).
-  interface Raw { stockId: string; symbol: string; fRows: FoundationAnnual[]; qRows: MomentumQuarter[]; daily: DailyClose[]; own: OwnershipQuarter[] }
+  // Member set: DB roster, or a non-destructive symbol override (resolved directly).
+  let memberStocks: { id: string; symbol: string }[];
+  if (opts.rosterOverride && opts.rosterOverride.length) {
+    const found = await prisma.stock.findMany({ where: { symbol: { in: opts.rosterOverride } }, select: { id: true, symbol: true } });
+    const bySym = new Map(found.map((s) => [s.symbol, s]));
+    memberStocks = opts.rosterOverride.map((sym) => bySym.get(sym)).filter((s): s is { id: string; symbol: string } => !!s);
+  } else {
+    memberStocks = pgRow.stocks.map((sp) => ({ id: sp.stock.id, symbol: sp.stock.symbol }));
+  }
+
+  // Per-member: raw daily/ownership (universal) + the live metric values + an L3
+  // own-history accessor. The live path branches on industry; everything downstream
+  // (cross-section, pillars, market, ownership, composite) is industry-agnostic.
+  interface Raw {
+    stockId: string; symbol: string; daily: DailyClose[]; own: OwnershipQuarter[];
+    foundation: MetricValue[]; momentum: MetricValue[]; snapshotFy: string | null; snapshotQuarter: string | null;
+    seriesFor: (key: string, pillar: "foundation" | "momentum") => number[];
+  }
   const raws: Raw[] = [];
-  for (const sp of pgRow.stocks) {
-    const id = sp.stock.id, symbol = sp.stock.symbol;
-    const fRows = await loadFoundationStandalone(id);
-    const qRows = await loadMomentumStandalone(id);
+  for (const ms of memberStocks) {
+    const id = ms.id, symbol = ms.symbol;
     const daily = (await prisma.dailyPrice.findMany({ where: { stockId: id }, orderBy: { date: "asc" }, select: { date: true, close: true } })).map((d) => ({ date: d.date, close: Number(d.close) }));
     const sh = await prisma.shareholdingPattern.findMany({ where: { stockId: id }, orderBy: { asOnDate: "asc" }, select: { asOnDate: true, quarter: true, fiscalYear: true, promoterShares: true, totalShares: true, pledgedShares: true, promoterPct: true, fiiPct: true, diiPct: true, retailPct: true } });
     const own: OwnershipQuarter[] = sh.map((r) => ({ asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear, promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares, promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct) }));
-    raws.push({ stockId: id, symbol, fRows, qRows, daily, own });
+
+    let foundation: MetricValue[], momentum: MetricValue[], snapshotFy: string | null, snapshotQuarter: string | null;
+    let seriesFor: (key: string, pillar: "foundation" | "momentum") => number[];
+    if (industry === "banking") {
+      const ctx: BankingCtx = await loadBankingCtx(symbol, id);
+      const d = dispatchLiveValues({ industryType: "banking", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: [], momentumQuarters: [], bankingCtx: ctx });
+      foundation = d.status === "computed" ? d.foundation : [];
+      momentum = d.status === "computed" ? d.momentum : [];
+      snapshotFy = d.status === "computed" ? d.snapshotFy : null;
+      snapshotQuarter = d.status === "computed" ? d.snapshotQuarter : null;
+      seriesFor = (key) => bankingSeriesForKey(ctx, key);
+    } else {
+      const fRows = await loadFoundationStandalone(id);
+      const qRows = await loadMomentumStandalone(id);
+      const d = dispatchLiveValues({ industryType: "non_financial", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: fRows, momentumQuarters: qRows });
+      foundation = d.status === "computed" ? d.foundation : [];
+      momentum = d.status === "computed" ? d.momentum : [];
+      snapshotFy = d.status === "computed" ? d.snapshotFy : null;
+      snapshotQuarter = d.status === "computed" ? d.snapshotQuarter : null;
+      seriesFor = (key, pillar) => seriesForKey(fRows, qRows, key, pillar);
+    }
+    raws.push({ stockId: id, symbol, daily, own, foundation, momentum, snapshotFy, snapshotQuarter, seriesFor });
   }
 
-  const live = new Map(raws.map((r) => [r.symbol, dispatchLiveValues({ industryType: "non_financial", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: r.fRows, momentumQuarters: r.qRows })]));
-  const fSnap = (live.get(raws[0]?.symbol) as any)?.snapshotFy ?? "FY";
-  const mSnap = (live.get(raws[0]?.symbol) as any)?.snapshotQuarter ?? "FYQ";
+  const fSnap = raws[0]?.snapshotFy ?? "FY";
+  const mSnap = raws[0]?.snapshotQuarter ?? "FYQ";
 
   // Cross-section score F/M per key.
   const fMetrics = new Map<string, ScoredMetric[]>(); const mMetrics = new Map<string, ScoredMetric[]>();
@@ -147,9 +199,9 @@ export async function computePgScores(ref: PgRef): Promise<PgComputed> {
       if (!bs) continue;
       ids.set(key, bs.metricBarSetId ?? null);
       const xsMembers: CrossSectionMember[] = raws.map((r) => {
-        const d = live.get(r.symbol)!; const arr = d.status === "computed" ? (pillar === "foundation" ? d.foundation : d.momentum) : [];
+        const arr = pillar === "foundation" ? r.foundation : r.momentum;
         const mv = arr.find((x) => x.key === key); const avail = !!mv && mv.available && mv.value !== null;
-        return { stockId: r.stockId, symbol: r.symbol, rawValue: avail ? mv!.value : null, available: avail, unavailableReason: avail ? null : (mv?.reason ?? "no value"), ownHistoryValues: seriesForKey(r.fRows, r.qRows, key, pillar) };
+        return { stockId: r.stockId, symbol: r.symbol, rawValue: avail ? mv!.value : null, available: avail, unavailableReason: avail ? null : (mv?.reason ?? "no value"), ownHistoryValues: r.seriesFor(key, pillar) };
       });
       const xs = scoreMetricCrossSection({ pillar, metricKey: key, label: key, snapshot: snap, direction: bs.direction, bars: bs.bars, barNote: bs.note, sscu: bs.sscu ? { bars: bs.sscu.bars, scope: bs.sscu.scope } : null, members: xsMembers, suppression: NO_SUPPRESSION, config: cfg });
       for (const s of xs.scored) bucket.get(s.symbol)!.push(s);
@@ -177,7 +229,7 @@ export async function computePgScores(ref: PgRef): Promise<PgComputed> {
     return { stockId: r.stockId, symbol: r.symbol, fPillar, fMetrics: fMetrics.get(r.symbol)!, fBarSetIds, mPillar, mMetrics: mMetrics.get(r.symbol)!, mBarSetIds, market, marketSourcePeriod, own, composite };
   });
 
-  return { ref, peerGroupId: pgRow.id, asOf, periodKey, members };
+  return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members };
 }
 
 // ── SCAFFOLD (get-or-create spec / run / band-mapping, once per pass) ────────────────
@@ -268,7 +320,7 @@ async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: strin
   return { id: created.id, r1Fired, r1Triggering: r1TriggeringValues };
 }
 
-export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string): Promise<MemberWriteResult> {
+export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string, industryPath: IndustryType = "non_financial"): Promise<MemberWriteResult> {
   // Unavailable composite → no snapshot (recorded, never fabricated). For these
   // rosters this is not expected (Market may drop, but composite still 3-pillar-scores).
   if (m.composite.state !== "scored" || m.composite.composite === null) {
@@ -293,7 +345,7 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   const ownership = await writeOwnershipPillar(db, m.own, m.stockId, m.symbol, { runId: sc.runId, specVersionId: sc.specVersionId, asOfDate: asOf });
 
   const pillarScoreIds: Record<Pillar, string> = { foundation: foundationId, momentum: momentumId, market: marketId, ownership: ownership.id };
-  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath: "non_financial", pillarScoreIds });
+  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds });
   if (existingSnap) { snapRow.version = existingSnap.version + 1; snapRow.supersedesId = existingSnap.id; } // append-only supersede on genuine change
 
   const snap = await db.scoreSnapshot.create({ data: snapRow, select: { id: true } });

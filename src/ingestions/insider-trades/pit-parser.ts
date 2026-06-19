@@ -1,36 +1,51 @@
 // src/parser/pit-parser.ts
-// Normalises raw NSE PIT response into clean, typed InsiderTradeNormalized records.
+// Normalisation helpers + the XBRL-row → InsiderTradeNormalized mapper.
 //
-// NSE data is messy:
-// - Dates come as DD-MM-YYYY strings (or blank)
-// - Numbers come as strings (or blank or "N.A.")
-// - Person categories are free-text with inconsistent capitalisation
-// - Transaction types are free-text
+// NSE PIT V2.0 (gg endpoint) data is messy:
+// - Dates come as ISO "YYYY-MM-DD" (XBRL) or "DD-Mon-YYYY HH:MM:SS" (index)
+// - Numbers come as strings (or blank or "N.A." or "Nil")
+// - Person categories / transaction types / modes are free-text
 //
-// This parser handles all of that so the ingestion layer stays clean.
+// These helpers handle all of that so the ingestion layer stays clean.
 
 import type {
-  NseInsiderRaw,
   InsiderTradeNormalized,
   PersonCategory,
   TransactionType,
   SecurityType,
   AcquisitionMode,
+  PitFilingIndex,
+  PitXbrlRow,
 } from "./insider-types.js";
 
 // ── Date parsing ─────────────────────────────────────────────────────────────
-// NSE uses DD-Mon-YYYY (e.g. "20-Apr-2026") or DD-Mon-YYYY HH:MM for some fields.
-// Some older fields may use DD-MM-YYYY. Both are handled below.
+// Handles three shapes seen across PIT V2.0:
+//   - ISO          "2026-06-17"                (XBRL transaction dates)
+//   - DD-Mon-YYYY  "19-Jun-2026" / "19-Jun-2026 23:09:12"  (gg index broadcast)
+//   - DD-MM-YYYY   "19-06-2026"                (legacy)
 const MONTH_MAP: Record<string, number> = {
   jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
   jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
 };
 
-function parseNseDate(str: string | null | undefined): Date | null {
+export function parseNseDate(str: string | null | undefined): Date | null {
   if (!str || str.trim() === "" || str === "-" || str === "N.A.") return null;
 
-  // Strip time component if present: "20-Apr-2026 19:20" → "20-Apr-2026"
-  const datePart = str.trim().split(" ")[0];
+  // Strip any time component: "19-Jun-2026 23:09:12" → "19-Jun-2026"
+  const datePart = str.trim().split(/[ T]/)[0];
+
+  // ISO yyyy-mm-dd (XBRL)
+  const iso = datePart.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (iso) {
+    const y = Number(iso[1]);
+    const month = Number(iso[2]) - 1;
+    const d = Number(iso[3]);
+    if (month < 0 || month > 11 || d < 1 || d > 31) return null;
+    const date = new Date(y, month, d);
+    return isNaN(date.getTime()) ? null : date;
+  }
+
+  // DD-Mon-YYYY or DD-MM-YYYY
   const parts = datePart.split("-");
   if (parts.length !== 3) return null;
 
@@ -39,7 +54,6 @@ function parseNseDate(str: string | null | undefined): Date | null {
   const y = Number(yStr);
   if (isNaN(d) || isNaN(y) || d < 1 || d > 31) return null;
 
-  // Numeric month (DD-MM-YYYY) or abbreviated name (DD-Mon-YYYY)
   let month: number;
   const mNum = Number(mStr);
   if (!isNaN(mNum)) {
@@ -52,36 +66,33 @@ function parseNseDate(str: string | null | undefined): Date | null {
   }
 
   const date = new Date(y, month, d);
-  if (isNaN(date.getTime())) return null;
-
-  return date;
+  return isNaN(date.getTime()) ? null : date;
 }
 
 // ── Number parsing ────────────────────────────────────────────────────────────
-function parseBigInt(str: string | null | undefined): bigint | null {
-  if (!str || str.trim() === "" || str === "-" || str === "N.A." || str.toLowerCase() === "nil") return null;
-  const cleaned = str.replace(/,/g, "").trim();
+export function parseBigIntSafe(str: string | null | undefined): bigint | null {
+  if (!str || str.trim() === "" || str === "-" || str === "N.A." || str.toLowerCase() === "nil") {
+    return null;
+  }
+  // XBRL sometimes emits decimals like "1921.00" for share counts
+  const cleaned = str.replace(/,/g, "").trim().replace(/\.0+$/, "");
   if (!/^\d+$/.test(cleaned)) return null;
   return BigInt(cleaned);
 }
 
-function parseFloat2(str: string | null | undefined): number | null {
+export function parseFloatSafe(str: string | null | undefined): number | null {
   if (!str || str.trim() === "" || str === "-" || str === "N.A.") return null;
   const n = parseFloat(str.replace(/,/g, ""));
   return isNaN(n) ? null : n;
 }
 
 // ── Person category normalisation ─────────────────────────────────────────────
-function normalisePersonCategory(raw: string): PersonCategory {
+export function normalisePersonCategory(raw: string): PersonCategory {
   const s = raw.toLowerCase().trim();
 
-  if (s.includes("promoter group") || s.includes("promoter grp")) {
-    return "promoter_group";
-  }
+  if (s.includes("promoter group") || s.includes("promoter grp")) return "promoter_group";
   if (s.includes("promoter")) return "promoter";
-  if (s.includes("immediate relative") || s.includes("imm. relative")) {
-    return "immediate_relative";
-  }
+  if (s.includes("immediate relative") || s.includes("imm. relative")) return "immediate_relative";
   if (s.includes("managing director") || s.includes("md")) return "director";
   if (s.includes("director")) return "director";
   if (
@@ -97,36 +108,20 @@ function normalisePersonCategory(raw: string): PersonCategory {
   if (s.includes("designated")) return "designated_employee";
   if (s.includes("employee")) return "designated_employee";
 
+  // PIT V2.0 introduces "Connected Person" (Reg 7(3)) → no dedicated bucket
   return "other";
 }
 
 // ── Transaction type normalisation ───────────────────────────────────────────
-function normaliseTransactionType(raw: string): TransactionType {
+export function normaliseTransactionType(raw: string): TransactionType {
   const s = raw.toLowerCase().trim();
 
-  if (s.includes("pledge") && (s.includes("revoke") || s.includes("release"))) {
-    return "revoke_pledge";
-  }
+  if (s.includes("pledge") && (s.includes("revoke") || s.includes("release"))) return "revoke_pledge";
   if (s.includes("pledge")) return "pledge";
   if (s.includes("inter") && s.includes("se")) return "inter_se_transfer";
-  if (s.includes("esos") || s.includes("stock option") || s.includes("esop")) {
-    return "esos";
-  }
-  if (
-    s.includes("buy") ||
-    s.includes("purchase") ||
-    s.includes("acqui") ||
-    s === "b"
-  ) {
-    return "buy";
-  }
-  if (
-    s.includes("sell") ||
-    s.includes("sale") ||
-    s.includes("disposal") ||
-    s.includes("dispos") ||
-    s === "s"
-  ) {
+  if (s.includes("esos") || s.includes("stock option") || s.includes("esop")) return "esos";
+  if (s.includes("buy") || s.includes("purchase") || s.includes("acqui") || s === "b") return "buy";
+  if (s.includes("sell") || s.includes("sale") || s.includes("disposal") || s.includes("dispos") || s === "s") {
     return "sell";
   }
 
@@ -134,126 +129,96 @@ function normaliseTransactionType(raw: string): TransactionType {
 }
 
 // ── Security type normalisation ──────────────────────────────────────────────
-function normaliseSecurityType(raw: string): SecurityType {
+export function normaliseSecurityType(raw: string): SecurityType {
   const s = raw.toLowerCase().trim();
 
   if (s.includes("warrant")) return "warrants";
-  if (s.includes("convertible") || s.includes("debenture")) {
-    return "convertible_debentures";
-  }
-  if (s.includes("equity") || s.includes("share") || s === "eq") {
-    return "equity_shares";
-  }
+  if (s.includes("convertible") || s.includes("debenture")) return "convertible_debentures";
+  if (s.includes("equity") || s.includes("share") || s === "eq") return "equity_shares";
 
   return "other";
 }
 
 // ── Acquisition mode normalisation ──────────────────────────────────────────
-function normaliseAcquisitionMode(
-  raw: string | null | undefined,
-): AcquisitionMode | null {
+export function normaliseAcquisitionMode(raw: string | null | undefined): AcquisitionMode | null {
   if (!raw || raw.trim() === "" || raw === "-") return null;
   const s = raw.toLowerCase().trim();
 
-  if (
-    s.includes("market purchase") ||
-    s.includes("open market") ||
-    s === "market"
-  ) {
-    return "market";
-  }
   if (s.includes("off market") || s.includes("off-market")) return "off_market";
   if (s.includes("preferential")) return "preferential_allotment";
   if (s.includes("inter") && s.includes("se")) return "inter_se_transfer";
-  if (s.includes("esos") || s.includes("stock option")) return "esos";
+  if (s.includes("esos") || s.includes("stock option") || s.includes("esop")) return "esos";
   if (s.includes("rights")) return "rights";
+  // "Market Purchase" | "Market Sale" | "Open Market" | "Market"
+  if (s.includes("market")) return "market";
 
   return "other";
 }
 
 // ── Regulation normalisation ─────────────────────────────────────────────────
-function normaliseRegulation(raw: string): string {
-  const s = raw.trim();
-  // Map common variations
-  const map: Record<string, string> = {
-    "7(2)": "7(2)",
-    "7 (2)": "7(2)",
-    "reg 7(2)": "7(2)",
-    "29(1)": "29(1)",
-    "29 (1)": "29(1)",
-    "29(2)": "29(2)",
-    "30": "30",
-    "reg 30": "30",
-    "31": "31",
-    "reg 31": "31",
-  };
-  return map[s.toLowerCase()] ?? s;
+// PIT V2.0 emits "Regulation 7 (2)" / "Regulation 7 (3)" / "Regulation 29 (1)".
+// Collapse to the compact form: "7(2)", "7(3)", "29(1)", "30", "31".
+export function normaliseRegulation(raw: string): string {
+  if (!raw) return "";
+  const compact = raw
+    .replace(/regulation/i, "")
+    .replace(/\s+/g, "")
+    .trim();
+  return compact || raw.trim();
 }
 
-// ── Main parser ───────────────────────────────────────────────────────────────
-// Returns null if the record is fundamentally unparseable.
-// Partial data (missing optional fields) is still returned — never reject valid data.
-export function parseInsiderTradeRecord(
-  raw: NseInsiderRaw,
-  stockIdMap: Map<string, string>, // symbol → stockId
+// ── XBRL row → normalised record ─────────────────────────────────────────────
+// Combines a filing-index entry (header) with one parsed XBRL disclosure row.
+// Returns null if the row is fundamentally unusable (no person, no quantities).
+export function normaliseXbrlRow(
+  index: PitFilingIndex,
+  row: PitXbrlRow,
+  stockId: string,
+  symbol: string,
 ): InsiderTradeNormalized | null {
-  // Symbol is mandatory
-  const symbol = raw.symbol?.trim().toUpperCase();
-  if (!symbol) return null;
+  const personName = row.personName?.trim();
+  if (!personName) return null;
 
-  // Check if this stock is in our universe
-  const stockId = stockIdMap.get(symbol);
-  if (!stockId) return null; // Not in our universe — will be counted as filtered
+  const intimationDate = parseNseDate(index.broadcastDateTime);
+  if (!intimationDate) return null;
 
-  // Intimation date is mandatory
-  const intimationDate = parseNseDate(raw.intimDt);
-  if (!intimationDate) {
-    console.warn(
-      `[PitParser] Cannot parse intimation date for ${symbol}: ${raw.intimDt}`,
-    );
+  const securitiesPre = parseBigIntSafe(row.securitiesPre);
+  const securitiesTraded = parseBigIntSafe(row.securitiesTraded);
+  const securitiesPost = parseBigIntSafe(row.securitiesPost);
+
+  // A row with no traded quantity and no person holding change is noise.
+  if (securitiesTraded === null && securitiesPre === null && securitiesPost === null) {
     return null;
   }
 
-  // Validate we have at least a person name
-  const personName = raw.acqName?.trim();
-  if (!personName) return null;
-
-  // Parse quantities
-  const securitiesPre = parseBigInt(raw.befAcqSharesNo);
-  const securitiesTraded = parseBigInt(raw.secAcq || raw.noOfSharesAcq);
-  const securitiesPost = parseBigInt(raw.afterAcqSharesNo);
-
-  // Parse holding percentages
-  const holdingPctPre = parseFloat2(raw.befAcqSharesPer);
-  const holdingPctPost = parseFloat2(raw.afterAcqSharesPer);
+  const holdingPctPre = parseFloatSafe(row.holdingPctPre);
+  const holdingPctPost = parseFloatSafe(row.holdingPctPost);
   const holdingPctDelta =
     holdingPctPre !== null && holdingPctPost !== null
       ? parseFloat((holdingPctPost - holdingPctPre).toFixed(4))
       : null;
 
-  // Trade value: NSE provides secVal = total rupee value of the transaction.
-  // tradeValueCr = secVal / 1e7 (rupees → crore)
-  // tradePrice   = secVal / securitiesTraded (per-share price)
-  const secValRaw = parseFloat2(raw.secVal);
-  const tradeValueCr =
-    secValRaw !== null && secValRaw > 0
-      ? parseFloat((secValRaw / 1e7).toFixed(4))
-      : null;
+  // valueOfSecurity = total rupee value of the transaction.
+  const value = parseFloatSafe(row.valueOfSecurity);
+  const tradeValueCr = value !== null && value > 0 ? parseFloat((value / 1e7).toFixed(4)) : null;
   const tradePrice =
-    secValRaw !== null && secValRaw > 0 && securitiesTraded !== null && securitiesTraded > 0n
-      ? parseFloat((secValRaw / Number(securitiesTraded)).toFixed(2))
+    value !== null && value > 0 && securitiesTraded !== null && securitiesTraded > 0n
+      ? parseFloat((value / Number(securitiesTraded)).toFixed(2))
       : null;
+
+  // Trade date: prefer the "to" date (execution / allotment), fall back to "from".
+  const tradeDate = parseNseDate(row.tradeToDate) ?? parseNseDate(row.tradeFromDate);
 
   return {
     symbol,
     stockId,
-    regulation: normaliseRegulation(raw.anex || ""),
+    regulation: normaliseRegulation(index.regulation || ""),
     intimationDate,
     personName,
-    personCategory: normalisePersonCategory(raw.personCategory || ""),
-    transactionType: normaliseTransactionType(raw.tdpTransactionType || ""),
-    securityType: normaliseSecurityType(raw.secType || ""),
-    tradeDate: parseNseDate(raw.date),
+    personCategory: normalisePersonCategory(row.personCategory || ""),
+    transactionType: normaliseTransactionType(row.transactionType || ""),
+    securityType: normaliseSecurityType(row.securityType || ""),
+    tradeDate,
     securitiesPre,
     securitiesTraded,
     securitiesPost,
@@ -262,50 +227,16 @@ export function parseInsiderTradeRecord(
     holdingPctDelta,
     tradePrice,
     tradeValueCr,
-    acquisitionMode: normaliseAcquisitionMode(raw.acqMode),
-    remarks: raw.remarks?.trim() || null,
-    exchangeRef: raw.exchange?.trim() || null,
+    acquisitionMode: normaliseAcquisitionMode(row.acquisitionMode),
+    remarks: row.remarks?.trim() || null,
+    exchangeRef: index.appId?.trim() || null,
   };
 }
 
-// ── Batch parser ──────────────────────────────────────────────────────────────
+// ── Parse result (consumed by the ingester) ──────────────────────────────────
 export interface ParseResult {
   records: InsiderTradeNormalized[];
   skippedCount: number; // parse failures (bad data)
-  filteredCount: number; // not in our universe
-  totalRaw: number;
-}
-
-export function parseInsiderTradesBatch(
-  rawRecords: NseInsiderRaw[],
-  stockIdMap: Map<string, string>,
-): ParseResult {
-  let skippedCount = 0;
-  let filteredCount = 0;
-  const records: InsiderTradeNormalized[] = [];
-
-  for (const raw of rawRecords) {
-    const symbol = raw.symbol?.trim().toUpperCase();
-
-    // Check universe membership before full parse (fast path)
-    if (symbol && !stockIdMap.has(symbol)) {
-      filteredCount++;
-      continue;
-    }
-
-    const parsed = parseInsiderTradeRecord(raw, stockIdMap);
-    if (!parsed) {
-      skippedCount++;
-      continue;
-    }
-
-    records.push(parsed);
-  }
-
-  return {
-    records,
-    skippedCount,
-    filteredCount,
-    totalRaw: rawRecords.length,
-  };
+  filteredCount: number; // filings whose symbol is not in our universe
+  totalRaw: number; // total filings seen in the index
 }

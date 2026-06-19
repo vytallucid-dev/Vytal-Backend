@@ -2715,13 +2715,23 @@ model BankSupplementary {
 
   // The figure as a PERCENT, NOT a fraction: CASA 43.82 = 43.82%, Tier-1
   // 14.50 = 14.50%. (Banking ratio unit discipline — never store a fraction.)
-  value Decimal @db.Decimal(8, 4)
+  // NULL when status = "missing" (explicit gap — engine reads as neutral-60).
+  value Decimal? @db.Decimal(8, 4)
 
-  // Source traceability — REQUIRED (non-null). The disclosure this value came
-  // from, e.g. "Q3FY26 Investor Presentation, slide 14" or a URL. A sourceless
-  // value must be rejectable at ingest, hence non-null here.
-  sourceCitation String   @map("source_citation")
-  sourceDate     DateTime @map("source_date") @db.Date // date the disclosure was published/dated
+  // Source traceability. NULL only when status = "missing" (no disclosure exists).
+  // For status = "found", ingest enforces non-null (found⟹value+citation invariant).
+  sourceCitation String?   @map("source_citation")
+  sourceDate     DateTime? @map("source_date") @db.Date // null for missing rows
+
+  // Data-quality flag: A = primary disclosure, B = derived/secondary, C = estimated.
+  // NULL for missing rows.
+  confidence String? // "A" | "B" | "C" | null
+
+  // "found" | "missing". Missing rows are explicit gaps (engine §5.8 neutral-60 path).
+  status String @default("found") // NOT NULL
+
+  // Free-form annotation per row (e.g. why a period is missing).
+  notes String?
 
   // Append-only supersede chain (newest version wins on read)
   version      Int     @default(1)

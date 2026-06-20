@@ -44,6 +44,7 @@ import { scoreMarketForPg, type MemberMarket } from "../market/orchestrate.js";
 import type { MarketUniversalResult } from "../market/market-universal.js";
 import { toMarketPillarScoreRow, marketSubScoreRows, marketInputsFingerprint } from "../market/persist.js";
 import { computeOwnership, type OwnershipContext, type OwnershipResult } from "../ownership/ownership.js";
+import { loadFlowFeeds } from "../ownership/flow-feeds-load.js";
 import type { OwnershipQuarter } from "../ownership/types.js";
 import { rangePositionAsOf, MIN_TRAILING_DAYS, type DailyClose } from "../price/range.js";
 import type { A1PriceEval, FlowFeeds, PriceProbe } from "../ownership/flow.js";
@@ -58,6 +59,8 @@ type Db = Prisma.TransactionClient;
 
 const F_CFG: WiringConfig = { peerMinN: 5, l3MinN: 5, l3Window: 10 };
 const M_CFG: WiringConfig = { peerMinN: 5, l3MinN: 6, l3Window: 12 };
+// Fallback only: a member with no shareholding has no ownership at all (own=null), so
+// its feeds are never read. The LIVE C/D feeds come from loadFlowFeeds (see below).
 const NO_FEEDS: FlowFeeds = { insiderTxns: null, blockTxns: null, marketCapInrCr: null };
 const num = (d: any): number | null => (d == null ? null : typeof d.toNumber === "function" ? d.toNumber() : Number(d));
 
@@ -253,12 +256,29 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   // a historical cutoff, so we must NOT derive it from raws[0]. Each member still uses
   // its own ≤cutoff latest data for its pillars (point-in-time per member).
   const periodKey = pit ? pit.expectPeriodKey : (mSnap || fSnap || "FY26Q4");
+
+  // ── C/D FLOW FEEDS (insider + block) — replaces the NO_FEEDS stub ──────────────
+  // Load each member's insider/block feeds + end-of-window market cap, CUTOFF-CORRECT
+  // (the same pit.quarterEnd every raw read uses → no post-period leak). Async, so it
+  // runs as a pass BEFORE the (synchronous) member assembly below. A member with no
+  // shareholding gets no ownership at all (own=null), so its feed is skipped; the
+  // loader returns ARRAYS (never null) for everyone else, so C/D land in their proper
+  // SCORED state (neutral when there's no activity) — `dormant_no_feed` now means only
+  // "this loader did not run", never a wired-but-quiet stock.
+  const feedsByStock = new Map<string, FlowFeeds>();
+  for (const r of raws) {
+    if (!r.own.length) continue;
+    const current = r.own[r.own.length - 1];
+    const loaded = await loadFlowFeeds({ stockId: r.stockId, asOf: current.asOnDate, cutoff, daily: r.daily, totalShares: current.totalShares });
+    feedsByStock.set(r.stockId, loaded.feeds);
+  }
+
   const members: MemberComputed[] = raws.map((r) => {
     const fPillar = assemblePillar({ pillar: "foundation", stockId: r.stockId, symbol: r.symbol, snapshot: fSnap, metrics: fMetrics.get(r.symbol)! });
     const mPillar = assemblePillar({ pillar: "momentum", stockId: r.stockId, symbol: r.symbol, snapshot: mSnap, metrics: mMetrics.get(r.symbol)! });
     const market = mktBySym.get(r.symbol)?.result ?? null;
     const mktSub = market && market.state === "scored" ? market.subtotal : null;
-    const ctx: OwnershipContext = { priceProbe: makePriceProbe(r.daily), feeds: NO_FEEDS };
+    const ctx: OwnershipContext = { priceProbe: makePriceProbe(r.daily), feeds: feedsByStock.get(r.stockId) ?? NO_FEEDS };
     const own = r.own.length ? computeOwnership(r.symbol, r.own, ctx) : null;
     const latest = r.own[r.own.length - 1];
     const pillars: PillarInput[] = [

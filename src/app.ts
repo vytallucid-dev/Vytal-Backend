@@ -32,6 +32,7 @@ import {
 import { jobsRouter } from "./routes/job-routes.js";
 import { stocksRouter } from "./routes/stock-health-route.js";
 import { peerGroupHealthRouter } from "./routes/peer-group-health-route.js";
+import { universeHealthRouter } from "./routes/universe-health-route.js";
 
 export const createApp = () => {
   const app = express();
@@ -68,6 +69,10 @@ export const createApp = () => {
   // Health tab. Mounted at /api/peer-groups (no v1); distinct from the v1 ingestion-
   // metrics router of the same path prefix.
   app.use("/api/peer-groups", peerGroupHealthRouter);
+
+  // Read API — universe-level aggregate (all ~93 scored stocks). Mounted at
+  // /api/universe (no v1). Provides the Briefing + Flags + Screen data for the Hub.
+  app.use("/api/universe", universeHealthRouter);
 
   return app;
 };

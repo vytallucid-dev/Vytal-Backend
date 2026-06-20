@@ -213,6 +213,26 @@ export async function getSnapshotSeries(
   return points;
 }
 
+/**
+ * The windowed in-force snapshot REFS (id + period + asOfDate), OLDEST→NEWEST — the
+ * SAME supersede-aware reduction + windowing getSnapshotSeries uses, but returning
+ * the row IDs so a caller can load the full pillar graph (ownership flows, anatomy)
+ * for exactly the in-force rows in the window. Point-in-time by construction.
+ */
+export async function getInForceSeriesRefs(
+  stockId: string,
+  windowQuarters = 12,
+  snapshotType: SnapshotType = "quarterly",
+): Promise<SnapshotRef[]> {
+  const byPeriod = await inForceByPeriod(stockId, snapshotType);
+  if (byPeriod.size === 0) return [];
+  const newestFirst = [...byPeriod.values()].sort(
+    (a, b) =>
+      b.asOfDate.getTime() - a.asOfDate.getTime() || b.periodKey.localeCompare(a.periodKey),
+  );
+  return newestFirst.slice(0, Math.max(1, windowQuarters)).reverse(); // oldest → newest
+}
+
 /** Coverage descriptor (latest StockScoringState, newest-by-createdAt). */
 export interface CoverageInfo {
   coverageState: CoverageState;

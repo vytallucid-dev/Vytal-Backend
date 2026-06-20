@@ -134,6 +134,13 @@ export interface CompositeWritePlan {
 
 /**
  * Plan (dry-run) or commit (real) the snapshot write for one composite.
+ *
+ * ⚠ The LIVE commit path is persistMember() in score-pass.ts, NOT this. writeComposite
+ * is used ONLY by the dry-run diagnostic scripts/composite-check.ts (dryRun:true). Its
+ * real-write branch below is NOT supersede-aware (it looks up version:1 and creates a
+ * version-1 row without chaining version/supersedesId), so committing a CHANGED
+ * composite through here would collide on @@unique([…,version]). Do NOT wire this into
+ * a live path without porting persistMember's live-version chaining first.
  */
 export async function writeComposite(r: CompositeResult, ctx: CompositeWriteContext): Promise<CompositeWritePlan> {
   const notes: string[] = [];

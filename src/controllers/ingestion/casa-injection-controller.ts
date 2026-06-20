@@ -14,6 +14,7 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { injectLiveCasa } from "../../ingestions/bank-supplementary/inject-casa.js";
+import { triggerRescoreForSymbols } from "../../jobs/scoring-triggers.js";
 
 // Envelope-shape only. The rich CASA validation (band, CN-4 citation, 12-bank symbol,
 // metricKey=casa_pct, confidence) lives in injectLiveCasa so every reason is explicit.
@@ -56,6 +57,23 @@ export const injectCasa = async (req: Request, res: Response) => {
       });
     }
 
+    // A genuine CASA write (inserted/superseded) changes the bank's F7 → route it
+    // through the SAME PG_RESCORE path as the other event-driven triggers (deduped per
+    // PG; gated by SCORING_TRIGGERS_ENABLED). An "unchanged" no-op triggers nothing.
+    // Best-effort: a trigger error never fails the (already-committed) CASA write.
+    let rescore: Awaited<ReturnType<typeof triggerRescoreForSymbols>> = null;
+    if (result.action !== "unchanged" && result.symbol) {
+      try {
+        rescore = await triggerRescoreForSymbols(
+          [result.symbol],
+          "hook:casa_inject",
+          `CASA ${result.action} for ${result.symbol} (v${result.version})`,
+        );
+      } catch (err) {
+        console.error("[bank-supplementary/casa] rescore trigger error (CASA still written):", err);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       data: {
@@ -67,9 +85,10 @@ export const injectCasa = async (req: Request, res: Response) => {
         rowId: result.rowId,
         supersededId: result.supersededId,
         warnings: result.warnings,
+        rescoreTriggered: rescore, // { enqueued, deduped, scope, pgIds } | null (off / unchanged)
         note: result.action === "unchanged"
           ? "identical value+source already on file — no new version written"
-          : `CASA ${result.action} as version ${result.version}; flows into F7 on the next live banking score for ${result.symbol}`,
+          : `CASA ${result.action} as version ${result.version}; ${rescore?.enqueued ? `rescore enqueued for PG ${rescore.pgIds.join(",")}` : "rescore not enqueued (triggers off or already pending)"} → flows into F7 for ${result.symbol}`,
       },
     });
   } catch (err) {

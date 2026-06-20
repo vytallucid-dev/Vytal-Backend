@@ -96,7 +96,7 @@ async function main() {
     const pg = await computePgScores(ref); // DB roster (PG5 now reconciled)
     const results = await prisma.$transaction(async (tx) => {
       const out: MemberWriteResult[] = [];
-      for (const m of pg.members) out.push(await persistMember(tx as any, m, scaffold, pg.asOf, pg.peerGroupId, ref.pgId, pg.industry));
+      for (const m of pg.members) out.push(await persistMember(tx as any, m, scaffold, pg.asOf, pg.peerGroupId, ref.pgId, pg.industry, pg.peerStats));
       return out;
     }, { timeout: 120000, maxWait: 20000 });
 

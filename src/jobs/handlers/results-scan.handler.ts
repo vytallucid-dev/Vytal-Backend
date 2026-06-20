@@ -40,6 +40,8 @@ export async function handleResultsScan(
       totalRefreshed: r.refreshed,
       totalSkipped: r.skipped,
       totalFailed: r.failed,
+      // wrote-something → trigger a rescore of this symbol's PG(s).
+      changedSymbols: r.ingested + r.upgraded + r.refreshed > 0 ? [symbol] : [],
     };
   }
 
@@ -86,5 +88,6 @@ export async function handleResultsScan(
     totalSkipped: summary.totalSkipped,
     totalFailed: summary.totalFailed,
     failedSymbols: summary.symbolErrors.map((e) => e.symbol),
+    changedSymbols: summary.changedSymbols,
   };
 }

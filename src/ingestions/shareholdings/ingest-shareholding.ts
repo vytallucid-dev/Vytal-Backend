@@ -50,6 +50,9 @@ export interface BulkIngestResult {
   totalSkipped: number;
   durationMs: number;
   errors: Array<{ symbol: string; error: string }>;
+  /** Symbols that actually had shareholding rows written this run (quartersInserted > 0)
+   *  — fanned out to their PGs by the scoring-trigger layer. */
+  changedSymbols: string[];
 }
 
 // ── Per-stock ingest ──────────────────────────────────────────
@@ -280,12 +283,14 @@ async function runInBatches(
   successStocks: number;
   failedStocks: number;
   errors: Array<{ symbol: string; error: string }>;
+  changedSymbols: string[];
 }> {
   let totalInserted = 0;
   let totalSkipped = 0;
   let successStocks = 0;
   let failedStocks = 0;
   const errors: Array<{ symbol: string; error: string }> = [];
+  const changedSymbols: string[] = [];
   const totalBatches = Math.ceil(symbols.length / batchSize);
 
   for (let i = 0; i < symbols.length; i += batchSize) {
@@ -319,6 +324,8 @@ async function runInBatches(
         const r = outcome.value;
         totalInserted += r.quartersInserted;
         totalSkipped += r.quartersSkipped;
+        // wrote-something → this symbol's PG(s) should rescore.
+        if (r.quartersInserted > 0) changedSymbols.push(symbol);
         if (r.errors.length > 0) {
           errors.push({ symbol, error: r.errors.join("; ") });
           failedStocks++;
@@ -356,7 +363,7 @@ async function runInBatches(
     }
   }
 
-  return { totalInserted, totalSkipped, successStocks, failedStocks, errors };
+  return { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols };
 }
 
 // ── Bulk quarterly job (all active stocks) ────────────────────
@@ -379,7 +386,7 @@ export async function runQuarterlyShareholdingIngest(
     `[Shareholding] Quarterly job: ${stocks.length} stocks to process`,
   );
 
-  const { totalInserted, totalSkipped, successStocks, failedStocks, errors } =
+  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols } =
     await runInBatches(
       stocks.map((s) => s.symbol),
       (symbol) => ingestShareholdingForStock(symbol, 4, signal),
@@ -404,6 +411,7 @@ export async function runQuarterlyShareholdingIngest(
     totalSkipped,
     durationMs,
     errors,
+    changedSymbols,
   };
 }
 
@@ -442,12 +450,13 @@ export async function runSmartShareholdingRefresh(
       totalSkipped: 0,
       durationMs: Date.now() - start,
       errors: [],
+      changedSymbols: [],
     };
   }
 
   console.log(`[Shareholding] Smart refresh: ${dueStocks.length} stocks due`);
 
-  const { totalInserted, totalSkipped, successStocks, failedStocks, errors } =
+  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols } =
     await runInBatches(
       dueStocks.map((s) => s.symbol),
       (symbol) => ingestShareholdingForStock(symbol, 1, signal),
@@ -467,6 +476,7 @@ export async function runSmartShareholdingRefresh(
     totalSkipped,
     durationMs: Date.now() - start,
     errors,
+    changedSymbols,
   };
 }
 
@@ -488,7 +498,7 @@ export async function runShareholdingBackfill(
     `[Shareholding] Backfill: ${stocks.length} stocks × ${quartersBack} quarters`,
   );
 
-  const { totalInserted, totalSkipped, successStocks, failedStocks, errors } =
+  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols } =
     await runInBatches(
       stocks.map((s) => s.symbol),
       (symbol) => ingestShareholdingForStock(symbol, quartersBack, signal),
@@ -508,6 +518,7 @@ export async function runShareholdingBackfill(
     totalSkipped,
     durationMs: Date.now() - start,
     errors,
+    changedSymbols,
   };
 }
 

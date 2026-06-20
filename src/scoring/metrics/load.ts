@@ -23,10 +23,12 @@ export async function resolveStockId(symbol: string): Promise<string | null> {
   return s?.id ?? null;
 }
 
-/** Load all STANDALONE annual fundamentals for a stock, normalized + sorted asc. */
-export async function loadFoundationStandalone(stockId: string): Promise<FoundationAnnual[]> {
+/** Load all STANDALONE annual fundamentals for a stock, normalized + sorted asc.
+ *  `reportDateCutoff` (point-in-time backfill) restricts to periods whose report
+ *  (year-end) date is ≤ the cutoff — never leaking a future period's data. */
+export async function loadFoundationStandalone(stockId: string, reportDateCutoff?: Date): Promise<FoundationAnnual[]> {
   const rows = await prisma.fundamental.findMany({
-    where: { stockId, resultType: "standalone" },
+    where: { stockId, resultType: "standalone", ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) },
     orderBy: { fiscalYear: "asc" },
   });
   return rows.map((r) => ({
@@ -68,10 +70,12 @@ export async function loadFoundationStandalone(stockId: string): Promise<Foundat
   }));
 }
 
-/** Load all STANDALONE quarterly results for a stock, normalized + sorted asc. */
-export async function loadMomentumStandalone(stockId: string): Promise<MomentumQuarter[]> {
+/** Load all STANDALONE quarterly results for a stock, normalized + sorted asc.
+ *  `reportDateCutoff` (point-in-time backfill) restricts to periods whose report
+ *  (quarter-end) date is ≤ the cutoff — never leaking a future quarter's data. */
+export async function loadMomentumStandalone(stockId: string, reportDateCutoff?: Date): Promise<MomentumQuarter[]> {
   const rows = await prisma.quarterlyResult.findMany({
-    where: { stockId, resultType: "standalone" },
+    where: { stockId, resultType: "standalone", ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) },
     orderBy: [{ fiscalYear: "asc" }, { quarter: "asc" }],
   });
   return rows.map((r) => ({

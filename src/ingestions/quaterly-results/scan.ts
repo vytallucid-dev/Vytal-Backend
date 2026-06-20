@@ -553,6 +553,10 @@ export interface ScanUniverseResult {
   totalSkipped: number;
   totalFailed: number;
   symbolErrors: { symbol: string; error: string }[];
+  /** Symbols that ACTUALLY had fundamentals/quarterly rows written this scan
+   *  (ingested + upgraded + refreshed > 0). "changed" = wrote-something, not merely
+   *  scanned — the scoring-trigger layer fans these out to their PGs. */
+  changedSymbols: string[];
 }
 
 export async function scanUniverse(
@@ -581,6 +585,7 @@ export async function scanUniverse(
     totalSkipped: 0,
     totalFailed: 0,
     symbolErrors: [],
+    changedSymbols: [],
   };
 
   for (let i = 0; i < stocks.length; i++) {
@@ -593,6 +598,8 @@ export async function scanUniverse(
       result.totalRefreshed += r.refreshed;
       result.totalSkipped += r.skipped;
       result.totalFailed += r.failed;
+      // "Changed" = this symbol actually had rows written (not merely scanned/skipped).
+      if (r.ingested + r.upgraded + r.refreshed > 0) result.changedSymbols.push(symbol);
 
       if (options.onProgress) {
         await options.onProgress(symbol, r, {

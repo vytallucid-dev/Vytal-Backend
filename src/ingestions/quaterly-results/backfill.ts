@@ -114,6 +114,7 @@ export async function backfillSymbols(
     totalSkipped: 0,
     totalFailed: 0,
     symbolErrors: [],
+    changedSymbols: [],
   };
 
   for (let i = 0; i < symbols.length; i++) {
@@ -126,6 +127,7 @@ export async function backfillSymbols(
       result.totalRefreshed += r.refreshed;
       result.totalSkipped += r.skipped;
       result.totalFailed += r.failed;
+      if (r.ingested + r.upgraded + r.refreshed > 0) result.changedSymbols.push(symbol);
       console.log(
         `[backfill] ${i + 1}/${symbols.length} ${symbol}: ok (+${r.ingested})`,
       );

@@ -12,9 +12,9 @@ import type { BankingAnnual, BankingQuarter, BankingCtx, SupplementaryPoint } fr
 
 const n = (d: { toNumber: () => number } | null): number | null => (d === null ? null : d.toNumber());
 
-export async function loadBankingAnnualStandalone(stockId: string): Promise<BankingAnnual[]> {
+export async function loadBankingAnnualStandalone(stockId: string, reportDateCutoff?: Date): Promise<BankingAnnual[]> {
   const rows = await prisma.bankingFundamental.findMany({
-    where: { stockId, resultType: "standalone" },
+    where: { stockId, resultType: "standalone", ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) },
     orderBy: { fiscalYear: "asc" },
   });
   return rows.map((r) => ({
@@ -50,9 +50,9 @@ export async function loadBankingAnnualStandalone(stockId: string): Promise<Bank
   }));
 }
 
-export async function loadBankingQuarterlyStandalone(stockId: string): Promise<BankingQuarter[]> {
+export async function loadBankingQuarterlyStandalone(stockId: string, reportDateCutoff?: Date): Promise<BankingQuarter[]> {
   const rows = await prisma.bankingQuarterlyResult.findMany({
-    where: { stockId, resultType: "standalone" },
+    where: { stockId, resultType: "standalone", ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) },
     orderBy: [{ fiscalYear: "asc" }, { quarter: "asc" }],
   });
   return rows.map((r) => ({
@@ -92,11 +92,15 @@ export async function loadSupplementary(symbol: string): Promise<{ casa: Map<str
   return { casa, tier1 };
 }
 
-/** Build the full banking compute context for a stock. */
-export async function loadBankingCtx(symbol: string, stockId: string): Promise<BankingCtx> {
+/** Build the full banking compute context for a stock.
+ *  `reportDateCutoff` (point-in-time backfill) restricts annual + quarterly rows to
+ *  periods whose report date is ≤ the cutoff. BankSupplementary (CASA/Tier-1) is
+ *  fiscalYear-keyed and consumed only for the snapshot FY (≤ cutoff), so it stays
+ *  point-in-time-consistent on consumption without a date filter. */
+export async function loadBankingCtx(symbol: string, stockId: string, reportDateCutoff?: Date): Promise<BankingCtx> {
   const [annual, quarterly, supp] = await Promise.all([
-    loadBankingAnnualStandalone(stockId),
-    loadBankingQuarterlyStandalone(stockId),
+    loadBankingAnnualStandalone(stockId, reportDateCutoff),
+    loadBankingQuarterlyStandalone(stockId, reportDateCutoff),
     loadSupplementary(symbol),
   ]);
   return { symbol, annual, quarterly, casa: supp.casa, tier1: supp.tier1 };

@@ -17,6 +17,7 @@ import type { Prisma } from "../generated/prisma/client.js";
 import { makeJobContext, JobCancelledError } from "./context.js";
 import { getHandler } from "./dispatcher.js";
 import { JobStatus } from "./types.js";
+import { maybeEnqueueRescoresForJob } from "./scoring-triggers.js";
 
 interface WorkerOptions {
   /** How often to poll when no jobs are pending. Default 3000ms. */
@@ -208,6 +209,24 @@ class JobWorker {
         console.log(
           `[worker] job ${job.id} (${job.type}) succeeded in ${Date.now() - start}ms`,
         );
+        // ── CENTRAL SCORING TRIGGER ──────────────────────────────────────────
+        // After a job genuinely SUCCEEDS, enqueue the PG_RESCORE(s) its new data
+        // implies (prices → all 13 scored PGs; results-scan/shareholding → the
+        // affected PGs). Gated by SCORING_TRIGGERS_ENABLED. A trigger error NEVER
+        // changes the job's outcome — the job already succeeded; this is best-effort.
+        try {
+          const trig = await maybeEnqueueRescoresForJob(job.type, result);
+          if (trig && (trig.enqueued > 0 || trig.deduped > 0)) {
+            console.log(
+              `[worker] job ${job.id} (${job.type}) → scoring trigger: ${trig.enqueued} rescore(s) enqueued, ${trig.deduped} deduped [${trig.scope}: ${trig.pgIds.join(",")}]`,
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[worker] job ${job.id} (${job.type}) scoring-trigger error (job still SUCCEEDED):`,
+            err,
+          );
+        }
       } else {
         console.log(
           `[worker] job ${job.id} (${job.type}) completed but status was already terminal — suppressing SUCCEEDED`,

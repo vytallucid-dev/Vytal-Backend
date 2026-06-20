@@ -36,6 +36,12 @@ export const JobTypes = {
   PEER_METRICS_COMPUTE_ALL: "peer_metrics_compute_all",
   RESULTS_SCAN: "results_scan",
   LEGACY_BACKFILL: "legacy_backfill",
+  // ── Event-driven scoring ───────────────────────────────────
+  // Recompute one peer group's Health Scores (PG-scoped). Enqueued by the
+  // scoring-trigger layer after an ingestion job lands new data (prices → all
+  // scored PGs; fundamentals/shareholding → only the affected PGs). Idempotent:
+  // unchanged inputs skip-identical (no write); genuine change supersedes.
+  PG_RESCORE: "pg_rescore",
 } as const;
 
 export type JobType = (typeof JobTypes)[keyof typeof JobTypes];
@@ -153,6 +159,22 @@ export interface PriceBackfillPayload {
   days: number;
 }
 
+export interface PgRescorePayload {
+  /** Logical PG id used as the bar-derivation path / scoring key, e.g. "PG5".
+   *  NOT the DB peer_groups.id (a uuid). */
+  pgId: string;
+  /** DB peer_groups.name — computePgScores resolves the live roster by this. Must
+   *  match the seed `name` verbatim (see scoring/composite/pg-registry.ts). */
+  pgName: string;
+  /** Seed key carried for PgRef completeness, e.g. "pg5_private_banks". */
+  seedKey: string;
+  /** Trigger source: the completed job type that caused this rescore (e.g.
+   *  "eod_prices_daily"), or "manual" / "admin" for an operator-issued rescore. */
+  triggeredBy: string;
+  /** Optional human-readable reason for the audit trail. */
+  reason?: string;
+}
+
 // ── Daily operational payloads (no config — always "today") ──
 
 export interface EodPricesDailyPayload {}
@@ -217,7 +239,8 @@ export type JobPayload =
       data: PeerMetricsComputeAllPayload;
     }
   | { type: typeof JobTypes.RESULTS_SCAN; data: ResultsScanPayload }
-  | { type: typeof JobTypes.LEGACY_BACKFILL; data: LegacyBackfillPayload };
+  | { type: typeof JobTypes.LEGACY_BACKFILL; data: LegacyBackfillPayload }
+  | { type: typeof JobTypes.PG_RESCORE; data: PgRescorePayload };
 
 // ── Retry policy per job type ────────────────────────────────
 // Conservative defaults. Most ingest jobs should NOT auto-retry —
@@ -253,6 +276,10 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   [JobTypes.RESULTS_SCAN]: { maxAttempts: 3 },
   // Legacy backfill — manual, network-bound; 3 attempts for transient NSE failures
   [JobTypes.LEGACY_BACKFILL]: { maxAttempts: 3 },
+  // PG rescore — DB-only, idempotent (fingerprint + append-only supersede). The whole
+  // per-PG write is one transaction, so a retry after a transient DB error re-runs
+  // cleanly (rolled-back partial → nothing to undo). 2 attempts.
+  [JobTypes.PG_RESCORE]: { maxAttempts: 2 },
 };
 
 // ── Job status constants ────────────────────────────────────

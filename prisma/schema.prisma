@@ -13,10 +13,11 @@ datasource db {
 // pre-seed this table and link stocks to it.
 // ─────────────────────────────────────────────
 model Sector {
-  id          String @id @default(uuid())
-  name        String @unique // "IT Services", "Banking", "FMCG" …
-  displayName String @map("display_name")
-  stockCount  Int    @default(0) @map("stock_count")
+  id          String       @id @default(uuid())
+  name        String       @unique // "IT Services", "Banking", "FMCG" …
+  displayName String       @map("display_name")
+  sectorClass SectorClass? @map("sector_class")
+  stockCount  Int          @default(0) @map("stock_count")
 
   // Health score config (JSONB) — populated later
   healthScoreWeightages Json? @map("health_score_weightages")
@@ -28,6 +29,15 @@ model Sector {
   peerGroups PeerGroup[]
 
   @@map("sectors")
+}
+
+enum SectorClass {
+  Quality
+  Defensive
+  Commodity
+  Cyclical
+  Growth
+  PSU
 }
 
 // ─────────────────────────────────────────────
@@ -2080,8 +2090,13 @@ model PeerStatsSnapshot {
   run          ScoringRun    @relation(fields: [runId], references: [id])
   metricScores MetricScore[]
 
-  @@unique([peerGroupId, metricKey, runId])
+  // Identity is (PG, metric, run, AS-OF). asOfDate is REQUIRED in the key because the
+  // historical backfill scores many PERIODS under ONE runId — peer μ/σ is per-period,
+  // so (PG, metric, runId) alone would collide across quarters. The live/rescore path
+  // uses one run per period, so asOfDate just makes the per-pass row explicit there.
+  @@unique([peerGroupId, metricKey, runId, asOfDate], name: "peer_stats_identity")
   @@index([runId, metricKey])
+  @@index([peerGroupId, asOfDate]) // natural-key read lookup (assembler fallback when the MetricScore FK is null)
   @@map("score_peer_stats")
 }
 

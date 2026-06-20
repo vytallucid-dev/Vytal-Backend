@@ -16,10 +16,14 @@ export interface CleanedSeries {
   report: CleanResult;    // decomposable clean report (events, corrections, quarantine)
 }
 
-/** Load raw daily closes for a stock and return the split/bonus-cleaned series. */
-export async function getCleanedCloses(stockId: string, symbol: string): Promise<CleanedSeries> {
+/** Load raw daily closes for a stock and return the split/bonus-cleaned series.
+ *  `asOfCutoff` (point-in-time backfill) restricts the loaded series to closes with
+ *  date ≤ the cutoff BEFORE cleaning — so a FUTURE split/bonus/quarantine can never
+ *  retroactively adjust or quarantine a historical window (a real point-in-time leak
+ *  the §7.2 full-series cleaner would otherwise introduce). */
+export async function getCleanedCloses(stockId: string, symbol: string, asOfCutoff?: Date): Promise<CleanedSeries> {
   const rows = await prisma.dailyPrice.findMany({
-    where: { stockId },
+    where: { stockId, ...(asOfCutoff ? { date: { lte: asOfCutoff } } : {}) },
     orderBy: { date: "asc" },
     select: { date: true, close: true },
   });

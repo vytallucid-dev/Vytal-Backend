@@ -36,7 +36,7 @@ export async function scoreMarketForPg(pgName: string, asOfOverride?: Date): Pro
   const lastDates: number[] = [];
   for (const sp of pg.stocks) {
     const { id, symbol } = sp.stock;
-    const cs = await getCleanedCloses(id, symbol);
+    const cs = await getCleanedCloses(id, symbol, asOfOverride);
     let series = cs.closes;
     let quarantined = false;
     if (cs.report.quarantined && cs.report.quarantineFrom) {

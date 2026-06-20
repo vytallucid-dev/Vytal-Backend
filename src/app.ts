@@ -30,6 +30,8 @@ import {
   shareholdingRouter,
 } from "./routes/ingestion/shareholding-route.js";
 import { jobsRouter } from "./routes/job-routes.js";
+import { stocksRouter } from "./routes/stock-health-route.js";
+import { peerGroupHealthRouter } from "./routes/peer-group-health-route.js";
 
 export const createApp = () => {
   const app = express();
@@ -57,6 +59,15 @@ export const createApp = () => {
   app.use("/api/v1/admin/bank-supplementary", adminBankSupplementaryRouter);
   app.use("/api/v1/admin/legacy-backfill", legacyBackfillRouter);
   app.use("/api/v1/admin/jobs", jobsRouter);
+
+  // Read API — per-stock Health Score. Mounted at /api/stocks (no v1) to match the
+  // frontend hook path. Canonical "health snapshot read" reused by later surfaces.
+  app.use("/api/stocks", stocksRouter);
+
+  // Read API — peer-group aggregates (scoring). The index-page list + the per-pond
+  // Health tab. Mounted at /api/peer-groups (no v1); distinct from the v1 ingestion-
+  // metrics router of the same path prefix.
+  app.use("/api/peer-groups", peerGroupHealthRouter);
 
   return app;
 };

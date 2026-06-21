@@ -17,6 +17,7 @@ import type {
   SectorClass,
   TrajectoryMarker,
   DivergenceFlag,
+  FlowCategoryState,
 } from "./health-view.types.js";
 import type { ScopeDispersion } from "./scope-aggregate.js";
 
@@ -105,6 +106,8 @@ export interface FiredPattern {
   patternKey: string;
   direction: string | null;
   severity: string | null;
+  /** File 1 §5E display state; defaults "active". */
+  displayState?: "active" | "pending_data_integration" | "dampened";
 }
 
 export interface PeerGroupMemberView {
@@ -121,6 +124,9 @@ export interface PeerGroupMemberView {
   divergence: { flag: DivergenceFlag; gap: number };
   firedFlags: FiredFlag[];
   firedPatterns: FiredPattern[];
+  /** C/D ownership flow-category state — read-projection of score_ownership_flows.category_state.
+   *  undefined when the stock has no shareholding data (own=null in the scoring pass). */
+  flowCategoryStates?: { C_insider: FlowCategoryState; D_block: FlowCategoryState };
 }
 
 /** How widely a flag/pattern is shared across the pond — the clustering read. */
@@ -136,6 +142,9 @@ export interface PathologyCensusItem {
   members: string[]; // symbols firing, worst-first then alpha
   /** isolated (N=1) | widespread (N/M ≥ 0.5) | cluster (between). */
   reach: PathologyReach;
+  /** Dominant display state across firing members (File 1 §5E). A pattern dampened PG-wide
+   *  (>80%) surfaces as "dampened" so the board can show the sector-wide chip. Defaults "active". */
+  displayState?: "active" | "pending_data_integration" | "dampened";
 }
 
 export interface PeerMetricMemberPoint {

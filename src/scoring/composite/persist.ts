@@ -61,7 +61,7 @@ export function snapshotInputsFingerprint(r: CompositeResult): string {
  *  truth. Requires the four pillar FKs resolved (asserted in real mode). */
 export function toScoreSnapshotRow(
   r: CompositeResult,
-  ctx: { runId: string; specVersionId: string; bandMappingVersionId: string; peerGroupId: string; barPath: string; industryPath: string; pillarScoreIds: Record<Pillar, string> },
+  ctx: { runId: string; specVersionId: string; bandMappingVersionId: string; peerGroupId: string; barPath: string; industryPath: string; pillarScoreIds: Record<Pillar, string>; maskHeat?: string | null; pgTrailingMovePct?: number | null },
 ) {
   if (r.state !== "scored" || r.composite === null || r.labelBand === null) throw new Error("toScoreSnapshotRow: composite is unavailable — no snapshot row is written");
   const sub = (p: Pillar) => {
@@ -98,6 +98,9 @@ export function toScoreSnapshotRow(
     wOwnership: d4(r.appliedWeights.ownership),
     weightRedistributionReason: r.redistributionReason,
     divergence: r.divergence === null ? 0 : d4(r.divergence),
+    // Pond mask (File 1 §5) — PG-level heat inherited by this member; null when not established.
+    maskHeat: ctx.maskHeat ?? null,
+    pgTrailingMovePct: ctx.pgTrailingMovePct == null ? null : d4(ctx.pgTrailingMovePct),
     inputsFingerprint: snapshotInputsFingerprint(r),
   };
 }
@@ -113,7 +116,9 @@ export function toR1RedFlagRow(
     symbol: r.symbol,
     asOfDate: r.asOfDate,
     flagKey: "ownership_R1_pledge",
-    severity: "high",
+    // File 1 §5A: red flags are severity "Critical" (Watch With Care). The column is a
+    // free String? (no enum) — was "high" (under-severe vs spec); corrected to "critical".
+    severity: "critical",
     tier: "auto" as const,
     triggeringValues: (r1Triggering ?? undefined) as object | undefined,
     guardrailEventId: null as string | null,

@@ -108,7 +108,7 @@ async function main() {
       const qe = quarterEnd(pk);
       let computed;
       try {
-        computed = await computePgScores(ref, { pointInTime: { quarterEnd: qe, expectPeriodKey: pk } });
+        computed = await computePgScores(ref, { withFindings: true, pointInTime: { quarterEnd: qe, expectPeriodKey: pk } });
       } catch (e) {
         perPeriod.push(`${pk}:ERR(${(e as Error).message.slice(0, 40)})`);
         continue;
@@ -127,7 +127,7 @@ async function main() {
           // can't be persisted with a real Ownership pillar → record as no_snapshot, never
           // fabricate one. (persistMember would otherwise throw and abort the PG.)
           if (!m.own || !m.market) { out.push({ action: "no_snapshot", r1: false, composite: null }); continue; }
-          const res: MemberWriteResult = await persistMember(tx, m, scaffold!, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats);
+          const res: MemberWriteResult = await persistMember(tx, m, scaffold!, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats, { writeFindings: true });
           out.push({ action: res.action, r1: res.r1Written, composite: res.composite });
         }
         return out;

@@ -80,6 +80,15 @@ export interface DivergenceView {
   storedScalar: number;
 }
 
+/** PG-level pond mask (File 1 §5 / File 2 §3.3) — inherited from the snapshot's PG. */
+export interface PondMask {
+  heat: "hot" | "warm" | "calm";
+  /** heat === "hot" — the boolean the §5 price-linked cards (B/C1/D) consume. */
+  isHot: boolean;
+  /** signed pond median ~21d trailing return %, e.g. +12.4 / −17.5 (null when n/a). */
+  trailingMovePct: number | null;
+}
+
 export interface VerdictSection {
   composite: number;
   label: BandColour;
@@ -88,8 +97,8 @@ export interface VerdictSection {
   trajectoryMarker: TrajectoryMarker | null;
   trajectoryDelta: number | null;
   divergence: DivergenceView;
-  /** PG-level mask — no such concept in the schema; always null (flagged). */
-  pondMask: null;
+  /** PG-level pond mask; null when not established (no member quorum) or pre-stamp. */
+  pondMask: PondMask | null;
 }
 
 export interface MetricBars {
@@ -240,6 +249,11 @@ export interface PatternView {
   patternKey: string;
   direction: string | null;
   severity: string | null;
+  /** File 1 §5E display state: active | pending_data_integration | dampened. */
+  displayState: "active" | "pending_data_integration" | "dampened";
+  /** Effective §5E score impact; a dampened pattern carries the HALVED value. null for
+   *  structural cards (B/C/D/F/G/H/I) which carry no §5E magnitude. */
+  magnitude: number | null;
   evidence: unknown | null;
   metricRefs: unknown | null;
 }

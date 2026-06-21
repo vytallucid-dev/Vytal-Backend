@@ -9,6 +9,7 @@
 import type { Request, Response } from "express";
 import {
   buildScoredStocksList,
+  buildUniverseStocksList,
   buildToolScan,
 } from "../scoring/read/stocks-list.service.js";
 import { buildOwnershipView } from "../scoring/read/ownership-series.service.js";
@@ -20,6 +21,16 @@ export const getScoredStocks = async (_req: Request, res: Response) => {
   } catch (err) {
     console.error("[stocks] list error:", err);
     return res.status(500).json({ message: "Failed to build scored-stock list" });
+  }
+};
+
+export const getUniverseStocks = async (_req: Request, res: Response) => {
+  try {
+    const list = await buildUniverseStocksList();
+    return res.json(list);
+  } catch (err) {
+    console.error("[stocks/universe] list error:", err);
+    return res.status(500).json({ message: "Failed to build universe-stock list" });
   }
 };
 

@@ -16,11 +16,15 @@ import { getCleanedCloses } from "../price/load.js";
 import type { DailyClose } from "../price/range.js";
 import * as SC from "./universal-subcomponents.js";
 import { scoreSubComponent, assembleMarketUniversal, type MarketUniversalResult } from "./market-universal.js";
+import { computePondHeat, memberTrailingReturnPct, type PondHeat } from "../findings/section2/pond-heat.js";
 
 export interface MemberMarket { symbol: string; stockId: string; result: MarketUniversalResult; quarantined: boolean; nDays: number }
 export interface PgMarket {
   pgName: string; asOf: Date;
   sectorMedian1yr: number | null; sectorBaselineVol: number | null; poolN: number; d1Reason: string | null;
+  /** PG-level pond heat (File 1 §5 mask) — the pure-price ~21d trailing move of the pond, a
+   *  sibling of sectorMedian1yr off the SAME cleaned closes + quarantine handling. */
+  pondHeat: PondHeat;
   members: MemberMarket[];
 }
 
@@ -55,6 +59,14 @@ export async function scoreMarketForPg(pgName: string, asOfOverride?: Date): Pro
   const secRet = SC.sectorOneYearReturnMedian(peers, asOf);
   const secVol = SC.sectorBaselineVol(peers, asOf);
 
+  // ── POND HEAT (File 1 §5 mask) — each NON-quarantined member's pure-price ~21d trailing
+  // return off the cleaned closes; the pond's heat = magnitude of their median move. A
+  // quarantined member is excluded entirely (its truncated series would distort the pond move
+  // — the same "never poison the pool" discipline the sector references use). ──
+  const pondHeat = computePondHeat(
+    raw.map((r) => (r.quarantined ? null : memberTrailingReturnPct(r.series.map((d) => d.close)))),
+  );
+
   const members: MemberMarket[] = raw.map((r) => {
     const subs = [
       scoreSubComponent("A1", SC.a1RangePosition52w(r.series, asOf)),
@@ -68,5 +80,5 @@ export async function scoreMarketForPg(pgName: string, asOfOverride?: Date): Pro
     return { symbol: r.symbol, stockId: r.stockId, result: assembleMarketUniversal(subs), quarantined: r.quarantined, nDays: r.series.length };
   });
 
-  return { pgName: pg.name, asOf, sectorMedian1yr: secRet.median, sectorBaselineVol: secVol.baseline, poolN: secRet.n, d1Reason: secVol.reason, members };
+  return { pgName: pg.name, asOf, sectorMedian1yr: secRet.median, sectorBaselineVol: secVol.baseline, poolN: secRet.n, d1Reason: secVol.reason, pondHeat, members };
 }

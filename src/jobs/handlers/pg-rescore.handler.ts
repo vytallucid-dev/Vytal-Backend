@@ -77,7 +77,9 @@ export async function handlePgRescore(
 
   // 1. COMPUTE — pure reads, no writes. Live (NOW), current DB data. Industry handled
   //    internally; pg.industry drives the persist's industryPath.
-  const pg = await computePgScores(ref);
+  //    withFindings ON (the gate flipped at Stage F/G): the §5 findings catalog fires +
+  //    dampens per member, attached to m.findings, ready for persistMember to write.
+  const pg = await computePgScores(ref, { withFindings: true });
 
   // Honour cancellation before the (only) write phase. The compute is already done;
   // aborting here simply means "don't persist".
@@ -173,6 +175,7 @@ export async function handlePgRescore(
             ref.pgId,
             pg.industry,
             pg.peerStats,
+            { writeFindings: true }, // gate flipped (Stage F/G): a created/superseded snapshot persists its findings
           ),
         );
       }

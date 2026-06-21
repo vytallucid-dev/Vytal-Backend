@@ -43,6 +43,19 @@ export interface ScoredStockListItem {
   band: LabelBand;
 }
 
+/** One lean row per stock in the FULL universe (scored + not-yet-scored) — the
+ *  screener typeahead spans every tracked stock, not just the scored subset.
+ *  `scored=false` rows carry null composite/band (no in-force snapshot yet); the
+ *  detail surface answers them with the honest not-scored notice. */
+export interface UniverseStockListItem {
+  symbol: string;
+  name: string;
+  sector: SectorRef | null;
+  scored: boolean;
+  composite: number | null;
+  band: LabelBand | null;
+}
+
 /** One row per scored stock, ranked by "most-interesting journey" for a tool's
  *  landing scan. `marker`/`delta`/`previousComposite` are null for a single-period
  *  (building-history) stock. `spark` is the recent in-force composite series

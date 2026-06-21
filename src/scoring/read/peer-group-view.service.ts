@@ -24,6 +24,7 @@ import type {
   DivergenceFlag,
   TrajectoryMarker,
   MetricBand,
+  FlowCategoryState,
 } from "./health-view.types.js";
 import type {
   PeerGroupListItem,
@@ -268,7 +269,14 @@ function loadFullCrossSection(ids: string[]) {
       foundationPillar: { include: { metricScores: { include: { metricBarSet: true } } } },
       momentumPillar: { include: { metricScores: { include: { metricBarSet: true } } } },
       marketPillar: { select: { pillarState: true } },
-      ownershipPillar: { select: { pillarState: true } },
+      ownershipPillar: {
+        select: {
+          pillarState: true,
+          ownershipScore: {
+            select: { flowCategories: { select: { category: true, categoryState: true } } },
+          },
+        },
+      },
       redFlags: true,
       patterns: true,
     },
@@ -355,9 +363,17 @@ export async function buildPeerGroupHealthView(
   const memberViews: PeerGroupMemberView[] = [];
 
   // pathology census accumulators
-  type Acc = { severity: string | null; members: { symbol: string; sev: string | null }[] };
+  type Acc = { severity: string | null; members: { symbol: string; sev: string | null }[]; states: string[] };
   const flagAcc = new Map<string, Acc>();
   const patternAcc = new Map<string, Acc>();
+  // Dominant display state across a pattern's firing members: dampened wins (a PG-wide
+  // dampening marks every member), else pending only when ALL are pending, else active.
+  const dominantState = (states: string[]): "active" | "pending_data_integration" | "dampened" =>
+    states.some((s) => s === "dampened")
+      ? "dampened"
+      : states.length > 0 && states.every((s) => s === "pending_data_integration")
+        ? "pending_data_integration"
+        : "active";
 
   // trajectory series per member (also powers movers) — reuse the shared resolver.
   const series2 = await Promise.all(
@@ -382,7 +398,7 @@ export async function buildPeerGroupHealthView(
       .map((rf) => ({ flagKey: rf.flagKey, severity: rf.severity, tier: rf.tier as "auto" | "review" }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
     const firedPatterns = [...s.patterns]
-      .map((p) => ({ patternKey: p.patternKey, direction: p.direction, severity: p.severity }))
+      .map((p) => ({ patternKey: p.patternKey, direction: p.direction, severity: p.severity, displayState: (p.displayState ?? "active") as "active" | "pending_data_integration" | "dampened" }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
     // trajectory marker from the member's last-2 in-force composites
@@ -395,6 +411,14 @@ export async function buildPeerGroupHealthView(
       trajectoryMarker = d > TRAJECTORY_EPS ? "improving" : d < -TRAJECTORY_EPS ? "deteriorating" : "stable";
     }
 
+    const flowCats = s.ownershipPillar?.ownershipScore?.flowCategories ?? [];
+    const cState = flowCats.find((f) => f.category === "C_insider")?.categoryState;
+    const dState = flowCats.find((f) => f.category === "D_block")?.categoryState;
+    const flowCategoryStates =
+      cState != null && dState != null
+        ? { C_insider: cState as FlowCategoryState, D_block: dState as FlowCategoryState }
+        : undefined;
+
     memberViews.push({
       symbol: s.symbol,
       name: nameById.get(s.stockId) ?? s.symbol,
@@ -406,6 +430,7 @@ export async function buildPeerGroupHealthView(
       divergence: divergenceOf(scoredSubs),
       firedFlags,
       firedPatterns,
+      flowCategoryStates,
     });
 
     scopeMembers.push({
@@ -420,15 +445,16 @@ export async function buildPeerGroupHealthView(
 
     // accumulate pathology
     for (const rf of s.redFlags) {
-      const acc = flagAcc.get(rf.flagKey) ?? { severity: null, members: [] };
+      const acc = flagAcc.get(rf.flagKey) ?? { severity: null, members: [], states: [] };
       acc.severity = worseSeverity(acc.severity, rf.severity);
       acc.members.push({ symbol: s.symbol, sev: rf.severity });
       flagAcc.set(rf.flagKey, acc);
     }
     for (const p of s.patterns) {
-      const acc = patternAcc.get(p.patternKey) ?? { severity: null, members: [] };
+      const acc = patternAcc.get(p.patternKey) ?? { severity: null, members: [], states: [] };
       acc.severity = worseSeverity(acc.severity, p.severity);
       acc.members.push({ symbol: s.symbol, sev: p.severity });
+      acc.states.push(p.displayState ?? "active");
       patternAcc.set(p.patternKey, acc);
     }
   }
@@ -453,6 +479,7 @@ export async function buildPeerGroupHealthView(
           outOf: M,
           members,
           reach: reachOf(members.length, M),
+          displayState: dominantState(v.states),
         };
       })
       .sort(

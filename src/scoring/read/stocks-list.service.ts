@@ -20,6 +20,7 @@ import type {
 } from "./health-view.types.js";
 import type {
   ScoredStockListItem,
+  UniverseStockListItem,
   StockScanItem,
   DivergenceScanItem,
   DivergenceConfig,
@@ -183,6 +184,42 @@ export async function buildScoredStocksList(): Promise<ScoredStockListItem[]> {
           band: latest.labelBand,
         },
       ];
+    })
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+/**
+ * One lean row per stock in the FULL universe (scored + not-yet-scored), so the
+ * screener typeahead can resolve every tracked stock — not only the scored subset.
+ * Scored rows carry composite + band; the rest are `scored:false` with nulls.
+ * Reuses the SAME two-query loadUniverse + in-force reduction as the scored list.
+ * Sorted by symbol for a stable typeahead order.
+ */
+export async function buildUniverseStocksList(): Promise<UniverseStockListItem[]> {
+  const { stocks, byStock } = await loadUniverse();
+
+  return stocks
+    .map((st): UniverseStockListItem => {
+      const rows = byStock.get(st.id);
+      if (!rows || rows.length === 0) {
+        return {
+          symbol: st.symbol,
+          name: st.name,
+          sector: sectorRef(st.sector),
+          scored: false,
+          composite: null,
+          band: null,
+        };
+      }
+      const latest = inForceNewestFirst(rows)[0];
+      return {
+        symbol: st.symbol,
+        name: st.name,
+        sector: sectorRef(st.sector),
+        scored: true,
+        composite: round2(latest.composite),
+        band: latest.labelBand,
+      };
     })
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 }

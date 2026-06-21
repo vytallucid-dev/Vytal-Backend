@@ -254,7 +254,15 @@ export async function buildHealthSnapshotView(
     trajectoryMarker,
     trajectoryDelta,
     divergence,
-    pondMask: null, // no PG-level mask in the schema (flagged)
+    // Pond mask (File 1 §5) — PG-level heat stamped on this snapshot. null ⇒ not established /
+    // pre-stamp ⇒ the read layer treats as no-mask. isHot is the boolean the §5 cards consume.
+    pondMask: snap.maskHeat
+      ? {
+          heat: snap.maskHeat as "hot" | "warm" | "calm",
+          isHot: snap.maskHeat === "hot",
+          trailingMovePct: numN(snap.pgTrailingMovePct),
+        }
+      : null,
   };
 
   // ── suppression reasons (one lookup keyed by snapshotKey = periodKey) ──
@@ -435,6 +443,8 @@ export async function buildHealthSnapshotView(
       patternKey: p.patternKey,
       direction: p.direction,
       severity: p.severity,
+      displayState: (p.displayState ?? "active") as PatternView["displayState"],
+      magnitude: numN(p.magnitude),
       evidence: p.evidence ?? null,
       metricRefs: p.metricRefs ?? null,
     }))

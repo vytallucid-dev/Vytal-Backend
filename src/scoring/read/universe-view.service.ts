@@ -18,6 +18,7 @@ import type {
   LabelBand,
   TrajectoryMarker,
   DivergenceFlag,
+  FlowCategoryState,
 } from "./health-view.types.js";
 import type {
   PathologyCensusItem,
@@ -177,15 +178,31 @@ function loadUniverseCrossSection(ids: string[]) {
       foundationPillar: { select: { pillarState: true } },
       momentumPillar: { select: { pillarState: true } },
       marketPillar: { select: { pillarState: true } },
-      ownershipPillar: { select: { pillarState: true } },
+      ownershipPillar: {
+        select: {
+          pillarState: true,
+          ownershipScore: {
+            select: { flowCategories: { select: { category: true, categoryState: true } } },
+          },
+        },
+      },
       redFlags: { select: { flagKey: true, severity: true, tier: true } },
-      patterns: { select: { patternKey: true, direction: true, severity: true } },
+      patterns: { select: { patternKey: true, direction: true, severity: true, displayState: true } },
     },
   });
 }
 
 // ── pathology census builder ────────────────────────────────────────────────
-type Acc = { severity: string | null; members: { symbol: string; sev: string | null }[] };
+type Acc = { severity: string | null; members: { symbol: string; sev: string | null }[]; states: string[] };
+
+// Dominant display state across a pattern's firing members: dampened wins (PG-wide dampening
+// marks every member), else pending only when ALL are pending, else active.
+const dominantState = (states: string[]): "active" | "pending_data_integration" | "dampened" =>
+  states.some((s) => s === "dampened")
+    ? "dampened"
+    : states.length > 0 && states.every((s) => s === "pending_data_integration")
+      ? "pending_data_integration"
+      : "active";
 
 function buildCensus(
   acc: Map<string, Acc>,
@@ -208,6 +225,7 @@ function buildCensus(
         outOf: M,
         members,
         reach: reachOf(members.length, M),
+        displayState: dominantState(v.states),
       };
     })
     .sort(
@@ -422,6 +440,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
         patternKey: p.patternKey,
         direction: p.direction,
         severity: p.severity,
+        displayState: (p.displayState ?? "active") as FiredPattern["displayState"],
       }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
@@ -438,6 +457,14 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
 
     const sector = sectorByPg.get(currentLeanByStock.get(s.stockId)?.peerGroupId ?? "") ?? null;
 
+    const flowCats = s.ownershipPillar?.ownershipScore?.flowCategories ?? [];
+    const cState = flowCats.find((f) => f.category === "C_insider")?.categoryState;
+    const dState = flowCats.find((f) => f.category === "D_block")?.categoryState;
+    const flowCategoryStates =
+      cState != null && dState != null
+        ? { C_insider: cState as FlowCategoryState, D_block: dState as FlowCategoryState }
+        : undefined;
+
     memberViews.push({
       symbol: s.symbol,
       name: nameById.get(s.stockId) ?? s.symbol,
@@ -450,6 +477,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       firedFlags,
       firedPatterns,
       sector,
+      flowCategoryStates,
     });
 
     scopeMembers.push({
@@ -464,15 +492,16 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
 
     // Pathology accumulators
     for (const rf of s.redFlags) {
-      const acc = flagAcc.get(rf.flagKey) ?? { severity: null, members: [] };
+      const acc = flagAcc.get(rf.flagKey) ?? { severity: null, members: [], states: [] };
       acc.severity = worseSeverity(acc.severity, rf.severity);
       acc.members.push({ symbol: s.symbol, sev: rf.severity });
       flagAcc.set(rf.flagKey, acc);
     }
     for (const p of s.patterns) {
-      const acc = patternAcc.get(p.patternKey) ?? { severity: null, members: [] };
+      const acc = patternAcc.get(p.patternKey) ?? { severity: null, members: [], states: [] };
       acc.severity = worseSeverity(acc.severity, p.severity);
       acc.members.push({ symbol: s.symbol, sev: p.severity });
+      acc.states.push(p.displayState ?? "active");
       patternAcc.set(p.patternKey, acc);
     }
 

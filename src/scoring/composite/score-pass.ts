@@ -41,6 +41,7 @@ import { toMetricScoreRow } from "../metric-scoring/persist.js";
 import { metricWeightColumnsByKey, completeMetricScoreRow } from "../pillars/persist.js";
 import type { FoundationAnnual, MomentumQuarter, MetricValue } from "../metrics/types.js";
 import { scoreMarketForPg, type MemberMarket } from "../market/orchestrate.js";
+import type { PondHeat } from "../findings/section2/pond-heat.js";
 import type { MarketUniversalResult } from "../market/market-universal.js";
 import { toMarketPillarScoreRow, marketSubScoreRows, marketInputsFingerprint } from "../market/persist.js";
 import { computeOwnership, type OwnershipContext, type OwnershipResult } from "../ownership/ownership.js";
@@ -54,6 +55,15 @@ import { assembleComposite } from "./composite.js";
 import { bandMappingJson, BAND_MAPPING_VERSION } from "./label.js";
 import { COMPOSITE_SPEC_VERSION, snapshotInputsFingerprint, toScoreSnapshotRow, toR1RedFlagRow } from "./persist.js";
 import type { CompositeResult, Pillar, PillarInput } from "./types.js";
+// §2/§5 findings engine — the fire-and-persist contract. Hook runs AFTER composite
+// assembly (reads the assembled pillars/composite/trajectory), emitting fired findings.
+import { runFindings } from "../findings/engine.js";
+import { opmSeriesFromQuarters, pillarMapOf } from "../findings/context.js";
+import { persistFindings } from "../findings/persist.js";
+import { loadTrajectorySeries } from "../findings/trajectory/load-series.js";
+import { loadBandTypicalProfiles } from "../findings/composition/band-typical.js";
+import { applyPgDampening, type DampenReport } from "../findings/dampen.js";
+import type { FiredFinding, FiringContext } from "../findings/types.js";
 
 type Db = Prisma.TransactionClient;
 
@@ -104,6 +114,12 @@ export interface MemberComputed {
   market: MarketUniversalResult | null; marketSourcePeriod: string;
   own: OwnershipResult | null;
   composite: CompositeResult;
+  /** §2/§5 fired findings — present only when computePgScores ran with withFindings.
+   *  undefined ⇒ the findings hook did not run (legacy/committed callers). */
+  findings?: FiredFinding[];
+  /** PG-level pond heat (File 1 §5 mask) — same value for every member of the PG (inherited).
+   *  Stamped onto the member's snapshot by persistMember. undefined for legacy callers. */
+  pondHeat?: PondHeat;
 }
 /** PG-level peer cross-section μ/σ/N for ONE F/M metric — captured from the same
  *  scoreMetricCrossSection output that produces each member's L2 (so the persisted
@@ -119,7 +135,7 @@ export interface PeerStatsCapture {
   sampleN: number;
   anchorLiftFired: boolean; // §5.3.1 collective lift decision
 }
-export interface PgComputed { ref: PgRef; peerGroupId: string; asOf: Date; periodKey: string; industry: IndustryType; members: MemberComputed[]; peerStats: PeerStatsCapture[] }
+export interface PgComputed { ref: PgRef; peerGroupId: string; asOf: Date; periodKey: string; industry: IndustryType; members: MemberComputed[]; peerStats: PeerStatsCapture[]; dampenReport?: DampenReport }
 
 export interface ComputeOpts {
   /** Non-destructive roster OVERRIDE (symbols) — score this exact member set instead
@@ -136,6 +152,12 @@ export interface ComputeOpts {
    *  raw inputs are point-in-time. `expectPeriodKey` asserts the period that emerges
    *  from the filtered momentum data matches the requested one. */
   pointInTime?: { quarterEnd: Date; expectPeriodKey: string };
+  /** §2/§5 FINDINGS HOOK. When true, after composite assembly each member's FiringContext
+   *  is built and the rule set is run; the fired findings are attached to MemberComputed
+   *  .findings (PURE — no writes here). Default false so existing committed callers are
+   *  byte-identical until the full rule set is validated + the live path opts in. The
+   *  PERSIST of findings is separately gated (persistMember opts.writeFindings). */
+  withFindings?: boolean;
 }
 
 export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promise<PgComputed> {
@@ -189,6 +211,12 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     stockId: string; symbol: string; daily: DailyClose[]; own: OwnershipQuarter[];
     foundation: MetricValue[]; momentum: MetricValue[]; snapshotFy: string | null; snapshotQuarter: string | null;
     seriesFor: (key: string, pillar: "foundation" | "momentum") => number[];
+    /** Standalone quarterly rows (non-financial) — retained for the §5 findings hook
+     *  (P11/P12 read the OPM series). Empty for banks (OPM is not a banking metric). */
+    qRows: MomentumQuarter[];
+    /** Standalone annual rows (non-financial) — §5 findings hook (R4 D/E history, P8
+     *  receivables). Empty for banks (these annual rules are non-financial). */
+    fRows: FoundationAnnual[];
   }
   const raws: Raw[] = [];
   for (const ms of memberStocks) {
@@ -199,6 +227,8 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
 
     let foundation: MetricValue[], momentum: MetricValue[], snapshotFy: string | null, snapshotQuarter: string | null;
     let seriesFor: (key: string, pillar: "foundation" | "momentum") => number[];
+    let qRowsForFindings: MomentumQuarter[] = []; // non-fin standalone quarters (P11/P12 OPM); [] for banks
+    let fRowsForFindings: FoundationAnnual[] = []; // non-fin standalone annuals (R4/P8); [] for banks
     if (industry === "banking") {
       const ctx: BankingCtx = await loadBankingCtx(symbol, id, cutoff);
       const d = dispatchLiveValues({ industryType: "banking", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: [], momentumQuarters: [], bankingCtx: ctx });
@@ -210,6 +240,8 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     } else {
       const fRows = await loadFoundationStandalone(id, cutoff);
       const qRows = await loadMomentumStandalone(id, cutoff);
+      qRowsForFindings = qRows;
+      fRowsForFindings = fRows;
       const d = dispatchLiveValues({ industryType: "non_financial", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: fRows, momentumQuarters: qRows });
       foundation = d.status === "computed" ? d.foundation : [];
       momentum = d.status === "computed" ? d.momentum : [];
@@ -217,7 +249,7 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       snapshotQuarter = d.status === "computed" ? d.snapshotQuarter : null;
       seriesFor = (key, pillar) => seriesForKey(fRows, qRows, key, pillar);
     }
-    raws.push({ stockId: id, symbol, daily, own, foundation, momentum, snapshotFy, snapshotQuarter, seriesFor });
+    raws.push({ stockId: id, symbol, daily, own, foundation, momentum, snapshotFy, snapshotQuarter, seriesFor, qRows: qRowsForFindings, fRows: fRowsForFindings });
   }
 
   const fSnap = raws[0]?.snapshotFy ?? "FY";
@@ -288,10 +320,56 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       { pillar: "ownership", subtotal: own ? own.finalOwnership : null, state: own ? "scored" : "unavailable_redistributed", sourcePeriod: own?.snapshot.periodKey ?? "—" },
     ];
     const composite = assembleComposite(r.stockId, r.symbol, pillars, { snapshotType: "quarterly", periodKey, asOfDate: asOf });
-    return { stockId: r.stockId, symbol: r.symbol, fPillar, fMetrics: fMetrics.get(r.symbol)!, fBarSetIds, mPillar, mMetrics: mMetrics.get(r.symbol)!, mBarSetIds, market, marketSourcePeriod, own, composite };
+    // Pond heat is a PG-level property inherited by every member (File 2 §7) — the same
+    // pgMkt.pondHeat for all. undefined only when the Market pass returned no pond (no roster).
+    return { stockId: r.stockId, symbol: r.symbol, fPillar, fMetrics: fMetrics.get(r.symbol)!, fBarSetIds, mPillar, mMetrics: mMetrics.get(r.symbol)!, mBarSetIds, market, marketSourcePeriod, own, composite, pondHeat: pgMkt?.pondHeat };
   });
 
-  return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members, peerStats: peerStatsCaps };
+  let dampenReport: DampenReport | undefined;
+  // ── §2/§5 FINDINGS HOOK (opt-in; PURE — no writes) ───────────────────────────────
+  // The seam File 1's engine hooks: AFTER composite assembly. For each SCORED member,
+  // assemble the FiringContext from its just-built composite + raw series and run the
+  // rule set; attach the fired set to m.findings. raws and members are index-aligned
+  // (members = raws.map), so raws[i] is members[i]'s raw inputs. Persisting the findings
+  // is separately gated (persistMember opts.writeFindings) — nothing is written here.
+  if (opts.withFindings) {
+    // Each member's sector class (gates §2 Line 2 + F1). The Sector.sectorClass column is
+    // seeded from the ratified map; null only for an unmapped sector (none in the DB today).
+    const stockSectors = await prisma.stock.findMany({ where: { id: { in: members.map((m) => m.stockId) } }, select: { id: true, sector: { select: { sectorClass: true } } } });
+    const sectorClassByStock = new Map<string, FiringContext["sectorClass"]>(stockSectors.map((s) => [s.id, (s.sector?.sectorClass ?? null) as FiringContext["sectorClass"]]));
+    // Band-typical 4-pillar medians (F1) — once per pass, ≤ cutoff (PIT). Same for all members.
+    const bandTypicalProfiles = await loadBandTypicalProfiles(cutoff ?? null);
+    for (let i = 0; i < members.length; i++) {
+      const m = members[i];
+      const r = raws[i];
+      if (m.composite.state !== "scored" || m.composite.composite === null || m.composite.labelBand === null) { m.findings = []; continue; }
+      // Stage-D substrate: the ordered prior-snapshot series, point-in-time (strictly before
+      // this period, ≤ cutoff, head-of-chain). Empty for a stock with no backfilled history.
+      const priorSnapshots = await loadTrajectorySeries(m.stockId, periodKey, cutoff ?? null);
+      const fctx: FiringContext = {
+        stockId: m.stockId, symbol: m.symbol, periodKey, asOfDate: asOf, industry, cutoff: cutoff ?? null,
+        current: { composite: m.composite.composite, labelBand: m.composite.labelBand, pillars: pillarMapOf(m.composite) },
+        priorSnapshots,
+        shareholding: r.own,
+        annualFundamentals: r.fRows,
+        quarterlyOpm: industry === "banking" ? null : (r.qRows.length ? opmSeriesFromQuarters(r.qRows) : null),
+        quarterlyResults: r.qRows,
+        daily: r.daily,
+        feeds: feedsByStock.get(m.stockId) ?? NO_FEEDS,
+        sectorClass: sectorClassByStock.get(m.stockId) ?? null, // seeded sector→class (§2 Line 2 / F1)
+        bandTypicalProfiles,
+      };
+      m.findings = runFindings(fctx);
+    }
+    // ── PG-WIDE DAMPENING (post-fire, pre-persist) ─────────────────────────────────
+    // A pattern firing on >80% of the PG's SCORED members is a sector-wide condition →
+    // halve magnitude + mark "dampened". Mutates the fired sets in place (patterns only;
+    // red flags never dampen). The denominator is the scored members.
+    const scoredSets = members.filter((m) => m.composite.state === "scored" && m.findings).map((m) => m.findings!);
+    dampenReport = applyPgDampening(scoredSets);
+  }
+
+  return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members, peerStats: peerStatsCaps, dampenReport };
 }
 
 // ── SCAFFOLD (get-or-create spec / run / band-mapping, once per pass) ────────────────
@@ -425,7 +503,7 @@ async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: strin
   return { id: created.id, r1Fired, r1Triggering: r1TriggeringValues };
 }
 
-export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string, industryPath: IndustryType = "non_financial", peerStats: PeerStatsCapture[] = []): Promise<MemberWriteResult> {
+export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string, industryPath: IndustryType = "non_financial", peerStats: PeerStatsCapture[] = [], opts: { writeFindings?: boolean } = {}): Promise<MemberWriteResult> {
   // Unavailable composite → no snapshot (recorded, never fabricated). For these
   // rosters this is not expected (Market may drop, but composite still 3-pillar-scores).
   if (m.composite.state !== "scored" || m.composite.composite === null) {
@@ -464,7 +542,7 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   const ownership = await writeOwnershipPillar(db, m.own, m.stockId, m.symbol, { runId: sc.runId, specVersionId: sc.specVersionId, asOfDate: asOf });
 
   const pillarScoreIds: Record<Pillar, string> = { foundation: foundationId, momentum: momentumId, market: marketId, ownership: ownership.id };
-  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds });
+  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null });
   if (liveSnap) { snapRow.version = liveSnap.version + 1; snapRow.supersedesId = liveSnap.id; } // append-only supersede: chain from the live (highest) version → v1→v2→v3…
 
   const snap = await db.scoreSnapshot.create({ data: snapRow, select: { id: true } });
@@ -472,6 +550,14 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   if (ownership.r1Fired) {
     await db.redFlag.create({ data: toR1RedFlagRow(snap.id, m.composite, ownership.r1Triggering) });
     r1Written = true;
+  }
+
+  // §2/§5 FINDINGS PERSIST — gated (default OFF; nothing durable until the catalog is
+  // validated + a rescore stage opts in). Writes only the NEW rules' findings (R6/P11/C1
+  // …); R1 keeps its dedicated write above. Findings FK this fresh snapshot — they version
+  // with it. Runs only when the findings hook attached a set (computePgScores withFindings).
+  if (opts.writeFindings && m.findings && m.findings.length) {
+    await persistFindings(db, snap.id, m.symbol, asOf, m.findings);
   }
 
   return { symbol: m.symbol, action: "created", version: snapRow.version, superseded: !!liveSnap, snapshotId: snap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market.state, r1Written, pillarIds: pillarScoreIds };

@@ -40,7 +40,7 @@ import { periodKeyOf, quarterLabel, type OwnershipQuarter } from "./types.js";
  */
 export interface DeferredRedFlag {
   flagKey: string; // e.g. "ownership_R1_pledge"
-  severity: string; // "high"
+  severity: string; // "critical" (File 1 §5A — red flags are Critical)
   tier: "auto" | "review";
   triggeringValues: Record<string, unknown>;
   reasons: string[];
@@ -118,7 +118,7 @@ export function computePrimaryOwnership(
   if (pledging.r1Breach) {
     redFlags.push({
       flagKey: "ownership_R1_pledge",
-      severity: "high",
+      severity: "critical", // File 1 §5A: red flags are severity Critical (kept in sync with the DB-write site in composite/persist.ts)
       tier: "auto",
       triggeringValues: {
         pledgeRatioQ: pledging.pledgeRatioQ,

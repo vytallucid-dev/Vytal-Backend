@@ -2305,6 +2305,13 @@ model ScoreSnapshot {
 
   divergence Decimal @db.Decimal(8, 4) // per-snapshot scalar; "widening" computed on read
 
+  // Pond mask (File 1 §5 / File 2 §3.3) — the PG-level "is the pond hot" signal, denormalised
+  // onto EVERY member's snapshot (a PGState property inherited by every member). Pure-price
+  // ~21d trailing move of the pond. Display-only modifier (annotates B/C1/D); never changes
+  // scoring. Nullable: null ⇒ not established (no member quorum) ⇒ read layer treats as no-mask.
+  maskHeat          String?  @map("mask_heat") // "hot" | "warm" | "calm" | null
+  pgTrailingMovePct Decimal? @map("pg_trailing_move_pct") @db.Decimal(8, 4) // signed pond median ~21d return %
+
   // Skip-identical fingerprint (ruling 3) — engine-side no-op check for composites
   inputsFingerprint String @map("inputs_fingerprint")
 
@@ -2567,7 +2574,16 @@ model ScorePattern {
   patternKey String   @map("pattern_key")
   direction  String?
   severity   String?
-  evidence   Json? // the underlying values
+  // Three mandatory display states (File 1 §5E): "active" | "pending_data_integration"
+  // | "dampened". Free String (matches the codebase convention for soft-classification
+  // fields, e.g. severity/direction) — defaults to "active" so existing readers are safe.
+  displayState String @default("active") @map("display_state")
+  // EFFECTIVE score impact applied this snapshot (File 1 §5E: Green +5 / Amber −3 / Red
+  // −8 / P13 ±5). For a dampened pattern this is the HALVED value (so −3 → −1.5 — Decimal,
+  // not Int, to survive halving). Nullable: a pending_data_integration chip carries no
+  // numeric impact. The base catalog magnitude is reconstructable from patternKey.
+  magnitude  Decimal? @db.Decimal(6, 2)
+  evidence   Json? // the underlying values (the UI reads this to build the verdict sentence)
   metricRefs Json?    @map("metric_refs") // array of metricKeys
   createdAt  DateTime @default(now()) @map("created_at")
 

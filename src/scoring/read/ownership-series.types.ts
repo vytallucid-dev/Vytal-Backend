@@ -107,7 +107,10 @@ export interface OwnershipSeriesView {
   symbol: string;
   name: string;
   windowQuarters: number;
-  scored: boolean; // false when the stock has no in-force ownership history
+  scored: boolean; // false when the stock has no in-force ownership history (alias of hasScoredPeriod)
+  hasScoredPeriod: boolean; // true → flow-lane sub-scores / baseline / R1 verdict are populated.
+  // The raw ledger (holding split, pledging, insider, block) populates whenever its rows
+  // exist, INDEPENDENT of this flag — the UI gates only the score-derived sections on it.
   series: OwnershipSeriesPoint[]; // oldest → newest
   pledging: PledgingPoint[]; // oldest → newest
   current: OwnershipAnatomy | null;

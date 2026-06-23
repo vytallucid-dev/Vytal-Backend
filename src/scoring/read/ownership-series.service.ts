@@ -130,6 +130,12 @@ export async function buildOwnershipView(
   if (!stock) return null;
 
   const refs = await getInForceSeriesRefs(stock.id, windowQuarters);
+  // The ledger (holding split, pledging, insider, block) is RAW data and must surface
+  // whenever its rows exist — independent of whether a scored period exists. Only the
+  // score-derived overlay (flow-lane sub-scores, baseline/penalties, R1 verdict) needs a
+  // scored period. `hasScoredPeriod` lets the UI gate the score-only sections without
+  // blanking the whole tab.
+  const hasScoredPeriod = refs.length > 0;
 
   // 1 query: the in-force snapshots in the window, each with its ownership pillar →
   // OwnershipScore → flow categories.
@@ -169,6 +175,20 @@ export async function buildOwnershipView(
     },
   })) as ShpRow[];
 
+  // one ShareholdingPattern row → the canonical holding split (pure raw data).
+  const rowHolding = (r: ShpRow): OwnershipHolding => {
+    const ratios = pledgeRatios(r.pledgedShares, r.promoterShares, r.totalShares);
+    return {
+      asOnDate: ymd(r.asOnDate),
+      promoterPct: numN(r.promoterPct),
+      fiiPct: numN(r.fiiPct),
+      diiPct: numN(r.diiPct),
+      retailPct: numN(r.retailPct),
+      othersPct: numN(r.othersPct),
+      ...ratios,
+    };
+  };
+
   // point-in-time: latest observation with asOnDate ≤ the period's asOfDate.
   const holdingAsOf = (d: Date): OwnershipHolding | null => {
     let pick: ShpRow | null = null;
@@ -176,34 +196,46 @@ export async function buildOwnershipView(
       if (r.asOnDate.getTime() <= d.getTime()) pick = r;
       else break; // shp is ascending — no later row can qualify
     }
-    if (!pick) return null;
-    const ratios = pledgeRatios(pick.pledgedShares, pick.promoterShares, pick.totalShares);
-    return {
-      asOnDate: ymd(pick.asOnDate),
-      promoterPct: numN(pick.promoterPct),
-      fiiPct: numN(pick.fiiPct),
-      diiPct: numN(pick.diiPct),
-      retailPct: numN(pick.retailPct),
-      othersPct: numN(pick.othersPct),
-      ...ratios,
-    };
+    return pick ? rowHolding(pick) : null;
   };
 
-  const series: OwnershipSeriesPoint[] = refs.map((ref) => {
-    const os = osById.get(ref.id) ?? null;
-    return {
-      periodKey: ref.periodKey,
-      asOfDate: ymd(ref.asOfDate),
-      baseline: os ? num(os.baseline) : 0,
-      pledgingAdjustment: os ? num(os.pledgingAdjustment) : 0,
-      primarySubtotal: os ? num(os.primarySubtotal) : 0,
-      flowAdjustmentClamped: os ? num(os.flowAdjustmentClamped) : 0,
-      finalOwnership: os ? num(os.finalOwnership) : 0,
-      r1Fired: os?.r1Fired ?? false,
-      flowCategories: os ? mapFlows(os) : [],
-      holding: holdingAsOf(ref.asOfDate),
-    };
-  });
+  // Normalize a ShareholdingPattern's fy/quarter into the canonical "FY26Q4" periodKey.
+  const periodKeyOf = (fy: string, q: string): string =>
+    `${fy.startsWith("FY") ? fy : `FY${fy}`}${q.startsWith("Q") ? q : `Q${q}`}`;
+
+  // The holding/flow series. When scored, map the in-force snapshots (existing behaviour
+  // unchanged — flow lanes + point-in-time holding). When UNSCORED, build the series from
+  // the raw ShareholdingPattern rows directly so the holding split, trends and pledge
+  // stats still surface; score fields are zeroed and flowCategories empty (the UI reads
+  // only `holding` + `periodKey` off series points, and quiet-empties the score sections).
+  const series: OwnershipSeriesPoint[] = hasScoredPeriod
+    ? refs.map((ref) => {
+        const os = osById.get(ref.id) ?? null;
+        return {
+          periodKey: ref.periodKey,
+          asOfDate: ymd(ref.asOfDate),
+          baseline: os ? num(os.baseline) : 0,
+          pledgingAdjustment: os ? num(os.pledgingAdjustment) : 0,
+          primarySubtotal: os ? num(os.primarySubtotal) : 0,
+          flowAdjustmentClamped: os ? num(os.flowAdjustmentClamped) : 0,
+          finalOwnership: os ? num(os.finalOwnership) : 0,
+          r1Fired: os?.r1Fired ?? false,
+          flowCategories: os ? mapFlows(os) : [],
+          holding: holdingAsOf(ref.asOfDate),
+        };
+      })
+    : shp.slice(-Math.max(windowQuarters, 1)).map((r) => ({
+        periodKey: periodKeyOf(r.fiscalYear, r.quarter),
+        asOfDate: ymd(r.asOnDate),
+        baseline: 0,
+        pledgingAdjustment: 0,
+        primarySubtotal: 0,
+        flowAdjustmentClamped: 0,
+        finalOwnership: 0,
+        r1Fired: false,
+        flowCategories: [],
+        holding: rowHolding(r),
+      }));
 
   // ── raw insider + block events (window-aware, newest-first, capped at 25) ──────────
   const today = new Date();
@@ -281,9 +313,14 @@ export async function buildOwnershipView(
       totalShares: r.totalShares != null ? r.totalShares.toString() : null,
     }));
 
-  // current anatomy — the latest in-force period's full ownership detail.
+  // current anatomy — the latest in-force period's full ownership detail. When scored,
+  // it's the scored snapshot (unchanged). When UNSCORED but shareholding exists, it's
+  // synthesized from the latest raw ShareholdingPattern: real `holding` (so the donut,
+  // pledge stats and R1 inputs render), score fields zeroed and flowCategories empty.
+  // It stays null only when there is no shareholding at all.
   const latestRef = refs.length ? refs[refs.length - 1] : null;
   const cos = latestRef ? osById.get(latestRef.id) ?? null : null;
+  const latestShp = shp.length ? shp[shp.length - 1] : null;
   const current: OwnershipAnatomy | null =
     latestRef && cos
       ? {
@@ -306,13 +343,34 @@ export async function buildOwnershipView(
           flowCategories: mapFlows(cos),
           holding: holdingAsOf(latestRef.asOfDate),
         }
-      : null;
+      : latestShp
+        ? {
+            periodKey: periodKeyOf(latestShp.fiscalYear, latestShp.quarter),
+            asOfDate: ymd(latestShp.asOnDate),
+            baseline: 0,
+            baselineReason: "",
+            pledgingAdjustment: 0,
+            penalties: { r2: 0, r6: 0, prolongedFii: 0 },
+            primarySubtotal: 0,
+            flowAdjustmentRaw: 0,
+            flowAdjustmentClamped: 0,
+            finalOwnership: 0,
+            r1Fired: false,
+            r1TriggeringValues: null,
+            flowCategories: [],
+            holding: rowHolding(latestShp),
+          }
+        : null;
 
   return {
     symbol: stock.symbol,
     name: stock.name,
     windowQuarters,
-    scored: series.length > 0,
+    // `scored` keeps its original meaning — a scored period exists (was series-presence
+    // back when series was built only from scored refs). `hasScoredPeriod` is the explicit
+    // alias the UI gates the score-only sections on, decoupled from ledger-data presence.
+    scored: hasScoredPeriod,
+    hasScoredPeriod,
     series,
     pledging,
     current,

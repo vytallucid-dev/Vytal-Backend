@@ -13,6 +13,8 @@ import {
   buildToolScan,
 } from "../scoring/read/stocks-list.service.js";
 import { buildOwnershipView } from "../scoring/read/ownership-series.service.js";
+import { buildFundamentalsView } from "../scoring/read/fundamentals-view.service.js";
+import type { Basis } from "../scoring/read/fundamentals-view.types.js";
 
 export const getScoredStocks = async (_req: Request, res: Response) => {
   try {
@@ -70,5 +72,30 @@ export const getStockOwnership = async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[stocks/:symbol/ownership] error:", err);
     return res.status(500).json({ message: "Failed to build ownership series" });
+  }
+};
+
+// GET /api/stocks/:symbol/fundamentals → FundamentalsView (dispatch-by-industry-family).
+// Returned DIRECTLY (no {success,data} envelope), same as the health/ownership reads.
+export const getStockFundamentals = async (req: Request, res: Response) => {
+  try {
+    const symbol = String(req.params.symbol ?? "").toUpperCase().trim();
+    if (!symbol) {
+      return res.status(400).json({ message: "symbol is required" });
+    }
+    // ?basis= optional override from the tab's toggle; invalid values are ignored and
+    // the service defaults to consolidated → the only-available basis.
+    const rawBasis = String(req.query.basis ?? "").toLowerCase().trim();
+    const basis: Basis | undefined =
+      rawBasis === "consolidated" || rawBasis === "standalone" ? (rawBasis as Basis) : undefined;
+
+    const view = await buildFundamentalsView(symbol, { basis });
+    if (!view) {
+      return res.status(404).json({ message: `Stock ${symbol} not found in universe` });
+    }
+    return res.json(view);
+  } catch (err) {
+    console.error("[stocks/:symbol/fundamentals] error:", err);
+    return res.status(500).json({ message: "Failed to build fundamentals view" });
   }
 };

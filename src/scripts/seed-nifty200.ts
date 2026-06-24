@@ -268,9 +268,9 @@ function validateSeed(): { ok: boolean; errors: string[] } {
     }
   }
 
-  // 5. Expected count
-  if (STOCKS.length !== 200) {
-    errors.push(`Expected 200 stocks, got ${STOCKS.length}`);
+  // 5. Expected count (201 after TATAMOTORS demerger split into TMCV + TMPV)
+  if (STOCKS.length !== 201) {
+    errors.push(`Expected 201 stocks, got ${STOCKS.length}`);
   }
 
   return { ok: errors.length === 0, errors };

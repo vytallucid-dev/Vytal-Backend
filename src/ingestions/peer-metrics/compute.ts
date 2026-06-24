@@ -74,6 +74,8 @@ export interface BulkComputeResult {
   fiscalYear: string;
   results: ComputeResult[];
   durationMs: number;
+  /** Per-group failure reasons (throws), for diagnostics. */
+  errors?: { name: string; reason: string }[];
 }
 
 // ── Math helpers ──────────────────────────────────────────────
@@ -156,6 +158,7 @@ export async function computePeerGroupMetrics(
               id: true,
               symbol: true,
               isActive: true,
+              industryType: true,
             },
           },
         },
@@ -189,6 +192,22 @@ export async function computePeerGroupMetrics(
     };
   }
 
+  // ── Financial-sector branch ────────────────────────────────
+  // Banks / NBFCs / insurers store fundamentals in their own tables
+  // (banking_fundamentals, nbfc_fundamentals, *_insurance_fundamentals),
+  // NOT in `fundamentals`. The non-financial path below would find no
+  // rows for them and skip. Route those groups to the financial engine,
+  // which reads the right table and normalises ratio→percent scales.
+  const family = dominantFinancialFamily(activeStocks);
+  if (family) {
+    return computeFinancialPeerGroupMetrics(
+      peerGroupId,
+      peerGroup.name,
+      activeStocks,
+      family,
+    );
+  }
+
   const stockIds = activeStocks.map((s) => s.id);
 
   // Determine which fiscal year to use
@@ -212,8 +231,6 @@ export async function computePeerGroupMetrics(
     },
     select: {
       stockId: true,
-      peRatio: true,
-      pbRatio: true,
       roe: true,
       roce: true,
       netMargin: true,
@@ -222,7 +239,8 @@ export async function computePeerGroupMetrics(
       revenueGrowthYoy: true,
       interestCoverage: true,
       assetTurnover: true,
-      eps: true,
+      dilutedEps: true,
+      basicEps: true,
       bookValuePerShare: true,
       revenue: true,
     },
@@ -247,18 +265,17 @@ export async function computePeerGroupMetrics(
   });
   const priceMap = new Map(stockPrices.map((p) => [p.stockId, toNum(p.price)]));
 
-  // Compute live P/E and P/B using current price + fundamentals
-  // Fall back to stored peRatio/pbRatio from fundamentals tables if price unavailable
+  // Compute live P/E and P/B using current price + per-share fundamentals.
+  // eps/peRatio/pbRatio were dropped from the fundamentals table in May 2026;
+  // P/E and P/B are now always derived from current price + dilutedEps/bvps.
   const liveMetrics = fundamentals.map((f) => {
     const currentPrice = priceMap.get(f.stockId);
-    const eps = toNum(f.eps);
+    const eps = toNum(f.dilutedEps) ?? toNum(f.basicEps);
     const bvps = toNum(f.bookValuePerShare);
 
-    const livePe =
-      currentPrice && eps && eps > 0 ? currentPrice / eps : toNum(f.peRatio);
+    const livePe = currentPrice && eps && eps > 0 ? currentPrice / eps : null;
 
-    const livePb =
-      currentPrice && bvps && bvps > 0 ? currentPrice / bvps : toNum(f.pbRatio);
+    const livePb = currentPrice && bvps && bvps > 0 ? currentPrice / bvps : null;
 
     return {
       peRatio: livePe,
@@ -360,6 +377,381 @@ export async function computePeerGroupMetrics(
   };
 }
 
+// ──────────────────────────────────────────────────────────────
+// FINANCIAL-SECTOR PEER METRICS
+//
+// Banks, NBFCs, and insurers keep their fundamentals in dedicated
+// tables with sector-specific schemas. We compute the subset of
+// peer averages that are universally comparable across a financial
+// peer group and store them in the SAME PeerGroup columns the
+// non-financial engine uses (no schema change):
+//
+//   avgPeRatio        — live median, price / dilutedEps
+//   avgPbRatio        — live median, price / bookValuePerShare
+//   avgRoe            — mean ROE, normalised ratio→percent (×100)
+//   avgNetMargin      — mean netProfit/totalIncome (banks & NBFCs only)
+//   avgRevenueGrowth  — mean of the family's top-line YoY growth (percent)
+//   avgDebtToEquity   — mean borrowings/equity ×100 (NBFC/HFC only; banks
+//                       and insurers stay NULL — deposits/float ≠ debt)
+//
+// Deliberately left NULL for financials (not meaningful / no clean
+// shared definition): avgRoce (lenders don't report it), and
+// avgDebtToEquity for banks & insurers.
+//
+// Scale note (verified against the ingesters):
+//   - financial `roe` is stored as a RATIO (0.15); non-financial as
+//     PERCENT (15.0). We ×100 here so avgRoe is consistent percent.
+//   - all *GrowthYoy fields are stored as PERCENT in both worlds — no
+//     scaling applied.
+// ──────────────────────────────────────────────────────────────
+
+export type FinancialFamily =
+  | "banking"
+  | "nbfc"
+  | "life_insurance"
+  | "general_insurance";
+
+/** Normalised per-stock row used by the financial aggregation. */
+interface FinRow {
+  stockId: string;
+  fiscalYear: string;
+  reportDate: Date;
+  resultType: string; // "consolidated" | "standalone"
+  eps: number | null; // diluted, falling back to basic
+  bvps: number | null;
+  roe: number | null; // RATIO as stored (×100 applied at aggregation)
+  netProfit: number | null;
+  income: number | null; // denominator for netMargin (null where N/A)
+  growth: number | null; // family-appropriate top-line YoY growth (percent)
+  leverage: number | null; // borrowings/equity RATIO (NBFC/HFC only; ×100 at aggregation)
+}
+
+/**
+ * The financial family of a peer group, or null if it's non-financial
+ * (→ caller uses the existing `fundamentals` path). Uses the modal
+ * industryType among active stocks so a single stray misclassified
+ * member can't flip the whole group.
+ */
+function dominantFinancialFamily(
+  stocks: { industryType: string }[],
+): FinancialFamily | null {
+  const counts = new Map<string, number>();
+  for (const s of stocks) {
+    counts.set(s.industryType, (counts.get(s.industryType) ?? 0) + 1);
+  }
+  let modal = "non_financial";
+  let best = -1;
+  for (const [type, n] of counts) {
+    if (n > best) {
+      best = n;
+      modal = type;
+    }
+  }
+  return modal === "banking" ||
+    modal === "nbfc" ||
+    modal === "life_insurance" ||
+    modal === "general_insurance"
+    ? (modal as FinancialFamily)
+    : null;
+}
+
+/** Fetch + normalise every available annual row (all years, all bases)
+ *  for the given stocks from the family's fundamentals table. */
+async function fetchFinancialRows(
+  family: FinancialFamily,
+  stockIds: string[],
+): Promise<FinRow[]> {
+  const common = {
+    where: { stockId: { in: stockIds } },
+    orderBy: { reportDate: "desc" as const },
+  };
+
+  if (family === "banking") {
+    const rows = await prisma.bankingFundamental.findMany({
+      ...common,
+      select: {
+        stockId: true,
+        fiscalYear: true,
+        reportDate: true,
+        resultType: true,
+        dilutedEps: true,
+        basicEps: true,
+        bookValuePerShare: true,
+        roe: true,
+        netProfit: true,
+        totalIncome: true,
+        niiGrowthYoy: true,
+      },
+    });
+    return rows.map((r) => ({
+      stockId: r.stockId,
+      fiscalYear: r.fiscalYear,
+      reportDate: r.reportDate,
+      resultType: r.resultType,
+      eps: toNum(r.dilutedEps) ?? toNum(r.basicEps),
+      bvps: toNum(r.bookValuePerShare),
+      roe: toNum(r.roe),
+      netProfit: toNum(r.netProfit),
+      income: toNum(r.totalIncome),
+      growth: toNum(r.niiGrowthYoy),
+      leverage: null, // banks: deposits ≠ debt → no D/E
+    }));
+  }
+
+  if (family === "nbfc") {
+    const rows = await prisma.nbfcFundamental.findMany({
+      ...common,
+      select: {
+        stockId: true,
+        fiscalYear: true,
+        reportDate: true,
+        resultType: true,
+        dilutedEps: true,
+        basicEps: true,
+        bookValuePerShare: true,
+        roe: true,
+        netProfit: true,
+        totalIncome: true,
+        revenueGrowthYoy: true,
+        borrowingsToEquity: true,
+      },
+    });
+    return rows.map((r) => ({
+      stockId: r.stockId,
+      fiscalYear: r.fiscalYear,
+      reportDate: r.reportDate,
+      resultType: r.resultType,
+      eps: toNum(r.dilutedEps) ?? toNum(r.basicEps),
+      bvps: toNum(r.bookValuePerShare),
+      roe: toNum(r.roe),
+      netProfit: toNum(r.netProfit),
+      income: toNum(r.totalIncome),
+      growth: toNum(r.revenueGrowthYoy),
+      leverage: toNum(r.borrowingsToEquity), // NBFC/HFC: borrowings/equity ratio
+    }));
+  }
+
+  if (family === "life_insurance") {
+    const rows = await prisma.lifeInsuranceFundamental.findMany({
+      ...common,
+      select: {
+        stockId: true,
+        fiscalYear: true,
+        reportDate: true,
+        resultType: true,
+        dilutedEps: true,
+        basicEps: true,
+        bookValuePerShare: true,
+        roe: true,
+        netProfit: true,
+        premiumGrowthYoy: true,
+      },
+    });
+    return rows.map((r) => ({
+      stockId: r.stockId,
+      fiscalYear: r.fiscalYear,
+      reportDate: r.reportDate,
+      resultType: r.resultType,
+      eps: toNum(r.dilutedEps) ?? toNum(r.basicEps),
+      bvps: toNum(r.bookValuePerShare),
+      roe: toNum(r.roe),
+      netProfit: toNum(r.netProfit),
+      income: null, // no clean shared revenue base → netMargin omitted
+      growth: toNum(r.premiumGrowthYoy),
+      leverage: null,
+    }));
+  }
+
+  // general_insurance
+  const rows = await prisma.generalInsuranceFundamental.findMany({
+    ...common,
+    select: {
+      stockId: true,
+      fiscalYear: true,
+      reportDate: true,
+      resultType: true,
+      dilutedEps: true,
+      basicEps: true,
+      bookValuePerShare: true,
+      roe: true,
+      netProfit: true,
+      gpwGrowthYoy: true,
+    },
+  });
+  return rows.map((r) => ({
+    stockId: r.stockId,
+    fiscalYear: r.fiscalYear,
+    reportDate: r.reportDate,
+    resultType: r.resultType,
+    eps: toNum(r.dilutedEps) ?? toNum(r.basicEps),
+    bvps: toNum(r.bookValuePerShare),
+    roe: toNum(r.roe),
+    netProfit: toNum(r.netProfit),
+    income: null,
+    growth: toNum(r.gpwGrowthYoy),
+    leverage: null,
+  }));
+}
+
+/** Most recent fiscal year with data for at least half the stocks
+ *  (min 2). Mirrors detectLatestFiscalYear but operates on already-
+ *  fetched rows so the financial path needs only one query. */
+function detectLatestFiscalYearFromRows(
+  rows: FinRow[],
+  stockCount: number,
+): string | null {
+  const yearCoverage = new Map<string, Set<string>>();
+  for (const r of rows) {
+    if (!yearCoverage.has(r.fiscalYear)) {
+      yearCoverage.set(r.fiscalYear, new Set());
+    }
+    yearCoverage.get(r.fiscalYear)!.add(r.stockId);
+  }
+  const threshold = Math.max(2, Math.floor(stockCount / 2));
+  const sortedYears = Array.from(yearCoverage.entries())
+    .filter(([, stocks]) => stocks.size >= threshold)
+    .sort(([a], [b]) => b.localeCompare(a));
+  return sortedYears[0]?.[0] ?? null;
+}
+
+export async function computeFinancialPeerGroupMetrics(
+  peerGroupId: string,
+  peerGroupName: string,
+  activeStocks: { id: string }[],
+  family: FinancialFamily,
+): Promise<ComputeResult> {
+  const stockIds = activeStocks.map((s) => s.id);
+
+  const allRows = await fetchFinancialRows(family, stockIds);
+  if (allRows.length === 0) {
+    return {
+      success: true,
+      peerGroupId,
+      peerGroupName,
+      metrics: null,
+      skipped: true,
+      reason: `No ${family} fundamental data found for any stock in peer group`,
+    };
+  }
+
+  const fiscalYear = detectLatestFiscalYearFromRows(allRows, activeStocks.length);
+  if (!fiscalYear) {
+    return {
+      success: true,
+      peerGroupId,
+      peerGroupName,
+      metrics: null,
+      skipped: true,
+      reason: `No ${family} fundamental data found for any stock in peer group`,
+    };
+  }
+
+  // One row per stock for the chosen year, preferring consolidated basis
+  // (matches the scoring read layer's convention) to avoid double-counting
+  // the dual-basis rows.
+  const byStock = new Map<string, FinRow>();
+  for (const r of allRows) {
+    if (r.fiscalYear !== fiscalYear) continue;
+    const existing = byStock.get(r.stockId);
+    if (!existing || (r.resultType === "consolidated" && existing.resultType !== "consolidated")) {
+      byStock.set(r.stockId, r);
+    }
+  }
+  const perStock = Array.from(byStock.values());
+
+  if (perStock.length < 2) {
+    return {
+      success: true,
+      peerGroupId,
+      peerGroupName,
+      metrics: null,
+      skipped: true,
+      reason: `Only ${perStock.length} stock(s) have ${family} data for ${fiscalYear}`,
+    };
+  }
+
+  // Current prices for live P/E and P/B
+  const stockPrices = await prisma.stockPrice.findMany({
+    where: { stockId: { in: stockIds } },
+    select: { stockId: true, price: true },
+  });
+  const priceMap = new Map(stockPrices.map((p) => [p.stockId, toNum(p.price)]));
+
+  const peValues: number[] = [];
+  const pbValues: number[] = [];
+  const roeValues: number[] = [];
+  const marginValues: number[] = [];
+  const growthValues: number[] = [];
+  const deValues: number[] = [];
+
+  for (const r of perStock) {
+    const price = priceMap.get(r.stockId);
+    if (price && r.eps && r.eps > 0) peValues.push(price / r.eps);
+    if (price && r.bvps && r.bvps > 0) pbValues.push(price / r.bvps);
+    if (r.roe != null) roeValues.push(r.roe * 100); // ratio → percent
+    if (r.netProfit != null && r.income != null && r.income > 0) {
+      marginValues.push((r.netProfit / r.income) * 100);
+    }
+    if (r.growth != null) growthValues.push(r.growth);
+    // NBFC/HFC leverage (borrowings/equity) → percent, to match the
+    // non-financial avg_debt_to_equity scale (which stores ratio×100).
+    if (r.leverage != null && r.leverage >= 0) deValues.push(r.leverage * 100);
+  }
+
+  const avgPeRatio = round4(median(peValues));
+  const avgPbRatio = round4(median(pbValues));
+  const avgRoe = round4(mean(roeValues));
+  const avgNetMargin = marginValues.length ? round4(mean(marginValues)) : null;
+  const avgRevenueGrowth = growthValues.length
+    ? round4(mean(growthValues))
+    : null;
+  const avgDebtToEquity = deValues.length ? round4(mean(deValues)) : null;
+
+  const metrics: PeerMetrics = {
+    peerGroupId,
+    peerGroupName,
+    fiscalYear,
+    stocksWithData: perStock.length,
+    stocksTotal: activeStocks.length,
+    avgPeRatio,
+    avgPbRatio,
+    avgRoe,
+    avgRoce: null, // N/A for financials (lenders don't report ROCE)
+    avgNetMargin,
+    avgDebtToEquity, // NBFC/HFC: borrowings/equity; banks & insurers: null
+    avgRevenueGrowth,
+    avgOperatingMargin: null,
+    avgInterestCoverage: null,
+    avgAssetTurnover: null,
+    avgRevenueGrowth3y: null,
+  };
+
+  await prisma.peerGroup.update({
+    where: { id: peerGroupId },
+    data: {
+      avgPeRatio: avgPeRatio != null ? new Prisma.Decimal(avgPeRatio) : null,
+      avgPbRatio: avgPbRatio != null ? new Prisma.Decimal(avgPbRatio) : null,
+      avgRoe: avgRoe != null ? new Prisma.Decimal(avgRoe) : null,
+      avgRoce: null,
+      avgNetMargin:
+        avgNetMargin != null ? new Prisma.Decimal(avgNetMargin) : null,
+      avgDebtToEquity:
+        avgDebtToEquity != null ? new Prisma.Decimal(avgDebtToEquity) : null,
+      avgRevenueGrowth:
+        avgRevenueGrowth != null ? new Prisma.Decimal(avgRevenueGrowth) : null,
+      metricsUpdatedAt: new Date(),
+    },
+  });
+
+  return {
+    success: true,
+    peerGroupId,
+    peerGroupName,
+    metrics,
+    skipped: false,
+  };
+}
+
 // ── Bulk compute: all peer groups ─────────────────────────────
 
 export async function computeAllPeerGroupMetrics(
@@ -377,6 +769,7 @@ export async function computeAllPeerGroupMetrics(
   );
 
   const results: ComputeResult[] = [];
+  const errors: { name: string; reason: string }[] = [];
   let computed = 0;
   let skipped = 0;
   let failed = 0;
@@ -403,14 +796,16 @@ export async function computeAllPeerGroupMetrics(
       }
     } catch (e) {
       failed++;
-      console.error(`[PeerMetrics] ✗ ${group.name}:`, (e as Error).message);
+      const reason = (e as Error).message;
+      console.error(`[PeerMetrics] ✗ ${group.name}:`, reason);
+      errors.push({ name: group.name, reason });
       results.push({
         success: false,
         peerGroupId: group.id,
         peerGroupName: group.name,
         metrics: null,
         skipped: false,
-        reason: (e as Error).message,
+        reason,
       });
     }
 
@@ -438,6 +833,7 @@ export async function computeAllPeerGroupMetrics(
     fiscalYear,
     results,
     durationMs,
+    errors,
   };
 }
 

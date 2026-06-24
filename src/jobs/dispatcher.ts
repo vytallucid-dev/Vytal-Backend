@@ -28,6 +28,10 @@ import { handlePeerMetricsComputeAll } from "./handlers/peer-metrics-compute-all
 import { handlePgRescore } from "./handlers/pg-rescore.handler.js";
 import { handleResultsScan } from "./handlers/results-scan.handler.js";
 import { handlePriceBackfill } from "./handlers/price-backfill.handler.js";
+import {
+  handleIndexPricesDaily,
+  handleIndexBackfill,
+} from "./handlers/index-ingest.handler.js";
 import { handleLegacyBackfill } from "./handlers/legacy-backfill.js";
 import {
   handleEodPricesDaily,
@@ -52,7 +56,9 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.INSIDER_TRADES_BACKFILL]: handleInsiderTradesBackfill,
   [JobTypes.NEWS_BACKFILL]: handleNewsBackfill,
   [JobTypes.PRICE_BACKFILL]: handlePriceBackfill,
+  [JobTypes.INDEX_PRICES_BACKFILL]: handleIndexBackfill,
   [JobTypes.EOD_PRICES_DAILY]: handleEodPricesDaily,
+  [JobTypes.INDEX_PRICES_DAILY]: handleIndexPricesDaily,
   [JobTypes.DEALS_DAILY_INGEST]: handleDealsDailyIngest,
   [JobTypes.EVENTS_WEEKLY_INGEST]: handleEventsWeeklyIngest,
   [JobTypes.EVENTS_DAILY_REFRESH]: handleEventsDailyRefresh,

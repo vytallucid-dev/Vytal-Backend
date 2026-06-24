@@ -154,11 +154,11 @@ export const getALlStockInPeerGroupWithMetrics = async (
         operatingMargin: true,
         roe: true,
         roce: true,
-        peRatio: true,
-        pbRatio: true,
         debtToEquity: true,
         revenueGrowthYoy: true,
-        eps: true,
+        dilutedEps: true,
+        basicEps: true,
+        bookValuePerShare: true,
         ebitda: true,
         interestCoverage: true,
       },
@@ -177,14 +177,16 @@ export const getALlStockInPeerGroupWithMetrics = async (
       const fund = fundamentalMap.get(m.stock.id);
       const currentPrice = priceMap.get(m.stock.id);
 
-      // Compute live P/E from current price if available
-      const eps = fund ? fmt(fund.eps) : null;
+      const eps = fund ? (fmt(fund.dilutedEps) ?? fmt(fund.basicEps)) : null;
+      const bvps = fund ? fmt(fund.bookValuePerShare) : null;
       const livePe =
         currentPrice && eps && eps > 0
           ? Math.round((currentPrice / eps) * 100) / 100
-          : fund
-            ? fmt(fund.peRatio)
-            : null;
+          : null;
+      const livePb =
+        currentPrice && bvps && bvps > 0
+          ? Math.round((currentPrice / bvps) * 100) / 100
+          : null;
 
       return {
         id: m.stock.id,
@@ -200,7 +202,7 @@ export const getALlStockInPeerGroupWithMetrics = async (
         roe: fund ? fmt(fund.roe) : null,
         roce: fund ? fmt(fund.roce) : null,
         peRatio: livePe,
-        pbRatio: fund ? fmt(fund.pbRatio) : null,
+        pbRatio: livePb,
         debtToEquity: fund ? fmt(fund.debtToEquity) : null,
         revenueGrowthYoy: fund ? fmt(fund.revenueGrowthYoy) : null,
         eps,

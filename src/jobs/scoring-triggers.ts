@@ -147,6 +147,11 @@ export async function maybeEnqueueRescoresForJob(jobType: string, result: unknow
       return out ?? { enqueued: 0, deduped: 0, scope: "disabled", pgIds: [] };
     }
     default:
-      return null; // not a trigger source (PG_RESCORE, news, deals, events, peer-metrics, …)
+      // Not a trigger source (PG_RESCORE, news, deals, events, peer-metrics, …).
+      // This INCLUDES the display-only index pipeline (INDEX_PRICES_DAILY /
+      // INDEX_PRICES_BACKFILL): index data is a sibling write to the equity prices
+      // and must NEVER move a Health Score, so its job types are deliberately
+      // absent from the arms above → they fall here → no PG rescore is enqueued.
+      return null;
   }
 }

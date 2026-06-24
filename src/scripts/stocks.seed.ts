@@ -475,8 +475,17 @@ export const STOCKS: StockSeed[] = [
     verified: true,
   },
   {
-    symbol: "TATAMOTORS",
-    name: "Tata Motors Ltd",
+    // Demerger effective Oct 1 2025 — TATAMOTORS split into TMCV + TMPV.
+    // TMCV = commercial vehicles (new listing, BSE 544569); TMPV = PV + JLR
+    // (old ISIN INE155A01022, BSE 500570). Both are NIFTY 200 constituents.
+    symbol: "TMCV",
+    name: "Tata Motors Ltd (Commercial Vehicles)",
+    sectorKey: "automobile",
+    verified: true,
+  },
+  {
+    symbol: "TMPV",
+    name: "Tata Motors Passenger Vehicles Ltd",
     sectorKey: "automobile",
     verified: true,
   },

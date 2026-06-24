@@ -48,6 +48,21 @@ export const PriceBackfillSchema = z.object({
   days: z.number().int().min(1).max(365).default(365),
 });
 
+// ── Indices (display-only — mirror of the price schemas) ──────
+
+export const IndexLogsQuerySchema = z.object({
+  status: z
+    .enum(["success", "failed", "partial", "market_closed", "all"])
+    .default("all"),
+  source: z.string().optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+export const IndexBackfillSchema = z.object({
+  days: z.number().int().min(1).max(365).default(365),
+});
+
 export const CalendarQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).default(30),
   types: z.string().optional(), // comma-separated: "earnings,dividend"

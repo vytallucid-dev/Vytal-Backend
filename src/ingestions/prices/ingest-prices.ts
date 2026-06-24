@@ -12,6 +12,7 @@ import { prisma } from "../../db/prisma.js";
 import { Prisma } from "../../generated/prisma/client.js";
 import type { EodPrice } from "./providers/provider.js";
 import { fetchWithFallback } from "./registry.js";
+import { computeMarketCap } from "./market-cap.js";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -217,6 +218,10 @@ async function updateSnapshots(
 
         const returns = await computeReturns(stockId, close, price.date);
 
+        // Spot market cap (₹Cr) = close × latest total_shares / 1e7, split-gated.
+        // Sibling display value — NOT a scoring input; null (honest-empty) when gated.
+        const mc = await computeMarketCap(stockId, close, price.date);
+
         const dec = (v: number | null) =>
           v != null ? new Prisma.Decimal(v) : null;
 
@@ -240,7 +245,8 @@ async function updateSnapshots(
             sparkline: returns.sparkline,
             priceDate: price.date,
             provider,
-            marketCap: null, // computed separately from fundamentals
+            marketCap: dec(mc.marketCapCr),
+            sharesAsOfDate: mc.sharesAsOfDate,
             faceValue: null,
           },
           update: {
@@ -260,6 +266,8 @@ async function updateSnapshots(
             sparkline: returns.sparkline,
             priceDate: price.date,
             provider,
+            marketCap: dec(mc.marketCapCr),
+            sharesAsOfDate: mc.sharesAsOfDate,
           },
         });
       }),

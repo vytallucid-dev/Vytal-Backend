@@ -94,6 +94,9 @@ model Stock {
   // ── Manual supplementary banking figures (CASA, Tier-1 history) ──
   bankSupplementary BankSupplementary[]
 
+  // ── Editorial overview content (hand-authored, separate lifecycle) ──
+  overview StockOverview?
+
   @@index([industryType])
   @@map("stocks")
 }
@@ -303,7 +306,10 @@ model StockPrice {
   id           String    @id @default(uuid())
   stockId      String    @unique @map("stock_id")
   price        Decimal   @db.Decimal(10, 2)
-  marketCap    Decimal?  @map("market_cap") @db.Decimal(20, 2)
+  marketCap    Decimal?  @map("market_cap") @db.Decimal(20, 2) // ₹ Cr = close × total_shares / 1e7; null when split-gated / no shares
+  // The shareholding filing as-of date whose total_shares fed marketCap — auditability
+  // (spot stale shares) + the split-gate's stale-window lower bound. Null ⇔ marketCap null.
+  sharesAsOfDate DateTime? @map("shares_as_of_date") @db.Date
   faceValue    Decimal?  @map("face_value") @db.Decimal(10, 2)
   updatedAt    DateTime  @updatedAt @map("updated_at")
   open         Decimal?  @db.Decimal(12, 2)
@@ -491,6 +497,71 @@ model PriceFetchLog {
   @@unique([priceDate, provider])
   @@index([priceDate])
   @@map("price_fetch_logs")
+}
+
+// ─────────────────────────────────────────────
+// INDEX PRICES  (DISPLAY-ONLY — NOT scored)
+// Daily OHLC + valuation per NSE index, parsed from
+// the ind_close_all_DDMMYYYY.csv archive (separate
+// from the equity bhavcopy). TALL: one row per index
+// per day. Sibling to DailyPrice; deliberately NOT
+// wired into the scoring / PG-rescore trigger layer.
+//
+// Some indices (G-Sec / rate / USD variants) publish
+// only a close — open/high/low and the valuation cols
+// arrive as "-" in the file → stored NULL here. close
+// is always present (rows without it are skipped).
+// Upsert on (indexName, date): re-runs/backfills never
+// duplicate; a revised value overwrites in place.
+// ─────────────────────────────────────────────
+model IndexPrice {
+  id           String   @id @default(uuid())
+  indexName    String   @map("index_name") // "Nifty 50", "Nifty Bank", "Nifty IT" …
+  date         DateTime @db.Date // trading date UTC midnight
+  open         Decimal? @db.Decimal(14, 4)
+  high         Decimal? @db.Decimal(14, 4)
+  low          Decimal? @db.Decimal(14, 4)
+  close        Decimal  @db.Decimal(14, 4)
+  pointsChange Decimal? @map("points_change") @db.Decimal(14, 4)
+  changePct    Decimal? @map("change_pct") @db.Decimal(10, 4)
+  volume       BigInt?
+  turnover     Decimal? @db.Decimal(18, 4) // ₹ Cr
+  pe           Decimal? @db.Decimal(12, 4)
+  pb           Decimal? @db.Decimal(12, 4)
+  divYield     Decimal? @map("div_yield") @db.Decimal(10, 4)
+  provider     String   @default("nse-index-csv")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([indexName, date])
+  @@index([indexName])
+  @@index([date])
+  @@index([indexName, date(sort: Desc)]) // for "latest N values" chart queries
+  @@map("index_prices")
+}
+
+// ─────────────────────────────────────────────
+// INDEX FETCH LOG  (SEPARATE from price_fetch_logs)
+// Mirrors the price_fetch_logs shape exactly so the
+// admin UI renders index ingest health identically.
+// totalSkipped = parse-invalid rows only (no universe
+// filter — every index in the file is stored).
+// ─────────────────────────────────────────────
+model IndexFetchLog {
+  id            String   @id @default(uuid())
+  indexDate     DateTime @map("index_date") @db.Date
+  source        String   @default("nse-index-csv")
+  status        String // success | partial | failed | market_closed
+  totalFetched  Int      @default(0) @map("total_fetched") // valid rows from the file
+  totalInserted Int      @default(0) @map("total_inserted") // rows upserted
+  totalSkipped  Int      @default(0) @map("total_skipped") // parse-invalid (no close)
+  durationMs    Int?     @map("duration_ms")
+  error         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([indexDate, source])
+  @@index([indexDate])
+  @@map("index_fetch_logs")
 }
 
 // ─────────────────────────────────────────────
@@ -2784,4 +2855,28 @@ model BankSupplementary {
   @@unique([supersedesId]) // a row supersedes at most one prior version (clean chain)
   @@index([stockId, metric, fiscalYear, quarter, version(sort: Desc)]) // "latest version for this cell" read path
   @@map("bank_supplementary")
+}
+
+// ─────────────────────────────────────────────
+// STOCK OVERVIEW
+// Hand-authored editorial content per stock.
+// Source: stock_overview_static.json (v1.1+).
+// Separate table — editorial lifecycle is
+// independent of operational data on stocks.
+// Loader: src/scripts/seed-stock-overview.ts
+// ─────────────────────────────────────────────
+model StockOverview {
+  id           String   @id @default(uuid())
+  stockId      String   @unique @map("stock_id")
+  industry     String
+  listedSince  Int?     @map("listed_since")
+  coreBusiness String   @map("core_business") @db.Text
+  revenueModel String   @map("revenue_model") @db.Text
+  businessTags String[] @map("business_tags")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@map("stock_overviews")
 }

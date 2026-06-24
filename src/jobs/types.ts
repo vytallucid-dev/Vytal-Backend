@@ -20,8 +20,13 @@ export const JobTypes = {
   INSIDER_TRADES_BACKFILL: "insider_trades_backfill",
   NEWS_BACKFILL: "news_backfill",
   PRICE_BACKFILL: "price_backfill",
+  // Display-only index history backfill (sibling of PRICE_BACKFILL; NOT scored).
+  INDEX_PRICES_BACKFILL: "index_prices_backfill",
   // ── Scheduled / recurring daily-operational jobs ───────────
   EOD_PRICES_DAILY: "eod_prices_daily",
+  // Display-only daily index ingest (sibling of EOD_PRICES_DAILY; NOT scored —
+  // not a switch arm in scoring-triggers.ts, so it never enqueues a PG rescore).
+  INDEX_PRICES_DAILY: "index_prices_daily",
   DEALS_DAILY_INGEST: "deals_daily_ingest",
   EVENTS_WEEKLY_INGEST: "events_weekly_ingest",
   EVENTS_DAILY_REFRESH: "events_daily_refresh",
@@ -159,6 +164,12 @@ export interface PriceBackfillPayload {
   days: number;
 }
 
+export interface IndexBackfillPayload {
+  days: number;
+}
+
+export interface IndexPricesDailyPayload {}
+
 export interface PgRescorePayload {
   /** Logical PG id used as the bar-derivation path / scoring key, e.g. "PG5".
    *  NOT the DB peer_groups.id (a uuid). */
@@ -198,7 +209,9 @@ export type JobPayload =
     }
   | { type: typeof JobTypes.NEWS_BACKFILL; data: NewsBackfillPayload }
   | { type: typeof JobTypes.PRICE_BACKFILL; data: PriceBackfillPayload }
+  | { type: typeof JobTypes.INDEX_PRICES_BACKFILL; data: IndexBackfillPayload }
   | { type: typeof JobTypes.EOD_PRICES_DAILY; data: EodPricesDailyPayload }
+  | { type: typeof JobTypes.INDEX_PRICES_DAILY; data: IndexPricesDailyPayload }
   | { type: typeof JobTypes.DEALS_DAILY_INGEST; data: DealsDailyIngestPayload }
   | {
       type: typeof JobTypes.EVENTS_WEEKLY_INGEST;
@@ -258,8 +271,11 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   [JobTypes.INSIDER_TRADES_BACKFILL]: { maxAttempts: 1 },
   [JobTypes.NEWS_BACKFILL]: { maxAttempts: 1 }, // large batch — avoid double-fetch
   [JobTypes.PRICE_BACKFILL]: { maxAttempts: 1 },
+  [JobTypes.INDEX_PRICES_BACKFILL]: { maxAttempts: 1 }, // display-only; idempotent but wasteful to re-run
   // Daily operational — network-bound NSE/external calls; one retry on transient failure
   [JobTypes.EOD_PRICES_DAILY]: { maxAttempts: 2 },
+  [JobTypes.INDEX_PRICES_DAILY]: { maxAttempts: 2 }, // network-bound NSE archive fetch
+
   [JobTypes.DEALS_DAILY_INGEST]: { maxAttempts: 2 },
   [JobTypes.EVENTS_WEEKLY_INGEST]: { maxAttempts: 2 },
   [JobTypes.EVENTS_DAILY_REFRESH]: { maxAttempts: 2 },

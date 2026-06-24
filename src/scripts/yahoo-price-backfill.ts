@@ -41,7 +41,9 @@ const PROVIDER = "yahoo-finance";
 const YAHOO_SYMBOL_OVERRIDES: Record<string, string> = {
   // Zomato renamed to Eternal in 2025 on NSE, but Yahoo may still serve old symbol
   ETERNAL: "ETERNAL.NS",
-  TATAMOTORS: "TMCV.NS",
+  // Tata Motors demerger effective Oct 1 2025: TATAMOTORS → TMCV (CV) + TMPV (PV+JLR)
+  TMCV: "TMCV.NS",
+  TMPV: "TMPV.NS",
   // Adani Energy Solutions renamed from ADANITRANS — check if Yahoo updated
   ADANIENSOL: "ADANIENSOL.NS",
   // GE Vernova T&D renamed from GET&D — verify on Yahoo

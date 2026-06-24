@@ -22,6 +22,10 @@ import {
   adminPricesRouter,
   pricesRouter,
 } from "./routes/ingestion/prices-route.js";
+import {
+  adminIndicesRouter,
+  indicesRouter,
+} from "./routes/ingestion/indices-route.js";
 import { resultsScanRouter } from "./routes/ingestion/results-scan-route.js";
 import { adminBankSupplementaryRouter } from "./routes/ingestion/bank-supplementary-route.js";
 import { legacyBackfillRouter } from "./routes/ingestion/legacy-backfill-route.js";
@@ -46,6 +50,8 @@ export const createApp = () => {
   app.use("/api/v1/admin/deals", adminDealsRouter);
   app.use("/api/v1/prices", pricesRouter);
   app.use("/api/v1/admin/prices", adminPricesRouter);
+  app.use("/api/v1/indices", indicesRouter);
+  app.use("/api/v1/admin/indices", adminIndicesRouter);
   app.use("/api/v1/events", eventsRouter);
   app.use("/api/v1/admin/events", adminEventsRouter);
   app.use("/api/v1/shareholding", shareholdingRouter);

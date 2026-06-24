@@ -103,6 +103,23 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
       ).then(() => {}),
   },
 
+  // ── Index Prices (DISPLAY-ONLY — not scored) ───────────────
+  // Sibling of daily-eod-prices: fetches the NSE index archive
+  // (ind_close_all_*.csv) for chart display. Runs 5 min after the
+  // equity job to stagger the two NSE fetches. INDEX_PRICES_DAILY is
+  // NOT a scoring-trigger switch arm → it never enqueues a PG rescore.
+  {
+    name: "daily-eod-indices",
+    schedule: "35 13 * * 1-5", // 7:05 PM IST, Mon–Fri
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.INDEX_PRICES_DAILY,
+        {},
+        "cron:daily-eod-indices",
+        50,
+      ).then(() => {}),
+  },
+
   // ── Block / Bulk Deals ─────────────────────────────────────
   {
     name: "daily-block-deals",

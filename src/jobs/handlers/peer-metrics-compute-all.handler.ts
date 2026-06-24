@@ -25,5 +25,8 @@ export async function handlePeerMetricsComputeAll(
     failed: result.failed,
     fiscalYear: result.fiscalYear,
     durationMs: result.durationMs,
+    // Diagnostic: first few distinct failure reasons so the cause is visible
+    // in the job result without trawling server logs.
+    errorSample: (result.errors ?? []).slice(0, 5),
   };
 }

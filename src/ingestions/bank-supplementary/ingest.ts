@@ -25,6 +25,8 @@
 
 import { prisma } from "../../db/prisma.js";
 import type { BankSupplementaryMetric } from "../../generated/prisma/client.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import { CASA_BAND, TIER1_BAND, checkBand } from "../quaterly-results/financial-guards.js";
 
 // ── Public input contract ─────────────────────────────────────────────────────
 
@@ -413,6 +415,31 @@ export async function ingestBankSupplementary(
 
     return out;
   }, { timeout: 60_000 });
+
+  // ── Band-check guard (CASA [15,60] / Tier-1 [5,25]) ──
+  // The write itself only enforces [0,100]; the admin page enforces the
+  // tighter band. This RECORDS a band violation to the error table so a
+  // seed/batch path that bypasses the page (or a repeated fat-finger) leaves
+  // a signal. Value lands (medium); an admin can re-enter the right figure.
+  for (const p of prepared) {
+    if (p.status !== "found" || p.value === null) continue;
+    const band = p.metric === "casa_pct" ? CASA_BAND : TIER1_BAND;
+    if (!checkBand(p.value, band)) continue;
+    await reportIngestionError({
+      source: "admin_manual",
+      cron: "bank_supplementary",
+      guardType: "range",
+      targetTable: "BankSupplementary",
+      targetField: p.metric,
+      targetEntity: `${p.symbol}@${p.fiscalYear}${p.quarter ? `-${p.quarter}` : ""}`,
+      severity: "medium",
+      resolutionPath: "admin_fill",
+      expected: `${p.metric} in [${band[0]}, ${band[1]}]%`,
+      observed: `${p.value}%`,
+      detail: "Bank supplementary value outside its plausible band — likely a hand-entry error (e.g. 4.5 vs 45).",
+      runRef: `banksupp:${input.enteredBy}`,
+    });
+  }
 
   const inserted = results.filter((r) => r.action === "inserted").length;
   const superseded = results.filter((r) => r.action === "superseded").length;

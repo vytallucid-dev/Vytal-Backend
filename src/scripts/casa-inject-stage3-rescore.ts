@@ -41,10 +41,10 @@ async function main() {
   const pg6Before = before6.members.map((m) => ({ s: m.symbol, c: m.composite.composite }));
   const nonFinBefore = await prisma.scoreSnapshot.findMany({ where: { industryPath: "non_financial" }, select: { symbol: true, composite: true, inputsFingerprint: true } });
 
-  // ── INJECT a valid live CASA for ICICIBANK (durable, so the re-score reads it) ──
-  console.log(`\nINJECT — ${TARGET} LIVE CASA (real value + citation):`);
+  // ── INJECT a valid quarterly CASA for ICICIBANK (durable, so the re-score reads it) ──
+  console.log(`\nINJECT — ${TARGET} FY26/Q1 CASA (real value + citation):`);
   const inj = await injectLiveCasa({
-    symbol: TARGET, fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+    symbol: TARGET, fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
     value: 38.4, sourceCitation: "ICICI Bank Q1-FY26 results (Jul 2025) — CASA ratio 38.4% at Jun-30-2025 [demonstration value; operator supplies the actual disclosed figure]",
     confidence: "A", enteredBy: "demo:stage3-casa-rescore",
   });

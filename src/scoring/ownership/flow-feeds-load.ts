@@ -142,7 +142,8 @@ export async function loadFlowFeeds(args: {
     if (side === null) { dSide++; continue; } // non-directional txn type
     const valueInrCr = num(r.tradeValueCr);
     if (valueInrCr === null || valueInrCr <= 0) { dValue++; continue; } // unscoreable value
-    const date = r.tradeDate ?? r.intimationDate; // intimationDate is NOT NULL → always a date
+    const date = r.tradeDate ?? r.intimationDate; // intimationDate nullable (bad-source rows nulled)
+    if (date === null) continue; // no reliable event date — unscoreable
     insiderTxns.push({ date, insiderId: (r.personName ?? "").trim().toLowerCase() || "unknown", side, valueInrCr, role });
   }
 

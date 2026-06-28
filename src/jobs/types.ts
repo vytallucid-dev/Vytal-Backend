@@ -47,6 +47,21 @@ export const JobTypes = {
   // scored PGs; fundamentals/shareholding → only the affected PGs). Idempotent:
   // unchanged inputs skip-identical (no write); genuine change supersedes.
   PG_RESCORE: "pg_rescore",
+  // CASA forward-cascade self-heal. Enqueued by the CASA admin write when a PAST
+  // quarter is edited: PIT-rescore the bank's PG for [editedPeriod .. current],
+  // live-rescore the current period (Option-1 split). A current-period edit degrades
+  // to a single live rescore (no backward cascade). Idempotent (skip-identical).
+  PG_CASCADE_RESCORE: "pg_cascade_rescore",
+  // General fill forward-cascade self-heal. Enqueued by the raw-field fill write
+  // (applyRawFieldEdit) when a PAST fundamentals/shareholding period is corrected:
+  // re-derive runs on the edited row first, then rescore the stock's scored PG(s)
+  // for [editedPeriod .. current] — PIT historical + live current (Option-1),
+  // PG-type-agnostic (the banking cascade generalized). Idempotent (skip-identical).
+  FILL_CASCADE_RESCORE: "fill_cascade_rescore",
+  // Re-fetch the EOD bhavcopy for ONE date (the async wrap of the synchronous
+  // runEodPriceIngest) — the "re-fetch the feed for this date" resolution action
+  // offered alongside a manual price fill. Idempotent (upsert/skip-duplicates).
+  PRICES_REFETCH: "prices_refetch",
 } as const;
 
 export type JobType = (typeof JobTypes)[keyof typeof JobTypes];
@@ -164,6 +179,13 @@ export interface PriceBackfillPayload {
   days: number;
 }
 
+export interface PricesRefetchPayload {
+  /** The trading date to re-fetch, ISO "YYYY-MM-DD". */
+  dateIso: string;
+  triggeredBy: string;
+  reason?: string;
+}
+
 export interface IndexBackfillPayload {
   days: number;
 }
@@ -184,6 +206,42 @@ export interface PgRescorePayload {
   triggeredBy: string;
   /** Optional human-readable reason for the audit trail. */
   reason?: string;
+}
+
+export interface PgCascadeRescorePayload {
+  /** Logical PG id of the edited bank's peer group ("PG5" / "PG6"). */
+  pgId: string;
+  /** DB peer_groups.name (computePgScores resolves the roster by this). */
+  pgName: string;
+  /** Seed key for PgRef completeness ("pg5_private_banks"). */
+  seedKey: string;
+  /** The bank whose CASA was edited (the cascade trigger). */
+  symbol: string;
+  /** The edited period "FYxxQn" (e.g. "FY26Q2") — the cascade start; the handler
+   *  determines the current period and builds [editedPeriod .. current]. */
+  editedPeriod: string;
+  /** Trigger source ("hook:casa_inject" / "manual"). */
+  triggeredBy: string;
+  /** Optional human-readable reason for the audit trail. */
+  reason?: string;
+}
+
+export interface FillCascadeRescorePayload {
+  /** The stock whose raw field was corrected (the cascade trigger). */
+  symbol: string;
+  /** Edited-period shape: annual rows map to a start quarter via reportDate;
+   *  quarterly rows carry their own FYxxQy key. Stored JSON-serialisable. */
+  editKind: "annual" | "quarter";
+  /** ISO string when editKind="annual". */
+  editReportDateIso?: string;
+  /** FYxxQy key when editKind="quarter". */
+  editPeriodKey?: string;
+  /** Trigger source ("fill:<admin>"). */
+  triggeredBy: string;
+  /** Optional human-readable reason for the audit trail. */
+  reason?: string;
+  /** Test-only: persist the cascade in rolled-back txns (never set in production). */
+  dryRun?: boolean;
 }
 
 // ── Daily operational payloads (no config — always "today") ──
@@ -253,7 +311,10 @@ export type JobPayload =
     }
   | { type: typeof JobTypes.RESULTS_SCAN; data: ResultsScanPayload }
   | { type: typeof JobTypes.LEGACY_BACKFILL; data: LegacyBackfillPayload }
-  | { type: typeof JobTypes.PG_RESCORE; data: PgRescorePayload };
+  | { type: typeof JobTypes.PG_RESCORE; data: PgRescorePayload }
+  | { type: typeof JobTypes.PG_CASCADE_RESCORE; data: PgCascadeRescorePayload }
+  | { type: typeof JobTypes.FILL_CASCADE_RESCORE; data: FillCascadeRescorePayload }
+  | { type: typeof JobTypes.PRICES_REFETCH; data: PricesRefetchPayload };
 
 // ── Retry policy per job type ────────────────────────────────
 // Conservative defaults. Most ingest jobs should NOT auto-retry —
@@ -296,6 +357,16 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   // per-PG write is one transaction, so a retry after a transient DB error re-runs
   // cleanly (rolled-back partial → nothing to undo). 2 attempts.
   [JobTypes.PG_RESCORE]: { maxAttempts: 2 },
+  // CASA cascade — DB-only, idempotent (each period skip-identical when unchanged). A
+  // retry re-runs the whole [edited..current] range cleanly; already-applied periods
+  // skip-identical, so a partial cascade self-completes on retry. 2 attempts.
+  [JobTypes.PG_CASCADE_RESCORE]: { maxAttempts: 2 },
+  // General fill cascade — DB-only, idempotent (skip-identical per period/member).
+  // A retry re-runs the whole [edited..current] range cleanly; done periods
+  // skip-identical, so a partial cascade self-completes on retry. 2 attempts.
+  [JobTypes.FILL_CASCADE_RESCORE]: { maxAttempts: 2 },
+  // Prices re-fetch — network-bound NSE bhavcopy fetch; idempotent (upsert). 2 attempts.
+  [JobTypes.PRICES_REFETCH]: { maxAttempts: 2 },
 };
 
 // ── Job status constants ────────────────────────────────────

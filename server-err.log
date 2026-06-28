@@ -1,0 +1,704 @@
+[worker] loop error: Error: Connection terminated unexpectedly
+    at C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:618:22)
+    at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+    at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+    at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+    at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: PrismaClientKnownRequestError: 
+Invalid `prisma.backgroundJob.findFirst()` invocation in
+C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:44
+
+   98  * `SELECT ... FOR UPDATE SKIP LOCKED` query.
+   99  */
+  100 private async claimNextJob() {
+→ 101   const job = await prisma.backgroundJob.findFirst(
+Can't reach database server at aws-1-ap-southeast-1.pooler.supabase.com
+    at Gr.handleRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:237:13)
+    at Gr.handleAndLogRequestError (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:183:12)
+    at Gr.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\RequestHandler.ts:152:12)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async a (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\getPrismaClient.ts:938:24)
+    at async JobWorker.claimNextJob (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:101:17)
+    at async JobWorker.loop (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\src\jobs\worker.ts:73:21) {
+  code: 'P1001',
+  meta: {
+    modelName: 'BackgroundJob',
+    driverAdapterError: DriverAdapterError: DatabaseNotReachable
+        at PrismaPgAdapter.onError (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:642:11)
+        at PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:637:12)
+        at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+        at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+        at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+        at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+        at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+        at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+      cause: [Object]
+    }
+  },
+  clientVersion: '7.7.0'
+}
+[worker] loop error: Error: Connection terminated unexpectedly
+    at C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:618:22)
+    at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+    at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+    at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+    at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+  clientVersion: '7.7.0'
+}
+[worker] loop error: Error: Connection terminated unexpectedly
+    at C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async PrismaPgAdapter.performIO (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:618:22)
+    at async PrismaPgAdapter.queryRaw (file:///C:/Users/Punctuations/Downloads/personal/personal/invest-iq-backend/node_modules/@prisma/adapter-pg/dist/index.mjs:568:30)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:186:26)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:213:41)
+    at async e.interpretNode (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:272:41)
+    at async e.run (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client-engine-runtime\src\interpreter\query-interpreter.ts:94:23)
+    at async e.execute (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\LocalExecutor.ts:81:12)
+    at async jt.request (C:\Users\Punctuations\Downloads\personal\personal\invest-iq-backend\node_modules\@prisma\client\src\runtime\core\engines\client\ClientEngine.ts:503:22) {
+  clientVersion: '7.7.0'
+}

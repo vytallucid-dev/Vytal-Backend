@@ -34,9 +34,12 @@ import {
   shareholdingRouter,
 } from "./routes/ingestion/shareholding-route.js";
 import { jobsRouter } from "./routes/job-routes.js";
+import { ingestionErrorsRouter } from "./routes/ingestion/ingestion-errors-route.js";
+import { resultsRouter } from "./routes/results-route.js";
 import { stocksRouter } from "./routes/stock-health-route.js";
 import { peerGroupHealthRouter } from "./routes/peer-group-health-route.js";
 import { universeHealthRouter } from "./routes/universe-health-route.js";
+import { compareRouter } from "./routes/compare-route.js";
 
 export const createApp = () => {
   const app = express();
@@ -66,6 +69,12 @@ export const createApp = () => {
   app.use("/api/v1/admin/bank-supplementary", adminBankSupplementaryRouter);
   app.use("/api/v1/admin/legacy-backfill", legacyBackfillRouter);
   app.use("/api/v1/admin/jobs", jobsRouter);
+  app.use("/api/v1/admin/ingestion-errors", ingestionErrorsRouter);
+
+  // Read API — cross-stock results feed (reported + upcoming) for the Results landing.
+  // Public, no auth; mounted under /api/v1 (envelope style). Reported numbers come from
+  // the per-family quarterly_results tables; upcoming from corporate_events earnings.
+  app.use("/api/v1/results", resultsRouter);
 
   // Read API — per-stock Health Score. Mounted at /api/stocks (no v1) to match the
   // frontend hook path. Canonical "health snapshot read" reused by later surfaces.
@@ -79,6 +88,12 @@ export const createApp = () => {
   // Read API — universe-level aggregate (all ~93 scored stocks). Mounted at
   // /api/universe (no v1). Provides the Briefing + Flags + Screen data for the Hub.
   app.use("/api/universe", universeHealthRouter);
+
+  // Read API — stock-vs-stock COMPARISON. Mounted at /api/compare (no v1). A NEW
+  // assembly/alignment endpoint over the existing per-stock reads (health/fundamentals/
+  // price/ownership) — no new data tables. Owns the comparability/alignment logic:
+  // the universal axis, the family-locked sets, and the honest boundary (never a winner).
+  app.use("/api/compare", compareRouter);
 
   return app;
 };

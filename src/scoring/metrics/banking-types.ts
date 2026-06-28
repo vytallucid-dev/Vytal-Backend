@@ -80,9 +80,11 @@ export interface BankingQuarter {
 // ── BankSupplementary point (CASA / Tier-1, already PERCENT) ─────────────────────
 export interface SupplementaryPoint {
   fiscalYear: string; // "FY17".."FY26" | "LIVE"
+  quarter: string | null; // "Q1".."Q4" (quarter-keyed CASA) | null (legacy annual/LIVE)
   value: number | null; // PERCENT (null = explicit gap, status="missing")
   status: string; // "found" | "missing"
   confidence: string | null; // "A"|"B"|"C"|null
+  createdAt: Date | null; // when THIS cell's newest version was written (provenance for the admin status table)
 }
 
 // ── The banking compute context (everything the 12 fns need) ────────────────────
@@ -128,7 +130,8 @@ export function liveSupplementary(m: Map<string, SupplementaryPoint>): Supplemen
 
 /** Latest "live" supplementary value: prefer "LIVE" (found), else the most recent
  *  found fiscalYear (FY26 → FY17). Returns the point or null if none found. Used
- *  for the F1 Tier-1 fallback (pre-FY23 / XBRL-absent path). */
+ *  for the F1 Tier-1 fallback (pre-FY23 / XBRL-absent path). Tier-1 has no
+ *  quarter-keyed rows, so the bare-FY key scan here is unaffected by quarterly CASA. */
 export function latestSupplementary(m: Map<string, SupplementaryPoint>): SupplementaryPoint | null {
   const live = m.get("LIVE");
   if (live && live.status === "found" && live.value !== null) return live;
@@ -137,6 +140,46 @@ export function latestSupplementary(m: Map<string, SupplementaryPoint>): Supplem
     const p = m.get(fy)!;
     if (p.status === "found" && p.value !== null) return p;
   }
+  return null;
+}
+
+/** Comparable chronological ordinal for a QUARTER-KEYED supplementary row:
+ *  FY26/Q4 > FY26/Q3 > FY26/Q2 > FY26/Q1 > FY25/Q4 … (Indian FY: Q1=Apr-Jun … Q4=Jan-Mar).
+ *  ONLY for quarter-keyed rows (tier 1) — a null quarter is never passed here (legacy
+ *  LIVE/annual rows resolve by their own tier, not by this ordinal). */
+export function periodOrdinal(fiscalYear: string, quarter: string): number {
+  const fy = Number(fiscalYear.replace(/\D/g, "")); // "FY26" → 26
+  const q = Number(quarter.replace(/\D/g, "")); // "Q3" → 3
+  return fy * 4 + (q - 1); // FY26/Q3 → 26*4 + 2 = 106
+}
+
+/** TIERED CASA resolution (the live F7 snapshot value). Preserving cutover (Option B):
+ *    tier 1 — newest QUARTER-KEYED found row (FYxx/Qn) by periodOrdinal (the quarterly value);
+ *    tier 2 — the legacy "LIVE" row (quarter=null) — keeps the live banks scoring as before;
+ *    else   — null (caller applies §5.8 neutral). The legacy ANNUAL rows are NOT a snapshot
+ *             tier (they remain L3-own-history only) — so a bank with only annual CASA stays
+ *             on neutral, exactly as today.
+ *  Returns the resolved point plus the tier + a period label for provenance. */
+export function resolveCasa(
+  m: Map<string, SupplementaryPoint>,
+): { point: SupplementaryPoint; tier: "quarter" | "legacy_live"; periodLabel: string } | null {
+  // Tier 1 — newest quarter-keyed found row.
+  let bestQ: SupplementaryPoint | null = null;
+  let bestOrd = -Infinity;
+  for (const p of m.values()) {
+    if (p.quarter !== null && p.status === "found" && p.value !== null) {
+      const ord = periodOrdinal(p.fiscalYear, p.quarter);
+      if (ord > bestOrd) { bestOrd = ord; bestQ = p; }
+    }
+  }
+  if (bestQ) return { point: bestQ, tier: "quarter", periodLabel: `${bestQ.fiscalYear}/${bestQ.quarter}` };
+
+  // Tier 2 — legacy LIVE (quarter=null).
+  const live = m.get("LIVE");
+  if (live && live.quarter === null && live.status === "found" && live.value !== null) {
+    return { point: live, tier: "legacy_live", periodLabel: "LIVE" };
+  }
+
   return null;
 }
 

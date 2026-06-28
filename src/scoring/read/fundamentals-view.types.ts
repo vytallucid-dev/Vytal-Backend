@@ -25,6 +25,8 @@ export type Basis = "consolidated" | "standalone";
 export interface QuarterPoint {
   periodKey: string; // "FY26Q4" — fiscalYear ("FY26") + quarter ("Q4")
   reportDate: string; // YYYY-MM-DD
+  filingDate: string; // YYYY-MM-DD — when filed with NSE (drives the Results viewer header)
+  xbrlUrl: string; // direct link to the source XBRL filing
   revenue: number | null; // ₹ Cr
   netProfit: number | null; // ₹ Cr
   operatingProfit: number | null; // ₹ Cr (EBITDA proxy)
@@ -248,10 +250,42 @@ export interface BkRatioHistoryPoint {
   creditCostPct: number | null; // %
 }
 
+// ── CASA (current-and-savings ratio) — entered quarterly, exposed for DISPLAY ─────
+// CASA is a manually-entered supplementary (BankSupplementary, PERCENT) scored by the
+// engine; this block carries it back out on the READ path so the UI can show it. The
+// tier in `current.source` is the load-bearing field — it mirrors the admin status
+// table's tiering EXACTLY (see ingestions/bank-supplementary/casa-status.ts). Banks-only:
+// `casa` appears solely on the banking branch. A bank with no entered CASA is honest-empty
+// (current.value null, source "none", series []) — never a fabricated number.
+
+/** The current CASA reading + the tier context the UI needs to render it honestly. */
+export interface BankingCasaCurrent {
+  value: number | null; // CASA %, e.g. 34.5 — null when source === "none"
+  quarter: string | null; // the quarter this value is FOR, e.g. "FY27/Q1"; null on legacy_live / none
+  source: "quarter" | "legacy_live" | "none"; // resolved tier — THE field that drives honest display
+  isCurrent: boolean; // true ONLY when the latest entered quarter === the current expected quarter
+  asOf: string | null; // ISO — when the driving row was entered (null when none)
+}
+
+/** One entered CASA quarter for the history chart (quarter-keyed rows only, ascending). */
+export interface BankingCasaSeriesPoint {
+  quarter: string; // "FY26/Q3"
+  value: number; // CASA % for that quarter (already percent — no conversion)
+  periodEnd: string | null; // period-end date if stored (currently null — quarter is the period identity)
+}
+
+/** CASA block on the banking fundamentals view: the current tiered value (honest display)
+ *  + the full entered quarter series (the CASA history chart). */
+export interface BankingCasa {
+  current: BankingCasaCurrent;
+  series: BankingCasaSeriesPoint[]; // ascending by quarter; [] when no entered quarters
+}
+
 export interface BankingPayload {
   quarters: BankingQuarter[]; // oldest → newest
   annual: BankingAnnual | null;
   ratioHistory: BkRatioHistoryPoint[]; // oldest → newest; sparkline-eligible, per-stock gated
+  casa: BankingCasa; // current CASA (tiered, honest) + full quarter series for the history chart
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

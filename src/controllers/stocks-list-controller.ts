@@ -15,6 +15,8 @@ import {
 import { buildOwnershipView } from "../scoring/read/ownership-series.service.js";
 import { buildFundamentalsView } from "../scoring/read/fundamentals-view.service.js";
 import type { Basis } from "../scoring/read/fundamentals-view.types.js";
+import { buildOverviewView } from "../scoring/read/overview-view.service.js";
+import { buildPriceView } from "../scoring/read/price-view.service.js";
 
 export const getScoredStocks = async (_req: Request, res: Response) => {
   try {
@@ -97,5 +99,46 @@ export const getStockFundamentals = async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[stocks/:symbol/fundamentals] error:", err);
     return res.status(500).json({ message: "Failed to build fundamentals view" });
+  }
+};
+
+// GET /api/stocks/:symbol/overview → StockOverviewView (editorial company profile).
+// Returned DIRECTLY (no envelope), same as the health/ownership/fundamentals reads.
+// 404 when the symbol is unknown; an in-universe stock with no editorial row returns
+// a honest-empty view (hasProfile=false), NOT a 404.
+export const getStockOverview = async (req: Request, res: Response) => {
+  try {
+    const symbol = String(req.params.symbol ?? "").toUpperCase().trim();
+    if (!symbol) {
+      return res.status(400).json({ message: "symbol is required" });
+    }
+    const view = await buildOverviewView(symbol);
+    if (!view) {
+      return res.status(404).json({ message: `Stock ${symbol} not found in universe` });
+    }
+    return res.json(view);
+  } catch (err) {
+    console.error("[stocks/:symbol/overview] error:", err);
+    return res.status(500).json({ message: "Failed to build overview view" });
+  }
+};
+
+// GET /api/stocks/:symbol/price → StockPriceView (factual price performance + benchmark
+// + sector-index comparison lines). Returned DIRECTLY (no envelope). 404 when the symbol
+// is unknown; a stock with no price rows returns hasPrice=false (honest-empty), NOT a 404.
+export const getStockPrice = async (req: Request, res: Response) => {
+  try {
+    const symbol = String(req.params.symbol ?? "").toUpperCase().trim();
+    if (!symbol) {
+      return res.status(400).json({ message: "symbol is required" });
+    }
+    const view = await buildPriceView(symbol);
+    if (!view) {
+      return res.status(404).json({ message: `Stock ${symbol} not found in universe` });
+    }
+    return res.json(view);
+  } catch (err) {
+    console.error("[stocks/:symbol/price] error:", err);
+    return res.status(500).json({ message: "Failed to build price view" });
   }
 };

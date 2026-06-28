@@ -14,6 +14,7 @@
 
 import { prisma } from "../../db/prisma.js";
 import { makeNormalizer, divOrNull, pctOf, round, zeroToNull, toNum } from "./fundamentals-normalize.js";
+import { buildCasaDisplay } from "../../ingestions/bank-supplementary/casa-status.js";
 import type {
   FundamentalsView,
   IndustryFamily,
@@ -116,7 +117,7 @@ export async function buildFundamentalsView(
   }
 
   if (family === "banking") {
-    const { payload, historyDepth, notes } = await buildBanking(stock.id, basis, basisAvailable);
+    const { payload, historyDepth, notes } = await buildBanking(stock.symbol, stock.id, basis, basisAvailable);
     return {
       ...base,
       built: true,
@@ -180,6 +181,8 @@ type QuarterRow = {
   quarter: string;
   fiscalYear: string;
   reportDate: Date;
+  filingDate: Date;
+  xbrlUrl: string;
   revenue: unknown;
   netProfit: unknown;
   operatingProfit: unknown;
@@ -238,6 +241,8 @@ async function buildNonFinancial(
         quarter: true,
         fiscalYear: true,
         reportDate: true,
+        filingDate: true,
+        xbrlUrl: true,
         revenue: true,
         netProfit: true,
         operatingProfit: true,
@@ -297,6 +302,8 @@ async function buildNonFinancial(
   const quarters: QuarterPoint[] = quarterRows.map((q) => ({
     periodKey: `${q.fiscalYear}${q.quarter}`, // "FY26" + "Q4" → "FY26Q4"
     reportDate: ymd(q.reportDate),
+    filingDate: ymd(q.filingDate),
+    xbrlUrl: q.xbrlUrl,
     revenue: zeroToNull(norm.money(q.revenue)),
     netProfit: zeroToNull(norm.money(q.netProfit)),
     operatingProfit: zeroToNull(norm.money(q.operatingProfit)),
@@ -535,6 +542,7 @@ type BankingAnnualRow = {
 };
 
 async function buildBanking(
+  symbol: string,
   stockId: string,
   basis: Basis,
   basisAvailable: Basis[],
@@ -547,7 +555,7 @@ async function buildBanking(
   const pct = (raw: unknown) => norm.pct(raw); // gnpa, nnpa, pcr, cet1, tier1, roa, c/i, nim, …
   const passPct = (raw: unknown) => round(toNum(raw), 2); // net_margin, *_yoy, *_qoq (already %)
 
-  const [quarterRows, annualRows] = await Promise.all([
+  const [quarterRows, annualRows, casa] = await Promise.all([
     prisma.bankingQuarterlyResult.findMany({
       where: { stockId, resultType: basis },
       orderBy: { reportDate: "asc" }, // oldest → newest (the spine)
@@ -623,6 +631,10 @@ async function buildBanking(
         cashFromFinancing: true,
       },
     }) as Promise<BankingAnnualRow[]>,
+    // CASA (entered supplementary) — current tiered value + full quarter series, for display.
+    // Symbol-keyed and basis-independent (CASA is standalone-only), so it rides the same
+    // parallel fetch. Honest-empty for banks with no entered CASA.
+    buildCasaDisplay(symbol),
   ]);
 
   // ── QUARTERLY EARNINGS SPINE ──────────────────────────────────────────────────
@@ -741,7 +753,7 @@ async function buildBanking(
     creditCostPct: pct(r.creditCostPct),
   }));
 
-  const payload: BankingPayload = { quarters, annual, ratioHistory };
+  const payload: BankingPayload = { quarters, annual, ratioHistory, casa };
 
   // ── honest data-state notes ───────────────────────────────────────────────────
   const years = annualRows.length;

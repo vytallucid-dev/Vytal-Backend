@@ -5,13 +5,28 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedIndAsAnnual } from "../xbrl/parser-indas.js";
 import {
   safeNumber,
-  decimalPct,
   decimalPerShare,
   decrementFY,
-  pctChange,
-  sumNonNull,
-  avgNonNull,
 } from "../ingester-utils.js";
+import { reportIngestionError } from "../../shared/ingestion-error.js";
+import {
+  RESULTS_CRON,
+  RESULTS_SOURCE,
+  SCALE_CEIL_CR,
+  BS_IMBALANCE_MAX,
+  REVENUE_YOY_MAX_PCT,
+  checkPlContentless,
+  checkScale,
+  checkRevenueNonPositive,
+  checkBsImbalance,
+  checkRevenueYoyAnomaly,
+  resultsRunRef,
+} from "../fundamentals-guards.js";
+import {
+  deriveIndAsAnnual,
+  plausibleFaceValue,
+  boundDerived,
+} from "../derive/derive-indas-annual.js";
 
 export interface IngestIndAsAnnualInput {
   stockId: string;
@@ -19,51 +34,36 @@ export interface IngestIndAsAnnualInput {
   source: string;
 }
 
-// A derived ratio / per-share column has limited precision; a corrupt SOURCE
-// input (e.g. a mis-tagged face value in the XBRL) can push a derived value past
-// the column range and reject the ENTIRE row — discarding real financials over a
-// display field. A display-only ratio must never do that, so out-of-range → null
-// + warn. The scoring engine recomputes its metrics from raw ₹Cr lines and does
-// not read these stored ratio columns for any affected metric (CN-8: no score
-// shift). maxIntDigits = (precision − scale): Decimal(8,4)→4, Decimal(10,4)→6,
-// Decimal(10,2)→8.
-function boundDerived(
-  v: Prisma.Decimal | null,
-  maxIntDigits: number,
-  field: string,
-  tag: string,
-): Prisma.Decimal | null {
-  if (v === null) return null;
-  const max = new Prisma.Decimal(10).pow(maxIntDigits);
-  if (v.abs().greaterThanOrEqualTo(max)) {
-    console.warn(
-      `[ingest-indas-annual] ${tag}: derived ${field}=${v.toString()} out of column range ` +
-        `(|v|≥${max.toString()}) → stored null (display field; scoring reads raw lines, not this column).`,
-    );
-    return null;
-  }
-  return v;
-}
-
-// Indian equity face values are 1/2/5/10 (occasionally up to 100). A value far
-// outside that range is corrupt source data (seen in integrated-filing XBRL where
-// a price or other figure is mis-tagged as nominal value). Drop it so it can't
-// poison its consumers: the derived bookValuePerShare, and the F3 ESC-buyback
-// quantifier in scoring (which reads faceValueShare, gated on an ESC drop).
-const PLAUSIBLE_FACE_VALUE_MAX = 1000;
-function plausibleFaceValue(v: number | null): number | null {
-  if (v === null) return null;
-  if (v <= 0 || v > PLAUSIBLE_FACE_VALUE_MAX) return null;
-  return v;
-}
-
 export async function ingestIndAsAnnual(
   input: IngestIndAsAnnualInput,
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed, source } = input;
   const p = parsed;
   const tag = `${p.fiscalYear}/${p.resultType} stock=${stockId.slice(0, 8)}`;
+  const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`Y-${p.fiscalYear}`);
+
+  // ── GUARD 1: SHAPE / P&L content (critical · source_code · REJECT) ──
+  // Runs on EVERY upsert (ingest + refresh) to protect existing rows from
+  // being overwritten by a contentless parse.
+  if (checkPlContentless(p.revenue, p.netProfit)) {
+    await reportIngestionError({
+      source: RESULTS_SOURCE,
+      cron: RESULTS_CRON,
+      guardType: "shape",
+      targetTable: "Fundamental",
+      targetEntity: entity,
+      severity: "critical",
+      resolutionPath: "source_code",
+      expected: "revenue or netProfit present",
+      observed: "both null (no P&L content)",
+      detail:
+        "Annual P&L tags did not resolve (likely an XBRL tag rename) — rejecting the upsert to preserve any existing row.",
+      runRef,
+    });
+    return { status: "rejected", rowId: "" };
+  }
   // Sanitised face value — corrupt source (e.g. 44539 where the real value is 10)
   // would otherwise compute a nonsensical bookValuePerShare and reject the row.
   const faceValueSane = plausibleFaceValue(p.faceValueShare);
@@ -71,62 +71,7 @@ export async function ingestIndAsAnnual(
     console.warn(`[ingest-indas-annual] ${tag}: implausible faceValueShare=${p.faceValueShare} → treated as null.`);
   }
 
-  // ── Derived totals ──
-  const totalDebt = sumNonNull(p.borrowingsCurrent, p.borrowingsNoncurrent);
-  const fcf =
-    p.cashFromOperating !== null && p.capex !== null
-      ? p.cashFromOperating - p.capex
-      : null;
-  const ebitda =
-    p.profitBeforeTax !== null &&
-    p.financeCosts !== null &&
-    p.depreciation !== null
-      ? p.profitBeforeTax + p.financeCosts + p.depreciation
-      : null;
-
-  // ── Margins ──
-  const netMargin =
-    p.netProfit !== null && p.revenue !== null && p.revenue !== 0
-      ? (p.netProfit / p.revenue) * 100
-      : null;
-
-  // Operating margin = EBITDA / Revenue
-  const operatingMargin =
-    ebitda !== null && p.revenue !== null && p.revenue !== 0
-      ? (ebitda / p.revenue) * 100
-      : null;
-
-  // ── Net Worth = Equity ──
-  // Prefer EquityAttributableToOwners (consolidated) > totalEquity > shareCapital + otherEquity
-  const netWorth =
-    p.equityAttributableToOwners ??
-    p.totalEquity ??
-    sumNonNull(p.equityShareCapital, p.otherEquity);
-
-  // ── Book Value Per Share ──
-  // Need shares outstanding = paidUpEquityCapital / faceValueShare (both in absolute, so ratio is share count)
-  // paidUpEquityCapital is in ₹ Cr; faceValueShare is in ₹/share. shares = (paidUpEquityCapital * 1e7) / faceValueShare
-  let bookValuePerShare: number | null = null;
-  if (
-    netWorth !== null &&
-    p.paidUpEquityCapital !== null &&
-    p.paidUpEquityCapital > 0 &&
-    faceValueSane !== null &&
-    faceValueSane > 0
-  ) {
-    const sharesOutstandingCr = p.paidUpEquityCapital / faceValueSane; // (₹Cr) / (₹/share) → Cr-shares
-    if (sharesOutstandingCr > 0) {
-      bookValuePerShare = netWorth / sharesOutstandingCr;
-    }
-  }
-
-  // ── D/E ──
-  const debtToEquity =
-    totalDebt !== null && netWorth !== null && netWorth !== 0
-      ? totalDebt / netWorth
-      : null;
-
-  // ── ROE & ROCE — need prior-year for averaging ──
+  // ── Prior-year row (for ROE averaging + YoY growth) ──
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.fundamental.findUnique({
     where: {
@@ -144,79 +89,138 @@ export async function ingestIndAsAnnual(
       equityAttributableToOwners: true,
       equityShareCapital: true,
       otherEquity: true,
-      borrowingsCurrent: true,
-      borrowingsNoncurrent: true,
-      totalAssets: true,
     },
   });
 
-  const priorNetWorth = priorRow
-    ? (priorRow.equityAttributableToOwners?.toNumber() ??
-      priorRow.totalEquity?.toNumber() ??
-      sumNonNull(
-        priorRow.equityShareCapital?.toNumber() ?? null,
-        priorRow.otherEquity?.toNumber() ?? null,
-      ))
-    : null;
-
-  const avgEquity = avgNonNull(netWorth, priorNetWorth);
-  const roe =
-    p.netProfit !== null && avgEquity !== null && avgEquity !== 0
-      ? (p.netProfit / avgEquity) * 100
-      : null;
-
-  // ROCE: EBIT / (Equity + Total Debt) using year-end as approximation
-  const ebit =
-    p.profitBeforeTax !== null && p.financeCosts !== null
-      ? p.profitBeforeTax + p.financeCosts
-      : null;
-  const capitalEmployed = sumNonNull(netWorth, totalDebt);
-  const roce =
-    ebit !== null && capitalEmployed !== null && capitalEmployed !== 0
-      ? (ebit / capitalEmployed) * 100
-      : null;
-
-  // ── Interest Coverage = EBIT / Interest ──
-  const interestCoverage =
-    ebit !== null && p.financeCosts !== null && p.financeCosts !== 0
-      ? ebit / p.financeCosts
-      : null;
-
-  // ── Receivables Days ──
-  const receivables = sumNonNull(
-    p.tradeReceivablesCurrent,
-    p.tradeReceivablesNoncurrent,
+  // ── Derive every stored ratio column — SINGLE PATH (ingestion ≡ fill).
+  // deriveIndAsAnnual is a verbatim extraction of the former inline block;
+  // the raw-field fill calls the exact same function on the stored row. ──
+  const derived = deriveIndAsAnnual(
+    {
+      revenue: p.revenue,
+      netProfit: p.netProfit,
+      financeCosts: p.financeCosts,
+      depreciation: p.depreciation,
+      profitBeforeTax: p.profitBeforeTax,
+      equityShareCapital: p.equityShareCapital,
+      otherEquity: p.otherEquity,
+      totalEquity: p.totalEquity,
+      equityAttributableToOwners: p.equityAttributableToOwners,
+      borrowingsCurrent: p.borrowingsCurrent,
+      borrowingsNoncurrent: p.borrowingsNoncurrent,
+      cashFromOperating: p.cashFromOperating,
+      capex: p.capex,
+      paidUpEquityCapital: p.paidUpEquityCapital,
+      faceValueShareSane: faceValueSane,
+      tradeReceivablesCurrent: p.tradeReceivablesCurrent,
+      tradeReceivablesNoncurrent: p.tradeReceivablesNoncurrent,
+      inventories: p.inventories,
+      totalAssets: p.totalAssets,
+      basicEps: p.basicEps,
+    },
+    priorRow
+      ? {
+          revenue: priorRow.revenue?.toNumber() ?? null,
+          netProfit: priorRow.netProfit?.toNumber() ?? null,
+          basicEps: priorRow.basicEps?.toNumber() ?? null,
+          totalEquity: priorRow.totalEquity?.toNumber() ?? null,
+          equityAttributableToOwners:
+            priorRow.equityAttributableToOwners?.toNumber() ?? null,
+          equityShareCapital: priorRow.equityShareCapital?.toNumber() ?? null,
+          otherEquity: priorRow.otherEquity?.toNumber() ?? null,
+        }
+      : null,
+    tag,
   );
-  const receivablesDays =
-    receivables !== null && p.revenue !== null && p.revenue !== 0
-      ? (receivables / p.revenue) * 365
-      : null;
+  // The CONTINUITY guard reads the pre-Decimal revenue-YoY number.
+  const revenueGrowthYoy = derived.numbers.revenueGrowthYoy;
 
-  // ── Inventory Turnover ──
-  const inventoryTurnover =
-    p.inventories !== null && p.inventories !== 0 && p.revenue !== null
-      ? p.revenue / p.inventories
-      : null;
-
-  // ── Asset Turnover ──
-  const assetTurnover =
-    p.totalAssets !== null && p.totalAssets !== 0 && p.revenue !== null
-      ? p.revenue / p.totalAssets
-      : null;
-
-  // ── YoY Growth ──
-  const revenueGrowthYoy = pctChange(
-    p.revenue,
-    priorRow?.revenue?.toNumber() ?? null,
-  );
-  const profitGrowthYoy = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
-  );
-  const epsGrowthYoy = pctChange(
-    p.basicEps,
-    priorRow?.basicEps?.toNumber() ?? null,
-  );
+  // ── Per-record FLAG guards — only on genuinely-NEW periods (ingest),
+  // not refreshes, so re-scanning a season never re-flags history. ──
+  if (decision === "ingest") {
+    // GUARD 4: RANGE / scale (the ÷1e7 unit break) on the big line items.
+    const scaleHits = (
+      [
+        ["revenue", p.revenue],
+        ["netProfit", p.netProfit],
+        ["totalAssets", p.totalAssets],
+      ] as const
+    ).filter(([, v]) => checkScale(v));
+    if (scaleHits.length > 0) {
+      await reportIngestionError({
+        source: RESULTS_SOURCE,
+        cron: RESULTS_CRON,
+        guardType: "range",
+        targetTable: "Fundamental",
+        targetField: "scale",
+        targetEntity: entity,
+        severity: "medium",
+        resolutionPath: "source_code",
+        expected: `|line item| ≤ ${SCALE_CEIL_CR} ₹Cr`,
+        observed: scaleHits.map(([k, v]) => `${k}=${v}`).join(", "),
+        detail: "Line item far beyond plausible ₹Cr — likely a unit-scale (÷1e7) parse break.",
+        runRef,
+      });
+    }
+    if (checkRevenueNonPositive(p.revenue)) {
+      await reportIngestionError({
+        source: RESULTS_SOURCE,
+        cron: RESULTS_CRON,
+        guardType: "range",
+        targetTable: "Fundamental",
+        targetField: "revenue",
+        targetEntity: entity,
+        severity: "medium",
+        resolutionPath: "admin_fill",
+        expected: "revenue > 0",
+        observed: `revenue=${p.revenue}`,
+        detail: "Non-positive revenue — verify against source.",
+        runRef,
+      });
+    }
+    // GUARD 4: BALANCE-SHEET identity — CONDITIONAL. Only fires when all
+    // four lines are present; a NULL balance sheet (24.4% of rows) is
+    // normal and never flagged here.
+    const bsImbalance = checkBsImbalance({
+      totalAssets: p.totalAssets,
+      totalEquity: p.totalEquity,
+      currentLiabilities: p.currentLiabilities,
+      noncurrentLiabilities: p.noncurrentLiabilities,
+    });
+    if (bsImbalance != null) {
+      await reportIngestionError({
+        source: RESULTS_SOURCE,
+        cron: RESULTS_CRON,
+        guardType: "range",
+        targetTable: "Fundamental",
+        targetField: "balanceSheet",
+        targetEntity: entity,
+        severity: "medium",
+        resolutionPath: "source_code",
+        expected: `|assets − (equity+curLiab+noncurLiab)| / assets ≤ ${(BS_IMBALANCE_MAX * 100).toFixed(0)}%`,
+        observed: `${(bsImbalance * 100).toFixed(1)}% off (assets=${p.totalAssets}, equity=${p.totalEquity}, curLiab=${p.currentLiabilities}, noncurLiab=${p.noncurrentLiabilities})`,
+        detail: "Balance sheet doesn't balance — a major BS line was mis-parsed.",
+        runRef,
+      });
+    }
+    // GUARD 5: CONTINUITY — revenue YoY anomaly (NOT profit YoY).
+    if (checkRevenueYoyAnomaly(revenueGrowthYoy)) {
+      await reportIngestionError({
+        source: RESULTS_SOURCE,
+        cron: RESULTS_CRON,
+        guardType: "continuity",
+        targetTable: "Fundamental",
+        targetField: "revenueGrowthYoy",
+        targetEntity: entity,
+        severity: "low",
+        resolutionPath: "source_code",
+        expected: `|revenue YoY| ≤ ${REVENUE_YOY_MAX_PCT}% (max real 238%)`,
+        observed: `revenueGrowthYoy=${revenueGrowthYoy?.toFixed(0)}%`,
+        detail: "Revenue YoY beyond the sticky band — per-period scale break or real anomaly; eyeball.",
+        runRef,
+      });
+    }
+  }
 
   const data: Prisma.FundamentalUpsertArgs["create"] = {
     stockId,
@@ -264,7 +268,6 @@ export async function ingestIndAsAnnual(
     deferredTaxLiabilitiesNet: safeNumber(p.deferredTaxLiabilitiesNet),
     currentLiabilities: safeNumber(p.currentLiabilities),
     noncurrentLiabilities: safeNumber(p.noncurrentLiabilities),
-    totalDebt: safeNumber(totalDebt),
 
     // BS — Non-current Assets
     propertyPlantAndEquipment: safeNumber(p.propertyPlantAndEquipment),
@@ -310,7 +313,6 @@ export async function ingestIndAsAnnual(
     repaymentsOfBorrowings: safeNumber(p.repaymentsOfBorrowings),
     dividendsPaid: safeNumber(p.dividendsPaid),
     interestPaid: safeNumber(p.interestPaid),
-    fcf: safeNumber(fcf),
 
     // Per Share — bounded to Decimal(10,4) (6 int digits); faceValue sanitised
     basicEps: boundDerived(decimalPerShare(p.basicEps), 6, "basicEps", tag),
@@ -318,25 +320,10 @@ export async function ingestIndAsAnnual(
     faceValueShare: decimalPerShare(faceValueSane),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
-    // Derived — ratio/pct columns are Decimal(8,4) (4 int digits); per-share &
-    // turnover columns Decimal(10,4) (6); receivablesDays Decimal(10,2) (8).
-    // bound* clamps a corrupt-input blowup to null rather than rejecting the row.
-    ebitda: safeNumber(ebitda),
-    netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
-    operatingMargin: boundDerived(decimalPct(operatingMargin), 4, "operatingMargin", tag),
-    netWorth: safeNumber(netWorth),
-    bookValuePerShare: boundDerived(decimalPerShare(bookValuePerShare), 6, "bookValuePerShare", tag),
-    debtToEquity: boundDerived(decimalPct(debtToEquity !== null ? debtToEquity * 100 : null), 4, "debtToEquity", tag), // store as percent
-    roe: boundDerived(decimalPct(roe), 4, "roe", tag),
-    roce: boundDerived(decimalPct(roce), 4, "roce", tag),
-    interestCoverage: boundDerived(decimalPerShare(interestCoverage), 6, "interestCoverage", tag),
-    receivablesDays: boundDerived(safeNumber(receivablesDays, 2), 8, "receivablesDays", tag),
-    inventoryTurnover: boundDerived(decimalPerShare(inventoryTurnover), 6, "inventoryTurnover", tag),
-    assetTurnover: boundDerived(decimalPerShare(assetTurnover), 6, "assetTurnover", tag),
-
-    revenueGrowthYoy: boundDerived(decimalPct(revenueGrowthYoy), 4, "revenueGrowthYoy", tag),
-    profitGrowthYoy: boundDerived(decimalPct(profitGrowthYoy), 4, "profitGrowthYoy", tag),
-    epsGrowthYoy: boundDerived(decimalPct(epsGrowthYoy), 4, "epsGrowthYoy", tag),
+    // Derived — the 17 computed ratio/total columns (totalDebt, fcf, ebitda,
+    // netWorth, margins, bvps, D/E, roe, roce, coverage, turnover, YoY) all come
+    // from the single deriveIndAsAnnual path so ingestion ≡ fill, byte-for-byte.
+    ...derived.columns,
   };
 
   const row = await prisma.fundamental.upsert({

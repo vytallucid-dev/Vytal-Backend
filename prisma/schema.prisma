@@ -755,8 +755,10 @@ model InsiderTrade {
   // "30"    = annual disclosure (Reg 30)
   // "31"    = event-based disclosure (Reg 31)
 
-  intimationDate DateTime @map("intimation_date") @db.Date
-  // Date NSE received / published the disclosure
+  intimationDate DateTime? @map("intimation_date") @db.Date
+  // Date NSE received / published the disclosure. Nullable: pre-gg-migration
+  // filings (appId="NA") sometimes carry a bad-source future date; we null those
+  // rather than storing a fabricated value. tradeDate is the reliable fallback.
 
   // ── Person who traded ─────────────────────
   personName     String @map("person_name")
@@ -2872,11 +2874,153 @@ model StockOverview {
   listedSince  Int?     @map("listed_since")
   coreBusiness String   @map("core_business") @db.Text
   revenueModel String   @map("revenue_model") @db.Text
-  businessTags String[] @map("business_tags")
+  businessTags String[] @default([]) @map("business_tags")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
   @@map("stock_overviews")
+}
+
+// ─────────────────────────────────────────────────────────────
+// INGESTION ERROR  (shared, cron-agnostic detection framework)
+//
+// Per-VIOLATION detail for silent ingest failures (Class-B:
+// 200-OK-with-bad-data — empty sets, renamed fields, wrong units —
+// not loud 404s). Five guard families POPULATE this table by calling
+// reportIngestionError() when a detection guard trips:
+//   shape | count | null_rate | range | continuity
+//
+// COMPLEMENTS — does NOT replace — the per-RUN fetch logs
+// (PriceFetchLog / ShareholdingFetchLog / …). Those stay one row per
+// run (status/counts/duration). This is one row per violation
+// (why / which field / seen-vs-expected). They link via `runRef`.
+//
+// SEVERITY drives behaviour + resolutionPath (the design rule):
+//   critical = shape  → source_code, guard REJECTS data (no insert)
+//   high     = count / skip-rate → source_code, data LANDS + flags
+//   medium   = null_rate / range → MAY be admin_fill, data LANDS + flags
+//   low      = continuity        → source_code/review, data LANDS + flags
+//
+// resolutionPath gates the resolution UI: admin_fill rows get a
+// fill-button (a missing value an admin can source + cite); source_code
+// rows do not (an admin can't type their way out of a broken endpoint).
+// ─────────────────────────────────────────────────────────────
+enum GuardType {
+  shape // expected structure / columns present
+  count // row count in expected band
+  null_rate // per-field population rate (genuinely-nullable fields)
+  range // value within bounds
+  continuity // delta vs history
+  // ── SCORING error class (source="scoring") — a SCORE that failed to compute
+  //    properly even when the input data is fine. Distinct from the ingestion
+  //    guards above (which catch bad data coming IN). Added so scoring errors
+  //    share this table + its resolution UI / lifecycle / dedup.
+  scoring_job_failed // a terminal-failed rescore BackgroundJob (Stage 1)
+  scoring_degraded // a committed snapshot degraded unexpectedly (Stage 4)
+  scoring_stale // a snapshot whose inputs moved since it was computed (Stage 3)
+}
+
+enum IngestionSeverity {
+  critical // shape failure — reject + flag
+  high // count anomaly / skip-rate spike
+  medium // null-rate spike / range violation
+  low // continuity flag (human eyeball)
+}
+
+enum ResolutionPath {
+  source_code // developer / source-side fix (no fill-button)
+  admin_fill // a specific value an admin can source + enter (fill-button)
+  rescore // re-run the scoring job (scoring errors) — enqueue a rescore + poll the job.
+  // fill-then-rescore reuses admin_fill (the existing fill bridge cascades a rescore).
+}
+
+enum IngestionErrorStatus {
+  open
+  resolved
+  ignored
+}
+
+model IngestionError {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now()) @map("created_at") // first seen
+
+  // ── Provenance: where the violation came from ──
+  source String // "nse_bhavcopy"
+  cron   String // "daily_eod_prices"
+
+  guardType GuardType @map("guard_type")
+
+  // ── Target: what the guard was checking ──
+  targetTable  String  @map("target_table") // "DailyPrice"
+  targetField  String? @map("target_field") // "close" — NULL for batch-level guards (shape/count/skip)
+  targetEntity String? @map("target_entity") // symbol / priceDate — NULL when not field-level
+
+  // ── Classification (severity drives behaviour + path) ──
+  severity       IngestionSeverity
+  resolutionPath ResolutionPath    @map("resolution_path")
+
+  // ── Evidence ──
+  expected String  @db.Text // "150–250 rows" / "close in [0.01,200000]"
+  observed String  @db.Text // "12 rows" / "close=0.34"
+  detail   String? @db.Text // human context
+  runRef   String? @map("run_ref") // SOFT ref to the run-log identity ("<priceDate>:<provider>");
+  // NOT a Prisma FK — each cron's run-log is a different table, and the
+  // price log row is upserted at end-of-run (after guards fire).
+
+  // ── Dedup bookkeeping (a daily recurring gap = 1 row, not 30) ──
+  occurrences Int      @default(1) // bumped each time the same open violation re-trips
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at") // last detection (createdAt = first)
+
+  // ── Resolution lifecycle ──
+  status             IngestionErrorStatus @default(open)
+  resolvedBy         String?              @map("resolved_by")
+  resolvedAt         DateTime?            @map("resolved_at")
+  resolutionCitation String?              @map("resolution_citation") @db.Text // CN-4: source the admin cited (admin_fill)
+  resolutionNote     String?              @map("resolution_note") @db.Text
+
+  // ── SCORING error class (source="scoring") — all nullable so ingestion rows are
+  //    unaffected (they leave every column below NULL). Populated by reportScoringError.
+  //    The dedup still rides the existing (cron, guardType, targetField, targetEntity,
+  //    status) index — periodKey is folded into targetEntity for cascade rows, so these
+  //    columns are structured/UI metadata, not part of the dedup key.
+  pgId             String? @map("pg_id") // PG_RESCORE entity ("PG5"); null for symbol-keyed cascades
+  periodKey        String? @map("period_key") // cascade edited period ("FY26Q2"); null for live pg_rescore
+  failureType      String? @map("failure_type") // "job_failed" | "degraded" | "stale"
+  degradationDetail Json?  @map("degradation_detail") // pillar/metric/presentRatio/lens — Stages 3/4
+  recomputeAction  String? @map("recompute_action") // "rescore" | "fill_then_rescore" | "source_code"
+  triggeringJobId  String? @map("triggering_job_id") // the failed BackgroundJob id (job_failed)
+  snapshotId       String? @map("snapshot_id") // the affected ScoreSnapshot — Stages 3/4
+
+  @@index([status, severity]) // triage queue
+  @@index([cron, createdAt]) // per-cron history
+  @@index([status, resolutionPath]) // fill-button vs source_code split
+  @@index([cron, guardType, targetField, targetEntity, status]) // dedup lookup of the open instance
+  @@map("ingestion_errors")
+}
+
+// ─────────────────────────────────────────────
+// RAW FIELD EDIT — append-only audit trail for the admin raw-field fill bridge.
+// One row per admin correction of a RAW fundamentals/shareholding field. The
+// correction itself is applied IN-PLACE on the target row (those tables are
+// upsert-in-place, not supersede-chained); this table is the citation history
+// (CN-4: every raw edit carries a source attribution). Additive — apply via the
+// drift-safe db-execute + migrate-resolve path (see [[invest-iq-migration-drift]]).
+// ─────────────────────────────────────────────
+model RawFieldEdit {
+  id          String   @id @default(uuid())
+  targetTable String   @map("target_table") // e.g. "Fundamental"
+  targetRowId String   @map("target_row_id")
+  field       String // the raw column corrected
+  oldValue    String?  @map("old_value") // stringified prior value (audit)
+  newValue    String?  @map("new_value") // stringified new value
+  citation    String // CN-4: mandatory source attribution
+  editedBy    String   @map("edited_by")
+  note        String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([targetTable, targetRowId])
+  @@index([createdAt])
+  @@map("raw_field_edits")
 }

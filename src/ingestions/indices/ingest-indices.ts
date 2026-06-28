@@ -16,6 +16,18 @@ import { prisma } from "../../db/prisma.js";
 import { Prisma } from "../../generated/prisma/client.js";
 import type { IndexEodValue } from "./providers/provider.js";
 import { fetchIndexBhavcopy } from "./providers/nse-index-bhavcopy.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import {
+  INDEX_CRON,
+  INDEX_SOURCE,
+  COUNT_FLOOR,
+  CHANGEPCT_NULL_MAX,
+  OHL_NULL_MAX,
+  VALUATION_NULL_MAX,
+  classifyCount,
+  checkNullRate,
+  indexRunRef,
+} from "./indices-guards.js";
 
 const SOURCE = "nse-index-csv";
 
@@ -137,6 +149,67 @@ export async function runIndexIngest(
     }
 
     const inserted = await upsertIndexValues(fetchResult.values);
+
+    // ── GUARDS 3 + 4: run post-insert. Only reached on NON-market-closed
+    // days (the market_closed branch returned above), so no holiday flags.
+    // index uses upsert (not createMany+skipDuplicates), so `inserted`
+    // always equals the file's row count — no re-run false-flag (the equity
+    // Guard-3 fix does not apply here). ──
+    const runRef = indexRunRef(indexDate);
+    const batch = fetchResult.values;
+
+    // GUARD 3: COUNT — roster collapse (partial fetch). No ceiling: the
+    // roster grows over time and upsert dedups.
+    const countVerdict = classifyCount(inserted);
+    if (countVerdict) {
+      await reportIngestionError({
+        source: INDEX_SOURCE,
+        cron: INDEX_CRON,
+        guardType: "count",
+        targetTable: "IndexPrice",
+        severity: countVerdict.severity,
+        resolutionPath: "source_code",
+        expected: `≥${COUNT_FLOOR} indices (normal 135–160)`,
+        observed: `${inserted} indices upserted`,
+        detail: countVerdict.note,
+        runRef,
+      });
+    }
+
+    // GUARD 4: NULL-RATE — a column rename nulls a field across the batch.
+    // changePct is ~always present (tight); OHL/valuation/turnover/volume
+    // are legitimately sparse (G-Sec/rate/bond indices), so their thresholds
+    // sit above the legit baseline.
+    const n = batch.length;
+    const nullChecks: Array<[string, number, number, string]> = [
+      ["changePct", batch.filter((v) => v.changePct == null).length, CHANGEPCT_NULL_MAX, "0.7%"],
+      ["open", batch.filter((v) => v.open == null).length, OHL_NULL_MAX, "10.2%"],
+      ["high", batch.filter((v) => v.high == null).length, OHL_NULL_MAX, "10.2%"],
+      ["low", batch.filter((v) => v.low == null).length, OHL_NULL_MAX, "10.2%"],
+      ["pe", batch.filter((v) => v.pe == null).length, VALUATION_NULL_MAX, "15.9%"],
+      ["pb", batch.filter((v) => v.pb == null).length, VALUATION_NULL_MAX, "15.1%"],
+      ["divYield", batch.filter((v) => v.divYield == null).length, VALUATION_NULL_MAX, "15.1%"],
+      ["turnover", batch.filter((v) => v.turnover == null).length, VALUATION_NULL_MAX, "15.8%"],
+      ["volume", batch.filter((v) => v.volume == null).length, VALUATION_NULL_MAX, "15.8%"],
+    ];
+    for (const [field, nulls, max, normal] of nullChecks) {
+      const rate = checkNullRate(nulls, n, max);
+      if (rate == null) continue;
+      await reportIngestionError({
+        source: INDEX_SOURCE,
+        cron: INDEX_CRON,
+        guardType: "null_rate",
+        targetTable: "IndexPrice",
+        targetField: field,
+        severity: "medium",
+        resolutionPath: "source_code",
+        expected: `${field} null-rate ≤ ${(max * 100).toFixed(0)}% (normal ${normal})`,
+        observed: `${(rate * 100).toFixed(1)}% null (${nulls}/${n})`,
+        detail: "Index column nulled across the batch — likely a CSV column rename.",
+        runRef,
+      });
+    }
+
     const durationMs = Date.now() - start;
 
     await prisma.indexFetchLog.upsert({

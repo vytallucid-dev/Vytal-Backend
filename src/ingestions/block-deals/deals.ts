@@ -14,6 +14,15 @@
 // ─────────────────────────────────────────────────────────────
 
 import { nseClient } from "../../lib/client.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import {
+  DEALS_CRON,
+  DEALS_SOURCE,
+  REQUIRED_DAILY_KEYS,
+  checkDailyShape,
+  checkHistoricalShapeMalformed,
+  dealsRunRef,
+} from "./deals-guards.js";
 
 // ── NSE response types ────────────────────────────────────────
 
@@ -216,6 +225,30 @@ export async function fetchDailyDeals(): Promise<{
     "/api/snapshot-capital-market-largedeal",
   );
 
+  // ── GUARD (SHAPE · critical · reject) ──
+  // `data.BULK_DEALS_DATA ?? []` silently yields [] if NSE renames the key —
+  // a fake quiet day. Assert the keys the parser reads are arrays. Empty-but-
+  // present arrays are a legit quiet/holiday day (holiday-immune → no flag).
+  const missingDaily = checkDailyShape(data);
+  if (missingDaily.length > 0) {
+    await reportIngestionError({
+      source: DEALS_SOURCE,
+      cron: DEALS_CRON,
+      guardType: "shape",
+      targetTable: "BlockDeal",
+      severity: "critical",
+      resolutionPath: "source_code",
+      expected: `snapshot response with [${REQUIRED_DAILY_KEYS.join(", ")}] arrays`,
+      observed: `missing/non-array: [${missingDaily.join(", ")}]`,
+      detail:
+        "NSE largedeal snapshot key rename/removal — would otherwise parse as 0 deals (a fake quiet day).",
+      runRef: dealsRunRef(new Date(), "daily"),
+    });
+    throw new Error(
+      `Block-deals daily shape assertion failed — missing/non-array: ${missingDaily.join(", ")}`,
+    );
+  }
+
   const deals: DealRecord[] = [];
   let rawBulk = 0;
   let rawBlock = 0;
@@ -255,6 +288,26 @@ export async function fetchHistoricalDeals(
     `?optionType=${optionType}&from=${fromStr}&to=${toStr}`;
 
   const data = await nseClient.get<NseHistoricalDealsResponse>(path);
+
+  // ── GUARD (SHAPE · critical · reject) — same trap on `data.data ?? []`. ──
+  if (checkHistoricalShapeMalformed(data)) {
+    await reportIngestionError({
+      source: DEALS_SOURCE,
+      cron: DEALS_CRON,
+      guardType: "shape",
+      targetTable: "BlockDeal",
+      severity: "critical",
+      resolutionPath: "source_code",
+      expected: "historical response with a `data` array",
+      observed: "`data` is missing / not an array",
+      detail:
+        "NSE historical deals key rename/removal — would otherwise parse as 0 deals.",
+      runRef: dealsRunRef(new Date(), "backfill"),
+    });
+    throw new Error(
+      `Block-deals historical shape assertion failed — \`data\` not an array`,
+    );
+  }
 
   const deals: DealRecord[] = [];
   for (const raw of data.data ?? []) {

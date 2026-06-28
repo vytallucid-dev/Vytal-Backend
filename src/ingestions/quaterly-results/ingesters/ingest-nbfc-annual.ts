@@ -5,36 +5,38 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedNbfcAnnual } from "../xbrl/parser-nbfc.js";
 import {
   safeNumber,
-  decimalPct,
-  decimalRatio,
   decimalPerShare,
   decrementFY,
-  pctChange,
-  sumNonNull,
-  avgNonNull,
 } from "../ingester-utils.js";
+import {
+  financialShapeReject,
+  financialRecordGuards,
+  resultsRunRef,
+} from "../financial-guards.js";
+import { deriveNbfcAnnual } from "../derive/derive-nbfc-annual.js";
 
 export async function ingestNbfcAnnual(
   input: { stockId: string; parsed: ParsedNbfcAnnual; source: string },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
+  const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`Y-${p.fiscalYear}`);
+  if (
+    await financialShapeReject({
+      table: "NbfcFundamental",
+      entity,
+      runRef,
+      coreA: p.revenue,
+      coreB: p.netProfit,
+      coreLabel: "revenue or netProfit",
+    })
+  ) {
+    return { status: "rejected", rowId: "" };
+  }
 
-  // ── Derived NBFC ratios ──
-
-  // Total borrowings = debtSecurities + borrowings + subordinatedLiabilities + depositsLiabilities
-  const totalBorrowings = sumNonNull(
-    p.debtSecurities,
-    p.borrowings,
-    p.subordinatedLiabilities,
-    p.depositsLiabilities,
-  );
-
-  // Net Worth = totalEquity (preferred) || (equityShareCapital + otherEquity)
-  const netWorth =
-    p.totalEquity ?? sumNonNull(p.equityShareCapital, p.otherEquity);
-
-  // Avg AUM (Loans) for ratios that require it
+  // ── Prior-year row (avg loans/borrowings/equity denominators + YoY) — one
+  // fetch; the avg-denominator semantics live in deriveNbfcAnnual. ──
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.nbfcFundamental.findUnique({
     where: {
@@ -55,121 +57,70 @@ export async function ingestNbfcAnnual(
       borrowings: true,
       subordinatedLiabilities: true,
       depositsLiabilities: true,
-      financeCosts: true,
-      interestIncome: true,
     },
   });
-  const priorLoans = priorRow?.loans?.toNumber() ?? null;
-  const avgLoans = avgNonNull(p.loans, priorLoans);
 
-  // NIM (NBFC) ≈ (interestIncome - financeCosts) / avg(loans)
-  const nii =
-    p.interestIncome !== null && p.financeCosts !== null
-      ? p.interestIncome - p.financeCosts
-      : null;
-  const nim =
-    nii !== null && avgLoans !== null && avgLoans !== 0 ? nii / avgLoans : null;
-
-  // Cost-to-Income
-  const totalIncomeForC2I =
-    p.totalIncome ??
-    sumNonNull(
-      p.interestIncome,
-      p.feeAndCommissionIncome,
-      p.netGainOnFairValueChanges,
-      p.otherIncome,
-    );
-  const opEx = sumNonNull(
-    p.employeeBenefitExpense,
-    p.depreciation,
-    p.otherExpenses,
-    p.feeAndCommissionExpense,
+  // ── Derive all 12 stored columns — SINGLE PATH (ingestion ≡ fill). ──
+  const derived = deriveNbfcAnnual(
+    {
+      interestIncome: p.interestIncome,
+      financeCosts: p.financeCosts,
+      loans: p.loans,
+      totalIncome: p.totalIncome,
+      feeAndCommissionIncome: p.feeAndCommissionIncome,
+      netGainOnFairValueChanges: p.netGainOnFairValueChanges,
+      otherIncome: p.otherIncome,
+      employeeBenefitExpense: p.employeeBenefitExpense,
+      depreciation: p.depreciation,
+      otherExpenses: p.otherExpenses,
+      feeAndCommissionExpense: p.feeAndCommissionExpense,
+      impairmentOnFinancialInstruments: p.impairmentOnFinancialInstruments,
+      debtSecurities: p.debtSecurities,
+      borrowings: p.borrowings,
+      subordinatedLiabilities: p.subordinatedLiabilities,
+      depositsLiabilities: p.depositsLiabilities,
+      totalEquity: p.totalEquity,
+      equityShareCapital: p.equityShareCapital,
+      otherEquity: p.otherEquity,
+      totalAssets: p.totalAssets,
+      paidUpEquityCapital: p.paidUpEquityCapital,
+      faceValueShare: p.faceValueShare,
+      netProfit: p.netProfit,
+      revenue: p.revenue,
+    },
+    priorRow
+      ? {
+          revenue: priorRow.revenue?.toNumber() ?? null,
+          netProfit: priorRow.netProfit?.toNumber() ?? null,
+          loans: priorRow.loans?.toNumber() ?? null,
+          totalEquity: priorRow.totalEquity?.toNumber() ?? null,
+          equityShareCapital: priorRow.equityShareCapital?.toNumber() ?? null,
+          otherEquity: priorRow.otherEquity?.toNumber() ?? null,
+          debtSecurities: priorRow.debtSecurities?.toNumber() ?? null,
+          borrowings: priorRow.borrowings?.toNumber() ?? null,
+          subordinatedLiabilities:
+            priorRow.subordinatedLiabilities?.toNumber() ?? null,
+          depositsLiabilities: priorRow.depositsLiabilities?.toNumber() ?? null,
+        }
+      : null,
   );
-  const costToIncomeRatio =
-    opEx !== null && nii !== null && totalIncomeForC2I !== null
-      ? opEx / (totalIncomeForC2I - (p.financeCosts ?? 0))
-      : null;
+  // The record guards read the pre-Decimal revenue-YoY number.
+  const revenueGrowthYoy = derived.numbers.revenueGrowthYoy;
 
-  // Credit Cost % = ECL / avg(loans)
-  const creditCostPct =
-    p.impairmentOnFinancialInstruments !== null &&
-    avgLoans !== null &&
-    avgLoans !== 0
-      ? p.impairmentOnFinancialInstruments / avgLoans
-      : null;
-
-  // Spread = (interestIncome / avgLoans) - (financeCosts / avgBorrowings)
-  const priorBorrowings = priorRow
-    ? sumNonNull(
-        priorRow.debtSecurities?.toNumber() ?? null,
-        priorRow.borrowings?.toNumber() ?? null,
-        priorRow.subordinatedLiabilities?.toNumber() ?? null,
-        priorRow.depositsLiabilities?.toNumber() ?? null,
-      )
-    : null;
-  const avgBorrowings = avgNonNull(totalBorrowings, priorBorrowings);
-  const yieldOnAdvances =
-    p.interestIncome !== null && avgLoans !== null && avgLoans !== 0
-      ? p.interestIncome / avgLoans
-      : null;
-  const costOfFunds =
-    p.financeCosts !== null && avgBorrowings !== null && avgBorrowings !== 0
-      ? p.financeCosts / avgBorrowings
-      : null;
-  const spread =
-    yieldOnAdvances !== null && costOfFunds !== null
-      ? yieldOnAdvances - costOfFunds
-      : null;
-
-  // Capital-to-Assets (proxy for CRAR; actual CRAR requires RWA which isn't in XBRL)
-  const capitalToAssetsRatio =
-    netWorth !== null && p.totalAssets !== null && p.totalAssets !== 0
-      ? netWorth / p.totalAssets
-      : null;
-
-  // Borrowings to Equity (leverage)
-  const borrowingsToEquity =
-    totalBorrowings !== null && netWorth !== null && netWorth !== 0
-      ? totalBorrowings / netWorth
-      : null;
-
-  // BVPS
-  let bookValuePerShare: number | null = null;
-  if (
-    netWorth !== null &&
-    p.paidUpEquityCapital !== null &&
-    p.paidUpEquityCapital > 0 &&
-    p.faceValueShare !== null &&
-    p.faceValueShare > 0
-  ) {
-    const sharesCr = p.paidUpEquityCapital / p.faceValueShare;
-    if (sharesCr > 0) bookValuePerShare = netWorth / sharesCr;
+  if (decision === "ingest") {
+    await financialRecordGuards({
+      table: "NbfcFundamental",
+      entity,
+      runRef,
+      scale: [
+        ["revenue", p.revenue],
+        ["totalAssets", p.totalAssets],
+        ["loans", p.loans],
+      ],
+      yoy: revenueGrowthYoy,
+      yoyLabel: "revenueGrowthYoy",
+    });
   }
-
-  // ROE
-  const priorNetWorth = priorRow
-    ? (priorRow.totalEquity?.toNumber() ??
-      sumNonNull(
-        priorRow.equityShareCapital?.toNumber() ?? null,
-        priorRow.otherEquity?.toNumber() ?? null,
-      ))
-    : null;
-  const avgEquity = avgNonNull(netWorth, priorNetWorth);
-  const roe =
-    p.netProfit !== null && avgEquity !== null && avgEquity !== 0
-      ? p.netProfit / avgEquity
-      : null;
-
-  // YoY growth
-  const aumGrowthYoy = pctChange(p.loans, priorRow?.loans?.toNumber() ?? null);
-  const revenueGrowthYoy = pctChange(
-    p.revenue,
-    priorRow?.revenue?.toNumber() ?? null,
-  );
-  const patGrowthYoy = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
-  );
 
   const data: Prisma.NbfcFundamentalUpsertArgs["create"] = {
     stockId,
@@ -255,19 +206,10 @@ export async function ingestNbfcAnnual(
     faceValueShare: decimalPerShare(p.faceValueShare),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
-    nim: decimalRatio(nim),
-    costToIncomeRatio: decimalRatio(costToIncomeRatio),
-    creditCostPct: decimalRatio(creditCostPct),
-    spread: decimalRatio(spread),
-    capitalToAssetsRatio: decimalRatio(capitalToAssetsRatio),
-    borrowingsToEquity: decimalPct(borrowingsToEquity),
-    netWorth: safeNumber(netWorth),
-    bookValuePerShare: decimalPerShare(bookValuePerShare),
-    roe: decimalRatio(roe),
-
-    aumGrowthYoy: decimalPct(aumGrowthYoy),
-    revenueGrowthYoy: decimalPct(revenueGrowthYoy),
-    patGrowthYoy: decimalPct(patGrowthYoy),
+    // Derived — the 12 computed columns (nim, costToIncome, creditCost, spread,
+    // capitalToAssets, borrowingsToEquity, netWorth, bvps, roe, *GrowthYoy) all
+    // from the single deriveNbfcAnnual path so ingestion ≡ fill.
+    ...derived.columns,
   };
 
   const row = await prisma.nbfcFundamental.upsert({

@@ -171,22 +171,41 @@ function buildPdfUrl(attchmntFile: string): string | null {
 
 // ── Fetcher ───────────────────────────────────────────────────
 
+/**
+ * Result of one announcements fetch. `nonArray` = the envelope trap (the
+ * 200 response was an object/error-shaped, not an array → would silently
+ * yield 0). `rawRows`/`passed` expose the required-field filter so a
+ * seq_id/desc/an_dt rename (rows present, all dropped) is detectable. An
+ * empty-but-array response (legit quiet symbol) is `nonArray:false, rawRows:0`.
+ */
+export interface NseAnnouncementsFetch {
+  announcements: NseAnnouncement[];
+  nonArray: boolean;
+  rawRows: number;
+  passed: number;
+}
+
 export async function fetchNseAnnouncements(
   symbol: string,
   from: Date,
   to: Date,
   signal?: AbortSignal,
-): Promise<NseAnnouncement[]> {
+): Promise<NseAnnouncementsFetch> {
   const path =
     `/api/corporate-announcements?index=equities` +
     `&symbol=${encodeURIComponent(symbol)}` +
     `&from_date=${toNseDate(from)}&to_date=${toNseDate(to)}`;
 
   const data = await nseClient.get<NseAnnouncementRaw[]>(path, signal);
-  if (!Array.isArray(data)) return [];
+  const nonArray = !Array.isArray(data);
+  const rows: NseAnnouncementRaw[] = nonArray
+    ? []
+    : (data as NseAnnouncementRaw[]);
 
-  return data
-    .filter((r) => r.seq_id && r.desc && r.an_dt)
+  // Required-field filter (a seq_id/desc/an_dt rename drops every row here).
+  const withFields = rows.filter((r) => r.seq_id && r.desc && r.an_dt);
+
+  const announcements = withFields
     .map((r): NseAnnouncement | null => {
       const publishedAt = parseNseAnDate(r.an_dt);
       if (!publishedAt) return null;
@@ -213,4 +232,6 @@ export async function fetchNseAnnouncements(
       };
     })
     .filter((r): r is NseAnnouncement => r !== null);
+
+  return { announcements, nonArray, rawRows: rows.length, passed: withFields.length };
 }

@@ -1,0 +1,3 @@
+◇ injected env (0) from .env // tip: ⌘ suppress logs { quiet: true }
+[worker] starting
+Server running on http://localhost:4000

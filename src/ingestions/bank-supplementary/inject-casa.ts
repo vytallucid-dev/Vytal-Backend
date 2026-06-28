@@ -13,7 +13,8 @@
 // THE GATES (in order; ALL must pass or the inject is REJECTED with reasons):
 //   1. metricKey            — must be "casa_pct" (CASA-only; Tier-1 is XBRL).
 //   2. symbol               — must be one of the 12 PG5/PG6 banking-PG banks.
-//   3. fiscalYear           — "LIVE" or "FYxx".
+//   3. fiscalYear           — "FYxx" (a real FY; "LIVE" not accepted — quarterly model).
+//   3b. quarter             — REQUIRED "Q1".."Q4" (what makes the row quarter-keyed).
 //   4. value (UNIT gate)    — CASA percent in the sanity band [15, 60]. Rejects the
 //                             0.34-vs-34 fraction trap and out-of-band typos.
 //   5. sourceCitation (CN-4)— REQUIRED, non-empty. A found value with no attribution is
@@ -21,16 +22,18 @@
 //   6. confidence           — "A"|"B"|"C". "C" is ACCEPTED but WARNED (operator verify).
 //   7. sourceDate/periodEnd — a disclosure date is required to stamp the found row.
 //
-// SUPERSEDE: injecting a CASA for an existing (symbol, casa_pct, fiscalYear) creates a
-// NEW version (version+1, supersedesId → prior); the prior row is retained (audit). The
-// live read uses the highest-version row.
+// SUPERSEDE: injecting a CASA for an existing (symbol, casa_pct, fiscalYear, quarter)
+// cell creates a NEW version (version+1, supersedesId → prior); the prior row is retained
+// (audit). A new quarter is a fresh row (version 1). The live read uses the highest-version
+// row per cell. Legacy quarter=null rows (LIVE/annual) are never matched here (distinct cell).
 
 import { prisma } from "../../db/prisma.js";
 import type { Prisma } from "../../generated/prisma/client.js";
 
 export const CASA_BAND = { lo: 15, hi: 60 } as const;
 const VALID_CONFIDENCE = new Set(["A", "B", "C"]);
-const FY_RE = /^(FY\d{2}|LIVE)$/;
+const FY_RE = /^FY\d{2}$/; // quarterly model: a quarter-keyed CASA uses a real FY (not "LIVE")
+const QUARTER_RE = /^Q[1-4]$/; // "Q1".."Q4"
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH: Record<string, string> = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06", Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
 
@@ -39,7 +42,8 @@ type Db = Prisma.TransactionClient | typeof prisma;
 
 export interface LiveCasaInput {
   symbol: string;
-  fiscalYear: string; // "LIVE" | "FY26"
+  fiscalYear: string; // "FY26" (a real FY — the quarterly model)
+  quarter: string; // "Q1".."Q4" — REQUIRED (the quarterly model)
   periodEnd?: string | null; // "DD-Mon-YYYY" or "YYYY-MM-DD" — dates the disclosure
   value: number; // CASA PERCENT (e.g. 38.4, NOT 0.384)
   sourceCitation: string; // REQUIRED (CN-4)
@@ -56,6 +60,7 @@ export interface LiveCasaResult {
   rowId?: string;
   symbol?: string;
   fiscalYear?: string;
+  quarter?: string;
   value?: number;
   supersededId?: string | null;
   warnings: string[];
@@ -110,9 +115,15 @@ export async function injectLiveCasa(input: LiveCasaInput, db: Db = prisma): Pro
     else stockId = st.id;
   }
 
-  // 3. fiscalYear.
+  // 3. fiscalYear — a real FY ("FYxx"). The quarterly model keys CASA per (FY, quarter);
+  //    "LIVE" is no longer accepted here (legacy LIVE rows stay as a read-fallback tier).
   const fiscalYear = typeof input.fiscalYear === "string" ? input.fiscalYear.trim() : "";
-  if (!FY_RE.test(fiscalYear)) errors.push(`fiscalYear must be "LIVE" or "FYxx", got ${JSON.stringify(input.fiscalYear)}.`);
+  if (!FY_RE.test(fiscalYear)) errors.push(`fiscalYear must be "FYxx" (e.g. "FY26"), got ${JSON.stringify(input.fiscalYear)}. The quarterly CASA model uses a real fiscal year + quarter; "LIVE" is not accepted (legacy LIVE rows are preserved as a read-fallback, not re-written here).`);
+
+  // 3b. quarter — REQUIRED, "Q1".."Q4" (the quarterly model). This is what makes the row
+  //     quarter-keyed (tier-1 read). A row's cell is (stockId, casa_pct, fiscalYear, quarter).
+  const quarter = typeof input.quarter === "string" ? input.quarter.trim().toUpperCase() : "";
+  if (!QUARTER_RE.test(quarter)) errors.push(`quarter must be "Q1", "Q2", "Q3", or "Q4", got ${JSON.stringify(input.quarter)}.`);
 
   // 4. value — UNIT gate: CASA percent in [15, 60] (catches the 0.34-vs-34 fraction trap).
   const value = input.value;
@@ -156,21 +167,23 @@ export async function injectLiveCasa(input: LiveCasaInput, db: Db = prisma): Pro
 
   // ── APPEND-ONLY SUPERSEDE WRITE (mirrors the BankSupplementary supersede chain) ──
   // Read-before-write: the latest version for this exact (stock, casa_pct, fiscalYear,
-  // annual) cell. quarter=null (CASA LIVE is annual). New value/source ⇒ version+1 with
-  // supersedesId → prior. Identical value+source ⇒ no-op (unchanged).
+  // quarter) cell. Re-submitting FY26/Q2 ⇒ version+1 with supersedesId → prior; a new
+  // quarter (FY26/Q3) finds nothing ⇒ version 1 (a new row). Legacy quarter=null rows
+  // (LIVE / annual) are DISTINCT from any FYxx/Qn cell and are never matched/mutated here.
+  // Identical value+source ⇒ no-op (unchanged).
   const latest = await db.bankSupplementary.findFirst({
-    where: { stockId, metric: "casa_pct", fiscalYear, quarter: null },
+    where: { stockId, metric: "casa_pct", fiscalYear, quarter },
     orderBy: { version: "desc" },
     select: { id: true, version: true, value: true, sourceCitation: true },
   });
 
   if (latest && latest.value !== null && latest.value.equals(value) && latest.sourceCitation === sourceCitation) {
-    return { ok: true, action: "unchanged", version: latest.version, rowId: latest.id, symbol, fiscalYear, value, supersededId: null, warnings, errors: [] };
+    return { ok: true, action: "unchanged", version: latest.version, rowId: latest.id, symbol, fiscalYear, quarter, value, supersededId: null, warnings, errors: [] };
   }
 
   const row = await db.bankSupplementary.create({
     data: {
-      stockId, symbol, metric: "casa_pct", fiscalYear, quarter: null,
+      stockId, symbol, metric: "casa_pct", fiscalYear, quarter,
       value, sourceCitation, sourceDate, confidence, status: "found", notes: input.notes ?? null,
       version: latest ? latest.version + 1 : 1,
       supersedesId: latest ? latest.id : null,
@@ -184,7 +197,7 @@ export async function injectLiveCasa(input: LiveCasaInput, db: Db = prisma): Pro
     action: latest ? "superseded" : "inserted",
     version: row.version,
     rowId: row.id,
-    symbol, fiscalYear, value,
+    symbol, fiscalYear, quarter, value,
     supersededId: latest?.id ?? null,
     warnings, errors: [],
   };

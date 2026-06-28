@@ -26,7 +26,7 @@
 
 import {
   type BankingCtx, type BankingAnnual, type BankingQuarter, type MetricValue,
-  pctFromFraction, BOUNDS, inBand, latestSupplementary, liveSupplementary, bUnavailable, r2,
+  pctFromFraction, BOUNDS, inBand, latestSupplementary, resolveCasa, bUnavailable, r2,
 } from "./banking-types.js";
 
 // Net interest income for a period: interestEarned − interestExpended.
@@ -227,22 +227,25 @@ export function f6CostIncome(c: BankingCtx): MetricValue {
 
 // ════════════════════════════════════════════════════════════════════════════
 // F7 — CASA % (higher_better) = BankSupplementary casa_pct (already %).
+// TIERED READ (preserving cutover): newest QUARTER-KEYED row → legacy LIVE → §5.8.
 // null → unavailable (scoring layer §5.8-excludes F7, redistributes weight).
 // ════════════════════════════════════════════════════════════════════════════
 export function f7Casa(c: BankingCtx): MetricValue {
-  // The LIVE manual figure is THE F7 input (the live pipeline is CASA-only). A bank
-  // whose LIVE CASA is missing has no current CASA → §5.8 missing-lens (F7 excluded
-  // from Foundation, weight redistributed across the other 6). Historical FY CASA is
-  // for L3 own-history sampling only, NOT the live snapshot value.
-  const live = liveSupplementary(c.casa);
-  if (!live || live.status !== "found" || live.value === null) {
-    return bUnavailable("CASA", "CASA Ratio %", "missing_line_item", "no LIVE CASA in BankSupplementary → §5.8 missing-lens (F7 excluded, weight redistributed across other 6)", {}, ["§5.8 missing-lens (no live CASA)"]);
+  // The CASA snapshot is the NEWEST quarter-keyed value (FYxx/Qn) if any exists; else
+  // the legacy "LIVE" row (so the 8 live banks score exactly as before until their first
+  // quarter lands); else no current CASA → §5.8 missing-lens (F7 excluded from Foundation,
+  // weight redistributed across the other 6). Legacy ANNUAL FY rows are L3 own-history
+  // only, NOT a snapshot tier — a bank with only annual CASA stays on §5.8, as today.
+  const resolved = resolveCasa(c.casa);
+  if (!resolved) {
+    return bUnavailable("CASA", "CASA Ratio %", "missing_line_item", "no quarter-keyed or LIVE CASA in BankSupplementary → §5.8 missing-lens (F7 excluded, weight redistributed across other 6)", {}, ["§5.8 missing-lens (no current CASA)"]);
   }
+  const { point, tier, periodLabel } = resolved;
   return {
-    key: "CASA", label: "CASA Ratio %", available: true, value: live.value, unit: "%", source: "stored_column",
-    formula: `CASA = ${r2(live.value)}% [BankSupplementary LIVE, conf ${live.confidence ?? "—"}]`,
-    inputs: { casa: live.value, fy: "LIVE", confidence: live.confidence },
-    reason: null, flags: live.confidence === "C" ? ["confidence=C (operator-verify before trusting)"] : [],
+    key: "CASA", label: "CASA Ratio %", available: true, value: point.value!, unit: "%", source: "stored_column",
+    formula: `CASA = ${r2(point.value!)}% [BankSupplementary ${periodLabel}${tier === "legacy_live" ? " (legacy)" : ""}, conf ${point.confidence ?? "—"}]`,
+    inputs: { casa: point.value!, period: periodLabel, tier, confidence: point.confidence },
+    reason: null, flags: point.confidence === "C" ? ["confidence=C (operator-verify before trusting)"] : [],
   };
 }
 
@@ -337,10 +340,13 @@ const subCtxAnnual = (c: BankingCtx, n: number): BankingCtx => ({ ...c, annual: 
 const subCtxQuarterly = (c: BankingCtx, n: number): BankingCtx => ({ ...c, quarterly: c.quarterly.slice(0, n) });
 
 function suppSeries(m: BankingCtx["casa"]): number[] {
-  const fys = [...m.keys()].filter((k) => k !== "LIVE").sort((a, b) => Number(a.replace(/\D/g, "")) - Number(b.replace(/\D/g, "")));
-  const out: number[] = [];
-  for (const fy of fys) { const p = m.get(fy)!; if (p.status === "found" && p.value !== null) out.push(p.value); }
-  return out;
+  // L3 own-history = the curated ANNUAL FY series (oldest→newest). Exclude "LIVE" and
+  // exclude quarter-keyed rows (those are the live snapshot, not history) — iterating
+  // point fields (not map keys) keeps this correct now that keys can be composite "FY/Qn".
+  const annual = [...m.values()]
+    .filter((p) => p.quarter === null && p.fiscalYear !== "LIVE" && p.status === "found" && p.value !== null)
+    .sort((a, b) => Number(a.fiscalYear.replace(/\D/g, "")) - Number(b.fiscalYear.replace(/\D/g, "")));
+  return annual.map((p) => p.value!);
 }
 
 /** Own-history series (oldest→newest) for L3, per metric key. Tier1/CASA use the

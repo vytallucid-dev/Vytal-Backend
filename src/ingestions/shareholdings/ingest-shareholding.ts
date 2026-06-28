@@ -18,6 +18,38 @@ import { dateToQuarterFY, parseAsOnDate } from "./shareholding-dates.js";
 import { fetchShareholdingIndex, fetchXbrlXml } from "./shareholding-fetch.js";
 import { nseClient } from "../../lib/client.js";
 import { parseXbrlShareholding } from "./xbrl-parser.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import {
+  SHAREHOLDING_CRON,
+  SHAREHOLDING_SOURCE,
+  PARTITION_MIN,
+  PCT_MIN,
+  PCT_MAX,
+  CONTINUITY_PROMOTER_PP,
+  FII_DII_NULL_MAX,
+  BANKS_NULL_MAX,
+  checkPartitionBroken,
+  classifyCoverage,
+  checkZeroFilingRate,
+  checkBatchNullRate,
+  checkPledgeCollapse,
+  checkPctRange,
+  checkShareInvariants,
+  checkPromoterContinuity,
+  shareholdingRunRef,
+} from "./shareholding-guards.js";
+
+// The breakdown fields the batch NULL-RATE guard inspects, captured for
+// each genuinely-new quarter's row so the run-level guard sees through
+// the CSV top-level mask.
+interface NewQuarterParsed {
+  symbol: string;
+  asOnDate: Date;
+  fiiPct: number | null;
+  diiPct: number | null;
+  banksFisPct: number | null;
+  promoterPledgedPct: number | null;
+}
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -40,6 +72,10 @@ export interface IngestShareholdingResult {
   quartersSkipped: number;
   durationMs: number;
   errors: string[];
+  /** GUARD 2b: the NSE filing index came back empty (no XBRL filings). */
+  zeroFilings: boolean;
+  /** GUARD 3: breakdown of the newest genuinely-new quarter (null if none). */
+  newQuarter: NewQuarterParsed | null;
 }
 
 export interface BulkIngestResult {
@@ -83,6 +119,8 @@ export async function ingestShareholdingForStock(
       quartersSkipped: 0,
       durationMs: Date.now() - start,
       errors: [`Stock ${symbol} not found in universe`],
+      zeroFilings: false,
+      newQuarter: null,
     };
   }
 
@@ -112,6 +150,8 @@ export async function ingestShareholdingForStock(
       quartersSkipped: 0,
       durationMs: Date.now() - start,
       errors: [msg],
+      zeroFilings: false,
+      newQuarter: null,
     };
   }
 
@@ -125,6 +165,8 @@ export async function ingestShareholdingForStock(
       quartersSkipped: 0,
       durationMs: Date.now() - start,
       errors: ["No XBRL filings found for this stock"],
+      zeroFilings: true, // GUARD 2b: empty index — a silent index-API break if widespread
+      newQuarter: null,
     };
   }
 
@@ -141,6 +183,25 @@ export async function ingestShareholdingForStock(
     .slice(0, quartersBack);
 
   console.log(`[Shareholding] ${symbol}: ${sorted.length} quarters to process`);
+
+  // For the per-record guards: the stock's latest existing row at run
+  // start. Per-record FLAG guards (range/continuity) fire ONLY on quarters
+  // strictly newer than this — so re-upserting old quarters every run never
+  // re-flags known history (the shareholding analog of the prices Guard-3
+  // fix). The SHAPE reject runs on EVERY upsert (it protects existing rows
+  // from being overwritten by a broken-parse zero). For a brand-new stock
+  // (no prior row) only the single newest filing is guarded.
+  const priorRow = await prisma.shareholdingPattern.findFirst({
+    where: { stockId: stock.id },
+    orderBy: { asOnDate: "desc" },
+    select: { asOnDate: true, promoterPct: true },
+  });
+  const priorAsOnDate = priorRow?.asOnDate ?? null;
+  const priorPromoterPct = priorRow
+    ? parseFloat(priorRow.promoterPct.toString())
+    : null;
+  const newestAsOnDate = sorted[0].parsedDate!;
+  let newQuarter: NewQuarterParsed | null = null;
 
   // Step 3: For each quarter, check if we already have it, if not fetch+parse
   for (const filing of sorted) {
@@ -189,6 +250,132 @@ export async function ingestShareholdingForStock(
 
     const dec = (v: number | null) =>
       v != null ? new Prisma.Decimal(v) : null;
+
+    const entity = `${symbol}@${asOnDate.toISOString().slice(0, 10)}`;
+    const runRef = shareholdingRunRef(asOnDate);
+
+    // ── GUARD 1: SHAPE / partition (critical · source_code · REJECT) ──
+    // Runs on EVERY upsert (new + re-upsert): a broken parse here would
+    // OVERWRITE an existing good row with zeros. promoter+public+empTrust
+    // partitions the register (~100); <50 ⇒ total context break (≈0) or a
+    // fraction-scale break (≈1). Reject = skip the upsert, keep prior data.
+    if (checkPartitionBroken(promoterPct, publicPct, parsed.employeeTrustPct)) {
+      await reportIngestionError({
+        source: SHAREHOLDING_SOURCE,
+        cron: SHAREHOLDING_CRON,
+        guardType: "shape",
+        targetTable: "ShareholdingPattern",
+        targetEntity: entity,
+        severity: "critical",
+        resolutionPath: "source_code",
+        expected: `promoter+public+empTrust ≥ ${PARTITION_MIN} (≈100)`,
+        observed: `sum=${(promoterPct + publicPct + parsed.employeeTrustPct).toFixed(2)} (promoter=${promoterPct}, public=${publicPct})`,
+        detail:
+          "Partition collapsed — XBRL context resolution likely broke (new SEBI taxonomy vintage) and the CSV top-level fallback was also empty. Rejecting the upsert to preserve any existing row.",
+        runRef,
+      });
+      console.warn(
+        `[Shareholding] ${symbol} ${quarter} ${fiscalYear}: REJECTED (partition sum < ${PARTITION_MIN})`,
+      );
+      quartersSkipped++;
+      await sleep(800);
+      continue;
+    }
+
+    // Per-record FLAG guards run ONLY on quarters newer than what we had,
+    // so re-upserting history never re-flags it.
+    const isNewQuarter = priorAsOnDate
+      ? asOnDate.getTime() > priorAsOnDate.getTime()
+      : asOnDate.getTime() === newestAsOnDate.getTime();
+
+    if (isNewQuarter) {
+      // ── GUARD 4: RANGE / validity (medium · per-record) ──
+      const pctFields: Array<[string, number | null]> = [
+        ["promoterPct", promoterPct],
+        ["publicPct", publicPct],
+        ["fiiPct", parsed.fiiPct],
+        ["diiPct", parsed.diiPct],
+        ["retailPct", parsed.retailPct],
+        ["othersPct", parsed.othersPct],
+        ["promoterPledgedPct", parsed.promoterPledgedPct],
+        ["promoterPledgedSharesPct", parsed.promoterPledgedSharesPct],
+      ];
+      const pctOob = pctFields
+        .filter(([, v]) => checkPctRange(v))
+        .map(([k, v]) => `${k}=${v}`);
+      if (pctOob.length > 0) {
+        await reportIngestionError({
+          source: SHAREHOLDING_SOURCE,
+          cron: SHAREHOLDING_CRON,
+          guardType: "range",
+          targetTable: "ShareholdingPattern",
+          targetField: "pct",
+          targetEntity: entity,
+          severity: "medium",
+          resolutionPath: "admin_fill",
+          expected: `percentages in [${PCT_MIN}, ${PCT_MAX}]`,
+          observed: pctOob.join(", "),
+          detail: "Percentage out of bounds — possible scale error.",
+          runRef,
+        });
+      }
+
+      const shareViolations = checkShareInvariants({
+        totalShares: parsed.totalShares,
+        promoterShares: parsed.promoterShares,
+        pledgedShares: parsed.pledgedShares,
+      });
+      if (shareViolations.length > 0) {
+        await reportIngestionError({
+          source: SHAREHOLDING_SOURCE,
+          cron: SHAREHOLDING_CRON,
+          guardType: "range",
+          targetTable: "ShareholdingPattern",
+          targetField: "shares",
+          targetEntity: entity,
+          severity: "medium",
+          resolutionPath: "source_code",
+          expected:
+            "totalShares>0, promoterShares≤totalShares, pledgedShares≤promoterShares",
+          observed: `${shareViolations.join(", ")} (total=${parsed.totalShares}, promoter=${parsed.promoterShares}, pledged=${parsed.pledgedShares})`,
+          detail: "Share-count invariant broken — likely a share context parse miss.",
+          runRef,
+        });
+      }
+
+      // ── GUARD 5: CONTINUITY (low · per-record · QoQ) ──
+      const promoterDelta = checkPromoterContinuity(promoterPct, priorPromoterPct);
+      if (promoterDelta != null) {
+        await reportIngestionError({
+          source: SHAREHOLDING_SOURCE,
+          cron: SHAREHOLDING_CRON,
+          guardType: "continuity",
+          targetTable: "ShareholdingPattern",
+          targetField: "promoterPct",
+          targetEntity: entity,
+          severity: "low",
+          resolutionPath: "source_code",
+          expected: `|Δpromoter vs prior quarter| ≤ ${CONTINUITY_PROMOTER_PP}pp`,
+          observed: `${priorPromoterPct}→${promoterPct} (Δ${promoterDelta.toFixed(2)}pp)`,
+          detail:
+            "Large promoter-stake move — genuine action or a parse miss; eyeball.",
+          runRef,
+        });
+      }
+
+      // Capture the newest new quarter's breakdown for the run-level
+      // batch NULL-RATE guard (sees through the CSV top-level mask).
+      if (!newQuarter) {
+        newQuarter = {
+          symbol,
+          asOnDate,
+          fiiPct: parsed.fiiPct,
+          diiPct: parsed.diiPct,
+          banksFisPct: parsed.banksFisPct,
+          promoterPledgedPct: parsed.promoterPledgedPct,
+        };
+      }
+    }
 
     // Upsert the shareholding record
     const recordData = {
@@ -260,6 +447,8 @@ export async function ingestShareholdingForStock(
     quartersSkipped,
     durationMs,
     errors,
+    zeroFilings: false,
+    newQuarter,
   };
 }
 
@@ -284,13 +473,17 @@ async function runInBatches(
   failedStocks: number;
   errors: Array<{ symbol: string; error: string }>;
   changedSymbols: string[];
+  zeroFilingStocks: number;
+  newQuarters: NewQuarterParsed[];
 }> {
   let totalInserted = 0;
   let totalSkipped = 0;
   let successStocks = 0;
   let failedStocks = 0;
+  let zeroFilingStocks = 0;
   const errors: Array<{ symbol: string; error: string }> = [];
   const changedSymbols: string[] = [];
+  const newQuarters: NewQuarterParsed[] = [];
   const totalBatches = Math.ceil(symbols.length / batchSize);
 
   for (let i = 0; i < symbols.length; i += batchSize) {
@@ -324,6 +517,8 @@ async function runInBatches(
         const r = outcome.value;
         totalInserted += r.quartersInserted;
         totalSkipped += r.quartersSkipped;
+        if (r.zeroFilings) zeroFilingStocks++;
+        if (r.newQuarter) newQuarters.push(r.newQuarter);
         // wrote-something → this symbol's PG(s) should rescore.
         if (r.quartersInserted > 0) changedSymbols.push(symbol);
         if (r.errors.length > 0) {
@@ -363,7 +558,122 @@ async function runInBatches(
     }
   }
 
-  return { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols };
+  return {
+    totalInserted,
+    totalSkipped,
+    successStocks,
+    failedStocks,
+    errors,
+    changedSymbols,
+    zeroFilingStocks,
+    newQuarters,
+  };
+}
+
+// ── Run-level coverage + null-rate guards (GUARDS 2 + 3) ──────
+// Called at the end of each bulk job over the run's aggregate. These see
+// through the CSV top-level mask by inspecting the XBRL BREAKDOWN of the
+// genuinely-new quarters. Batch rates are skipped below MIN_BATCH_FOR_RATE
+// (noise on small smart-refresh runs).
+async function runCoverageGuards(
+  jobLabel: string,
+  agg: {
+    totalStocks: number;
+    successStocks: number;
+    zeroFilingStocks: number;
+    newQuarters: NewQuarterParsed[];
+  },
+): Promise<void> {
+  const runRef = `${SHAREHOLDING_CRON}:${jobLabel}`;
+  const base = {
+    source: SHAREHOLDING_SOURCE,
+    cron: SHAREHOLDING_CRON,
+    targetTable: "ShareholdingPattern",
+    runRef,
+  } as const;
+
+  // ── GUARD 2a: COUNT / coverage ──
+  const coverage = classifyCoverage(agg.successStocks, agg.totalStocks);
+  if (coverage) {
+    await reportIngestionError({
+      ...base,
+      guardType: "count",
+      severity: coverage.severity,
+      resolutionPath: "source_code",
+      expected: `≥75% of ${agg.totalStocks} stocks succeed`,
+      observed: coverage.note,
+      detail: `${jobLabel} run coverage below floor — session cascade or NSE outage.`,
+    });
+  }
+
+  // ── GUARD 2b: zero-filing rate (silent index-API break) ──
+  const zeroRate = checkZeroFilingRate(agg.zeroFilingStocks, agg.totalStocks);
+  if (zeroRate != null) {
+    await reportIngestionError({
+      ...base,
+      guardType: "count",
+      targetField: "filingIndex",
+      severity: "high",
+      resolutionPath: "source_code",
+      expected: `≤10% of stocks return an empty filing index`,
+      observed: `${agg.zeroFilingStocks}/${agg.totalStocks} (${(zeroRate * 100).toFixed(1)}%) returned 0 filings`,
+      detail:
+        "Spike in empty filing indexes — the NSE index API likely changed/broke (these otherwise log as silent 'success').",
+    });
+  }
+
+  // ── GUARD 3: NULL-RATE on the XBRL breakdown (sees through CSV mask) ──
+  const n = agg.newQuarters.length;
+  const nq = agg.newQuarters;
+  const nullRateGuard = (
+    field: "fiiPct" | "diiPct" | "banksFisPct",
+    max: number,
+  ) => {
+    const nulls = nq.filter((q) => q[field] == null).length;
+    const rate = checkBatchNullRate(nulls, n, max);
+    if (rate == null) return null;
+    return { nulls, rate };
+  };
+
+  for (const [field, max, normal] of [
+    ["fiiPct", FII_DII_NULL_MAX, "0.2%"],
+    ["diiPct", FII_DII_NULL_MAX, "0.2%"],
+    ["banksFisPct", BANKS_NULL_MAX, "2.5%"],
+  ] as const) {
+    const hit = nullRateGuard(field, max);
+    if (hit) {
+      await reportIngestionError({
+        ...base,
+        guardType: "null_rate",
+        targetField: field,
+        severity: "medium",
+        resolutionPath: "source_code",
+        expected: `${field} null-rate ≤ ${(max * 100).toFixed(0)}% (normal ${normal})`,
+        observed: `${(hit.rate * 100).toFixed(1)}% null (${hit.nulls}/${n})`,
+        detail:
+          "XBRL breakdown silently lost across the run — the CSV top-level can still look fine, so this is the guard that catches a total XBRL break.",
+      });
+    }
+  }
+
+  // ── GUARD 3 (pledge collapse) ──
+  const pledgePresent = nq.filter(
+    (q) => q.promoterPledgedPct != null && q.promoterPledgedPct > 0,
+  ).length;
+  const pledgeRate = checkPledgeCollapse(pledgePresent, n);
+  if (pledgeRate != null) {
+    await reportIngestionError({
+      ...base,
+      guardType: "null_rate",
+      targetField: "promoterPledgedPct",
+      severity: "medium",
+      resolutionPath: "source_code",
+      expected: `pledge-present rate ≥ 5% (normal 18.7%)`,
+      observed: `${(pledgeRate * 100).toFixed(1)}% have pledge>0 (${pledgePresent}/${n})`,
+      detail:
+        "Pledge-present rate collapsed — the pledge/encumbrance context likely broke, defaulting everything to 0 (pledge is critical for the health score).",
+    });
+  }
 }
 
 // ── Bulk quarterly job (all active stocks) ────────────────────
@@ -386,7 +696,7 @@ export async function runQuarterlyShareholdingIngest(
     `[Shareholding] Quarterly job: ${stocks.length} stocks to process`,
   );
 
-  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols } =
+  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols, zeroFilingStocks, newQuarters } =
     await runInBatches(
       stocks.map((s) => s.symbol),
       (symbol) => ingestShareholdingForStock(symbol, 4, signal),
@@ -397,6 +707,13 @@ export async function runQuarterlyShareholdingIngest(
       onBatchComplete,
       signal,
     );
+
+  await runCoverageGuards("quarterly", {
+    totalStocks: stocks.length,
+    successStocks,
+    zeroFilingStocks,
+    newQuarters,
+  });
 
   const durationMs = Date.now() - start;
   console.log(
@@ -456,7 +773,7 @@ export async function runSmartShareholdingRefresh(
 
   console.log(`[Shareholding] Smart refresh: ${dueStocks.length} stocks due`);
 
-  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols } =
+  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols, zeroFilingStocks, newQuarters } =
     await runInBatches(
       dueStocks.map((s) => s.symbol),
       (symbol) => ingestShareholdingForStock(symbol, 1, signal),
@@ -467,6 +784,13 @@ export async function runSmartShareholdingRefresh(
       onBatchComplete,
       signal,
     );
+
+  await runCoverageGuards("smart", {
+    totalStocks: dueStocks.length,
+    successStocks,
+    zeroFilingStocks,
+    newQuarters,
+  });
 
   return {
     totalStocks: dueStocks.length,
@@ -498,7 +822,7 @@ export async function runShareholdingBackfill(
     `[Shareholding] Backfill: ${stocks.length} stocks × ${quartersBack} quarters`,
   );
 
-  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols } =
+  const { totalInserted, totalSkipped, successStocks, failedStocks, errors, changedSymbols, zeroFilingStocks, newQuarters } =
     await runInBatches(
       stocks.map((s) => s.symbol),
       (symbol) => ingestShareholdingForStock(symbol, quartersBack, signal),
@@ -509,6 +833,13 @@ export async function runShareholdingBackfill(
       onBatchComplete,
       signal,
     );
+
+  await runCoverageGuards("backfill", {
+    totalStocks: stocks.length,
+    successStocks,
+    zeroFilingStocks,
+    newQuarters,
+  });
 
   return {
     totalStocks: stocks.length,

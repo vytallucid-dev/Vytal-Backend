@@ -127,6 +127,10 @@ interface ParsedSubject {
   impactLevel: "high" | "medium" | "low";
 }
 
+function gcd(a: number, b: number): number {
+  return b === 0 ? a : gcd(b, a % b);
+}
+
 function parseSubject(subject: string): ParsedSubject {
   const s = subject.toLowerCase().trim();
 
@@ -169,8 +173,42 @@ function parseSubject(subject: string): ParsedSubject {
 
   // Split
   if (s.includes("split") || s.includes("sub-division")) {
-    const ratioMatch = subject.match(/(\d+)\s*:\s*(\d+)/);
-    const splitRatio = ratioMatch ? `${ratioMatch[1]}:${ratioMatch[2]}` : null;
+    // X:Y format first (kept for any future subjects that use it; currently 0 DB rows match)
+    const xyMatch = subject.match(/(\d+)\s*:\s*(\d+)/);
+    if (xyMatch) {
+      return {
+        eventType: "split",
+        dividendAmount: null,
+        dividendType: null,
+        bonusRatio: null,
+        splitRatio: `${xyMatch[1]}:${xyMatch[2]}`,
+        impactLevel: "high",
+      };
+    }
+
+    // Face-value format — the actual NSE format for all 60 split rows in the DB:
+    // "Face Value Split (Sub-Division) - From Rs 10/- Per Share To Rs 2/- Per Share"
+    // "Face Value Split From Rs.10/- To Re.1/-"
+    // "Fv Split Rs.2/- To Re.1/-"
+    // Handles: Rs/Re, Rs./Re. (dotted), no-space "Rs10", trailing "/-", optional "Per Share"
+    const fvMatch = subject.match(
+      /R[se]\.?\s*(\d+(?:\.\d+)?)\s*\/?-?\s*(?:Per\s+Share\s+)?To\s+R[se]\.?\s*(\d+(?:\.\d+)?)/i,
+    );
+    let splitRatio: string | null = null;
+    if (fvMatch) {
+      const oldFv = parseFloat(fvMatch[1]);
+      const newFv = parseFloat(fvMatch[2]);
+      if (oldFv > newFv && newFv > 0) {
+        // Scale to integers before GCD to handle decimal face values (e.g. Rs 0.50)
+        const scale = 100;
+        const o = Math.round(oldFv * scale);
+        const n = Math.round(newFv * scale);
+        const g = gcd(o, n);
+        splitRatio = `${o / g}:${n / g}`;
+      }
+      // oldFv <= newFv would be a reverse split / consolidation — leave splitRatio null
+    }
+
     return {
       eventType: "split",
       dividendAmount: null,
@@ -299,17 +337,15 @@ function toNseDateParam(d: Date): string {
 // ── Fetchers ──────────────────────────────────────────────────
 
 /**
- * Fetch corporate actions (dividends, bonus, splits, AGMs) for a date range.
- * Endpoint: /api/corporates-corporateActions?index=equities&from_date=...&to_date=...
+ * Fetch all corporate actions for a specific symbol (dividends, bonus, splits, etc.).
+ * NSE dropped date-range filtering from this endpoint — per-symbol is the only mode
+ * that returns data. Returns the full history NSE holds for that stock.
+ * Endpoint: /api/corporates-corporateActions?index=equities&symbol=SYMBOL
  */
-export async function fetchCorporateActions(
-  from: Date,
-  to: Date,
+export async function fetchCorporateActionsForSymbol(
+  symbol: string,
 ): Promise<EventRecord[]> {
-  const fromStr = toNseDateParam(from);
-  const toStr = toNseDateParam(to);
-
-  const path = `/api/corporates-corporateActions?index=equities&from_date=${fromStr}&to_date=${toStr}`;
+  const path = `/api/corporates-corporateActions?index=equities&symbol=${encodeURIComponent(symbol)}`;
 
   const data = await nseClient.get<NseCorporateActionRaw[]>(path);
 
@@ -402,30 +438,16 @@ export async function fetchEventCalendar(
 }
 
 /**
- * Fetch both corporate actions and event calendar for a date range.
- * Deduplicates by symbol + eventType + eventDate.
+ * Deduplicate events by symbol|eventType|date.
+ * Prefer corporate-actions rows (they carry amounts/exDates) over calendar rows.
  */
-export async function fetchAllEvents(
-  from: Date,
-  to: Date,
-): Promise<EventRecord[]> {
-  const [actions, calendar] = await Promise.all([
-    fetchCorporateActions(from, to),
-    fetchEventCalendar(from, to),
-  ]);
-
-  const all = [...actions, ...calendar];
-
-  // Deduplicate: prefer corporate actions over calendar for same event
-  // Key: symbol|eventType|date
+export function deduplicateEvents(events: EventRecord[]): EventRecord[] {
   const seen = new Map<string, EventRecord>();
-
-  for (const event of all) {
+  for (const event of events) {
     const key = `${event.symbol}|${event.eventType}|${event.eventDate.toISOString().split("T")[0]}`;
     if (!seen.has(key)) {
       seen.set(key, event);
     } else {
-      // If we have a duplicate, prefer the one with more data (dividendAmount, exDate etc.)
       const existing = seen.get(key)!;
       if (event.dividendAmount != null && existing.dividendAmount == null) {
         seen.set(key, event);
@@ -434,6 +456,19 @@ export async function fetchAllEvents(
       }
     }
   }
-
   return Array.from(seen.values());
+}
+
+/**
+ * Fetch event-calendar events (board meetings, earnings dates) for a date window.
+ * Corporate-actions are now fetched per-symbol — see fetchCorporateActionsForSymbol.
+ */
+export async function fetchAllEvents(
+  from: Date,
+  to: Date,
+): Promise<EventRecord[]> {
+  // Corporate-actions no longer support date-range queries (NSE API change).
+  // Callers that need corporate-actions must call fetchCorporateActionsForSymbol per stock.
+  // This function now returns only calendar events (meetings / earnings dates).
+  return fetchEventCalendar(from, to);
 }

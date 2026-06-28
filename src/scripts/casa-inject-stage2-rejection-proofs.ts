@@ -2,8 +2,9 @@
 // happy-path). Runs inside a transaction that is ALWAYS ROLLED BACK — nothing durable.
 //   npx tsx src/scripts/casa-inject-stage2-rejection-proofs.ts
 //
-// Proves: valid→ACCEPTED(found,v+1) · no-citation→REJECTED(CN-4) · 0.34 fraction→REJECTED
-// (unit band) · bad-symbol→REJECTED · second inject→SUPERSEDES(v2) · confidence-C→ACCEPTED+warn.
+// Proves: valid→ACCEPTED(found,inserted v1) · no-citation→REJECTED(CN-4) · 0.34 fraction→
+// REJECTED(unit band) · missing-quarter→REJECTED · bad-symbol→REJECTED · second inject→
+// SUPERSEDES(v2) · confidence-C→ACCEPTED+warn. All on quarter-keyed (FY26/Q1) cells.
 
 import { prisma } from "../db/prisma.js";
 import { injectLiveCasa } from "../ingestions/bank-supplementary/inject-casa.js";
@@ -25,21 +26,19 @@ async function main() {
 
   try {
     await prisma.$transaction(async (tx) => {
-      // 1. VALID — ICICIBANK live CASA (currently F7-§5.8-gapped) with a real citation.
+      // 1. VALID — ICICIBANK quarterly CASA (FY26/Q1) with a real citation. FY26/Q1 is a
+      //    FRESH quarter-keyed cell (bulk rows are all quarter=null), so this INSERTS v1.
       const valid = await injectLiveCasa({
-        symbol: "ICICIBANK", fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+        symbol: "ICICIBANK", fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
         value: 38.4, sourceCitation: "ICICI Bank Q1-FY26 results (Jul 2025) — CASA ratio 38.4% (period-end Jun-2025)",
         confidence: "A", enteredBy: "test:stage2",
       }, tx as any);
-      show("1. VALID ICICIBANK LIVE casa=38.4 (cited, conf A)", valid);
-      // ICICIBANK LIVE casa already has a bulk-loaded v1 "missing" (explicit-null) row, so
-      // the first live inject SUPERSEDES it as v2 — the operator's live value replaces the
-      // gap placeholder (correct audit behavior; not an "insert v1").
-      expect("valid accepted, supersedes bulk-missing v1 → found v2", valid.ok && valid.action === "superseded" && valid.version === 2 && !!valid.supersededId);
+      show("1. VALID ICICIBANK FY26/Q1 casa=38.4 (cited, conf A)", valid);
+      expect("valid accepted, fresh quarter cell → inserted v1", valid.ok && valid.action === "inserted" && valid.version === 1 && !valid.supersededId);
 
       // 2. NO CITATION — the CN-4 gate MUST fire.
       const noCite = await injectLiveCasa({
-        symbol: "ICICIBANK", fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+        symbol: "ICICIBANK", fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
         value: 38.4, sourceCitation: "", confidence: "A", enteredBy: "test:stage2",
       }, tx as any);
       show("2. NO sourceCitation (CN-4 gate)", noCite);
@@ -47,15 +46,23 @@ async function main() {
 
       // 3. FRACTION 0.34 — the unit-sanity band MUST fire.
       const frac = await injectLiveCasa({
-        symbol: "ICICIBANK", fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+        symbol: "ICICIBANK", fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
         value: 0.34, sourceCitation: "ICICI Q1-FY26 — CASA", confidence: "A", enteredBy: "test:stage2",
       }, tx as any);
       show("3. FRACTION value=0.34 (unit band [15,60])", frac);
       expect("fraction REJECTED", !frac.ok && frac.errors.some((e) => /sanity band|PERCENT/i.test(e)));
 
+      // 3b. MISSING quarter — the quarterly-model gate MUST fire.
+      const noQ = await injectLiveCasa({
+        symbol: "ICICIBANK", fiscalYear: "FY26", quarter: "", periodEnd: "30-Jun-2025",
+        value: 38.4, sourceCitation: "ICICI Q1-FY26 — CASA", confidence: "A", enteredBy: "test:stage2",
+      }, tx as any);
+      show("3b. MISSING quarter (quarterly-model gate)", noQ);
+      expect("missing-quarter REJECTED", !noQ.ok && noQ.errors.some((e) => /quarter must be/i.test(e)));
+
       // 4. UNKNOWN / non-banking symbol.
       const badSym = await injectLiveCasa({
-        symbol: "RELIANCE", fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+        symbol: "RELIANCE", fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
         value: 38.4, sourceCitation: "x", confidence: "A", enteredBy: "test:stage2",
       }, tx as any);
       show("4. NON-BANKING symbol RELIANCE", badSym);
@@ -63,36 +70,36 @@ async function main() {
 
       // 4b. Tier-1 metricKey — CASA-only gate.
       const tier1 = await injectLiveCasa({
-        symbol: "ICICIBANK", fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+        symbol: "ICICIBANK", fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
         value: 16.3, sourceCitation: "x", confidence: "A", metricKey: "tier1_pct", enteredBy: "test:stage2",
       }, tx as any);
       show("4b. metricKey=tier1_pct (CASA-only gate)", tier1);
       expect("tier1 metricKey REJECTED", !tier1.ok && tier1.errors.some((e) => /CASA-ONLY/i.test(e)));
 
-      // 5. SUPERSEDE — inject ICICIBANK LIVE again with a NEW value → v2 supersedes v1.
+      // 5. SUPERSEDE — inject ICICIBANK FY26/Q1 again with a NEW value → v2 supersedes v1.
       const supersede = await injectLiveCasa({
-        symbol: "ICICIBANK", fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+        symbol: "ICICIBANK", fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
         value: 39.1, sourceCitation: "ICICI Bank Q1-FY26 — CASA ratio revised 39.1%",
         confidence: "A", enteredBy: "test:stage2",
       }, tx as any);
-      show("5. SECOND inject ICICIBANK LIVE casa=39.1 (supersede)", supersede);
-      // bulk-missing v1 → inject#1 v2 (38.4) → inject#5 v3 (39.1).
-      expect("supersede → v3 with supersedesId", supersede.ok && supersede.action === "superseded" && supersede.version === 3 && !!supersede.supersededId);
+      show("5. SECOND inject ICICIBANK FY26/Q1 casa=39.1 (supersede)", supersede);
+      // inject#1 v1 (38.4) → inject#5 v2 (39.1).
+      expect("supersede → v2 with supersedesId", supersede.ok && supersede.action === "superseded" && supersede.version === 2 && !!supersede.supersededId);
 
-      // live-read check: highest version == v3 (39.1)
-      const liveRead = await tx.bankSupplementary.findFirst({ where: { symbol: "ICICIBANK", metric: "casa_pct", fiscalYear: "LIVE" }, orderBy: { version: "desc" }, select: { version: true, value: true, supersedesId: true } });
+      // live-read check: highest version == v2 (39.1)
+      const liveRead = await tx.bankSupplementary.findFirst({ where: { symbol: "ICICIBANK", metric: "casa_pct", fiscalYear: "FY26", quarter: "Q1" }, orderBy: { version: "desc" }, select: { version: true, value: true, supersedesId: true } });
       console.log(`\n  live-read (highest version): v${liveRead?.version} value=${liveRead?.value} supersedes=${liveRead?.supersedesId?.slice(0, 8) ?? "—"}`);
-      expect("live-read returns v3=39.1", liveRead?.version === 3 && Number(liveRead?.value) === 39.1);
+      expect("live-read returns v2=39.1", liveRead?.version === 2 && Number(liveRead?.value) === 39.1);
 
-      // 6. CONFIDENCE C — accepted with verify-warning. (Use a fresh cell: AXISBANK.)
+      // 6. CONFIDENCE C — accepted with verify-warning. (Use a fresh cell: AXISBANK FY26/Q1.)
       const cflag = await injectLiveCasa({
-        symbol: "AXISBANK", fiscalYear: "LIVE", periodEnd: "30-Jun-2025",
+        symbol: "AXISBANK", fiscalYear: "FY26", quarter: "Q1", periodEnd: "30-Jun-2025",
         value: 41.0, sourceCitation: "Axis Q1-FY26 brokerage note — CASA ~41% (secondary)",
         confidence: "C", enteredBy: "test:stage2",
       }, tx as any);
-      show("6. CONFIDENCE C AXISBANK casa=41.0 (secondary)", cflag);
-      // AXISBANK LIVE casa also has a bulk-missing v1 → conf-C inject supersedes to v2.
-      expect("conf-C accepted + warned (supersede v2)", cflag.ok && cflag.action === "superseded" && cflag.version === 2 && cflag.warnings.some((w) => /verify/i.test(w)));
+      show("6. CONFIDENCE C AXISBANK FY26/Q1 casa=41.0 (secondary)", cflag);
+      // Fresh AXISBANK FY26/Q1 quarter cell → conf-C inject inserts v1 (+ verify-warning).
+      expect("conf-C accepted + warned (inserted v1)", cflag.ok && cflag.action === "inserted" && cflag.version === 1 && cflag.warnings.some((w) => /verify/i.test(w)));
 
       // ALWAYS roll back — nothing durable.
       throw ROLLBACK;

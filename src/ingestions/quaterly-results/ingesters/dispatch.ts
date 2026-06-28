@@ -12,7 +12,7 @@ import { ingestLifeInsuranceAnnual } from "./ingest-li-annual.js";
 import { ingestGeneralInsuranceQuarterly } from "./ingest-gi-quarterly.js";
 import { ingestGeneralInsuranceAnnual } from "./ingest-gi-annual.js";
 
-export type IngestStatus = "success" | "refreshed";
+export type IngestStatus = "success" | "refreshed" | "rejected";
 
 export async function dispatchQuarterlyIngest(
   stockId: string,

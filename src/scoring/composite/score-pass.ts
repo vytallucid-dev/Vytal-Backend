@@ -230,7 +230,10 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     let qRowsForFindings: MomentumQuarter[] = []; // non-fin standalone quarters (P11/P12 OPM); [] for banks
     let fRowsForFindings: FoundationAnnual[] = []; // non-fin standalone annuals (R4/P8); [] for banks
     if (industry === "banking") {
-      const ctx: BankingCtx = await loadBankingCtx(symbol, id, cutoff);
+      // PIT: in a backfill, gate the quarter-keyed CASA read to ≤ the period (no future
+      // quarter leaks). pit.expectPeriodKey is "FYxxQn"; the live path passes undefined
+      // (newest CASA overall, unchanged). Tier-1 (XBRL) is never gated.
+      const ctx: BankingCtx = await loadBankingCtx(symbol, id, cutoff, pit?.expectPeriodKey);
       const d = dispatchLiveValues({ industryType: "banking", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: [], momentumQuarters: [], bankingCtx: ctx });
       foundation = d.status === "computed" ? d.foundation : [];
       momentum = d.status === "computed" ? d.momentum : [];

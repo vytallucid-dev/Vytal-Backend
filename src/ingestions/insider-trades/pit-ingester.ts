@@ -11,8 +11,104 @@ import { prisma } from "../../db/prisma.js";
 import type { PrismaClient } from "../../generated/prisma/client.js";
 import type { InsiderTradeNormalized, FetchJobResult } from "./insider-types.js";
 import type { ParseResult } from "./pit-parser.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import {
+  INSIDER_CRON,
+  INSIDER_SOURCE,
+  TXN_OTHER_MAX,
+  CAT_OTHER_MAX,
+  CORE_NULL_MAX,
+  VALUE_NULL_MAX,
+  checkBatchRate,
+  checkFutureDate,
+  insiderRunRef,
+} from "./insider-guards.js";
 
 const BATCH_SIZE = 30;
+
+// ── Detection guards over the parsed batch (GUARDS 1, 3, 4 + future-date) ──
+// Detection-only: insider ingest triggers no rescore. runRef ties to the run
+// log (<fetchDate>:<fetchType>).
+async function runInsiderRecordGuards(
+  parseResult: ParseResult,
+  fetchDate: Date,
+  fetchType: string,
+): Promise<void> {
+  const runRef = insiderRunRef(fetchDate, fetchType);
+  const base = { source: INSIDER_SOURCE, cron: INSIDER_CRON, targetTable: "InsiderTrade", runRef } as const;
+  const { records } = parseResult;
+
+  // GUARD 1: SHAPE — malformed feed (non-array data). A legit `data:[]`
+  // (quiet day) does NOT set this; the streak guard handles persistent empty.
+  if (parseResult.feedMalformed) {
+    await reportIngestionError({
+      ...base,
+      guardType: "shape",
+      severity: "critical",
+      resolutionPath: "source_code",
+      expected: "gg feed `data` is an array of filings",
+      observed: "feed returned a non-array `data` (malformed / empty-array trap)",
+      detail: "NSE corporates-pit-gg returned an unexpected shape — likely an endpoint change.",
+    });
+  }
+
+  const n = records.length;
+
+  // GUARD 3: CATEGORIZATION (batch ≥30).
+  // PRIMARY — transactionType "other" (protects buy/sell direction for C-flow).
+  const txnOtherRate = checkBatchRate(records.filter((r) => r.transactionType === "other").length, n, TXN_OTHER_MAX);
+  if (txnOtherRate != null) {
+    await reportIngestionError({
+      ...base, guardType: "null_rate", targetField: "transactionType", severity: "medium", resolutionPath: "source_code",
+      expected: `transactionType "other" ≤ ${(TXN_OTHER_MAX * 100).toFixed(0)}% (normal 0.1%)`,
+      observed: `${(txnOtherRate * 100).toFixed(1)}% unclassified (of ${n})`,
+      detail: "Buy/sell labels not recognised across the batch — the directional signal Ownership C reads is degrading (NSE format change).",
+    });
+  }
+  // SECONDARY — personCategory "other" (gross categorizer break).
+  const catOtherRate = checkBatchRate(records.filter((r) => r.personCategory === "other").length, n, CAT_OTHER_MAX);
+  if (catOtherRate != null) {
+    await reportIngestionError({
+      ...base, guardType: "null_rate", targetField: "personCategory", severity: "medium", resolutionPath: "source_code",
+      expected: `personCategory "other" ≤ ${(CAT_OTHER_MAX * 100).toFixed(0)}% (normal 48.1%)`,
+      observed: `${(catOtherRate * 100).toFixed(1)}% uncategorised (of ${n})`,
+      detail: "Person categories falling through to 'other' beyond the baseline — categorizer break or NSE category rename.",
+    });
+  }
+
+  // GUARD 4: NULL-RATE on the always-present fields + the value field.
+  const nullChecks: Array<[string, number, number, string]> = [
+    ["securitiesTraded", records.filter((r) => r.securitiesTraded == null).length, CORE_NULL_MAX, "0%"],
+    ["tradeDate", records.filter((r) => r.tradeDate == null).length, CORE_NULL_MAX, "0%"],
+    ["holdingPctPost", records.filter((r) => r.holdingPctPost == null).length, CORE_NULL_MAX, "0%"],
+    ["tradeValueCr", records.filter((r) => r.tradeValueCr == null).length, VALUE_NULL_MAX, "1.3%"],
+  ];
+  for (const [field, nulls, max, normal] of nullChecks) {
+    const rate = checkBatchRate(nulls, n, max);
+    if (rate == null) continue;
+    await reportIngestionError({
+      ...base, guardType: "null_rate", targetField: field, severity: "medium", resolutionPath: "source_code",
+      expected: `${field} null-rate ≤ ${(max * 100).toFixed(0)}% (normal ${normal})`,
+      observed: `${(rate * 100).toFixed(1)}% null (of ${n})`,
+      detail: "Field nulled across the batch — an XBRL field rename / parse break.",
+    });
+  }
+
+  // Future-date validity (per-record, low-volume). A future intimation date
+  // is a date-parse quirk.
+  const now = new Date();
+  for (const r of records) {
+    if (!checkFutureDate(r.intimationDate, now)) continue;
+    await reportIngestionError({
+      ...base, guardType: "range", targetField: "intimationDate",
+      targetEntity: `${r.symbol}@${r.personName}@${r.intimationDate.toISOString().slice(0, 10)}`,
+      severity: "medium", resolutionPath: "source_code",
+      expected: "intimationDate ≤ today",
+      observed: `intimationDate=${r.intimationDate.toISOString().slice(0, 10)}`,
+      detail: "Insider intimation dated in the future — a date-parse error.",
+    });
+  }
+}
 
 // ── Load symbol → stockId map from DB ────────────────────────────────────────
 // Call this once per job run, not per record.
@@ -138,6 +234,9 @@ export async function ingestInsiderTrades(
 
   // Write to fetch log
   await writeFetchLog(result);
+
+  // Detection guards over the parsed batch (best-effort; never blocks ingest).
+  await runInsiderRecordGuards(parseResult, fetchDate, fetchType);
 
   return result;
 }

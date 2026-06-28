@@ -18,6 +18,7 @@ import { makeJobContext, JobCancelledError } from "./context.js";
 import { getHandler } from "./dispatcher.js";
 import { JobStatus } from "./types.js";
 import { maybeEnqueueRescoresForJob } from "./scoring-triggers.js";
+import { surfaceFailedScoringJobById, resolveHealedScoringErrors } from "../scoring/errors/failed-job-guard.js";
 
 interface WorkerOptions {
   /** How often to poll when no jobs are pending. Default 3000ms. */
@@ -132,6 +133,9 @@ class JobWorker {
           errorMessage: `No handler registered for job type "${job.type}"`,
         },
       });
+      // Scoring-error guard (Stage 1): a missing handler is a terminal failure too
+      // (the rescore never ran → the score is stale). No-op for non-scoring types.
+      await surfaceFailedScoringJobById(job.id);
       return;
     }
 
@@ -227,6 +231,11 @@ class JobWorker {
             err,
           );
         }
+        // ── AUTO-RESOLVE-ON-HEAL (Stage 2) ───────────────────────────────────
+        // A scoring job that SUCCEEDED heals its entity → close any open
+        // scoring_job_failed row for that entity+period (button-driven OR organic).
+        // Best-effort + no-op for non-scoring types; never changes the job outcome.
+        await resolveHealedScoringErrors(job.type, job.payload, job.id);
       } else {
         console.log(
           `[worker] job ${job.id} (${job.type}) completed but status was already terminal — suppressing SUCCEEDED`,
@@ -261,7 +270,7 @@ class JobWorker {
       // Guard: only update if the row is still RUNNING — the cancel poller
       // might have set it to CANCELLED in the narrow window between the
       // handler throwing and clearInterval completing.
-      await prisma.backgroundJob.updateMany({
+      const { count } = await prisma.backgroundJob.updateMany({
         where: { id: job.id, status: JobStatus.RUNNING },
         data: {
           status: newStatus,
@@ -282,6 +291,10 @@ class JobWorker {
         console.error(
           `[worker] job ${job.id} (${job.type}) failed permanently: ${errorMessage}`,
         );
+        // Scoring-error guard (Stage 1): surface a GENUINE terminal failure of a
+        // scoring job (count>0 ⇒ the FAILED write took effect, not raced by a
+        // cancel). No-op for non-scoring types / non-real entities.
+        if (count > 0) await surfaceFailedScoringJobById(job.id);
       }
     }
   }

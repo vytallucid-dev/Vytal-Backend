@@ -16,6 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { XMLParser } from "fast-xml-parser";
+import { deriveOthersPct } from "./shareholding-derive.js";
 
 // ── Parsed result ──────────────────────────────────────────────
 
@@ -293,11 +294,15 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
       ? round4((banksPct ?? 0) + (fiPct ?? 0))
       : null;
 
-  // Others / retail = public − FII − DII (non-institutional residual)
+  // Others / retail = public − FII − DII (non-institutional residual). The
+  // residual is the SINGLE path (deriveOthersPct) shared with the raw-field
+  // fill; when FII/DII are absent it returns null and we fall back to the
+  // non-institutional XBRL context (not a stored column).
   const nonInstPct = sc(nonInstRaw);
+  const othersResidual = deriveOthersPct(publicPct, fiiPct, diiPct);
   const othersPct =
-    fiiPct != null && diiPct != null
-      ? Math.max(0, round4(publicPct - fiiPct - diiPct))
+    othersResidual != null
+      ? othersResidual
       : nonInstPct != null
         ? round4(nonInstPct)
         : null;

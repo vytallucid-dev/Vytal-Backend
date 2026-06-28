@@ -182,6 +182,20 @@ export function normaliseXbrlRow(
   const intimationDate = parseNseDate(index.broadcastDateTime);
   if (!intimationDate) return null;
 
+  // Guard: a future intimation date is impossible — disclosures can only happen
+  // after a trade. NSE's gg index sometimes assigns bad broadcast dates to
+  // pre-migration filings (appId="NA"). Reject rather than storing wrong data.
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (intimationDate > tomorrow) {
+    console.warn(
+      `[pit-parser] Skipping ${symbol} / ${row.personName?.trim()} — future intimationDate ${
+        intimationDate.toISOString().slice(0, 10)
+      } (raw broadcastDateTime: "${index.broadcastDateTime}")`,
+    );
+    return null;
+  }
+
   const securitiesPre = parseBigIntSafe(row.securitiesPre);
   const securitiesTraded = parseBigIntSafe(row.securitiesTraded);
   const securitiesPost = parseBigIntSafe(row.securitiesPost);
@@ -239,4 +253,5 @@ export interface ParseResult {
   skippedCount: number; // parse failures (bad data)
   filteredCount: number; // filings whose symbol is not in our universe
   totalRaw: number; // total filings seen in the index
+  feedMalformed: boolean; // GUARD 1: gg feed returned a non-array `data` (the trap)
 }

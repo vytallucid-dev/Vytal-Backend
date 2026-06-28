@@ -29,8 +29,8 @@ export type DivergenceFlag = "none" | "notable" | "wide";
 export type BarDirection = "higher_better" | "lower_better";
 
 /** SECTOR ARCHETYPE — Quality / Defensive / Commodity / Cyclical / Growth / PSU.
- *  NOT stored anywhere in the schema today (see findings note). Always null until
- *  a backing column/config exists. */
+ *  Backed by the `sector_class` column on the `sectors` table (migration 20260620100000).
+ *  Null only for coarse-bucket sectors (Financials, Energy & Materials) — honest-empty. */
 export type SectorClass =
   | "Quality"
   | "Defensive"
@@ -44,7 +44,7 @@ export interface IdentitySection {
   symbol: string;
   name: string;
   sector: { key: string; displayName: string } | null;
-  /** Load-bearing but ABSENT from the schema — always null today (flagged). */
+  /** Sector archetype — null for coarse-bucket sectors. */
   sectorClass: SectorClass;
   industryPath: IndustryPath;
   peerGroup: {

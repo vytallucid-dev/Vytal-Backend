@@ -5,55 +5,38 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedBankingQuarterly } from "../xbrl/parser-banking.js";
 import {
   safeNumber,
-  decimalPct,
   decimalRatio,
   decrementFY,
-  pctChange,
   getPriorQuarter,
 } from "../ingester-utils.js";
+import {
+  financialShapeReject,
+  financialRecordGuards,
+  resultsRunRef,
+} from "../financial-guards.js";
+import { deriveBankingQuarterly } from "../derive/derive-financial-quarterly.js";
 
 export async function ingestBankingQuarterly(
   input: { stockId: string; parsed: ParsedBankingQuarterly; source: string },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
+  const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`${p.quarter}-${p.fiscalYear}`);
+  if (
+    await financialShapeReject({
+      table: "BankingQuarterlyResult",
+      entity,
+      runRef,
+      coreA: p.interestEarned,
+      coreB: p.netProfit,
+      coreLabel: "interestEarned or netProfit",
+    })
+  ) {
+    return { status: "rejected", rowId: "" };
+  }
 
-  // ── Derived ──
-  const nii =
-    p.interestEarned !== null && p.interestExpended !== null
-      ? p.interestEarned - p.interestExpended
-      : null;
-  const totalIncome =
-    p.interestEarned !== null && p.otherIncome !== null
-      ? p.interestEarned + p.otherIncome
-      : null;
-  const costToIncomeRatio =
-    p.expenditureExclProvisions !== null &&
-    totalIncome !== null &&
-    totalIncome !== 0
-      ? p.expenditureExclProvisions / totalIncome
-      : null;
-  const netMargin =
-    p.netProfit !== null && totalIncome !== null && totalIncome !== 0
-      ? (p.netProfit / totalIncome) * 100
-      : null;
-
-  // PCR (Provision Coverage Ratio) = 1 - (NNPA / GNPA)
-  const pcr =
-    !p.auditPending &&
-    p.gnpaAbsolute !== null &&
-    p.gnpaAbsolute !== 0 &&
-    p.nnpaAbsolute !== null
-      ? 1 - p.nnpaAbsolute / p.gnpaAbsolute
-      : null;
-
-  // Tier1 Ratio = CET1 + AT1
-  const tier1Ratio =
-    !p.auditPending && p.cet1Ratio !== null && p.additionalTier1Ratio !== null
-      ? p.cet1Ratio + p.additionalTier1Ratio
-      : null;
-
-  // QoQ / YoY for NII and PAT
+  // ── Prior-quarter (QoQ) + year-ago-quarter (YoY) rows ──
   const priorQ = getPriorQuarter(p.quarter, p.fiscalYear);
   const priorRow = priorQ
     ? await prisma.bankingQuarterlyResult.findUnique({
@@ -68,7 +51,6 @@ export async function ingestBankingQuarterly(
         select: { nii: true, netProfit: true },
       })
     : null;
-
   const yearAgoFY = decrementFY(p.fiscalYear);
   const yearAgoRow = await prisma.bankingQuarterlyResult.findUnique({
     where: {
@@ -82,16 +64,36 @@ export async function ingestBankingQuarterly(
     select: { nii: true, netProfit: true },
   });
 
-  const niiQoq = pctChange(nii, priorRow?.nii?.toNumber() ?? null);
-  const niiYoy = pctChange(nii, yearAgoRow?.nii?.toNumber() ?? null);
-  const patQoq = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
+  // ── Derive 10 stored columns — SINGLE PATH (ingestion ≡ fill). ──
+  const derived = deriveBankingQuarterly(
+    {
+      interestEarned: p.interestEarned,
+      interestExpended: p.interestExpended,
+      otherIncome: p.otherIncome,
+      expenditureExclProvisions: p.expenditureExclProvisions,
+      netProfit: p.netProfit,
+      gnpaAbsolute: p.gnpaAbsolute,
+      nnpaAbsolute: p.nnpaAbsolute,
+      cet1Ratio: p.cet1Ratio,
+      additionalTier1Ratio: p.additionalTier1Ratio,
+      auditPending: p.auditPending,
+    },
+    priorRow ? { nii: priorRow.nii?.toNumber() ?? null, netProfit: priorRow.netProfit?.toNumber() ?? null } : null,
+    yearAgoRow ? { nii: yearAgoRow.nii?.toNumber() ?? null, netProfit: yearAgoRow.netProfit?.toNumber() ?? null } : null,
   );
-  const patYoy = pctChange(
-    p.netProfit,
-    yearAgoRow?.netProfit?.toNumber() ?? null,
-  );
+  const niiYoy = derived.numbers.niiYoy;
+
+  if (decision === "ingest") {
+    await financialRecordGuards({
+      table: "BankingQuarterlyResult",
+      entity,
+      runRef,
+      scale: [["interestEarned", p.interestEarned]],
+      yoy: niiYoy,
+      yoyLabel: "niiYoy",
+      npa: { nnpa: p.nnpaAbsolute, gnpa: p.gnpaAbsolute },
+    });
+  }
 
   const data: Prisma.BankingQuarterlyResultUpsertArgs["create"] = {
     stockId,
@@ -120,24 +122,17 @@ export async function ingestBankingQuarterly(
 
     gnpaAbsolute: safeNumber(p.gnpaAbsolute),
     nnpaAbsolute: safeNumber(p.nnpaAbsolute),
+    // Disclosed-raw (parsed-direct, not derived):
     gnpaPct: decimalRatio(p.gnpaPct),
     nnpaPct: decimalRatio(p.nnpaPct),
-    pcr: decimalRatio(pcr),
     cet1Ratio: decimalRatio(p.cet1Ratio),
     additionalTier1Ratio: decimalRatio(p.additionalTier1Ratio),
-    tier1Ratio: decimalRatio(tier1Ratio),
     roaQuarterly: decimalRatio(p.roaQuarterly),
     auditPending: p.auditPending,
 
-    nii: safeNumber(nii),
-    totalIncome: safeNumber(totalIncome),
-    costToIncomeRatio: decimalRatio(costToIncomeRatio),
-    netMargin: decimalPct(netMargin),
-
-    niiQoq: decimalPct(niiQoq),
-    niiYoy: decimalPct(niiYoy),
-    patQoq: decimalPct(patQoq),
-    patYoy: decimalPct(patYoy),
+    // Derived (nii, totalIncome, costToIncome, netMargin, pcr, tier1, QoQ/YoY)
+    // from the single deriveBankingQuarterly path (ingestion ≡ fill).
+    ...derived.columns,
   };
 
   const row = await prisma.bankingQuarterlyResult.upsert({

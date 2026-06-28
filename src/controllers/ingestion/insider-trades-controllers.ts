@@ -49,7 +49,12 @@ export const getInsiderTradesForSymbol = async (
       Parameters<typeof prisma.insiderTrade.findMany>[0]
     >["where"] = {
       stockId: stock.id,
-      intimationDate: { gte: since },
+      // Rows with null intimationDate (bad-source, nulled on backfill) fall back
+      // to tradeDate for the window filter so they still appear in results.
+      OR: [
+        { intimationDate: { gte: since } },
+        { intimationDate: null, tradeDate: { gte: since } },
+      ],
       ...(category !== "all" ? { personCategory: category } : {}),
       ...(type !== "all" ? { transactionType: type } : {}),
     };
@@ -57,7 +62,7 @@ export const getInsiderTradesForSymbol = async (
     const [trades, total] = await prisma.$transaction([
       prisma.insiderTrade.findMany({
         where,
-        orderBy: { intimationDate: "desc" },
+        orderBy: { intimationDate: { sort: "desc", nulls: "last" } },
         take: limit,
         skip,
         select: {
@@ -115,7 +120,7 @@ export const getInsiderTradesForSymbol = async (
           tradeValueCr: t.tradeValueCr
             ? parseFloat(t.tradeValueCr.toString())
             : null,
-          intimationDate: t.intimationDate.toISOString().split("T")[0],
+          intimationDate: t.intimationDate?.toISOString().split("T")[0] ?? null,
           tradeDate: t.tradeDate?.toISOString().split("T")[0] ?? null,
         })),
         pagination: { total, page, limit, pages: Math.ceil(total / limit) },

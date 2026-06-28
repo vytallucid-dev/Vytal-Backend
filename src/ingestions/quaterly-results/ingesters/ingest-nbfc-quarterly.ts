@@ -5,27 +5,37 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedNbfcQuarterly } from "../xbrl/parser-nbfc.js";
 import {
   safeNumber,
-  decimalPct,
   decrementFY,
-  pctChange,
   getPriorQuarter,
 } from "../ingester-utils.js";
+import {
+  financialShapeReject,
+  financialRecordGuards,
+  resultsRunRef,
+} from "../financial-guards.js";
+import { deriveNbfcQuarterly } from "../derive/derive-financial-quarterly.js";
 
 export async function ingestNbfcQuarterly(
   input: { stockId: string; parsed: ParsedNbfcQuarterly; source: string },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
+  const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`${p.quarter}-${p.fiscalYear}`);
+  if (
+    await financialShapeReject({
+      table: "NbfcQuarterlyResult",
+      entity,
+      runRef,
+      coreA: p.revenue,
+      coreB: p.netProfit,
+      coreLabel: "revenue or netProfit",
+    })
+  ) {
+    return { status: "rejected", rowId: "" };
+  }
 
-  const nii =
-    p.interestIncome !== null && p.financeCosts !== null
-      ? p.interestIncome - p.financeCosts
-      : null;
-  const netMargin =
-    p.netProfit !== null && p.totalIncome !== null && p.totalIncome !== 0
-      ? (p.netProfit / p.totalIncome) * 100
-      : null;
-
+  // ── Prior-quarter (QoQ) + year-ago-quarter (YoY) rows ──
   const priorQ = getPriorQuarter(p.quarter, p.fiscalYear);
   const priorRow = priorQ
     ? await prisma.nbfcQuarterlyResult.findUnique({
@@ -40,7 +50,6 @@ export async function ingestNbfcQuarterly(
         select: { revenue: true, netProfit: true },
       })
     : null;
-
   const yearAgoFY = decrementFY(p.fiscalYear);
   const yearAgoRow = await prisma.nbfcQuarterlyResult.findUnique({
     where: {
@@ -54,22 +63,30 @@ export async function ingestNbfcQuarterly(
     select: { revenue: true, netProfit: true },
   });
 
-  const revenueQoq = pctChange(
-    p.revenue,
-    priorRow?.revenue?.toNumber() ?? null,
+  // ── Derive 6 stored columns — SINGLE PATH (ingestion ≡ fill). ──
+  const derived = deriveNbfcQuarterly(
+    {
+      interestIncome: p.interestIncome,
+      financeCosts: p.financeCosts,
+      netProfit: p.netProfit,
+      totalIncome: p.totalIncome,
+      revenue: p.revenue,
+    },
+    priorRow ? { revenue: priorRow.revenue?.toNumber() ?? null, netProfit: priorRow.netProfit?.toNumber() ?? null } : null,
+    yearAgoRow ? { revenue: yearAgoRow.revenue?.toNumber() ?? null, netProfit: yearAgoRow.netProfit?.toNumber() ?? null } : null,
   );
-  const revenueYoy = pctChange(
-    p.revenue,
-    yearAgoRow?.revenue?.toNumber() ?? null,
-  );
-  const patQoq = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
-  );
-  const patYoy = pctChange(
-    p.netProfit,
-    yearAgoRow?.netProfit?.toNumber() ?? null,
-  );
+  const revenueYoy = derived.numbers.revenueYoy;
+
+  if (decision === "ingest") {
+    await financialRecordGuards({
+      table: "NbfcQuarterlyResult",
+      entity,
+      runRef,
+      scale: [["revenue", p.revenue]],
+      yoy: revenueYoy,
+      yoyLabel: "revenueYoy",
+    });
+  }
 
   const data: Prisma.NbfcQuarterlyResultUpsertArgs["create"] = {
     stockId,
@@ -100,13 +117,9 @@ export async function ingestNbfcQuarterly(
     tax: safeNumber(p.tax),
     netProfit: safeNumber(p.netProfit),
 
-    nii: safeNumber(nii),
-    netMargin: decimalPct(netMargin),
-
-    revenueQoq: decimalPct(revenueQoq),
-    revenueYoy: decimalPct(revenueYoy),
-    patQoq: decimalPct(patQoq),
-    patYoy: decimalPct(patYoy),
+    // Derived (nii, netMargin, revenue QoQ/YoY, pat QoQ/YoY) from the single
+    // deriveNbfcQuarterly path (ingestion ≡ fill).
+    ...derived.columns,
   };
 
   const row = await prisma.nbfcQuarterlyResult.upsert({

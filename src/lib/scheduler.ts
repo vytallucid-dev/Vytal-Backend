@@ -14,6 +14,9 @@
 import cron from "node-cron";
 import { enqueueJob, listJobs } from "../jobs/enqueue.js";
 import { JobStatus, JobTypes, type JobType } from "../jobs/types.js";
+import { sweepFailedScoringJobs } from "../scoring/errors/failed-job-guard.js";
+import { sweepStaleSnapshots } from "../scoring/errors/stale-snapshot-guard.js";
+import { sweepDegradedSnapshots } from "../scoring/errors/degraded-snapshot-guard.js";
 
 // ── Results-season gate ───────────────────────────────────────
 // Returns true during the four earnings windows (generous to catch late filers):
@@ -251,6 +254,57 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
         { mode: "universe", hoursBack: 6 },
         "cron:results-scan",
         50,
+      );
+    },
+  },
+
+  // ── Scoring-error detection: failed-job catch-up sweep (Stage 1) ──
+  // Reconciles terminal-failed scoring BackgroundJobs → scoring error rows. Runs the
+  // sweep DIRECTLY (a cheap read + dedup-write, not a long job), complementing the
+  // real-time worker hook. Dedup coalesces the two paths; the liveness filter skips
+  // failures already healed by a later successful rescore. Best-effort (never throws).
+  {
+    name: "scoring-failed-job-sweep",
+    schedule: "*/30 * * * *", // every 30 minutes (UTC)
+    enqueue: async () => {
+      const r = await sweepFailedScoringJobs();
+      console.log(
+        `[Scheduler] scoring-failed-job-sweep: scanned=${r.scanned} surfaced=${r.surfaced} ` +
+          `skippedHealed=${r.skippedHealed} skippedNonRealEntity=${r.skippedNonRealEntity}`,
+      );
+    },
+  },
+
+  // ── Scoring-error detection: stale-snapshot sweep (Stage 3) ──
+  // Reconciles in-force snapshots vs their (immutable-append) input createdAts →
+  // opens scoring_stale rows for stocks whose data moved since the score, and self-
+  // heals rows whose stock has since been rescored. Built on createdAt only (never
+  // updatedAt) → display-only sweeps cannot false-flag it. Best-effort (never throws).
+  {
+    name: "scoring-stale-snapshot-sweep",
+    schedule: "0 * * * *", // hourly (UTC) — staleness is drift, not urgent
+    enqueue: async () => {
+      const r = await sweepStaleSnapshots();
+      console.log(
+        `[Scheduler] scoring-stale-snapshot-sweep: scanned=${r.scanned} stale=${r.stale} ` +
+          `healed=${r.healed} (shareholding=${r.bySignal.new_shareholding} fundamental=${r.bySignal.new_fundamental})`,
+      );
+    },
+  },
+
+  // ── Scoring-error detection: degraded-snapshot sweep (Stage 4) ──
+  // Market sub-case only: flags a Market pillar dropped (unavailable_redistributed)
+  // while ≥2 of its 4 categories still have inputs — a contradiction of the engine's
+  // own §14.4c rule (an engine/persistence anomaly). NEVER flags honest drops (VEDL /
+  // <2 categories). Self-heals when the pillar is no longer unexpectedly dropped.
+  {
+    name: "scoring-degraded-snapshot-sweep",
+    schedule: "15 * * * *", // hourly (UTC), offset 15min from the stale sweep
+    enqueue: async () => {
+      const r = await sweepDegradedSnapshots();
+      console.log(
+        `[Scheduler] scoring-degraded-snapshot-sweep: scanned=${r.scanned} degraded=${r.degraded} ` +
+          `healed=${r.healed} honestSkipped=${r.honestSkipped}`,
       );
     },
   },

@@ -5,14 +5,16 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedGeneralInsuranceAnnual } from "../xbrl/parser-gi.js";
 import {
   safeNumber,
-  decimalPct,
   decimalRatio,
   decimalPerShare,
   decrementFY,
-  pctChange,
-  sumNonNull,
-  avgNonNull,
 } from "../ingester-utils.js";
+import {
+  financialShapeReject,
+  financialRecordGuards,
+  resultsRunRef,
+} from "../financial-guards.js";
+import { deriveGiAnnual } from "../derive/derive-gi-annual.js";
 
 export async function ingestGeneralInsuranceAnnual(
   input: {
@@ -21,41 +23,24 @@ export async function ingestGeneralInsuranceAnnual(
     source: string;
   },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
-
-  const netWorth = sumNonNull(
-    p.shareCapital,
-    p.reservesAndSurplus,
-    p.fairValueChangeAccount,
-  );
-
-  // BVPS for GI. Most GI XBRL files don't emit FaceValueOfEquityShareCapital.
-  // Fallback strategy:
-  //   1. If paidUpEquityCapital AND faceValueShare both present, use them
-  //      (this works for the rare insurer that emits face value).
-  //   2. If only paidUpEquityCapital present, assume ₹10 face (the IRDAI norm
-  //      for Indian general insurance equity; verify per insurer in extraMetrics
-  //      if their AR disagrees).
-  //   3. If only shareCapital present (rare; ShareCapital ≈ PaidUpEquityCapital
-  //      for most insurers), use that with ₹10 face.
-  //   4. Otherwise null.
-  let bookValuePerShare: number | null = null;
-  if (netWorth !== null) {
-    const equityCapital = p.paidUpEquityCapital ?? p.shareCapital;
-    const faceValue = p.faceValueShare ?? 10; // ₹10 IRDAI norm for GI
-
-    if (equityCapital !== null && equityCapital > 0 && faceValue > 0) {
-      const sharesCr = equityCapital / faceValue;
-      if (sharesCr > 0) {
-        bookValuePerShare = netWorth / sharesCr;
-      }
-    }
+  const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`Y-${p.fiscalYear}`);
+  if (
+    await financialShapeReject({
+      table: "GeneralInsuranceFundamental",
+      entity,
+      runRef,
+      coreA: p.grossPremiumsWritten,
+      coreB: p.netProfit,
+      coreLabel: "grossPremiumsWritten or netProfit",
+    })
+  ) {
+    return { status: "rejected", rowId: "" };
   }
 
-  const netUnderwritingMargin =
-    p.combinedRatio !== null ? 1 - p.combinedRatio : null;
-
+  // ── Prior-year row (ROE avg equity + YoY) ──
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.generalInsuranceFundamental.findUnique({
     where: {
@@ -73,27 +58,48 @@ export async function ingestGeneralInsuranceAnnual(
       netProfit: true,
     },
   });
-  const priorNetWorth = priorRow
-    ? sumNonNull(
-        priorRow.shareCapital?.toNumber() ?? null,
-        priorRow.reservesAndSurplus?.toNumber() ?? null,
-        priorRow.fairValueChangeAccount?.toNumber() ?? null,
-      )
-    : null;
-  const avgEquity = avgNonNull(netWorth, priorNetWorth);
-  const roe =
-    p.netProfit !== null && avgEquity !== null && avgEquity !== 0
-      ? p.netProfit / avgEquity
-      : null;
 
-  const gpwGrowthYoy = pctChange(
-    p.grossPremiumsWritten,
-    priorRow?.grossPremiumsWritten?.toNumber() ?? null,
+  // ── Derive 6 stored columns — SINGLE PATH (ingestion ≡ fill). The BVPS
+  // ₹10-face fallback + netUnderwritingMargin (= 1 − combinedRatio) live in
+  // deriveGiAnnual. ──
+  const derived = deriveGiAnnual(
+    {
+      shareCapital: p.shareCapital,
+      reservesAndSurplus: p.reservesAndSurplus,
+      fairValueChangeAccount: p.fairValueChangeAccount,
+      paidUpEquityCapital: p.paidUpEquityCapital,
+      faceValueShare: p.faceValueShare,
+      combinedRatio: p.combinedRatio,
+      netProfit: p.netProfit,
+      grossPremiumsWritten: p.grossPremiumsWritten,
+    },
+    priorRow
+      ? {
+          shareCapital: priorRow.shareCapital?.toNumber() ?? null,
+          reservesAndSurplus: priorRow.reservesAndSurplus?.toNumber() ?? null,
+          fairValueChangeAccount: priorRow.fairValueChangeAccount?.toNumber() ?? null,
+          grossPremiumsWritten: priorRow.grossPremiumsWritten?.toNumber() ?? null,
+          netProfit: priorRow.netProfit?.toNumber() ?? null,
+        }
+      : null,
   );
-  const patGrowthYoy = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
-  );
+  // The record guards read the pre-Decimal GPW-YoY number.
+  const gpwGrowthYoy = derived.numbers.gpwGrowthYoy;
+
+  if (decision === "ingest") {
+    await financialRecordGuards({
+      table: "GeneralInsuranceFundamental",
+      entity,
+      runRef,
+      scale: [
+        ["grossPremiumsWritten", p.grossPremiumsWritten],
+        ["totalAssets", p.totalAssets],
+      ],
+      yoy: gpwGrowthYoy,
+      yoyLabel: "gpwGrowthYoy",
+      solvency: p.solvencyRatio,
+    });
+  }
 
   const data: Prisma.GeneralInsuranceFundamentalUpsertArgs["create"] = {
     stockId,
@@ -170,13 +176,9 @@ export async function ingestGeneralInsuranceAnnual(
     faceValueShare: decimalPerShare(p.faceValueShare),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
-    netWorth: safeNumber(netWorth),
-    bookValuePerShare: decimalPerShare(bookValuePerShare),
-    roe: decimalRatio(roe),
-    netUnderwritingMargin: decimalRatio(netUnderwritingMargin),
-
-    gpwGrowthYoy: decimalPct(gpwGrowthYoy),
-    patGrowthYoy: decimalPct(patGrowthYoy),
+    // Derived — netWorth, bvps, roe, netUnderwritingMargin, gpw/patGrowthYoy —
+    // from the single deriveGiAnnual path (ingestion ≡ fill).
+    ...derived.columns,
   };
 
   const row = await prisma.generalInsuranceFundamental.upsert({

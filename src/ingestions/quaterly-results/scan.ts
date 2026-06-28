@@ -18,6 +18,16 @@ import {
 import type { NseFilingEntry } from "./xbrl/types.js";
 import type { Stock } from "../../generated/prisma/client.js";
 import { fetchXbrlFile } from "./legacy/discovery-legacy.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import {
+  RESULTS_CRON,
+  RESULTS_SOURCE,
+  CORE_NULL_MAX,
+  BS_NULL_MAX,
+  classifyFailedRate,
+  checkBatchNullRate,
+  resultsRunRef,
+} from "./fundamentals-guards.js";
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
@@ -384,7 +394,13 @@ async function ingestQuarterly(
     decision.decision,
   );
   return {
-    outcome: ingest.status === "refreshed" ? "refreshed" : "ingested",
+    // A SHAPE-rejected basis stored nothing → treat as skipped (not ingested).
+    outcome:
+      ingest.status === "refreshed"
+        ? "refreshed"
+        : ingest.status === "rejected"
+          ? "skipped"
+          : "ingested",
     quarter: parsed.data.quarter,
     resultType: parsed.data.resultType,
     rowId: ingest.rowId,
@@ -426,7 +442,13 @@ async function ingestAnnual(
     decision.decision,
   );
   return {
-    outcome: ingest.status === "refreshed" ? "refreshed" : "ingested",
+    // A SHAPE-rejected basis stored nothing → treat as skipped (not ingested).
+    outcome:
+      ingest.status === "refreshed"
+        ? "refreshed"
+        : ingest.status === "rejected"
+          ? "skipped"
+          : "ingested",
     quarter: "Y",
     resultType: parsed.data.resultType,
     rowId: ingest.rowId,
@@ -562,6 +584,7 @@ export interface ScanUniverseResult {
 export async function scanUniverse(
   options: ScanUniverseOptions = {},
 ): Promise<ScanUniverseResult> {
+  const scanStart = new Date();
   const delayMs = options.delayMs ?? 1500;
   const stocks = await prisma.stock.findMany({
     where: {
@@ -617,5 +640,142 @@ export async function scanUniverse(
     }
   }
 
+  await runResultsCoverageGuards(scanStart, result);
+
   return result;
+}
+
+// ── Run-level guards (GUARDS 2 + 3) for the Ind-AS path ───────
+// Called once at the end of a universe scan. COUNT keys off the scan's
+// own failure tally; NULL-RATE keys off the rows actually touched this run
+// (updatedAt ≥ scanStart) — no need to thread parsed data up the call
+// stack. Scoped to the non-financial fundamentals/quarterly_results tables.
+async function runResultsCoverageGuards(
+  scanStart: Date,
+  result: ScanUniverseResult,
+): Promise<void> {
+  const runRef = resultsRunRef("universe");
+  const base = {
+    source: RESULTS_SOURCE,
+    cron: RESULTS_CRON,
+    runRef,
+  } as const;
+
+  // ── GUARD 2: COUNT / coverage (PROVISIONAL) ──
+  const attempted =
+    result.totalIngested +
+    result.totalRefreshed +
+    result.totalSkipped +
+    result.totalFailed;
+  const failVerdict = classifyFailedRate(result.totalFailed, attempted);
+  if (failVerdict) {
+    await reportIngestionError({
+      ...base,
+      guardType: "count",
+      targetTable: "Fundamental",
+      severity: failVerdict.severity,
+      resolutionPath: "source_code",
+      expected: "≤25% of group attempts fail",
+      observed: failVerdict.note,
+      detail: "Results scan failure-rate spike — source/session cascade.",
+    });
+  }
+
+  // ── GUARD 3: NULL-RATE on core raw lines over rows touched this run ──
+  // (the workhorse: a tag-rename cascade shows as revenue/netProfit nulls
+  // spiking from the ~0% norm). A null balance sheet is normal (24.4%) —
+  // BS fields only flag a SPIKE past 50%.
+  const [f] = await prisma.$queryRaw<
+    Array<{ n: number; rev: number; np: number; ta: number; te: number }>
+  >`SELECT COUNT(*)::int AS n,
+      COUNT(*) FILTER (WHERE revenue IS NULL)::int AS rev,
+      COUNT(*) FILTER (WHERE net_profit IS NULL)::int AS np,
+      COUNT(*) FILTER (WHERE total_assets IS NULL)::int AS ta,
+      COUNT(*) FILTER (WHERE total_equity IS NULL)::int AS te
+    FROM fundamentals WHERE updated_at >= ${scanStart}`;
+  const [q] = await prisma.$queryRaw<
+    Array<{ n: number; rev: number; np: number }>
+  >`SELECT COUNT(*)::int AS n,
+      COUNT(*) FILTER (WHERE revenue IS NULL)::int AS rev,
+      COUNT(*) FILTER (WHERE net_profit IS NULL)::int AS np
+    FROM quarterly_results WHERE updated_at >= ${scanStart}`;
+
+  const checks: Array<{
+    table: string;
+    field: string;
+    nulls: number;
+    n: number;
+    max: number;
+    normal: string;
+  }> = [
+    { table: "Fundamental", field: "revenue", nulls: f.rev, n: f.n, max: CORE_NULL_MAX, normal: "0%" },
+    { table: "Fundamental", field: "netProfit", nulls: f.np, n: f.n, max: CORE_NULL_MAX, normal: "0%" },
+    { table: "Fundamental", field: "totalAssets", nulls: f.ta, n: f.n, max: BS_NULL_MAX, normal: "24%" },
+    { table: "Fundamental", field: "totalEquity", nulls: f.te, n: f.n, max: BS_NULL_MAX, normal: "24%" },
+    { table: "QuarterlyResult", field: "revenue", nulls: q.rev, n: q.n, max: CORE_NULL_MAX, normal: "0%" },
+    { table: "QuarterlyResult", field: "netProfit", nulls: q.np, n: q.n, max: CORE_NULL_MAX, normal: "0%" },
+  ];
+
+  for (const c of checks) {
+    const rate = checkBatchNullRate(c.nulls, c.n, c.max);
+    if (rate == null) continue;
+    await reportIngestionError({
+      ...base,
+      guardType: "null_rate",
+      targetTable: c.table,
+      targetField: c.field,
+      severity: "medium",
+      resolutionPath: "source_code",
+      expected: `${c.field} null-rate ≤ ${(c.max * 100).toFixed(0)}% (normal ${c.normal})`,
+      observed: `${(rate * 100).toFixed(1)}% null (${c.nulls}/${c.n})`,
+      detail: "Core line nulled across the run — likely an XBRL tag rename cascade.",
+    });
+  }
+
+  // ── Financial-industry core-P&L null-rate (same updatedAt window) ──
+  // Core KPI + netProfit only (both ~0% null). GNPA/CET1/solvency are
+  // sparsely disclosed (banking ~70% null) and are NOT null-rate-guarded.
+  const FIN_TABLES: Array<{
+    table: string;
+    model: string;
+    kpi: string;
+    kpiLabel: string;
+  }> = [
+    { table: "banking_fundamentals", model: "BankingFundamental", kpi: "interest_earned", kpiLabel: "interestEarned" },
+    { table: "banking_quarterly_results", model: "BankingQuarterlyResult", kpi: "interest_earned", kpiLabel: "interestEarned" },
+    { table: "nbfc_fundamentals", model: "NbfcFundamental", kpi: "revenue", kpiLabel: "revenue" },
+    { table: "nbfc_quarterly_results", model: "NbfcQuarterlyResult", kpi: "revenue", kpiLabel: "revenue" },
+    { table: "life_insurance_fundamentals", model: "LifeInsuranceFundamental", kpi: "gross_premium_income", kpiLabel: "grossPremiumIncome" },
+    { table: "life_insurance_quarterly_results", model: "LifeInsuranceQuarterlyResult", kpi: "gross_premium_income", kpiLabel: "grossPremiumIncome" },
+    { table: "general_insurance_fundamentals", model: "GeneralInsuranceFundamental", kpi: "gross_premiums_written", kpiLabel: "grossPremiumsWritten" },
+    { table: "general_insurance_quarterly_results", model: "GeneralInsuranceQuarterlyResult", kpi: "gross_premiums_written", kpiLabel: "grossPremiumsWritten" },
+  ];
+  for (const t of FIN_TABLES) {
+    const rows = (await prisma.$queryRawUnsafe(
+      `SELECT COUNT(*)::int AS n,
+         COUNT(*) FILTER (WHERE ${t.kpi} IS NULL)::int AS kpi,
+         COUNT(*) FILTER (WHERE net_profit IS NULL)::int AS np
+       FROM ${t.table} WHERE updated_at >= $1`,
+      scanStart,
+    )) as Array<{ n: number; kpi: number; np: number }>;
+    const r = rows[0];
+    for (const [field, nulls] of [
+      [t.kpiLabel, r.kpi],
+      ["netProfit", r.np],
+    ] as const) {
+      const rate = checkBatchNullRate(nulls, r.n, CORE_NULL_MAX);
+      if (rate == null) continue;
+      await reportIngestionError({
+        ...base,
+        guardType: "null_rate",
+        targetTable: t.model,
+        targetField: field,
+        severity: "medium",
+        resolutionPath: "source_code",
+        expected: `${field} null-rate ≤ 5% (normal 0%)`,
+        observed: `${(rate * 100).toFixed(1)}% null (${nulls}/${r.n})`,
+        detail: "Core line nulled across the run — likely an XBRL tag rename cascade.",
+      });
+    }
+  }
 }

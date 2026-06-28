@@ -13,6 +13,19 @@ import { Prisma } from "../../generated/prisma/client.js";
 import type { EodPrice } from "./providers/provider.js";
 import { fetchWithFallback } from "./registry.js";
 import { computeMarketCap } from "./market-cap.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import {
+  PRICES_CRON,
+  PREV_CLOSE_NULL_MAX,
+  TRADED_VALUE_NULL_MAX,
+  CLOSE_MIN,
+  CLOSE_MAX,
+  classifyCount,
+  checkNullRate,
+  checkCloseRange,
+  checkContinuity,
+  runRef,
+} from "./prices-guards.js";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -155,12 +168,19 @@ async function insertDailyPrices(
   let skipped = 0;
   const stocksWithNewPrices: Array<{ stockId: string; price: EodPrice }> = [];
   const rows: Prisma.DailyPriceCreateManyInput[] = [];
+  // GUARD 5 (RANGE): collect per-row close violations; the row still LANDS
+  // (medium = lands + flags), we just record each for admin review.
+  const rangeViolations: Array<{ symbol: string; close: number }> = [];
 
   for (const price of prices) {
     const stockId = universe.get(price.symbol);
     if (!stockId) {
       skipped++;
       continue;
+    }
+
+    if (checkCloseRange(price.close)) {
+      rangeViolations.push({ symbol: price.symbol, close: price.close });
     }
 
     rows.push({
@@ -192,6 +212,25 @@ async function insertDailyPrices(
     skipDuplicates: true,
   });
 
+  // GUARD 5 (RANGE): flag each out-of-band close (medium · admin_fill ·
+  // per-row). A specific symbol's value an admin can verify + correct.
+  for (const v of rangeViolations) {
+    await reportIngestionError({
+      source: provider,
+      cron: PRICES_CRON,
+      guardType: "range",
+      targetTable: "DailyPrice",
+      targetField: "close",
+      targetEntity: v.symbol,
+      severity: "medium",
+      resolutionPath: "admin_fill",
+      expected: `close in [${CLOSE_MIN}, ${CLOSE_MAX}]`,
+      observed: `close=${v.close}`,
+      detail: "Close price outside plausible bounds — verify against source.",
+      runRef: runRef(prices[0]?.date ?? new Date(), provider),
+    });
+  }
+
   return { inserted: result.count, skipped, stocksWithNewPrices };
 }
 
@@ -215,6 +254,27 @@ async function updateSnapshots(
         const prevClose = price.prevClose;
         const dayChangePct =
           prevClose && prevClose > 0 ? (close - prevClose) / prevClose : null;
+
+        // GUARD 6: CONTINUITY (low · source_code · per-row · flag). A move
+        // above circuit-breakers but below split size — suspicious, for a
+        // human eyeball. NOT the split-gate (>0.50, marketCap-gating).
+        if (checkContinuity(dayChangePct)) {
+          await reportIngestionError({
+            source: provider,
+            cron: PRICES_CRON,
+            guardType: "continuity",
+            targetTable: "DailyPrice",
+            targetField: "close",
+            targetEntity: price.symbol,
+            severity: "low",
+            resolutionPath: "source_code",
+            expected: `|day move| < 20% (or a known split > 50%)`,
+            observed: `${(dayChangePct! * 100).toFixed(1)}% (${prevClose}→${close})`,
+            detail:
+              "Day move in the suspicious band (above circuit-breakers, below split size) — eyeball.",
+            runRef: runRef(price.date, provider),
+          });
+        }
 
         const returns = await computeReturns(stockId, close, price.date);
 
@@ -348,6 +408,89 @@ export async function runEodPriceIngest(
       universe,
       fetchResult.provider,
     );
+
+    // ── GUARDS 3 + 4: run post-insert. This path is only reached on
+    // NON-market-closed days (the market_closed branch returned above),
+    // so no holiday false-flags.
+    const runRefStr = runRef(priceDate, fetchResult.provider);
+
+    // GUARD 3: COUNT (high/medium · source_code · flag). Expected ≈ 202.
+    // Measure the DAY's persisted coverage, NOT result.count: a healthy
+    // self-healing re-run inserts 0 new rows (skipDuplicates) even though
+    // the day is complete, so result.count would false-flag "below floor"
+    // — exactly the alert-fatigue failure this system must avoid.
+    const dayRowCount = await prisma.dailyPrice.count({
+      where: { date: priceDate },
+    });
+    const countVerdict = classifyCount(dayRowCount);
+    if (countVerdict) {
+      await reportIngestionError({
+        source: fetchResult.provider,
+        cron: PRICES_CRON,
+        guardType: "count",
+        targetTable: "DailyPrice",
+        severity: countVerdict.severity,
+        resolutionPath: "source_code",
+        expected: `150–250 rows for the day (≈202 universe)`,
+        observed: `${dayRowCount} rows for ${priceDate.toISOString().slice(0, 10)} (${inserted} new this run)`,
+        detail: countVerdict.note,
+        runRef: runRefStr,
+      });
+    }
+
+    // GUARD 4: NULL-RATE (medium · source_code · flag). Batch-level rate
+    // on genuinely-nullable fields only. NOT a fillable cell → source_code.
+    // marketCap is intentionally gated (split-gate) and is NOT guarded.
+    if (stocksWithNewPrices.length > 0) {
+      const batch = stocksWithNewPrices.map((s) => s.price);
+      const n = batch.length;
+      const prevCloseNulls = batch.filter((p) => p.prevClose == null).length;
+      const tradedValueNulls = batch.filter(
+        (p) => p.tradedValue == null,
+      ).length;
+
+      const prevCloseRate = checkNullRate(
+        prevCloseNulls,
+        n,
+        PREV_CLOSE_NULL_MAX,
+      );
+      if (prevCloseRate != null) {
+        await reportIngestionError({
+          source: fetchResult.provider,
+          cron: PRICES_CRON,
+          guardType: "null_rate",
+          targetTable: "DailyPrice",
+          targetField: "prevClose",
+          severity: "medium",
+          resolutionPath: "source_code",
+          expected: `prevClose null-rate ≤ ${(PREV_CLOSE_NULL_MAX * 100).toFixed(0)}% (normal 1–3%)`,
+          observed: `${(prevCloseRate * 100).toFixed(1)}% null (${prevCloseNulls}/${n})`,
+          detail: "Unusual share of rows missing prevClose.",
+          runRef: runRefStr,
+        });
+      }
+
+      const tradedValueRate = checkNullRate(
+        tradedValueNulls,
+        n,
+        TRADED_VALUE_NULL_MAX,
+      );
+      if (tradedValueRate != null) {
+        await reportIngestionError({
+          source: fetchResult.provider,
+          cron: PRICES_CRON,
+          guardType: "null_rate",
+          targetTable: "DailyPrice",
+          targetField: "tradedValue",
+          severity: "medium",
+          resolutionPath: "source_code",
+          expected: `tradedValue null-rate ≤ ${(TRADED_VALUE_NULL_MAX * 100).toFixed(0)}% (normal 2–5%)`,
+          observed: `${(tradedValueRate * 100).toFixed(1)}% null (${tradedValueNulls}/${n})`,
+          detail: "Unusual share of rows missing tradedValue (TURNOVER_LACS).",
+          runRef: runRefStr,
+        });
+      }
+    }
 
     // Update snapshots with returns (only for newly inserted)
     if (stocksWithNewPrices.length > 0) {

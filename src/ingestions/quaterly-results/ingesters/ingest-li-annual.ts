@@ -5,57 +5,38 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedLifeInsuranceAnnual } from "../xbrl/parser-li.js";
 import {
   safeNumber,
-  decimalPct,
   decimalRatio,
   decimalPerShare,
   decrementFY,
-  pctChange,
-  sumNonNull,
-  avgNonNull,
 } from "../ingester-utils.js";
+import {
+  financialShapeReject,
+  financialRecordGuards,
+  resultsRunRef,
+} from "../financial-guards.js";
+import { deriveLiAnnual } from "../derive/derive-li-annual.js";
 
 export async function ingestLifeInsuranceAnnual(
   input: { stockId: string; parsed: ParsedLifeInsuranceAnnual; source: string },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
-
-  // Derived
-  const netWorth = sumNonNull(
-    p.shareCapital,
-    p.reservesAndSurplus,
-    p.fairValueChangeAccount,
-  );
-  let bookValuePerShare: number | null = null;
-  // BVPS for LI. Most LI XBRL files don't emit FaceValueOfEquityShareCapital.
-  // Use paidUpEquityCapital with ₹10 face fallback (IRDAI norm for Indian life insurers).
-  if (netWorth !== null) {
-    const equityCapital = p.paidUpEquityCapital ?? p.shareCapital;
-    const faceValue = p.faceValueShare ?? 10; // IRDAI norm for LI
-
-    if (equityCapital !== null && equityCapital > 0 && faceValue > 0) {
-      const sharesCr = equityCapital / faceValue;
-      if (sharesCr > 0) {
-        bookValuePerShare = netWorth / sharesCr;
-      }
-    }
+  const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`Y-${p.fiscalYear}`);
+  if (
+    await financialShapeReject({
+      table: "LifeInsuranceFundamental",
+      entity,
+      runRef,
+      coreA: p.grossPremiumIncome,
+      coreB: p.netProfit,
+      coreLabel: "grossPremiumIncome or netProfit",
+    })
+  ) {
+    return { status: "rejected", rowId: "" };
   }
 
-  const newBusinessPremiumPct =
-    p.incomeFirstYearPremium !== null &&
-    p.grossPremiumIncome !== null &&
-    p.grossPremiumIncome !== 0
-      ? p.incomeFirstYearPremium / p.grossPremiumIncome
-      : null;
-
-  const expenseRatio =
-    p.totalOperatingExpenses !== null &&
-    p.grossPremiumIncome !== null &&
-    p.grossPremiumIncome !== 0
-      ? p.totalOperatingExpenses / p.grossPremiumIncome
-      : null;
-
-  // ROE
+  // ── Prior-year row (ROE avg equity + YoY) ──
   const priorFY = decrementFY(p.fiscalYear);
   const priorRow = await prisma.lifeInsuranceFundamental.findUnique({
     where: {
@@ -73,28 +54,47 @@ export async function ingestLifeInsuranceAnnual(
       netProfit: true,
     },
   });
-  const priorNetWorth = priorRow
-    ? sumNonNull(
-        priorRow.shareCapital?.toNumber() ?? null,
-        priorRow.reservesAndSurplus?.toNumber() ?? null,
-        priorRow.fairValueChangeAccount?.toNumber() ?? null,
-      )
-    : null;
-  const avgEquity = avgNonNull(netWorth, priorNetWorth);
-  const roe =
-    p.netProfit !== null && avgEquity !== null && avgEquity !== 0
-      ? p.netProfit / avgEquity
-      : null;
 
-  // YoY
-  const premiumGrowthYoy = pctChange(
-    p.grossPremiumIncome,
-    priorRow?.grossPremiumIncome?.toNumber() ?? null,
+  // ── Derive 7 stored columns — SINGLE PATH (ingestion ≡ fill). ──
+  const derived = deriveLiAnnual(
+    {
+      shareCapital: p.shareCapital,
+      reservesAndSurplus: p.reservesAndSurplus,
+      fairValueChangeAccount: p.fairValueChangeAccount,
+      paidUpEquityCapital: p.paidUpEquityCapital,
+      faceValueShare: p.faceValueShare,
+      incomeFirstYearPremium: p.incomeFirstYearPremium,
+      grossPremiumIncome: p.grossPremiumIncome,
+      totalOperatingExpenses: p.totalOperatingExpenses,
+      netProfit: p.netProfit,
+    },
+    priorRow
+      ? {
+          shareCapital: priorRow.shareCapital?.toNumber() ?? null,
+          reservesAndSurplus: priorRow.reservesAndSurplus?.toNumber() ?? null,
+          fairValueChangeAccount: priorRow.fairValueChangeAccount?.toNumber() ?? null,
+          grossPremiumIncome: priorRow.grossPremiumIncome?.toNumber() ?? null,
+          netProfit: priorRow.netProfit?.toNumber() ?? null,
+        }
+      : null,
   );
-  const patGrowthYoy = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
-  );
+  // The record guards read the pre-Decimal premium-YoY number.
+  const premiumGrowthYoy = derived.numbers.premiumGrowthYoy;
+
+  if (decision === "ingest") {
+    await financialRecordGuards({
+      table: "LifeInsuranceFundamental",
+      entity,
+      runRef,
+      scale: [
+        ["grossPremiumIncome", p.grossPremiumIncome],
+        ["totalAssets", p.totalAssets],
+      ],
+      yoy: premiumGrowthYoy,
+      yoyLabel: "premiumGrowthYoy",
+      solvency: p.solvencyRatio,
+    });
+  }
 
   const data: Prisma.LifeInsuranceFundamentalUpsertArgs["create"] = {
     stockId,
@@ -182,14 +182,9 @@ export async function ingestLifeInsuranceAnnual(
     faceValueShare: decimalPerShare(p.faceValueShare),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
-    netWorth: safeNumber(netWorth),
-    bookValuePerShare: decimalPerShare(bookValuePerShare),
-    roe: decimalRatio(roe),
-    newBusinessPremiumPct: decimalRatio(newBusinessPremiumPct),
-    expenseRatioPolicyholders: decimalRatio(expenseRatio),
-
-    premiumGrowthYoy: decimalPct(premiumGrowthYoy),
-    patGrowthYoy: decimalPct(patGrowthYoy),
+    // Derived — netWorth, bvps, roe, newBusinessPremiumPct, expenseRatio,
+    // premium/patGrowthYoy — from the single deriveLiAnnual path (ingestion ≡ fill).
+    ...derived.columns,
   };
 
   const row = await prisma.lifeInsuranceFundamental.upsert({

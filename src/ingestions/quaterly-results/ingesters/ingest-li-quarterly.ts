@@ -5,12 +5,16 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedLifeInsuranceQuarterly } from "../xbrl/parser-li.js";
 import {
   safeNumber,
-  decimalPct,
   decimalRatio,
   decrementFY,
-  pctChange,
   getPriorQuarter,
 } from "../ingester-utils.js";
+import {
+  financialShapeReject,
+  financialRecordGuards,
+  resultsRunRef,
+} from "../financial-guards.js";
+import { deriveLiQuarterly } from "../derive/derive-financial-quarterly.js";
 
 export async function ingestLifeInsuranceQuarterly(
   input: {
@@ -19,31 +23,24 @@ export async function ingestLifeInsuranceQuarterly(
     source: string;
   },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
+  const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`${p.quarter}-${p.fiscalYear}`);
+  if (
+    await financialShapeReject({
+      table: "LifeInsuranceQuarterlyResult",
+      entity,
+      runRef,
+      coreA: p.grossPremiumIncome,
+      coreB: p.netProfit,
+      coreLabel: "grossPremiumIncome or netProfit",
+    })
+  ) {
+    return { status: "rejected", rowId: "" };
+  }
 
-  // Derived
-  const newBusinessPremiumPct =
-    p.incomeFirstYearPremium !== null &&
-    p.grossPremiumIncome !== null &&
-    p.grossPremiumIncome !== 0
-      ? p.incomeFirstYearPremium / p.grossPremiumIncome
-      : null;
-
-  const expenseRatio =
-    p.totalOperatingExpenses !== null &&
-    p.grossPremiumIncome !== null &&
-    p.grossPremiumIncome !== 0
-      ? p.totalOperatingExpenses / p.grossPremiumIncome
-      : null;
-
-  const netMargin =
-    p.netProfit !== null &&
-    p.totalRevenuePolicyholders !== null &&
-    p.totalRevenuePolicyholders !== 0
-      ? (p.netProfit / p.totalRevenuePolicyholders) * 100
-      : null;
-
+  // ── Prior-quarter (QoQ) + year-ago-quarter (YoY) rows ──
   const priorQ = getPriorQuarter(p.quarter, p.fiscalYear);
   const priorRow = priorQ
     ? await prisma.lifeInsuranceQuarterlyResult.findUnique({
@@ -71,22 +68,31 @@ export async function ingestLifeInsuranceQuarterly(
     select: { grossPremiumIncome: true, netProfit: true },
   });
 
-  const premiumQoq = pctChange(
-    p.grossPremiumIncome,
-    priorRow?.grossPremiumIncome?.toNumber() ?? null,
+  // ── Derive 7 stored columns — SINGLE PATH (ingestion ≡ fill). ──
+  const derived = deriveLiQuarterly(
+    {
+      incomeFirstYearPremium: p.incomeFirstYearPremium,
+      grossPremiumIncome: p.grossPremiumIncome,
+      totalOperatingExpenses: p.totalOperatingExpenses,
+      netProfit: p.netProfit,
+      totalRevenuePolicyholders: p.totalRevenuePolicyholders,
+    },
+    priorRow ? { grossPremiumIncome: priorRow.grossPremiumIncome?.toNumber() ?? null, netProfit: priorRow.netProfit?.toNumber() ?? null } : null,
+    yearAgoRow ? { grossPremiumIncome: yearAgoRow.grossPremiumIncome?.toNumber() ?? null, netProfit: yearAgoRow.netProfit?.toNumber() ?? null } : null,
   );
-  const premiumYoy = pctChange(
-    p.grossPremiumIncome,
-    yearAgoRow?.grossPremiumIncome?.toNumber() ?? null,
-  );
-  const patQoq = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
-  );
-  const patYoy = pctChange(
-    p.netProfit,
-    yearAgoRow?.netProfit?.toNumber() ?? null,
-  );
+  const premiumYoy = derived.numbers.premiumYoy;
+
+  if (decision === "ingest") {
+    await financialRecordGuards({
+      table: "LifeInsuranceQuarterlyResult",
+      entity,
+      runRef,
+      scale: [["grossPremiumIncome", p.grossPremiumIncome]],
+      yoy: premiumYoy,
+      yoyLabel: "premiumYoy",
+      solvency: p.solvencyRatio,
+    });
+  }
 
   const data: Prisma.LifeInsuranceQuarterlyResultUpsertArgs["create"] = {
     stockId,
@@ -127,14 +133,9 @@ export async function ingestLifeInsuranceQuarterly(
     persistencyRatio49Month: decimalRatio(p.persistencyRatio49Month),
     persistencyRatio61Month: decimalRatio(p.persistencyRatio61Month),
 
-    newBusinessPremiumPct: decimalRatio(newBusinessPremiumPct),
-    expenseRatioPolicyholders: decimalRatio(expenseRatio),
-    netMargin: decimalPct(netMargin),
-
-    premiumQoq: decimalPct(premiumQoq),
-    premiumYoy: decimalPct(premiumYoy),
-    patQoq: decimalPct(patQoq),
-    patYoy: decimalPct(patYoy),
+    // Derived (newBusinessPremiumPct, expenseRatio, netMargin, premium QoQ/YoY,
+    // pat QoQ/YoY) from the single deriveLiQuarterly path (ingestion ≡ fill).
+    ...derived.columns,
   };
 
   const row = await prisma.lifeInsuranceQuarterlyResult.upsert({

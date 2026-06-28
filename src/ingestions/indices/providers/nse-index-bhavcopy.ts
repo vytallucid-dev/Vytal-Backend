@@ -29,6 +29,16 @@ import type {
   IndexProviderResult,
   IndexEodValue,
 } from "./provider.js";
+import { reportIngestionError } from "../../shared/ingestion-error.js";
+import {
+  INDEX_CRON,
+  INDEX_SOURCE,
+  MAX_SKIP_RATE,
+  REQUIRED_INDEX_COLUMNS,
+  checkShape,
+  checkSkipRate,
+  indexRunRef,
+} from "../indices-guards.js";
 
 // ── URL builder ───────────────────────────────────────────────
 
@@ -182,11 +192,7 @@ export class NseIndexCsvProvider implements IndexProvider {
       throw new Error(`NseIndex returned HTTP ${res.status} for ${url}`);
     }
 
-    if (!res.body.includes("Index Name") || !res.body.includes("Closing Index Value")) {
-      throw new Error(`NseIndex response doesn't look like a valid CSV`);
-    }
-
-    const { values, skipped } = parseIndexBhavcopy(res.body, d);
+    const { values, skipped } = await this.processIndexBody(res.body, d);
 
     if (values.length === 0) {
       errors.push("Parsed 0 index values — check CSV format");
@@ -197,6 +203,67 @@ export class NseIndexCsvProvider implements IndexProvider {
     );
 
     return { values, skipped, source: this.name, fetchedAt, errors };
+  }
+
+  // Shape-assert + parse + skip-check on a raw CSV body. Separated from the
+  // HTTP fetch so the guards can be exercised against synthetic bodies (the
+  // dry-run) without network. THROWS on shape failure (GUARD 1 reject);
+  // reports GUARD 1/2 violations as a side effect.
+  async processIndexBody(
+    body: string,
+    date: Date,
+  ): Promise<{ values: IndexEodValue[]; skipped: number }> {
+    // ── GUARD 1: SHAPE (critical · source_code · REJECT) ──
+    // Specific-column assertion over the exact parser-read set — replaces
+    // the old substring check that let an Open/High/Low/Change/P-E/P-B/
+    // Div-Yield rename through to silent nulls. Reject (throw) rather than
+    // store contentless rows; no fallback source, so this lands as "failed".
+    const headerLine = body.split(/\r?\n/, 1)[0] ?? "";
+    const headerCols = headerLine.split(",").map((c) => c.trim());
+    const missingCols = checkShape(headerCols);
+    if (missingCols.length > 0) {
+      await reportIngestionError({
+        source: INDEX_SOURCE,
+        cron: INDEX_CRON,
+        guardType: "shape",
+        targetTable: "IndexPrice",
+        severity: "critical",
+        resolutionPath: "source_code",
+        expected: `index header to contain [${REQUIRED_INDEX_COLUMNS.join(", ")}]`,
+        observed: `missing [${missingCols.join(", ")}] — header was [${headerCols.join(", ")}]`,
+        detail:
+          "NSE ind_close_all column rename/removal. Rejecting this fetch (would otherwise null the column silently).",
+        runRef: indexRunRef(date),
+      });
+      throw new Error(
+        `NseIndex shape assertion failed — missing columns: ${missingCols.join(", ")}`,
+      );
+    }
+
+    const { values, skipped } = parseIndexBhavcopy(body, date);
+
+    // ── GUARD 2: SKIP-RATE (high · source_code · flag) ──
+    // A spike in dropped rows = a value-parse break. If it drops EVERY row
+    // (skipped=N, values=0) it would masquerade as a market holiday — this
+    // catches that before the ingest declares market_closed. Normal ~0%.
+    const skipRate = checkSkipRate(skipped, skipped + values.length);
+    if (skipRate != null) {
+      await reportIngestionError({
+        source: INDEX_SOURCE,
+        cron: INDEX_CRON,
+        guardType: "null_rate", // batch-level skip variant (targetField null)
+        targetTable: "IndexPrice",
+        severity: "high",
+        resolutionPath: "source_code",
+        expected: `≤${(MAX_SKIP_RATE * 100).toFixed(0)}% of rows skipped for no-valid-close`,
+        observed: `${skipped}/${skipped + values.length} (${(skipRate * 100).toFixed(1)}%) rows skipped`,
+        detail:
+          "Unusual share of index rows dropped — a value-parse break (possibly masquerading as a holiday).",
+        runRef: indexRunRef(date),
+      });
+    }
+
+    return { values, skipped };
   }
 
   async ping(): Promise<boolean> {

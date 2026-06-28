@@ -6,6 +6,7 @@
 
 import https from "https";
 import { shouldScrapeArticle } from "./content-extractor.js";
+import { looksLikeRss } from "./news-guards.js";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -173,12 +174,23 @@ function resolveGoogleUrl(rawLink: string): string {
 
 // ── Main fetcher ───────────────────────────────────────────────
 
+/**
+ * Result of one RSS fetch. `malformed` = the 200 body was NOT RSS-shaped
+ * (consent/captcha/HTML block page) → 0 items silently. A valid-but-empty
+ * RSS feed (genuine quiet stock) is `malformed: false, items: []`. HTTP
+ * errors (403/timeout) still THROW (the caller counts those as a dead fetch).
+ */
+export interface GoogleNewsFetch {
+  items: GoogleNewsItem[];
+  malformed: boolean;
+}
+
 export async function fetchGoogleNews(
   symbol: string,
   companyName: string,
   maxItems: number = 20,
   signal?: AbortSignal,
-): Promise<GoogleNewsItem[]> {
+): Promise<GoogleNewsFetch> {
   // Short company name works better for search
   const shortName = companyName
     .replace(/\s+(limited|ltd\.?|private|pvt\.?)$/i, "")
@@ -188,6 +200,7 @@ export async function fetchGoogleNews(
   const url = `https://news.google.com/rss/search?q=${query}&hl=en-IN&gl=IN&ceid=IN:en`;
 
   const xml = await httpsGetText(url, signal);
+  const malformed = !looksLikeRss(xml);
   const items = extractAllItems(xml).slice(0, maxItems);
   const results: GoogleNewsItem[] = [];
 
@@ -225,5 +238,5 @@ export async function fetchGoogleNews(
     });
   }
 
-  return results;
+  return { items: results, malformed };
 }

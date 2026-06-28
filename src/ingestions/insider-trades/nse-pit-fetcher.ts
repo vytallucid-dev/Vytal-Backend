@@ -16,6 +16,7 @@
 import https from "https";
 import { nseClient } from "../../lib/client.js";
 import type { PitGgApiResponse, PitFilingIndex } from "./insider-types.js";
+import { isFeedMalformed } from "./insider-guards.js";
 
 const CHUNK_DAYS = 7;
 
@@ -32,7 +33,7 @@ export async function fetchFilingIndexForRange(
   fromDate: Date,
   toDate: Date,
   signal?: AbortSignal,
-): Promise<PitFilingIndex[]> {
+): Promise<{ filings: PitFilingIndex[]; malformed: boolean }> {
   const from = formatNseDate(fromDate);
   const to = formatNseDate(toDate);
 
@@ -43,17 +44,20 @@ export async function fetchFilingIndexForRange(
 
   if (!response || !Array.isArray(response.data)) {
     console.log(`[PitFetcher] No filing index for ${from} → ${to}`);
-    return [];
+    // GUARD 1 (SHAPE): a response whose `data` isn't an array = malformed
+    // feed (the empty-array trap) — distinct from a legit `data:[]` (quiet
+    // day). The caller reports the malformed case with the run's fetchType.
+    return { filings: [], malformed: isFeedMalformed(response) };
   }
 
   console.log(`[PitFetcher] Received ${response.data.length} filings`);
-  return response.data;
+  return { filings: response.data, malformed: false };
 }
 
 export async function fetchFilingIndexForDate(
   date: Date,
   signal?: AbortSignal,
-): Promise<PitFilingIndex[]> {
+): Promise<{ filings: PitFilingIndex[]; malformed: boolean }> {
   return fetchFilingIndexForRange(date, date, signal);
 }
 

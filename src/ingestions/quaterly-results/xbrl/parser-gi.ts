@@ -122,6 +122,11 @@ export interface ParsedGeneralInsuranceAnnual {
 }
 
 function extractGiRatios(xml: string, ctx: string) {
+  const rawSolvency =
+    extractNumber(xml, "SolvencyRatio", ctx) ??
+    extractNumber(xml, "SolvencyMargin", ctx);
+  // Band-test mirrors normalizeSolvency() — ICICIGI files 0.0267 = 2.67× (multiple÷100).
+  const solvencyRatio = rawSolvency !== null && rawSolvency < 0.5 ? rawSolvency * 100 : rawSolvency;
   return {
     combinedRatio: extractNumber(xml, "CombinedRatio", ctx),
     incurredClaimRatio:
@@ -133,9 +138,7 @@ function extractGiRatios(xml: string, ctx: string) {
       ctx,
     ),
     netRetentionRatio: extractNumber(xml, "NetRetentionRatio", ctx),
-    solvencyRatio:
-      extractNumber(xml, "SolvencyRatio", ctx) ??
-      extractNumber(xml, "SolvencyMargin", ctx),
+    solvencyRatio,
   };
 }
 

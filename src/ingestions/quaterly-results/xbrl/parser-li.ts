@@ -148,10 +148,15 @@ export interface ParsedLifeInsuranceAnnual {
  * Insurance-specific tags exposed via in-capmkt-ent for the LI taxonomy.
  */
 function extractLiRatios(xml: string, ctx: string) {
+  const rawSolvency =
+    extractNumber(xml, "SolvencyRatio", ctx) ??
+    extractNumber(xml, "SolvencyMargin", ctx);
+  // Three of five LI/GI filers (LICI, SBILIFE, ICICIGI) encode solvency as
+  // multiple÷100 (e.g. 0.0196 = 1.96×) rather than the multiple directly.
+  // Band-test mirrors normalizeSolvency() in fundamentals-view.service.ts.
+  const solvencyRatio = rawSolvency !== null && rawSolvency < 0.5 ? rawSolvency * 100 : rawSolvency;
   return {
-    solvencyRatio:
-      extractNumber(xml, "SolvencyRatio", ctx) ??
-      extractNumber(xml, "SolvencyMargin", ctx),
+    solvencyRatio,
     persistencyRatio13Month:
       extractNumber(xml, "PersistencyRatio13ThMonth", ctx) ??
       extractNumber(xml, "PersistencyRatio13Month", ctx),

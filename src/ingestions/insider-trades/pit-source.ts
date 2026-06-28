@@ -43,11 +43,11 @@ export async function fetchAndParseInsiderTrades(
   stockMap: Map<string, string>, // symbol(upper) → stockId
   signal?: AbortSignal,
 ): Promise<ParseResult> {
-  const index = await fetchFilingIndexForRange(fromDate, toDate, signal);
-  const totalRaw = index.length;
+  const { filings, malformed } = await fetchFilingIndexForRange(fromDate, toDate, signal);
+  const totalRaw = filings.length;
 
   // Universe filter first — only fetch XBRL for stocks we track.
-  const inUniverse = index.filter((f) => f.symbol && stockMap.has(f.symbol.trim().toUpperCase()));
+  const inUniverse = filings.filter((f) => f.symbol && stockMap.has(f.symbol.trim().toUpperCase()));
   const filteredCount = totalRaw - inUniverse.length;
 
   if (inUniverse.length > 0) {
@@ -90,5 +90,5 @@ export async function fetchAndParseInsiderTrades(
 
   for (const arr of perFiling) records.push(...arr);
 
-  return { records, skippedCount, filteredCount, totalRaw };
+  return { records, skippedCount, filteredCount, totalRaw, feedMalformed: malformed };
 }

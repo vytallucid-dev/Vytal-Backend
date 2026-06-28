@@ -10,6 +10,8 @@
 //   GET /api/stocks/:symbol/ownership — the per-stock OwnershipSeriesView
 //   GET /api/stocks/:symbol/fundamentals — the per-stock FundamentalsView
 //                                       (dispatch-by-industry-family; ?basis=consolidated|standalone)
+//   GET /api/stocks/:symbol/overview  — the per-stock StockOverviewView
+//                                       (editorial company profile; honest-empty when no row)
 //
 // Static segments (`/`, `/universe`, `/scan`) are registered before the
 // `/:symbol/health` param route so they resolve unambiguously.
@@ -23,6 +25,8 @@ import {
   getStockScan,
   getStockOwnership,
   getStockFundamentals,
+  getStockOverview,
+  getStockPrice,
 } from "../controllers/stocks-list-controller.js";
 
 export const stocksRouter = Router();
@@ -33,3 +37,5 @@ stocksRouter.get("/scan", getStockScan);
 stocksRouter.get("/:symbol/health", getStockHealth);
 stocksRouter.get("/:symbol/ownership", getStockOwnership);
 stocksRouter.get("/:symbol/fundamentals", getStockFundamentals);
+stocksRouter.get("/:symbol/overview", getStockOverview);
+stocksRouter.get("/:symbol/price", getStockPrice);

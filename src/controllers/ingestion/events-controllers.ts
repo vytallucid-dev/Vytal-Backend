@@ -135,6 +135,7 @@ export const getEventsBySymbol = async (req: Request, res: Response) => {
           exDate: e.exDate?.toISOString().split("T")[0] ?? null,
           recordDate: e.recordDate?.toISOString().split("T")[0] ?? null,
           impactLevel: e.impactLevel,
+          isConfirmed: e.isConfirmed,
           dividendAmount: e.dividendAmount
             ? parseFloat(e.dividendAmount.toString())
             : null,

@@ -23,6 +23,8 @@ import type { FetchJobResult } from "./insider-types.js";
 import type { PrismaClient } from "../../generated/prisma/client.js";
 import { prisma } from "../../db/prisma.js";
 import { nseClient } from "../../lib/client.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import { INSIDER_CRON, INSIDER_SOURCE } from "./insider-guards.js";
 
 /**
  * Called after each date chunk is ingested.
@@ -102,6 +104,22 @@ export async function runDailyJob(): Promise<void> {
   // unnoticed (as the previous endpoint freeze did for ~6 weeks).
   const alert = await checkNoDataStreak();
   if (alert.detected) {
+    // GUARD 2 (STREAK): the trailing-window-zero IS the feed-down signal
+    // (single-day volume is bursty — p10=1 — so a single no_data is a normal
+    // quiet day). Route it into the unified error table, then surface the run
+    // as failed via the existing throw.
+    await reportIngestionError({
+      source: INSIDER_SOURCE,
+      cron: INSIDER_CRON,
+      guardType: "count",
+      targetTable: "InsiderTrade",
+      severity: "high",
+      resolutionPath: "source_code",
+      expected: "≥1 of the last 3 daily runs returns data",
+      observed: `${alert.dates.length} consecutive no_data daily runs (${alert.dates.join(", ")})`,
+      detail: "Insider-trade feed blackout — NSE corporates-pit-gg may have changed again (the failure that previously went unnoticed for ~6 weeks).",
+      runRef: `${alert.dates[0] ?? "unknown"}:daily`,
+    });
     throw new Error(
       `Insider-trade feed blackout: ${alert.dates.length} consecutive daily runs returned ` +
         `no data (${alert.dates.join(", ")}). NSE corporates-pit-gg may have changed again — investigate.`,

@@ -5,12 +5,16 @@ import { Prisma } from "../../../generated/prisma/client.js";
 import type { ParsedGeneralInsuranceQuarterly } from "../xbrl/parser-gi.js";
 import {
   safeNumber,
-  decimalPct,
   decimalRatio,
   decrementFY,
-  pctChange,
   getPriorQuarter,
 } from "../ingester-utils.js";
+import {
+  financialShapeReject,
+  financialRecordGuards,
+  resultsRunRef,
+} from "../financial-guards.js";
+import { deriveGiQuarterly } from "../derive/derive-financial-quarterly.js";
 
 export async function ingestGeneralInsuranceQuarterly(
   input: {
@@ -19,16 +23,24 @@ export async function ingestGeneralInsuranceQuarterly(
     source: string;
   },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed"; rowId: string }> {
+): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
   const { stockId, parsed: p, source } = input;
+  const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
+  const runRef = resultsRunRef(`${p.quarter}-${p.fiscalYear}`);
+  if (
+    await financialShapeReject({
+      table: "GeneralInsuranceQuarterlyResult",
+      entity,
+      runRef,
+      coreA: p.grossPremiumsWritten,
+      coreB: p.netProfit,
+      coreLabel: "grossPremiumsWritten or netProfit",
+    })
+  ) {
+    return { status: "rejected", rowId: "" };
+  }
 
-  const netUnderwritingMargin =
-    p.combinedRatio !== null ? 1 - p.combinedRatio : null;
-  const netMargin =
-    p.netProfit !== null && p.totalRevenue !== null && p.totalRevenue !== 0
-      ? (p.netProfit / p.totalRevenue) * 100
-      : null;
-
+  // ── Prior-quarter (QoQ) + year-ago-quarter (YoY) rows ──
   const priorQ = getPriorQuarter(p.quarter, p.fiscalYear);
   const priorRow = priorQ
     ? await prisma.generalInsuranceQuarterlyResult.findUnique({
@@ -56,22 +68,30 @@ export async function ingestGeneralInsuranceQuarterly(
     select: { grossPremiumsWritten: true, netProfit: true },
   });
 
-  const gpwQoq = pctChange(
-    p.grossPremiumsWritten,
-    priorRow?.grossPremiumsWritten?.toNumber() ?? null,
+  // ── Derive 6 stored columns — SINGLE PATH (ingestion ≡ fill). ──
+  const derived = deriveGiQuarterly(
+    {
+      combinedRatio: p.combinedRatio,
+      netProfit: p.netProfit,
+      totalRevenue: p.totalRevenue,
+      grossPremiumsWritten: p.grossPremiumsWritten,
+    },
+    priorRow ? { grossPremiumsWritten: priorRow.grossPremiumsWritten?.toNumber() ?? null, netProfit: priorRow.netProfit?.toNumber() ?? null } : null,
+    yearAgoRow ? { grossPremiumsWritten: yearAgoRow.grossPremiumsWritten?.toNumber() ?? null, netProfit: yearAgoRow.netProfit?.toNumber() ?? null } : null,
   );
-  const gpwYoy = pctChange(
-    p.grossPremiumsWritten,
-    yearAgoRow?.grossPremiumsWritten?.toNumber() ?? null,
-  );
-  const patQoq = pctChange(
-    p.netProfit,
-    priorRow?.netProfit?.toNumber() ?? null,
-  );
-  const patYoy = pctChange(
-    p.netProfit,
-    yearAgoRow?.netProfit?.toNumber() ?? null,
-  );
+  const gpwYoy = derived.numbers.gpwYoy;
+
+  if (decision === "ingest") {
+    await financialRecordGuards({
+      table: "GeneralInsuranceQuarterlyResult",
+      entity,
+      runRef,
+      scale: [["grossPremiumsWritten", p.grossPremiumsWritten]],
+      yoy: gpwYoy,
+      yoyLabel: "gpwYoy",
+      solvency: p.solvencyRatio,
+    });
+  }
 
   const data: Prisma.GeneralInsuranceQuarterlyResultUpsertArgs["create"] = {
     stockId,
@@ -112,13 +132,9 @@ export async function ingestGeneralInsuranceQuarterly(
     netRetentionRatio: decimalRatio(p.netRetentionRatio),
     solvencyRatio: safeNumber(p.solvencyRatio, 4),
 
-    netUnderwritingMargin: decimalRatio(netUnderwritingMargin),
-    netMargin: decimalPct(netMargin),
-
-    gpwQoq: decimalPct(gpwQoq),
-    gpwYoy: decimalPct(gpwYoy),
-    patQoq: decimalPct(patQoq),
-    patYoy: decimalPct(patYoy),
+    // Derived (netUnderwritingMargin, netMargin, gpw QoQ/YoY, pat QoQ/YoY)
+    // from the single deriveGiQuarterly path (ingestion ≡ fill).
+    ...derived.columns,
   };
 
   const row = await prisma.generalInsuranceQuarterlyResult.upsert({

@@ -26,6 +26,9 @@ import {
 } from "./handlers/news-ingests.handler.js";
 import { handlePeerMetricsComputeAll } from "./handlers/peer-metrics-compute-all.handler.js";
 import { handlePgRescore } from "./handlers/pg-rescore.handler.js";
+import { handlePgCascadeRescore } from "./handlers/pg-cascade-rescore.handler.js";
+import { handleFillCascadeRescore } from "./handlers/fill-cascade-rescore.handler.js";
+import { handlePricesRefetch } from "./handlers/prices-refetch.handler.js";
 import { handleResultsScan } from "./handlers/results-scan.handler.js";
 import { handlePriceBackfill } from "./handlers/price-backfill.handler.js";
 import {
@@ -74,6 +77,9 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.RESULTS_SCAN]: handleResultsScan,
   [JobTypes.LEGACY_BACKFILL]: handleLegacyBackfill,
   [JobTypes.PG_RESCORE]: handlePgRescore,
+  [JobTypes.PG_CASCADE_RESCORE]: handlePgCascadeRescore,
+  [JobTypes.FILL_CASCADE_RESCORE]: handleFillCascadeRescore,
+  [JobTypes.PRICES_REFETCH]: handlePricesRefetch,
 };
 
 export function getHandler(type: string): JobHandler | null {

@@ -24,6 +24,21 @@ import { fetchGoogleNews, type GoogleNewsItem } from "./google-news.js";
 import { extractPdfText, extractArticleText } from "./content-extractor.js";
 import { prisma } from "../../db/prisma.js";
 import { nseClient } from "../../lib/client.js";
+import { reportIngestionError } from "../shared/ingestion-error.js";
+import {
+  NEWS_NSE_CRON,
+  NEWS_NSE_SOURCE,
+  NEWS_GOOGLE_CRON,
+  NEWS_GOOGLE_SOURCE,
+  nseRunRef,
+  googleRunRef,
+  nseShapeBreach,
+  nseFieldPresenceBreach,
+  googleSourceDeadBreach,
+  googleAggregateZeroBreach,
+  type NseRunStats,
+  type GoogleRunStats,
+} from "./news-guards.js";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -160,6 +175,12 @@ export async function runDailyNseAnnouncementsIngest(
   let pendingExtraction = 0;
   let stocksProcessed = 0;
 
+  // ── run-level guard counters (NSE filings) ──
+  let responsesReceived = 0;
+  let nonArrayResponses = 0;
+  let rawRowsSeen = 0;
+  let passedFilter = 0;
+
   try {
     const stocks = await loadUniverse();
     const to = new Date();
@@ -194,12 +215,12 @@ export async function runDailyNseAnnouncementsIngest(
 
       for (const stock of batch) {
         try {
-          const announcements = await fetchNseAnnouncements(
-            stock.symbol,
-            from,
-            to,
-            signal,
-          );
+          const { announcements, nonArray, rawRows, passed } =
+            await fetchNseAnnouncements(stock.symbol, from, to, signal);
+          responsesReceived++;
+          if (nonArray) nonArrayResponses++;
+          rawRowsSeen += rawRows;
+          passedFilter += passed;
 
           for (const ann of announcements) {
             const result = await insertNseAnnouncement(
@@ -243,6 +264,48 @@ export async function runDailyNseAnnouncementsIngest(
     }
 
     const durationMs = Date.now() - start;
+
+    // ── Run-level SHAPE guards (NSE) — per-stock errors are swallowed in
+    // the loop, so evaluate the accumulated counters once here, before the
+    // fetch log is written (which would otherwise log success on a dead feed). ──
+    const nseStats: NseRunStats = {
+      responsesReceived,
+      nonArrayResponses,
+      rawRowsSeen,
+      passedFilter,
+    };
+    const runRef = nseRunRef(new Date());
+    if (nseShapeBreach(nseStats)) {
+      await reportIngestionError({
+        source: NEWS_NSE_SOURCE,
+        cron: NEWS_NSE_CRON,
+        guardType: "shape",
+        targetTable: "StockNews",
+        severity: "critical",
+        resolutionPath: "source_code",
+        expected: "corporate-announcements returns an array per symbol",
+        observed: `every response non-array (${nonArrayResponses}/${responsesReceived} symbols)`,
+        detail:
+          "object-where-array envelope trap (nse-announcements.ts) — a renamed/changed envelope yields silent 0 announcements logged as success",
+        runRef,
+      });
+    }
+    if (nseFieldPresenceBreach(nseStats)) {
+      await reportIngestionError({
+        source: NEWS_NSE_SOURCE,
+        cron: NEWS_NSE_CRON,
+        guardType: "shape",
+        targetTable: "StockNews",
+        targetField: "seq_id/desc/an_dt",
+        severity: "high",
+        resolutionPath: "source_code",
+        expected: "raw filings carry seq_id + desc + an_dt",
+        observed: `${rawRowsSeen} raw rows, 0 passed the required-field filter`,
+        detail:
+          "field rename → .filter(r => r.seq_id && r.desc && r.an_dt) drops every row → silent 0",
+        runRef,
+      });
+    }
 
     await prisma.newsFetchLog.create({
       data: {
@@ -308,6 +371,12 @@ export async function runDailyGoogleNewsIngest(
   let pendingExtraction = 0;
   let stocksProcessed = 0;
 
+  // ── run-level guard counters (Google RSS) ──
+  let stocksAttempted = 0;
+  let responsesReceived = 0;
+  let nonRssBodies = 0;
+  let itemsParsed = 0;
+
   try {
     const stocks = await loadUniverse();
     const cutoff = new Date(Date.now() - daysBack * 86400_000);
@@ -329,9 +398,18 @@ export async function runDailyGoogleNewsIngest(
       );
 
       for (const stock of batch) {
+        stocksAttempted++;
         try {
-          const news = await fetchGoogleNews(stock.symbol, stock.name, 20, signal);
-          const recent = news.filter((n) => n.publishedAt >= cutoff);
+          const { items, malformed } = await fetchGoogleNews(
+            stock.symbol,
+            stock.name,
+            20,
+            signal,
+          );
+          responsesReceived++;
+          if (malformed) nonRssBodies++;
+          const recent = items.filter((n) => n.publishedAt >= cutoff);
+          itemsParsed += recent.length;
 
           for (const item of recent) {
             const result = await insertGoogleNewsItem(
@@ -375,6 +453,49 @@ export async function runDailyGoogleNewsIngest(
     }
 
     const durationMs = Date.now() - start;
+
+    // ── Run-level guards (Google RSS) — evaluate accumulated counters once
+    // before the fetch log is written (per-stock errors are swallowed above). ──
+    const gStats: GoogleRunStats = {
+      stocksAttempted,
+      responsesReceived,
+      nonRssBodies,
+      itemsParsed,
+    };
+    const runRef = googleRunRef(new Date());
+    if (googleSourceDeadBreach(gStats)) {
+      await reportIngestionError({
+        source: NEWS_GOOGLE_SOURCE,
+        cron: NEWS_GOOGLE_CRON,
+        guardType: "shape",
+        targetTable: "StockNews",
+        severity: "high",
+        resolutionPath: "source_code",
+        expected: "news.google.com/rss returns parseable RSS",
+        observed:
+          responsesReceived === 0
+            ? `all ${stocksAttempted} fetches failed (HTTP error / block)`
+            : `every 200 body was non-RSS (${nonRssBodies}/${responsesReceived}) — consent/captcha page`,
+        detail:
+          "Google blocked or moved the RSS endpoint — feed dead, not a quiet day (RSS is not market-gated)",
+        runRef,
+      });
+    }
+    if (googleAggregateZeroBreach(gStats)) {
+      await reportIngestionError({
+        source: NEWS_GOOGLE_SOURCE,
+        cron: NEWS_GOOGLE_CRON,
+        guardType: "count",
+        targetTable: "StockNews",
+        severity: "high",
+        resolutionPath: "source_code",
+        expected: "≥1 item across the universe (baseline floor ~22/run)",
+        observed: `0 items parsed across ${responsesReceived} valid RSS responses`,
+        detail:
+          "valid-but-empty RSS for every stock → search-query semantics changed (per-stock 0 is normal; universe-wide 0 is not)",
+        runRef,
+      });
+    }
 
     await prisma.newsFetchLog.create({
       data: {
@@ -604,7 +725,12 @@ export async function runNewsBackfill(daysBack: number = 90, onBatchComplete?: B
 
     for (const stock of batch) {
       try {
-        const anns = await fetchNseAnnouncements(stock.symbol, from, to, signal);
+        const { announcements: anns } = await fetchNseAnnouncements(
+          stock.symbol,
+          from,
+          to,
+          signal,
+        );
         for (const ann of anns) {
           const result = await insertNseAnnouncement(stock.id, stock.symbol, ann);
           if (result === "inserted") {

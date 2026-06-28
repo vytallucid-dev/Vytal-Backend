@@ -16,6 +16,15 @@ import type {
   PriceProviderResult,
   EodPrice,
 } from "./provider.js";
+import { reportIngestionError } from "../../shared/ingestion-error.js";
+import {
+  PRICES_CRON,
+  REQUIRED_BHAV_COLUMNS,
+  MAX_PARSE_SKIP_RATE,
+  checkShape,
+  checkSkipRate,
+  runRef,
+} from "../prices-guards.js";
 
 // ── URL builder ───────────────────────────────────────────────
 
@@ -75,7 +84,13 @@ interface BhavRow {
   ISIN: string;
 }
 
-function parseBhavcopy(csvText: string, date: Date): EodPrice[] {
+interface ParseResult {
+  prices: EodPrice[];
+  totalEq: number; // EQ-series rows seen (skipped + kept)
+  skippedBadValue: number; // EQ rows dropped for NaN/≤0 required values
+}
+
+function parseBhavcopy(csvText: string, date: Date): ParseResult {
   const rows: BhavRow[] = parseCsv(csvText, {
     columns: true,
     skip_empty_lines: true,
@@ -83,10 +98,13 @@ function parseBhavcopy(csvText: string, date: Date): EodPrice[] {
   });
 
   const prices: EodPrice[] = [];
+  let totalEq = 0;
+  let skippedBadValue = 0;
 
   for (const row of rows) {
     // Only equity series — skip BE, BL, SM, ST etc.
     if (row.SERIES.trim() !== "EQ") continue;
+    totalEq++;
 
     const close = parseFloat(row.CLOSE_PRICE);
     const open = parseFloat(row.OPEN_PRICE);
@@ -96,8 +114,13 @@ function parseBhavcopy(csvText: string, date: Date): EodPrice[] {
       ? parseInt(row.TTL_TRD_QNTY.replace(/,/g, ""), 10)
       : 0;
 
-    // Skip rows with invalid core values
-    if (isNaN(close) || isNaN(open) || close <= 0) continue;
+    // Skip rows with invalid core values (unchanged — GUARD 2 only COUNTS
+    // these skips; it does not widen the drop criteria, which would alter
+    // ingestion).
+    if (isNaN(close) || isNaN(open) || close <= 0) {
+      skippedBadValue++;
+      continue;
+    }
 
     const tradedValueCr = parseFloat(row.TURNOVER_LACS) / 100; // convert to Cr
 
@@ -117,7 +140,7 @@ function parseBhavcopy(csvText: string, date: Date): EodPrice[] {
     });
   }
 
-  return prices;
+  return { prices, totalEq, skippedBadValue };
 }
 
 // ── Provider ──────────────────────────────────────────────────
@@ -152,11 +175,7 @@ export class NseBhavcopyCsvProvider implements PriceProvider {
       throw new Error(`NseBhavcopy returned HTTP ${res.status} for ${url}`);
     }
 
-    if (!res.body.includes("SYMBOL") || !res.body.includes("CLOSE")) {
-      throw new Error(`NseBhavcopy response doesn't look like a valid CSV`);
-    }
-
-    const prices = parseBhavcopy(res.body, d);
+    const prices = await this.processBhavcopyBody(res.body, d);
 
     if (prices.length === 0) {
       errors.push("Parsed 0 prices from bhavcopy — check CSV format");
@@ -167,6 +186,65 @@ export class NseBhavcopyCsvProvider implements PriceProvider {
     );
 
     return { prices, provider: this.name, fetchedAt, errors };
+  }
+
+  // Shape-assert + parse + skip-check on a raw CSV body. Separated from
+  // the HTTP fetch so the guards can be exercised against synthetic bodies
+  // (see the dry-run harness) without any network. THROWS on shape failure
+  // (the GUARD 1 reject); reports GUARD 1/2 violations as a side effect.
+  async processBhavcopyBody(body: string, date: Date): Promise<EodPrice[]> {
+    // ── GUARD 1: SHAPE (critical · source_code · REJECT + flag) ──
+    // Specific-column assertion BEFORE row iteration. A missing/renamed
+    // column means the parser would silently NaN→empty and look like a
+    // closed market — so we REJECT (throw) rather than insert garbage.
+    // The throw also lets fetchWithFallback try BSE; only if every
+    // provider fails does the run log "failed".
+    const headerLine = body.split(/\r?\n/, 1)[0] ?? "";
+    const headerCols = headerLine.split(",").map((c) => c.trim());
+    const missingCols = checkShape(headerCols);
+    if (missingCols.length > 0) {
+      await reportIngestionError({
+        source: this.name,
+        cron: PRICES_CRON,
+        guardType: "shape",
+        targetTable: "DailyPrice",
+        severity: "critical",
+        resolutionPath: "source_code",
+        expected: `bhavcopy header to contain [${REQUIRED_BHAV_COLUMNS.join(", ")}]`,
+        observed: `missing [${missingCols.join(", ")}] — header was [${headerCols.join(", ")}]`,
+        detail:
+          "NSE bhavcopy column rename/removal. Rejecting this fetch (would otherwise NaN→empty and masquerade as a market holiday).",
+        runRef: runRef(date, this.name),
+      });
+      throw new Error(
+        `NseBhavcopy shape assertion failed — missing columns: ${missingCols.join(", ")}`,
+      );
+    }
+
+    const { prices, totalEq, skippedBadValue } = parseBhavcopy(body, date);
+
+    // ── GUARD 2: SKIP-RATE (high · source_code · flag) ──
+    // A spike in rows dropped for bad required values = silent data loss
+    // (a parse break eating rows). Corroborated by a low totalInserted
+    // (GUARD 3). Normal ≈ 0%.
+    const skipRate = checkSkipRate(skippedBadValue, totalEq);
+    if (skipRate != null) {
+      await reportIngestionError({
+        source: this.name,
+        cron: PRICES_CRON,
+        guardType: "null_rate", // batch-level skip variant (targetField null)
+        targetTable: "DailyPrice",
+        severity: "high",
+        resolutionPath: "source_code",
+        expected: `≤${(MAX_PARSE_SKIP_RATE * 100).toFixed(0)}% of EQ rows skipped for NaN/≤0 close/open`,
+        observed: `${skippedBadValue}/${totalEq} (${(skipRate * 100).toFixed(1)}%) EQ rows skipped`,
+        detail:
+          "Parser dropped an unusual share of EQ rows — possible column shift or value corruption upstream of insert.",
+        runRef: runRef(date, this.name),
+      });
+    }
+
+    return prices;
   }
 
   async ping(): Promise<boolean> {

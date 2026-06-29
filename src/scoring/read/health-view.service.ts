@@ -11,14 +11,35 @@ import { PILLAR_WEIGHTS } from "../composite/weights.js";
 import {
   getLatestSnapshot,
   getSnapshotSeries,
+  getInForceSeriesRefs,
   getPeerSiblings,
+  getPeerMetricValues,
   resolveCoverage,
 } from "./scoring-read.service.js";
+import { canonicalMetric } from "../bars-loader/label-map.js";
+import type { BarDirection as EngineBarDirection } from "../lenses/types.js";
+import {
+  deriveLensTriplet,
+  lensPattern as computeLensPattern,
+  lensPillarPattern as computeLensPillarPattern,
+  applyAntiDoubleCount,
+  applyAntiDoubleCountPillar,
+  STEADY_EQUIVALENT_MIN,
+  type MetricLensAtom,
+  type FiredHeadline,
+} from "../lens-patterns/index.js";
 import type {
   HealthSnapshotView,
   PillarView,
   PillarKey,
   MetricView,
+  MetricState,
+  LensRead,
+  L3SeriesPoint,
+  MetricLensPattern,
+  PillarLensPattern,
+  BandLadder,
+  PillarLensShares,
   MarketSubView,
   FlowCategoryView,
   OwnershipDetail,
@@ -36,6 +57,8 @@ import type {
   TrajectoryMarker,
   MetricBars,
   PeerStats,
+  PeerDistribution,
+  BarProvenance,
 } from "./health-view.types.js";
 
 // ── LOCKED CONSTANTS (methodology — not fitted, not per-PG) ──────────────────────
@@ -74,12 +97,106 @@ function toPeerStats(src: { mean: unknown; stdDev: unknown; sampleN: number } | 
 }
 
 type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof getLatestSnapshot>>>;
+type LoadedMetricScore = LoadedSnapshot["foundationPillar"]["metricScores"][number];
 
 const SEVERITY_ORDER: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
 };
 const severityRank = (s: string | null): number =>
   s == null ? 99 : SEVERITY_ORDER[s.toLowerCase()] ?? 50;
+
+/** Derive the MetricState discriminant from the stored columns.
+ *  Every scored+not metric maps to exactly one honest state.
+ *
+ *  For scoreState=scored metrics: the discriminant is "scored" in all cases where
+ *  L1 computed — individual lens evaluability is surfaced in lens.l1/l2/l3, not here.
+ *  The sub-states (building_history, insufficient_peers) describe why a specific lens
+ *  is not_evaluable; they live in lens.l*.reason. The top-level metricState is the
+ *  SCORED state, which is the dominant fact for routing the UI panel.
+ *
+ *  Exception: no_bar means L1 itself could not run (no bar set) — that's a top-level
+ *  scored-but-unratable situation distinct from "scored with limited peer/history data". */
+function deriveMetricState(ms: LoadedMetricScore, peer: PeerStats | null): MetricState {
+  if (ms.scoreState !== "scored") return "normalized_out";
+  if (!ms.l1Available || !ms.metricBarSet) return "no_bar";
+  return "scored";
+}
+
+/** Build the MetricLensAtom from the loaded row + resolved peer. */
+function toAtom(
+  ms: LoadedMetricScore,
+  pillar: "foundation" | "momentum",
+  peer: { mean: unknown; stdDev: unknown; sampleN: number } | null,
+): MetricLensAtom {
+  return {
+    metricKey: ms.metricKey,
+    pillar,
+    scored: ms.scoreState === "scored",
+    rawValue: num(ms.rawValue),
+    l1Available: ms.l1Available,
+    l1Band: (ms.l1Band as MetricLensAtom["l1Band"]) ?? null,
+    l2Available: ms.l2Available,
+    l2Score: numN(ms.l2Score),
+    l2AnchorApplied: numN(ms.l2AnchorApplied),
+    peerMean: peer ? num(peer.mean) : null,
+    peerStdDev: peer ? num(peer.stdDev) : null,
+    peerSampleN: peer ? peer.sampleN : null,
+    l3Available: ms.l3Available,
+    l3Score: numN(ms.l3Score),
+    l3AnchorApplied: numN(ms.l3AnchorApplied),
+    l3Mean: numN(ms.l3Mean),
+    l3StdDev: numN(ms.l3StdDev),
+    l3WindowN: ms.l3WindowN ?? null,
+  };
+}
+
+/** Build the three LensRead views from a derived triplet + atom.
+ *  acceptableBar: the L1 acceptable threshold from MetricBarSet (referenceValue for L1). */
+function toLensReads(
+  atom: MetricLensAtom,
+  acceptableBar: number | null,
+): { l1: LensRead; l2: LensRead; l3: LensRead } {
+  const triplet = deriveLensTriplet(atom);
+
+  const l1: LensRead = {
+    state: triplet.l1,
+    evaluable: triplet.l1 !== "not_evaluable",
+    referenceValue: acceptableBar,
+    reason: triplet.l1 === "not_evaluable" ? (atom.l1Available ? "no_bar" : "l1_unavailable") : null,
+  };
+
+  const l2Reason = (): string | null => {
+    if (triplet.l2 !== "not_evaluable") return null;
+    if (!atom.l2Available) return "l2_unavailable";
+    if (atom.peerSampleN === null || atom.peerMean === null) return "no_peer_stats";
+    if (atom.peerSampleN < 5) return "insufficient_peers";
+    if (atom.peerStdDev === 0) return "std_dev_zero";
+    return "l2_unavailable";
+  };
+
+  const l2: LensRead = {
+    state: triplet.l2,
+    evaluable: triplet.l2 !== "not_evaluable",
+    referenceValue: atom.peerMean,
+    reason: l2Reason(),
+  };
+
+  const l3Reason = (): string | null => {
+    if (triplet.l3 !== "not_evaluable") return null;
+    if (!atom.l3Available) return "building_history";
+    if (atom.l3Mean === null || atom.l3StdDev === null) return "no_history_stats";
+    return "l3_unavailable";
+  };
+
+  const l3: LensRead = {
+    state: triplet.l3,
+    evaluable: triplet.l3 !== "not_evaluable",
+    referenceValue: atom.l3Mean,
+    reason: l3Reason(),
+  };
+
+  return { l1, l2, l3 };
+}
 
 function nativeZone(pillar: PillarKey, subtotal: number, state: string): NativeZone {
   const marks = NATIVE_MARKS[pillar];
@@ -111,7 +228,97 @@ function bandColour(band: LabelBand, mapping: unknown): BandColour {
  *  fix and carries no peerStatsSnapshotId FK (the backfilled rows resolve here). */
 type PeerFallback = Map<string, { mean: unknown; stdDev: unknown; sampleN: number }>;
 
-function mapMetric(ms: LoadedSnapshot["foundationPillar"]["metricScores"][number], peerFallback: PeerFallback): MetricView {
+/** The minimal bar-set shape the provenance + synthesized-row helpers read — assignable
+ *  from BOTH the loaded metricScore.metricBarSet relation and the lightweight bar-set
+ *  query used to enumerate the pillar's full metric set. */
+interface BarSetLite {
+  direction: string;
+  excellent: unknown; good: unknown; acceptable: unknown; concerning: unknown; distress: unknown;
+  barPath: string;
+  inForceFrom: Date;
+  inheritsFromPeerGroupId: string | null;
+}
+
+/** Bar provenance (modal §2.1): where the bars came from + when last recalibrated. */
+function toBarProvenance(
+  bs: { barPath: string; inForceFrom: Date; inheritsFromPeerGroupId: string | null } | null,
+): BarProvenance | null {
+  if (!bs) return null;
+  return { barPath: bs.barPath, recalibratedAt: ymd(bs.inForceFrom), inheritedFromPeerGroupId: bs.inheritsFromPeerGroupId };
+}
+
+/** Per-metric peer cross-section (modal §2.3): members + mean + direction-aware rank.
+ *  Returns null for an honest-empty row or when no member values resolve. Self is always
+ *  included (the stock IS a member of its own field). */
+function toPeerDistribution(
+  metricKey: string,
+  selfRaw: number | null,
+  selfSymbol: string,
+  peer: PeerStats | null,
+  direction: EngineBarDirection | null,
+  peerValues: Map<string, { symbol: string; value: number }[]>,
+): PeerDistribution | null {
+  if (selfRaw === null) return null;
+  const raw = peerValues.get(metricKey) ?? [];
+  if (raw.length === 0) return null;
+  const members = raw.map((m) => ({ symbol: m.symbol, value: m.value, isSelf: m.symbol === selfSymbol }));
+  if (!members.some((m) => m.isSelf)) members.push({ symbol: selfSymbol, value: selfRaw, isSelf: true });
+  // Direction-aware rank: 1 = healthiest (highest for higher_better, lowest for lower_better).
+  const sorted = [...members].sort((a, b) => (direction === "lower_better" ? a.value - b.value : b.value - a.value));
+  const rank = sorted.findIndex((m) => m.isSelf) + 1;
+  const mean = peer ? peer.mean : members.reduce((s, m) => s + m.value, 0) / members.length;
+  return { mean, selfValue: selfRaw, rank, outOf: members.length, usable: peer?.usable ?? false, members };
+}
+
+/** An honest-empty MetricView for a pillar metric that has a BAR but no scored row this
+ *  period (§1 — every metric appears). metricState is normalized_out when the metric was
+ *  guardrail-suppressed, else data_unavailable. NEVER fabricates a value/score/lens. */
+function synthesizeMissingMetric(
+  metricKey: string,
+  bs: BarSetLite | null,
+  suppressionReason: string | null,
+): MetricView {
+  const bars: MetricBars | null = bs
+    ? {
+        direction: bs.direction as MetricBars["direction"],
+        excellent: num(bs.excellent), good: num(bs.good), acceptable: num(bs.acceptable),
+        concerning: num(bs.concerning), distress: num(bs.distress),
+      }
+    : null;
+  const metricState: MetricState = suppressionReason ? "normalized_out" : bars ? "data_unavailable" : "no_bar";
+  return {
+    metricKey,
+    rawValue: null,
+    l1Score: null, l2Score: null, l3Score: null, metricScore: null,
+    l1Band: null,
+    scoreState: suppressionReason ? "suppressed" : "missing_renorm",
+    nominalWeight: 0, effectiveWeight: 0, contribution: 0,
+    suppressionReason,
+    bars,
+    peer: null,
+    metricState,
+    l2Available: false, l3Available: false, l3WindowN: null,
+    lensFallbackApplied: "none",
+    lens: null,
+    lensPattern: null,
+    bandLadder: bars ? { ...bars, activeBand: null } : null,
+    peerDistribution: null,
+    barProvenance: toBarProvenance(bs),
+  };
+}
+
+function mapMetric(
+  ms: LoadedMetricScore,
+  pillar: "foundation" | "momentum",
+  peerFallback: PeerFallback,
+  l3SeriesMap: Map<string, L3SeriesPoint[]>,
+  headlines: FiredHeadline[],
+  pillarSubtotal: number,
+  pillarScored: boolean,
+  selfSymbol: string,
+  peerValues: Map<string, { symbol: string; value: number }[]>,
+): MetricView {
+  // ── bars (from metricBarSet FK) ───────────────────────────────────────────
   const bars: MetricBars | null = ms.metricBarSet
     ? {
         direction: ms.metricBarSet.direction as MetricBars["direction"],
@@ -122,13 +329,61 @@ function mapMetric(ms: LoadedSnapshot["foundationPillar"]["metricScores"][number
         distress: num(ms.metricBarSet.distress),
       }
     : null;
+
+  // ── peer stats (FK first, natural-key fallback, then usability guard) ─────
+  const peerSrc = ms.peerStats ?? peerFallback.get(ms.metricKey) ?? null;
+  const peer = toPeerStats(peerSrc);
+
+  // ── metricState discriminant ──────────────────────────────────────────────
+  const metricState = deriveMetricState(ms, peer);
+
+  // ── lens atom + triplet + lensPattern ────────────────────────────────────
+  const atom = toAtom(ms, pillar, peerSrc);
+  const acceptableBar = ms.metricBarSet ? num(ms.metricBarSet.acceptable) : null;
+  const lensReads = toLensReads(atom, acceptableBar);
+  const l3Series = l3SeriesMap.get(ms.metricKey) ?? [];
+
+  // LM pattern: only on scored metrics. LM8 needs pillar anti-mask check.
+  let lensPatternOut: MetricLensPattern | null = null;
+  if (ms.scoreState === "scored") {
+    const triplet = deriveLensTriplet(atom);
+    const pillarReadsAcceptable =
+      pillarScored && pillarSubtotal >= STEADY_EQUIVALENT_MIN;
+    const fired = computeLensPattern(triplet.l1, triplet.l2, triplet.l3, {
+      pillarReadsAcceptable,
+    });
+    if (fired) {
+      const adc = applyAntiDoubleCount(fired, pillar, headlines);
+      lensPatternOut = {
+        id: fired.id,
+        label: fired.label,
+        tone: fired.tone,
+        fieldVerdict: fired.fieldVerdict,
+        role: adc.role,
+      };
+    }
+  }
+
+  // ── bandLadder (5 cuts + active band) ────────────────────────────────────
+  const bandLadder: BandLadder | null = ms.metricBarSet
+    ? {
+        direction: ms.metricBarSet.direction as MetricBars["direction"],
+        excellent: num(ms.metricBarSet.excellent),
+        good: num(ms.metricBarSet.good),
+        acceptable: num(ms.metricBarSet.acceptable),
+        concerning: num(ms.metricBarSet.concerning),
+        distress: num(ms.metricBarSet.distress),
+        activeBand: (ms.l1Band as MetricView["l1Band"]) ?? null,
+      }
+    : null;
+
   return {
     metricKey: ms.metricKey,
     rawValue: num(ms.rawValue),
     l1Score: numN(ms.l1Score),
     l2Score: numN(ms.l2Score),
     l3Score: numN(ms.l3Score),
-    metricScore: num(ms.metricScore),
+    metricScore: ms.scoreState === "scored" ? num(ms.metricScore) : null,
     l1Band: (ms.l1Band as MetricView["l1Band"]) ?? null,
     scoreState: ms.scoreState as MetricView["scoreState"],
     nominalWeight: num(ms.nominalWeight),
@@ -136,8 +391,29 @@ function mapMetric(ms: LoadedSnapshot["foundationPillar"]["metricScores"][number
     contribution: num(ms.contribution),
     suppressionReason: null, // filled below from SuppressionDirective when applicable
     bars,
-    // Prefer the FK relation (new scores carry it); else the backfilled natural-key row.
-    peer: toPeerStats(ms.peerStats ?? peerFallback.get(ms.metricKey) ?? null),
+    peer,
+    // ── S2 fields ────────────────────────────────────────────────────────────
+    metricState,
+    l2Available: ms.l2Available,
+    l3Available: ms.l3Available,
+    l3WindowN: ms.l3WindowN ?? null,
+    lensFallbackApplied: ms.lensFallbackApplied ?? "none",
+    lens: {
+      l1: lensReads.l1,
+      l2: lensReads.l2,
+      l3: { ...lensReads.l3, series: l3Series },
+    },
+    lensPattern: lensPatternOut,
+    bandLadder,
+    peerDistribution: toPeerDistribution(
+      ms.metricKey,
+      ms.rawValue === null ? null : num(ms.rawValue),
+      selfSymbol,
+      peer,
+      (ms.metricBarSet?.direction as EngineBarDirection) ?? null,
+      peerValues,
+    ),
+    barProvenance: toBarProvenance(ms.metricBarSet),
   };
 }
 
@@ -284,6 +560,110 @@ export async function buildHealthSnapshotView(
     peerStatsRows.map((r) => [r.metricKey, { mean: r.mean, stdDev: r.stdDev, sampleN: r.sampleN }]),
   );
 
+  // ── §1 full pillar metric set + §2.3 per-metric peer cross-section ───────────────
+  // The bar-set keys for this snapshot's barPath ARE the PG's scored metric universe; a
+  // key with NO scored row is an honest-empty (non-scored) metric we still surface (§1).
+  // The per-metric member values feed the modal's peer-field visual (§2.3).
+  const barSetRows = await prisma.metricBarSet.findMany({
+    where: { barPath: snap.barPath },
+    select: {
+      metricKey: true, direction: true, excellent: true, good: true, acceptable: true,
+      concerning: true, distress: true, inForceFrom: true, barPath: true, inheritsFromPeerGroupId: true,
+    },
+  });
+  const barSetByKey = new Map<string, (typeof barSetRows)[number]>();
+  for (const bs of barSetRows) {
+    const cur = barSetByKey.get(bs.metricKey);
+    if (!cur || bs.inForceFrom > cur.inForceFrom) barSetByKey.set(bs.metricKey, bs); // latest in-force per key
+  }
+  const expectedKeysByPillar = new Map<"foundation" | "momentum", string[]>([["foundation", []], ["momentum", []]]);
+  for (const key of barSetByKey.keys()) {
+    const pl = canonicalMetric(key)?.pillar;
+    if (pl === "foundation" || pl === "momentum") expectedKeysByPillar.get(pl)!.push(key);
+  }
+  const peerMetricValues = await getPeerMetricValues(snap.peerGroupId, snap.periodKey);
+
+  // ── L3 series for per-metric sparklines (F+M only) ───────────────────────────────
+  // Load rawValue per metric across the in-force series window, then bucket by metricKey.
+  // This uses the SAME supersede-aware ref list that the composite series uses, so point-
+  // in-time correctness is guaranteed. One extra query per view (indexed by stockId+pillar).
+  const seriesRefs = await getInForceSeriesRefs(stock.id, windowQuarters);
+  // Build L3 series (per-metric sparkline) for Foundation + Momentum.
+  const l3SeriesFoundation = new Map<string, L3SeriesPoint[]>();
+  const l3SeriesMomentum = new Map<string, L3SeriesPoint[]>();
+
+  if (seriesRefs.length > 0) {
+    // Load all in-window snapshots' pillarScoreIds for foundation + momentum.
+    const windowSnapshots = await prisma.scoreSnapshot.findMany({
+      where: { id: { in: seriesRefs.map((r) => r.id) } },
+      select: {
+        periodKey: true,
+        asOfDate: true,
+        foundationPillarId: true,
+        momentumPillarId: true,
+      },
+    });
+
+    // Collect all unique pillarScore IDs per pillar type.
+    const fPillarIds = [...new Set(windowSnapshots.map((s) => s.foundationPillarId).filter(Boolean))] as string[];
+    const mPillarIds = [...new Set(windowSnapshots.map((s) => s.momentumPillarId).filter(Boolean))] as string[];
+
+    // pillarScoreId → (periodKey, asOfDate) via snapshot rows.
+    const pillarToMeta = new Map<string, { periodKey: string; asOfDate: Date }>();
+    for (const s of windowSnapshots) {
+      if (s.foundationPillarId) pillarToMeta.set(s.foundationPillarId, { periodKey: s.periodKey, asOfDate: s.asOfDate });
+      if (s.momentumPillarId) pillarToMeta.set(s.momentumPillarId, { periodKey: s.periodKey, asOfDate: s.asOfDate });
+    }
+
+    // One bulk query per pillar type for rawValue across all window periods.
+    const fMetricRows = fPillarIds.length
+      ? await prisma.metricScore.findMany({
+          where: { pillarScoreId: { in: fPillarIds } },
+          select: { pillarScoreId: true, metricKey: true, rawValue: true },
+        })
+      : [];
+    const mMetricRows = mPillarIds.length
+      ? await prisma.metricScore.findMany({
+          where: { pillarScoreId: { in: mPillarIds } },
+          select: { pillarScoreId: true, metricKey: true, rawValue: true },
+        })
+      : [];
+
+    function buildL3Map(
+      rows: { pillarScoreId: string; metricKey: string; rawValue: unknown }[],
+    ): Map<string, L3SeriesPoint[]> {
+      const out = new Map<string, L3SeriesPoint[]>();
+      for (const r of rows) {
+        const meta = pillarToMeta.get(r.pillarScoreId);
+        if (!meta) continue;
+        const pt: L3SeriesPoint = {
+          periodKey: meta.periodKey,
+          asOfDate: ymd(meta.asOfDate),
+          rawValue: num(r.rawValue),
+        };
+        const arr = out.get(r.metricKey) ?? [];
+        arr.push(pt);
+        out.set(r.metricKey, arr);
+      }
+      // Sort oldest → newest within each metric.
+      for (const pts of out.values()) {
+        pts.sort((a, b) => a.asOfDate.localeCompare(b.asOfDate));
+      }
+      return out;
+    }
+
+    const builtF = buildL3Map(fMetricRows);
+    const builtM = buildL3Map(mMetricRows);
+    for (const [k, v] of builtF) l3SeriesFoundation.set(k, v);
+    for (const [k, v] of builtM) l3SeriesMomentum.set(k, v);
+  }
+
+  // ── fired headlines for anti-double-count ────────────────────────────────────────
+  const firedHeadlines: FiredHeadline[] = snap.patterns.map((p) => {
+    const ev = p.evidence as { leg?: string } | null;
+    return { patternKey: p.patternKey, leg: ev?.leg ?? null };
+  });
+
   // ── pillars ──
   const applied: Record<PillarKey, number> = {
     foundation: num(snap.wFoundation),
@@ -304,11 +684,28 @@ export async function buildHealthSnapshotView(
     ownership: snap.ownershipPillar.pillarState,
   };
 
-  const fmMetrics = (p: LoadedSnapshot["foundationPillar"]): MetricView[] =>
-    p.metricScores
-      .map((ms) => mapMetric(ms, peerFallback))
-      .map((m) => ({ ...m, suppressionReason: suppressionByMetric.get(m.metricKey) ?? null }))
-      .sort((a, b) => a.metricKey.localeCompare(b.metricKey));
+  const fmMetrics = (
+    p: LoadedSnapshot["foundationPillar"],
+    pillarKey: "foundation" | "momentum",
+    l3SeriesMap: Map<string, L3SeriesPoint[]>,
+  ): MetricView[] => {
+    const pillarSubtotal = num(p.subtotal);
+    const pillarScored = p.pillarState === "scored";
+    const scored = p.metricScores
+      .map((ms) =>
+        mapMetric(ms, pillarKey, peerFallback, l3SeriesMap, firedHeadlines, pillarSubtotal, pillarScored, stock.symbol, peerMetricValues),
+      )
+      .map((m) => ({ ...m, suppressionReason: suppressionByMetric.get(m.metricKey) ?? null }));
+    // §1 EVERY METRIC: synthesize honest-empty rows for the pillar's bar-set keys that
+    // produced NO scored row this period (data unavailable / guardrail-suppressed). Never
+    // hidden, never fabricated — null value + the dashed-track bandLadder + a reason.
+    const scoredKeys = new Set(scored.map((m) => m.metricKey));
+    const missing = (expectedKeysByPillar.get(pillarKey) ?? []).filter((k) => !scoredKeys.has(k));
+    const synthesized = missing.map((k) =>
+      synthesizeMissingMetric(k, barSetByKey.get(k) ?? null, suppressionByMetric.get(k) ?? null),
+    );
+    return [...scored, ...synthesized].sort((a, b) => a.metricKey.localeCompare(b.metricKey));
+  };
 
   const marketSubs: MarketSubView[] = snap.marketPillar.marketSubScores
     .map((s) => ({
@@ -355,6 +752,35 @@ export async function buildHealthSnapshotView(
     : null;
 
   const pillars: PillarView[] = PILLARS.map((pillar) => {
+    let metrics: MetricView[] | null = null;
+    let lensPillarPatterns: PillarLensPattern[] | null = null;
+    let lensShares: PillarLensShares | null = null;
+
+    if (pillar === "foundation") {
+      metrics = fmMetrics(snap.foundationPillar, "foundation", l3SeriesFoundation);
+      // LP roll-up over scored metrics (the primitive reads the atom, we build atoms here).
+      const atoms = snap.foundationPillar.metricScores.map((ms) =>
+        toAtom(ms, "foundation", ms.peerStats ?? peerFallback.get(ms.metricKey) ?? null),
+      );
+      const lpResult = computeLensPillarPattern(atoms);
+      lensShares = lpResult.shares as PillarLensShares;
+      lensPillarPatterns = lpResult.patterns.map((p) => {
+        const adc = applyAntiDoubleCountPillar(p, "foundation", firedHeadlines);
+        return { id: p.id, label: p.label, tone: p.tone, fieldVerdict: p.fieldVerdict, role: adc.role };
+      });
+    } else if (pillar === "momentum") {
+      metrics = fmMetrics(snap.momentumPillar, "momentum", l3SeriesMomentum);
+      const atoms = snap.momentumPillar.metricScores.map((ms) =>
+        toAtom(ms, "momentum", ms.peerStats ?? peerFallback.get(ms.metricKey) ?? null),
+      );
+      const lpResult = computeLensPillarPattern(atoms);
+      lensShares = lpResult.shares as PillarLensShares;
+      lensPillarPatterns = lpResult.patterns.map((p) => {
+        const adc = applyAntiDoubleCountPillar(p, "momentum", firedHeadlines);
+        return { id: p.id, label: p.label, tone: p.tone, fieldVerdict: p.fieldVerdict, role: adc.role };
+      });
+    }
+
     const base: PillarView = {
       pillar,
       subtotal: subtotalOf[pillar],
@@ -362,14 +788,12 @@ export async function buildHealthSnapshotView(
       nominalWeight: PILLAR_WEIGHTS[pillar],
       appliedWeight: applied[pillar],
       nativeZone: nativeZone(pillar, subtotalOf[pillar], stateOf[pillar]),
-      metrics: null,
-      marketSubs: null,
-      ownership: null,
+      metrics,
+      marketSubs: pillar === "market" ? marketSubs : null,
+      ownership: pillar === "ownership" ? ownershipDetail : null,
+      lensPillarPatterns,
+      lensShares,
     };
-    if (pillar === "foundation") base.metrics = fmMetrics(snap.foundationPillar);
-    else if (pillar === "momentum") base.metrics = fmMetrics(snap.momentumPillar);
-    else if (pillar === "market") base.marketSubs = marketSubs;
-    else base.ownership = ownershipDetail;
     return base;
   });
 

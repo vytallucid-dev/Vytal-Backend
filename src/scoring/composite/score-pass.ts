@@ -64,6 +64,10 @@ import { loadTrajectorySeries } from "../findings/trajectory/load-series.js";
 import { loadBandTypicalProfiles } from "../findings/composition/band-typical.js";
 import { applyPgDampening, type DampenReport } from "../findings/dampen.js";
 import type { FiredFinding, FiringContext } from "../findings/types.js";
+// §5 THREE-LENS escalation — the LOUD lens-patterns (LM3/LM7/LP2/LP5) join the fired
+// set as findings-stream members (databank §5.2). Quiet ones stay payload-only.
+import { computeLensFindings, type LensAuditRow } from "../lens-patterns/lens-findings.js";
+import type { FiredHeadline } from "../lens-patterns/index.js";
 
 type Db = Prisma.TransactionClient;
 
@@ -115,8 +119,13 @@ export interface MemberComputed {
   own: OwnershipResult | null;
   composite: CompositeResult;
   /** §2/§5 fired findings — present only when computePgScores ran with withFindings.
-   *  undefined ⇒ the findings hook did not run (legacy/committed callers). */
+   *  undefined ⇒ the findings hook did not run (legacy/committed callers). Includes the
+   *  LOUD lens-patterns (LM3/LM7/LP2/LP5) as members of the same stream (§5.2). */
   findings?: FiredFinding[];
+  /** Three-Lens escalation audit — every LOUD lens-pattern that FIRED (escalated or
+   *  demoted to supporting-detail by anti-double-count). Transparency record for the
+   *  Stage-3 proof; present only with withFindings. */
+  lensAudit?: LensAuditRow[];
   /** PG-level pond heat (File 1 §5 mask) — same value for every member of the PG (inherited).
    *  Stamped onto the member's snapshot by persistMember. undefined for legacy callers. */
   pondHeat?: PondHeat;
@@ -363,6 +372,26 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
         bandTypicalProfiles,
       };
       m.findings = runFindings(fctx);
+
+      // ── §5 THREE-LENS escalation (members of THIS fired set, pre-dampen) ──────────
+      // The LOUD lens-patterns (LM3/LM7 metric, LP2/LP5 pillar — databank §5.2) join
+      // m.findings as findings-stream members, so they enter dampen.ts + persist on the
+      // SAME path the R/P findings do. Anti-double-count reads the R/P findings JUST
+      // fired above (headlines via evidence.leg) and demotes LP5/LP6→B, LM5→D — a
+      // demoted loud pattern does NOT escalate (it is supporting-detail beneath its
+      // headline). Peer μ/σ is resolved FK-first (the scorer's in-memory peerStats on
+      // each ScoredMetric) with PG-capture natural-key fallback — never null-degraded.
+      const headlines: FiredHeadline[] = m.findings
+        .filter((f) => f.kind === "pattern")
+        .map((f) => ({ patternKey: f.key, leg: (f.evidence as { leg?: string } | null)?.leg ?? null }));
+      const lens = computeLensFindings({
+        foundation: { pillar: "foundation", metrics: m.fMetrics, subtotal: m.fPillar.subtotal, state: m.fPillar.pillarState },
+        momentum: { pillar: "momentum", metrics: m.mMetrics, subtotal: m.mPillar.subtotal, state: m.mPillar.pillarState },
+        peerStatsCaps,
+        headlines,
+      });
+      m.findings.push(...lens.escalated);
+      m.lensAudit = lens.audit;
     }
     // ── PG-WIDE DAMPENING (post-fire, pre-persist) ─────────────────────────────────
     // A pattern firing on >80% of the PG's SCORED members is a sector-wide condition →

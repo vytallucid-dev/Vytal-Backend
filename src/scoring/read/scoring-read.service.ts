@@ -281,6 +281,51 @@ export interface PeerSibling {
   ownershipSubtotal: number;
 }
 
+/**
+ * Per-METRIC peer member rawValues for a PG at one periodKey — the cross-section
+ * behind each metric's Lens-2, for the metric modal's peer-field visual (§2.3). For
+ * every scored F/M metric, returns the in-force (MAX-version) value held by each PG
+ * member at this period. Two queries: the sibling head snapshots, then their scored
+ * metric rawValues. Read-only; never fabricates a member that didn't score the metric.
+ */
+export async function getPeerMetricValues(
+  peerGroupId: string,
+  periodKey: string,
+  snapshotType: SnapshotType = "quarterly",
+): Promise<Map<string, { symbol: string; value: number }[]>> {
+  const snaps = await prisma.scoreSnapshot.findMany({
+    where: { peerGroupId, periodKey, snapshotType },
+    select: { stockId: true, symbol: true, version: true, asOfDate: true, foundationPillarId: true, momentumPillarId: true },
+  });
+  // MAX(version) per stock (supersede-aware) → the head snapshot for each sibling.
+  const byStock = new Map<string, (typeof snaps)[number]>();
+  for (const s of snaps) {
+    const cur = byStock.get(s.stockId);
+    if (!cur || s.version > cur.version || (s.version === cur.version && s.asOfDate > cur.asOfDate)) byStock.set(s.stockId, s);
+  }
+  const heads = [...byStock.values()];
+  const pillarToSymbol = new Map<string, string>();
+  for (const h of heads) {
+    if (h.foundationPillarId) pillarToSymbol.set(h.foundationPillarId, h.symbol);
+    if (h.momentumPillarId) pillarToSymbol.set(h.momentumPillarId, h.symbol);
+  }
+  const pillarIds = [...pillarToSymbol.keys()];
+  const out = new Map<string, { symbol: string; value: number }[]>();
+  if (!pillarIds.length) return out;
+  const rows = await prisma.metricScore.findMany({
+    where: { pillarScoreId: { in: pillarIds }, scoreState: "scored" },
+    select: { pillarScoreId: true, metricKey: true, rawValue: true },
+  });
+  for (const r of rows) {
+    const symbol = pillarToSymbol.get(r.pillarScoreId);
+    if (!symbol) continue;
+    const arr = out.get(r.metricKey) ?? [];
+    arr.push({ symbol, value: num(r.rawValue) });
+    out.set(r.metricKey, arr);
+  }
+  return out;
+}
+
 export async function getPeerSiblings(
   peerGroupId: string,
   periodKey: string,

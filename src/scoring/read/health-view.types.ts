@@ -154,6 +154,16 @@ export interface L3SeriesPoint {
   rawValue: number;
 }
 
+/** Standing band from absolute rank in the PG (rank/N only — no z-score). */
+export type LensStandingBand = "top" | "upper" | "mid" | "lower" | "bottom";
+/** Rank second-check context attached at read-time (CONFIRMATION ONLY — never changes
+ *  which pattern fired). null when the stock has no PG standing. */
+export interface LensStandingContext {
+  rank: number;
+  n: number;
+  band: LensStandingBand;
+}
+
 /** A fired metric-level lens pattern (verbatim from LM_CATALOG). */
 export interface MetricLensPattern {
   id: string; // "LM1".."LM8"
@@ -162,6 +172,10 @@ export interface MetricLensPattern {
   fieldVerdict: "PG_WEAK" | "PG_STRONG" | null;
   /** Supporting-detail when the LM5 metric pattern defers to Family-D recovery. */
   role: "top_level" | "supporting_detail";
+  /** S3.5 rank second-check (read-layer; rank/N only). null when no PG standing. */
+  standingContext?: LensStandingContext | null;
+  /** Display-ready, standing-reconciled verdict sentence. Frontend renders verbatim. */
+  verdict?: string;
 }
 
 /** A fired pillar-level lens pattern (verbatim from LP_CATALOG). */
@@ -172,6 +186,10 @@ export interface PillarLensPattern {
   fieldVerdict: "PG_WEAK" | "PG_STRONG" | null;
   /** Supporting-detail when LP5/LP6 defer to Family-B deterioration. */
   role: "top_level" | "supporting_detail";
+  /** S3.5 rank second-check (read-layer; rank/N only). null when no PG standing. */
+  standingContext?: LensStandingContext | null;
+  /** Display-ready, standing-reconciled verdict sentence. Frontend renders verbatim. */
+  verdict?: string;
 }
 
 /** The 5 bar cuts + the active band + direction. Derived from MetricBarSet.

@@ -28,6 +28,11 @@ import {
   type MetricLensAtom,
   type FiredHeadline,
 } from "../lens-patterns/index.js";
+import {
+  standingBand,
+  composeLpVerdict,
+  composeLmVerdict,
+} from "../lens-patterns/standing-context.js";
 import type {
   HealthSnapshotView,
   PillarView,
@@ -879,6 +884,28 @@ export async function buildHealthSnapshotView(
   const peerStanding = pg
     ? buildPeerStanding(pg.id, snap.periodKey, stock.id, await getPeerSiblings(pg.id, snap.periodKey))
     : null;
+
+  // ── S3.5 rank second-check (read-layer; rank/N only, NO z-score) ──────────────
+  // CONFIRMATION ONLY: the triplet already FIRED each pattern above; here we attach the
+  // absolute standing band + a standing-reconciled display `verdict` so the field-line /
+  // pillar-verdict wording can never contradict the stock's rank in its PG (e.g. an LP3
+  // "trails an elite field" verdict on the PG's #1 stock). Firing is byte-identical —
+  // we mutate only the verdict text on the already-built pattern objects.
+  for (const pv of pillars) {
+    if (pv.pillar !== "foundation" && pv.pillar !== "momentum") continue;
+    const rk = peerStanding?.perPillarRank?.[pv.pillar] ?? null;
+    const band = rk ? standingBand(rk.rank, rk.outOf) : null;
+    const ctx = rk && band ? { rank: rk.rank, n: rk.outOf, band } : null;
+    for (const lp of pv.lensPillarPatterns ?? []) {
+      lp.standingContext = ctx;
+      lp.verdict = composeLpVerdict(lp.id, lp.fieldVerdict, band, pv.lensShares);
+    }
+    for (const m of pv.metrics ?? []) {
+      if (!m.lensPattern) continue;
+      m.lensPattern.standingContext = ctx;
+      m.lensPattern.verdict = composeLmVerdict(m.lensPattern.id, m.lensPattern.fieldVerdict, band);
+    }
+  }
 
   return { scored: true, identity, verdict, pillars, trajectory, findings, peerStanding };
 }

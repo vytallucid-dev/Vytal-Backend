@@ -12,6 +12,8 @@
 
 import { prisma } from "../../db/prisma.js";
 import { toNum, round } from "./fundamentals-normalize.js";
+import { buildHealthSnapshotView } from "./health-view.service.js";
+import { buildFundamentalsView } from "./fundamentals-view.service.js";
 import type {
   ResultDetailData,
   ViewerQuarter,
@@ -21,6 +23,10 @@ import type {
   ViewerCorpEvent,
   ViewerPeer,
   PeriodRef,
+  ResultHealthBlock,
+  AnnualResultBlock,
+  AnnualResultState,
+  AnnualLine,
 } from "./result-detail.types.js";
 
 const DAY_MS = 86_400_000;
@@ -387,6 +393,189 @@ async function buildPeers(
   return { peers, peerGroupName };
 }
 
+// ── Health context — viewed-period composite/band + shift + findings (one extra read) ──
+// composite/band come from the trajectory SERIES at the viewed periodKey (NOT verdict, which
+// is the latest snapshot only) so an older result never shows the latest composite. The shift
+// is a whole-snapshot delta vs the prior in-force period — framed by the UI, not "caused by".
+function buildHealthBlock(
+  health: Awaited<ReturnType<typeof buildHealthSnapshotView>>,
+  viewedPeriodKey: string,
+): ResultHealthBlock | null {
+  if (!health) return null; // unknown symbol (defensive — stock already resolved upstream)
+  const series = health.trajectory?.series ?? [];
+  const idx = series.findIndex((p) => p.periodKey === viewedPeriodKey);
+  const point = idx >= 0 ? series[idx] : null;
+  const prior = idx > 0 ? series[idx - 1] : null;
+  return {
+    scored: health.scored,
+    latestPeriodKey: health.identity.periodKey || null, // "" when unscored → null
+    periodComposite: point ? point.composite : null,
+    periodBand: point ? point.labelBand : null,
+    compositeShift:
+      point && prior
+        ? {
+            delta: Math.round((point.composite - prior.composite) * 1e4) / 1e4,
+            priorPeriodKey: prior.periodKey,
+          }
+        : null,
+    findings: health.findings,
+  };
+}
+
+// ── Annual CF + BS-headline — PER FAMILY, gated on FY-match ──
+// buildFundamentalsView serves all five families (built:true), each with its own annual shape —
+// the SAME per-family dispatch the Fundamentals tab uses. We surface the family-appropriate
+// BS-headline + CF (banks/NBFC carry CF; insurer annuals have NO cash-flow statement → cashFlow
+// null, a real absence the UI renders as "n/a for insurers"). The annual read returns the LATEST
+// year, so it lines up only with the latest Q4; an older quarter (or no annual row) → not_filed
+// (never a stale prior year). Per-line nulls pass through (BS ~24% null is normal — honest "—").
+const crLine = (key: string, label: string, value: number | null): AnnualLine => ({ key, label, value, unit: "cr" });
+const rsLine = (key: string, label: string, value: number | null): AnnualLine => ({ key, label, value, unit: "rupees" });
+const cfLines = (op: number | null, inv: number | null, fin: number | null): AnnualLine[] => [
+  crLine("cashFromOperating", "Operating", op),
+  crLine("cashFromInvesting", "Investing", inv),
+  crLine("cashFromFinancing", "Financing", fin),
+];
+
+function buildAnnualBlock(
+  family: Family,
+  fundamentals: Awaited<ReturnType<typeof buildFundamentalsView>>,
+  current: ViewerQuarter,
+): { annual: AnnualResultBlock | null; annualState: AnnualResultState } {
+  const notFiled = { annual: null, annualState: "not_filed" as const };
+  if (!fundamentals) return notFiled;
+  // The annual is the FULL-YEAR statement, so tie it to the YEAR-END (Q4) result ONLY. Two
+  // guards in one: (1) quarter === "Q4" — an interim quarter (Q1–Q3) of the SAME fiscal year
+  // shares the fiscalYear string but is NOT the year-end result, so the 12-month annual would be
+  // a temporal mismatch beside a 3-month interim; (2) fy === current.fiscalYear — the annual read
+  // returns the NEWEST year, so an OLDER year-end (e.g. FY24Q4) won't match → not_filed (never a
+  // stale prior year). FY-match alone is insufficient (every quarter of FY26 reads fiscalYear
+  // "FY26"); both conditions are required to isolate the latest year-end result.
+  const fyOk = (fy: string | undefined): boolean =>
+    current.quarter === "Q4" && fy === current.fiscalYear;
+
+  switch (family) {
+    case "non_financial": {
+      const a = fundamentals.nonFinancial?.annual;
+      if (!a || !fyOk(a.fiscalYear)) return notFiled;
+      return {
+        annual: {
+          family,
+          fiscalYear: a.fiscalYear,
+          balanceSheet: [
+            crLine("totalAssets", "Total assets", a.totalAssets),
+            crLine("totalEquity", "Total equity", a.totalEquity),
+            crLine("currentAssets", "Current assets", a.currentAssets),
+            crLine("currentLiabilities", "Current liabilities", a.currentLiabilities),
+            crLine("inventories", "Inventories", a.inventories),
+            crLine("totalDebt", "Total debt", a.totalDebt),
+            crLine("cashAndCashEquivalents", "Cash & equivalents", a.cashAndCashEquivalents),
+          ],
+          cashFlow: cfLines(a.cashFromOperating, a.cashFromInvesting, a.cashFromFinancing),
+          perShare: [
+            rsLine("basicEps", "Basic EPS", a.basicEps),
+            rsLine("bookValuePerShare", "Book value / share", a.bookValuePerShare),
+          ],
+        },
+        annualState: "available",
+      };
+    }
+    case "banking": {
+      const a = fundamentals.banking?.annual;
+      if (!a || !fyOk(a.fiscalYear)) return notFiled;
+      return {
+        annual: {
+          family,
+          fiscalYear: a.fiscalYear,
+          balanceSheet: [
+            crLine("totalAssets", "Total assets", a.totalAssets),
+            crLine("netWorth", "Net worth", a.netWorth),
+            crLine("deposits", "Deposits", a.deposits),
+            crLine("advances", "Advances", a.advances),
+            crLine("investments", "Investments", a.investments),
+            crLine("borrowings", "Borrowings", a.borrowings),
+          ],
+          cashFlow: cfLines(a.cashFromOperating, a.cashFromInvesting, a.cashFromFinancing),
+          perShare: [
+            rsLine("basicEps", "Basic EPS", a.basicEps),
+            rsLine("bookValuePerShare", "Book value / share", a.bookValuePerShare),
+          ],
+        },
+        annualState: "available",
+      };
+    }
+    case "nbfc": {
+      const a = fundamentals.nbfc?.annual;
+      if (!a || !fyOk(a.fiscalYear)) return notFiled;
+      return {
+        annual: {
+          family,
+          fiscalYear: a.fiscalYear,
+          balanceSheet: [
+            crLine("totalAssets", "Total assets", a.totalAssets),
+            crLine("netWorth", "Net worth", a.netWorth),
+            crLine("loans", "Loans (AUM)", a.loans),
+            crLine("borrowings", "Borrowings", a.borrowings),
+            crLine("investments", "Investments", a.investments),
+          ],
+          cashFlow: cfLines(a.cashFromOperating, a.cashFromInvesting, a.cashFromFinancing),
+          perShare: [
+            rsLine("basicEps", "Basic EPS", a.basicEps),
+            rsLine("bookValuePerShare", "Book value / share", a.bookValuePerShare),
+          ],
+        },
+        annualState: "available",
+      };
+    }
+    case "life_insurance": {
+      const a = fundamentals.lifeInsurance?.annual;
+      if (!a || !fyOk(a.fiscalYear)) return notFiled;
+      return {
+        annual: {
+          family,
+          fiscalYear: a.fiscalYear,
+          balanceSheet: [
+            crLine("totalAssets", "Total assets", a.totalAssets),
+            crLine("netWorth", "Net worth", a.netWorth),
+            crLine("policyholdersFunds", "Policyholders' funds", a.policyholdersFunds),
+            crLine("investmentsPolicyholders", "Investments (policyholders)", a.investmentsPolicyholders),
+            crLine("investmentsShareholders", "Investments (shareholders)", a.investmentsShareholders),
+          ],
+          cashFlow: null, // insurer annuals carry no cash-flow statement (real absence — n/a)
+          perShare: [
+            rsLine("basicEps", "Basic EPS", a.basicEps),
+            rsLine("bookValuePerShare", "Book value / share", a.bookValuePerShare),
+          ],
+        },
+        annualState: "available",
+      };
+    }
+    case "general_insurance": {
+      const a = fundamentals.generalInsurance?.annual;
+      if (!a || !fyOk(a.fiscalYear)) return notFiled;
+      return {
+        annual: {
+          family,
+          fiscalYear: a.fiscalYear,
+          balanceSheet: [
+            crLine("totalAssets", "Total assets", a.totalAssets),
+            crLine("netWorth", "Net worth", a.netWorth),
+            crLine("investments", "Investments", a.investments),
+          ],
+          cashFlow: null, // insurer annuals carry no cash-flow statement (real absence — n/a)
+          perShare: [
+            rsLine("basicEps", "Basic EPS", a.basicEps),
+            rsLine("bookValuePerShare", "Book value / share", a.bookValuePerShare),
+          ],
+        },
+        annualState: "available",
+      };
+    }
+    default:
+      return notFiled;
+  }
+}
+
 // ── Entry ───────────────────────────────────────────────────────────────────────
 export async function buildResultDetail(
   symbol: string,
@@ -414,13 +603,19 @@ export async function buildResultDetail(
   const sameQuarterLastYear =
     fullSpine.find((q) => q.quarter === current.quarter && q.fiscalYear === prevFy) ?? null;
 
-  const [marketReaction, news, ai, corporateEvents, peerBundle] = await Promise.all([
-    buildReaction(stock.id, current.filingDate),
-    buildNews(stock.id, current.filingDate),
-    buildAi(stock.id),
-    buildCorpEvents(stock.id, current.filingDate),
-    buildPeers(stock.id, family, current.quarter, current.fiscalYear),
-  ]);
+  const [marketReaction, news, ai, corporateEvents, peerBundle, health, fundamentals] =
+    await Promise.all([
+      buildReaction(stock.id, current.filingDate),
+      buildNews(stock.id, current.filingDate),
+      buildAi(stock.id),
+      buildCorpEvents(stock.id, current.filingDate),
+      buildPeers(stock.id, family, current.quarter, current.fiscalYear),
+      buildHealthSnapshotView(stock.symbol),
+      buildFundamentalsView(stock.symbol),
+    ]);
+
+  const healthBlock = buildHealthBlock(health, current.periodKey);
+  const { annual, annualState } = buildAnnualBlock(family, fundamentals, current);
 
   return {
     symbol: stock.symbol,
@@ -439,5 +634,8 @@ export async function buildResultDetail(
     corporateEvents,
     peers: peerBundle.peers,
     peerGroupName: peerBundle.peerGroupName,
+    health: healthBlock,
+    annual,
+    annualState,
   };
 }

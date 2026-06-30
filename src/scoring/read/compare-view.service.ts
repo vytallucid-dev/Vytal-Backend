@@ -195,6 +195,9 @@ function familySpecific(f: FundamentalsView): FamilyMetric[] {
         { key: "tier1", label: "Tier 1", unit: "pct", value: a.tier1 },
         { key: "costToIncome", label: "Cost to Income", unit: "pct", value: a.costToIncome },
         { key: "creditDepositRatio", label: "Credit / Deposit Ratio", unit: "pct", value: a.creditDepositRatio },
+        { key: "cashFromOperating", label: "Cash from Operating", unit: "cr", value: a.cashFromOperating },
+        { key: "cashFromInvesting", label: "Cash from Investing", unit: "cr", value: a.cashFromInvesting },
+        { key: "cashFromFinancing", label: "Cash from Financing", unit: "cr", value: a.cashFromFinancing },
       ];
     }
     case "nbfc": {
@@ -209,6 +212,9 @@ function familySpecific(f: FundamentalsView): FamilyMetric[] {
         { key: "capitalToAssetsRatio", label: "Capital / Assets", unit: "pct", value: a.capitalToAssetsRatio },
         { key: "creditCostPct", label: "Credit Cost", unit: "pct", value: a.creditCostPct },
         { key: "costToIncomeRatio", label: "Cost to Income", unit: "pct", value: a.costToIncomeRatio },
+        { key: "cashFromOperating", label: "Cash from Operating", unit: "cr", value: a.cashFromOperating },
+        { key: "cashFromInvesting", label: "Cash from Investing", unit: "cr", value: a.cashFromInvesting },
+        { key: "cashFromFinancing", label: "Cash from Financing", unit: "cr", value: a.cashFromFinancing },
       ];
     }
     case "life_insurance": {
@@ -304,6 +310,7 @@ function buildComparee(symbol: string, data: EntityData): Comparee {
       fiiPct: holding?.fiiPct ?? null,
       diiPct: holding?.diiPct ?? null,
       pledgedPctOfPromoter: holding?.pledgedPctOfPromoter ?? null,
+      marketCap: price?.current.marketCap ?? null,
     },
     familySpecific: familySpecific(fundamentals),
     // Per-pillar metric depth — straight pass-through of the health view already in
@@ -319,6 +326,9 @@ function buildComparee(symbol: string, data: EntityData): Comparee {
     pondMask: verdict?.pondMask ?? null,
     trajectoryDelta: verdict?.trajectoryDelta ?? null,
     peerStanding,
+    // Recent insider/block activity — pass-through of the ownership view already in memory
+    // (ZERO new reads). Empty arrays today (feeds wired-but-dormant) → UI shows "awaiting feed".
+    events: ownership?.events ?? { insider: [], block: [] },
   };
 }
 

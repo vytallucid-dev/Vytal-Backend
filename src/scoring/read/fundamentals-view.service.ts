@@ -192,6 +192,13 @@ type QuarterRow = {
   profitYoy: unknown;
   revenueQoq: unknown;
   profitQoq: unknown;
+  // P&L waterfall
+  otherIncome: unknown;
+  expenses: unknown;
+  depreciation: unknown;
+  interest: unknown;
+  profitBeforeTax: unknown;
+  tax: unknown;
 };
 
 type AnnualRow = {
@@ -223,6 +230,25 @@ type AnnualRow = {
   inventories: unknown;
   totalDebt: unknown;
   cashAndCashEquivalents: unknown;
+  // P&L waterfall
+  otherIncome: unknown;
+  expenses: unknown;
+  employeeBenefitExpense: unknown;
+  financeCosts: unknown;
+  depreciation: unknown;
+  profitBeforeTax: unknown;
+  tax: unknown;
+  ebitda: unknown;
+  // BS sub-lines — equity & liabilities
+  equityShareCapital: unknown;
+  otherEquity: unknown;
+  borrowingsCurrent: unknown;
+  borrowingsNoncurrent: unknown;
+  // BS sub-lines — assets
+  propertyPlantAndEquipment: unknown;
+  capitalWorkInProgress: unknown;
+  noncurrentInvestments: unknown;
+  currentInvestments: unknown;
 };
 
 async function buildNonFinancial(
@@ -252,6 +278,12 @@ async function buildNonFinancial(
         profitYoy: true,
         revenueQoq: true,
         profitQoq: true,
+        otherIncome: true,
+        expenses: true,
+        depreciation: true,
+        interest: true,
+        profitBeforeTax: true,
+        tax: true,
       },
     }) as Promise<QuarterRow[]>,
     prisma.fundamental.findMany({
@@ -286,6 +318,22 @@ async function buildNonFinancial(
         inventories: true,
         totalDebt: true,
         cashAndCashEquivalents: true,
+        otherIncome: true,
+        expenses: true,
+        employeeBenefitExpense: true,
+        financeCosts: true,
+        depreciation: true,
+        profitBeforeTax: true,
+        tax: true,
+        ebitda: true,
+        equityShareCapital: true,
+        otherEquity: true,
+        borrowingsCurrent: true,
+        borrowingsNoncurrent: true,
+        propertyPlantAndEquipment: true,
+        capitalWorkInProgress: true,
+        noncurrentInvestments: true,
+        currentInvestments: true,
       },
     }) as Promise<AnnualRow[]>,
     prisma.stockPrice.findUnique({
@@ -313,16 +361,27 @@ async function buildNonFinancial(
     profitYoy: norm.pct(q.profitYoy),
     revenueQoq: norm.pct(q.revenueQoq),
     profitQoq: norm.pct(q.profitQoq),
+    otherIncome: zeroToNull(norm.money(q.otherIncome)),
+    expenses: zeroToNull(norm.money(q.expenses)),
+    depreciation: zeroToNull(norm.money(q.depreciation)),
+    interest: zeroToNull(norm.money(q.interest)),
+    profitBeforeTax: zeroToNull(norm.money(q.profitBeforeTax)),
+    tax: zeroToNull(norm.money(q.tax)),
   }));
 
   // ── ANNUAL CONTEXT (latest year) + derivations ───────────────────────────────
   const a = annualRows[0] ?? null;
   const annual: AnnualSnapshot | null = a ? buildAnnual(a, norm) : null;
 
+  // ── ANNUAL SERIES (multi-year) — the SAME per-year snapshot, oldest→newest (matching the
+  // quarterly spine's ordering) so the statement tables read uniformly. Reuses buildAnnual;
+  // annual (latest) == annualSeries[last]. Honest depth: only the years actually on file.
+  const annualOldestFirst = [...annualRows].reverse();
+  const annualSeries: AnnualSnapshot[] = annualOldestFirst.map((r) => buildAnnual(r, norm));
+
   // ── CASH CONVERSION (multi-year) — operating cash flow vs net profit per fiscal year.
   // Built from EVERY annual year on the basis (oldest→newest), kept only where CFO is on
   // file — the divergence is meaningless without it (honest-empty when no CFO anywhere).
-  const annualOldestFirst = [...annualRows].reverse();
   const cashConversion: CashConversionPoint[] = annualOldestFirst
     .map((r) => ({
       fiscalYear: r.fiscalYear,
@@ -354,7 +413,7 @@ async function buildNonFinancial(
       }
     : null;
 
-  const payload: NonFinancialPayload = { quarters, annual, yields, cashConversion, ratioHistory };
+  const payload: NonFinancialPayload = { quarters, annual, annualSeries, yields, cashConversion, ratioHistory };
 
   // ── honest data-state notes ───────────────────────────────────────────────────
   const years = annualRows.length;
@@ -434,6 +493,16 @@ function buildAnnual(a: AnnualRow, norm: ReturnType<typeof makeNormalizer>): Ann
     basicEps: norm.ratio(a.basicEps),
     bookValuePerShare: norm.ratio(a.bookValuePerShare),
 
+    revenue: norm.money(a.revenue),
+    otherIncome: norm.money(a.otherIncome),
+    expenses: norm.money(a.expenses),
+    employeeBenefitExpense: norm.money(a.employeeBenefitExpense),
+    financeCosts: norm.money(a.financeCosts),
+    depreciation: norm.money(a.depreciation),
+    profitBeforeTax: norm.money(a.profitBeforeTax),
+    tax: norm.money(a.tax),
+    ebitda: norm.money(a.ebitda),
+
     totalAssets,
     totalEquity,
     currentAssets,
@@ -441,6 +510,16 @@ function buildAnnual(a: AnnualRow, norm: ReturnType<typeof makeNormalizer>): Ann
     inventories,
     totalDebt: norm.money(a.totalDebt),
     cashAndCashEquivalents: norm.money(a.cashAndCashEquivalents),
+
+    equityShareCapital: norm.money(a.equityShareCapital),
+    otherEquity: norm.money(a.otherEquity),
+    borrowingsCurrent: norm.money(a.borrowingsCurrent),
+    borrowingsNoncurrent: norm.money(a.borrowingsNoncurrent),
+
+    propertyPlantAndEquipment: norm.money(a.propertyPlantAndEquipment),
+    capitalWorkInProgress: norm.money(a.capitalWorkInProgress),
+    noncurrentInvestments: norm.money(a.noncurrentInvestments),
+    currentInvestments: norm.money(a.currentInvestments),
 
     dupont:
       netMargin == null && assetTurnover == null && equityMultiplier == null
@@ -683,10 +762,8 @@ async function buildBanking(
     };
   });
 
-  // ── ANNUAL CONTEXT (latest year) ──────────────────────────────────────────────
-  const a = annualRows[0] ?? null;
-  const annual: BankingAnnual | null = a
-    ? {
+  // ── ANNUAL CONTEXT — one mapper, reused for the latest year + the full multi-year series ─
+  const mapAnnual = (a: BankingAnnualRow): BankingAnnual => ({
         fiscalYear: a.fiscalYear,
 
         // profitability & efficiency (fraction→%)
@@ -739,8 +816,10 @@ async function buildBanking(
         cashFromOperating: norm.money(a.cashFromOperating),
         cashFromInvesting: norm.money(a.cashFromInvesting),
         cashFromFinancing: norm.money(a.cashFromFinancing),
-      }
-    : null;
+  });
+  // oldest→newest series (matching the quarterly spine); annual (latest) == annualSeries[last].
+  const annualSeries: BankingAnnual[] = [...annualRows].reverse().map(mapAnnual);
+  const annual: BankingAnnual | null = annualRows[0] ? mapAnnual(annualRows[0]) : null;
 
   // ── RATIO HISTORY — headline annual ratios per year (oldest→newest) for the sparklines.
   // Per-stock gated downstream (≥ 3 real points). Audit-gated/thin banks simply show no spark.
@@ -753,7 +832,7 @@ async function buildBanking(
     creditCostPct: pct(r.creditCostPct),
   }));
 
-  const payload: BankingPayload = { quarters, annual, ratioHistory, casa };
+  const payload: BankingPayload = { quarters, annual, annualSeries, ratioHistory, casa };
 
   // ── honest data-state notes ───────────────────────────────────────────────────
   const years = annualRows.length;
@@ -816,6 +895,11 @@ type NbfcQuarterRow = {
 
 type NbfcAnnualRow = {
   fiscalYear: string;
+  // P&L (stored but previously omitted — bug fix)
+  revenue: unknown;
+  netProfit: unknown;
+  interestIncome: unknown;
+  feeAndCommissionIncome: unknown;
   // profitability & spread (fraction)
   roe: unknown;
   nim: unknown;
@@ -893,6 +977,10 @@ async function buildNbfc(
       orderBy: { reportDate: "desc" }, // newest first — [0] is the latest year
       select: {
         fiscalYear: true,
+        revenue: true,
+        netProfit: true,
+        interestIncome: true,
+        feeAndCommissionIncome: true,
         roe: true,
         nim: true,
         spread: true,
@@ -944,11 +1032,17 @@ async function buildNbfc(
     patQoq: passPct(q.patQoq),
   }));
 
-  // ── ANNUAL CONTEXT (latest year) — the balance sheet lives here ───────────────
-  const a = annualRows[0] ?? null;
-  const annual: NbfcAnnual | null = a
-    ? {
+  // ── ANNUAL CONTEXT — one mapper, reused for the latest year + the full multi-year series ─
+  // The balance sheet lives here (NBFC quarterlies are P&L-only).
+  const mapAnnual = (a: NbfcAnnualRow): NbfcAnnual => ({
         fiscalYear: a.fiscalYear,
+
+        // P&L — bug fix: netProfit/netMargin/interestIncome/feeAndCommissionIncome were
+        // stored on NbfcFundamental but not in the SELECT; NBFC annual net profit was missing.
+        netProfit: norm.money(a.netProfit),
+        netMargin: pctOf(norm.money(a.netProfit), norm.money(a.revenue)),
+        interestIncome: zeroToNull(norm.money(a.interestIncome)),
+        feeAndCommissionIncome: zeroToNull(norm.money(a.feeAndCommissionIncome)),
 
         // profitability & spread (fraction→%)
         roe: pct(a.roe),
@@ -989,10 +1083,12 @@ async function buildNbfc(
         cashFromOperating: norm.money(a.cashFromOperating),
         cashFromInvesting: norm.money(a.cashFromInvesting),
         cashFromFinancing: norm.money(a.cashFromFinancing),
-      }
-    : null;
+  });
+  // oldest→newest series (matching the quarterly spine); annual (latest) == annualSeries[last].
+  const annualSeries: NbfcAnnual[] = [...annualRows].reverse().map(mapAnnual);
+  const annual: NbfcAnnual | null = annualRows[0] ? mapAnnual(annualRows[0]) : null;
 
-  const payload: NbfcPayload = { quarters, annual };
+  const payload: NbfcPayload = { quarters, annual, annualSeries };
 
   // ── honest data-state notes ───────────────────────────────────────────────────
   const years = annualRows.length;
@@ -1007,7 +1103,7 @@ async function buildNbfc(
       notes.push(`Annual figures cover a single year on a ${basis} basis — year-over-year growth needs a prior year.`);
     }
   }
-  if (a && annual && annual.depositsLiabilities == null) {
+  if (annual && annual.depositsLiabilities == null) {
     notes.push("This is a non-deposit-taking NBFC — it funds its book through borrowings and debt securities, not customer deposits.");
   }
   if (basisAvailable.length === 2) {
@@ -1218,10 +1314,8 @@ async function buildLifeInsurance(
     patYoy: passPct(q.patYoy),
   }));
 
-  // ── ANNUAL CONTEXT (latest year) ──────────────────────────────────────────────
-  const a = annualRows[0] ?? null;
-  const annual: LifeInsuranceAnnual | null = a
-    ? {
+  // ── ANNUAL CONTEXT — one mapper, reused for the latest year + the full multi-year series ─
+  const mapAnnual = (a: LiAnnualRow): LifeInsuranceAnnual => ({
         fiscalYear: a.fiscalYear,
 
         // profitability & disclosed ratios
@@ -1259,8 +1353,10 @@ async function buildLifeInsurance(
         // per-share (₹)
         basicEps: norm.ratio(a.basicEps),
         bookValuePerShare: norm.ratio(a.bookValuePerShare),
-      }
-    : null;
+  });
+  // oldest→newest series (matching the quarterly spine); annual (latest) == annualSeries[last].
+  const annualSeries: LifeInsuranceAnnual[] = [...annualRows].reverse().map(mapAnnual);
+  const annual: LifeInsuranceAnnual | null = annualRows[0] ? mapAnnual(annualRows[0]) : null;
 
   // ── RATIO HISTORY — solvency (×) + 13-month persistency (guarded %) per year, oldest→
   // newest, for the sparklines. Reuses the same guard/band-test as the headline cards.
@@ -1271,7 +1367,7 @@ async function buildLifeInsurance(
     persistency13M: persistency(r.persistencyRatio13Month),
   }));
 
-  const payload: LifeInsurancePayload = { quarters, annual, ratioHistory };
+  const payload: LifeInsurancePayload = { quarters, annual, annualSeries, ratioHistory };
 
   // ── honest data-state notes ───────────────────────────────────────────────────
   const years = annualRows.length;
@@ -1466,10 +1562,8 @@ async function buildGeneralInsurance(
     patYoy: passPct(q.patYoy),
   }));
 
-  // ── ANNUAL CONTEXT (latest year) ──────────────────────────────────────────────
-  const a = annualRows[0] ?? null;
-  const annual: GeneralInsuranceAnnual | null = a
-    ? {
+  // ── ANNUAL CONTEXT — one mapper, reused for the latest year + the full multi-year series ─
+  const mapAnnual = (a: GiAnnualRow): GeneralInsuranceAnnual => ({
         fiscalYear: a.fiscalYear,
 
         // profitability & disclosed underwriting ratios
@@ -1499,10 +1593,12 @@ async function buildGeneralInsurance(
         // per-share (₹)
         basicEps: norm.ratio(a.basicEps),
         bookValuePerShare: norm.ratio(a.bookValuePerShare),
-      }
-    : null;
+  });
+  // oldest→newest series (matching the quarterly spine); annual (latest) == annualSeries[last].
+  const annualSeries: GeneralInsuranceAnnual[] = [...annualRows].reverse().map(mapAnnual);
+  const annual: GeneralInsuranceAnnual | null = annualRows[0] ? mapAnnual(annualRows[0]) : null;
 
-  const payload: GeneralInsurancePayload = { quarters, annual };
+  const payload: GeneralInsurancePayload = { quarters, annual, annualSeries };
 
   // ── honest data-state notes ───────────────────────────────────────────────────
   const years = annualRows.length;

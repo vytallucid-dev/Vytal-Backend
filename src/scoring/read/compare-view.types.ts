@@ -25,6 +25,7 @@
 // canonical (percent as percent, money as ₹ Cr, ratios/multiples as-is).
 
 import type { IndustryFamily } from "./fundamentals-view.types.js";
+import type { InsiderEvent, BlockEvent } from "./ownership-series.types.js";
 import type {
   LabelBand,
   PillarKey,
@@ -145,6 +146,10 @@ export interface Comparee {
     fiiPct: number | null;
     diiPct: number | null;
     pledgedPctOfPromoter: number | null;
+    /** Live market cap (₹ Cr) from the price view — scoring-INDEPENDENT, present for unscored
+     *  stocks too. Feeds the Overview's size/identity universal sections. null when no shares /
+     *  split-gated. */
+    marketCap: number | null;
   };
   familySpecific: FamilyMetric[];
   /** Per-pillar metric breakdown — passed through verbatim from this entity's health
@@ -176,6 +181,11 @@ export interface Comparee {
   /** Composite trajectory delta (universal 0–100 movement) — stated per entity. */
   trajectoryDelta: number | null;
   peerStanding: CompareePeerStanding | null;
+  /** Recent insider / block-deal activity — straight pass-through of this entity's ownership
+   *  view events (already fetched by fetchEntity; ZERO extra reads). Per entity, never row-paired.
+   *  These feeds are wired-but-dormant today (no live feed) → arrays are empty → the UI shows the
+   *  honest "awaiting feed" state; they light up when the feed lands. Newest-first, capped 25. */
+  events: { insider: InsiderEvent[]; block: BlockEvent[] };
 }
 
 /** THE top-level read-model returned by GET /api/compare?a=…&b=…. */

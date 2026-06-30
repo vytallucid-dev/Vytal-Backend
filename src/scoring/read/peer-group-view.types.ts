@@ -18,6 +18,7 @@ import type {
   TrajectoryMarker,
   DivergenceFlag,
   FlowCategoryState,
+  LensRead,
 } from "./health-view.types.js";
 import type { ScopeDispersion } from "./scope-aggregate.js";
 
@@ -73,6 +74,30 @@ export interface PeerGroupIdentity {
   asOfDate: string | null;
 }
 
+/** One metric's FIELD-VERDICT rollup across the pond (Piece 2). L1-share based: the
+ *  fraction of usable members (scored + bar present) clearing their own L1 acceptable
+ *  bar. HONEST-EMPTY: a verdict requires ≥5 usable members (DEFAULT_PEER_MIN_N) — under
+ *  that, verdict/shareClearingBar/magnitude are all null but the row is still emitted
+ *  (with usableMembers) so the UI can say "field not assessable, only N members". The
+ *  ≥0.70 PG_STRONG / <0.40 PG_WEAK cuts reuse PILLAR_STRONG_SHARE / PILLAR_WEAK_SHARE
+ *  from the lens-pattern catalog (NOT new literals). DESCRIPTIVE only — strong/weak/mixed
+ *  is a statement about the field as it IS, never a prediction. */
+export interface PeerGroupFieldLensVerdict {
+  metricKey: string;
+  pillar: "foundation" | "momentum";
+  /** Display label. Carries the metricKey (the same identifier the distributions expose);
+   *  the frontend resolves the human label via getMetricLabel(metricKey), exactly as it
+   *  already does for metricDistributions — the read layer has no display-label catalog. */
+  label: string;
+  verdict: "PG_STRONG" | "PG_WEAK" | "mixed" | null;
+  /** 0..1 share of usable members above their L1 bar. null when verdict is null. */
+  shareClearingBar: number | null;
+  /** Count of scored-AND-bar-present members on this metric (the verdict denominator). */
+  usableMembers: number;
+  /** 0..1 decisiveness = |shareClearingBar − 0.5| * 2, clamped. null when verdict null. */
+  magnitude: number | null;
+}
+
 export interface PeerGroupAggregate {
   scoredCount: number;
   medianComposite: number;
@@ -95,6 +120,10 @@ export interface PeerGroupAggregate {
   pillarMedians: Record<PillarKey, number>;
   redFlagMemberCount: number;
   descriptor: string;
+  /** Piece 2 — per-metric field-verdict rollup (foundation+momentum metrics the pond
+   *  scores), L1-share based with the ≥5-usable honest-empty rule. Additive; absent
+   *  (undefined) on legacy payloads. One row per scored foundation/momentum metric. */
+  fieldLensVerdicts?: PeerGroupFieldLensVerdict[];
 }
 
 export interface FiredFlag {
@@ -147,11 +176,34 @@ export interface PathologyCensusItem {
   displayState?: "active" | "pending_data_integration" | "dampened";
 }
 
+/** The named metric-level lens pattern (LM1–LM8) as carried PER MEMBER on the PG
+ *  payload. Same {id,label,tone,fieldVerdict} face the stock read's MetricLensPattern
+ *  exposes, MINUS the stock-detail-only standing reconciliation (role/standingContext/
+ *  verdict) — the PG cross-section has no per-stock rank context to reconcile against.
+ *  Verbatim from LM_CATALOG (no-forward-language already guarded). null for a degenerate
+ *  / no-tension cell or when a required lens is not_evaluable (honest-empty). */
+export interface PgMetricLensPattern {
+  id: string; // "LM1".."LM8"
+  label: string;
+  tone: string;
+  fieldVerdict: "PG_WEAK" | "PG_STRONG" | null;
+}
+
 export interface PeerMetricMemberPoint {
   symbol: string;
   rawValue: number;
   l1Band: MetricBand | null;
   scoreState: string;
+  // ── S2 three-lens projection (additive; absent on legacy/non-scored cells) ──────
+  /** The three lens reads for this member's metric — {state, evaluable, referenceValue,
+   *  reason}, derived from the lens columns already on the score row via the SAME
+   *  deriveLensTriplet primitive the stock read calls. The PG read carries no per-metric
+   *  history series, so l3 is a plain LensRead (no sparkline `series`). Present only on
+   *  scored metrics; undefined otherwise (honest-empty, not a fabricated read). */
+  lens?: { l1: LensRead; l2: LensRead; l3: LensRead };
+  /** The fired LM pattern (via the shared lensPattern primitive + LM_CATALOG), or null
+   *  when no pattern fires / a required lens is not_evaluable. undefined on non-scored. */
+  lensPattern?: PgMetricLensPattern | null;
 }
 
 /** One metric's cross-section: per-member raw values + the persisted peer μ/σ/N

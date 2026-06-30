@@ -33,9 +33,19 @@ import type {
   PathologyCensusItem,
   PathologyReach,
   PeerMetricDistribution,
+  PeerMetricMemberPoint,
+  PeerGroupFieldLensVerdict,
   PeerGroupMover,
   BandDistribution,
 } from "./peer-group-view.types.js";
+import type { LensRead } from "./health-view.types.js";
+// THE shared lens primitive (used verbatim by the stock read — NOT reimplemented here).
+import { deriveLensTriplet } from "../lens-patterns/lens-states.js";
+import { lensPattern as computeLensPattern } from "../lens-patterns/lens-pattern.js";
+import {
+  type MetricLensAtom,
+  DEFAULT_PEER_MIN_N,
+} from "../lens-patterns/types.js";
 
 // ── helpers (mirrors health-view conventions) ───────────────────────────────────
 const num = (d: unknown): number =>
@@ -44,6 +54,14 @@ const num = (d: unknown): number =>
     : Number(d);
 const ymd = (d: Date): string => d.toISOString().slice(0, 10);
 const round2 = (x: number): number => Math.round(x * 100) / 100;
+/** Nullable Decimal→number coercion (mirrors the stock read's numN): null/undefined
+ *  stays null, a Prisma Decimal or number becomes a JS number. */
+const numN = (d: unknown): number | null =>
+  d == null
+    ? null
+    : typeof (d as { toNumber?: () => number }).toNumber === "function"
+      ? (d as { toNumber: () => number }).toNumber()
+      : Number(d);
 
 const DIVERGENCE_NOTABLE = 15;
 const DIVERGENCE_WIDE = 25;
@@ -490,8 +508,9 @@ export async function buildPeerGroupHealthView(
       );
   const pathology = [...buildCensus(flagAcc, "red_flag"), ...buildCensus(patternAcc, "pattern")];
 
-  // ── metric distributions ──
-  const metricDistributions = buildMetricDistributions(fullSnaps, peerByMetric);
+  // ── metric distributions + per-member lens projection + field-verdict rollup ──
+  const { distributions: metricDistributions, fieldLensVerdicts } =
+    buildMetricDistributions(fullSnaps, peerByMetric);
 
   // ── movers (risers/slippers) where ≥2 periods exist ──
   const moverRows: PeerGroupMover[] = [];
@@ -568,6 +587,7 @@ export async function buildPeerGroupHealthView(
       pillarMedians: agg.pillarMedians,
       redFlagMemberCount: agg.redFlagMemberCount,
       descriptor: describeScope(scopeMembers, agg) ?? "",
+      fieldLensVerdicts,
     },
     members: memberViews,
     notAtCurrentPeriod: xs.lagging,
@@ -577,18 +597,118 @@ export async function buildPeerGroupHealthView(
   };
 }
 
+// ── Three-lens projection helpers (PG variant — reuse the stock read's pattern) ────
+
+/** One loaded metricScore row off the PG full cross-section. */
+type LoadedPgMetricScore = FullSnap["foundationPillar"]["metricScores"][number];
+
+/** Build the MetricLensAtom from a PG-loaded row + the metric's field μ/σ/N. IDENTICAL
+ *  field-for-field to the stock read's toAtom — same persisted columns, same peer source
+ *  shape (the PG's score_peer_stats μ/σ/N is exactly the cross-section L2 compares to). */
+function pgToAtom(
+  ms: LoadedPgMetricScore,
+  pillar: "foundation" | "momentum",
+  peer: { mean: number; stdDev: number; sampleN: number } | null,
+): MetricLensAtom {
+  return {
+    metricKey: ms.metricKey,
+    pillar,
+    scored: ms.scoreState === "scored",
+    rawValue: num(ms.rawValue),
+    l1Available: ms.l1Available,
+    l1Band: (ms.l1Band as MetricLensAtom["l1Band"]) ?? null,
+    l2Available: ms.l2Available,
+    l2Score: numN(ms.l2Score),
+    l2AnchorApplied: numN(ms.l2AnchorApplied),
+    peerMean: peer ? peer.mean : null,
+    peerStdDev: peer ? peer.stdDev : null,
+    peerSampleN: peer ? peer.sampleN : null,
+    l3Available: ms.l3Available,
+    l3Score: numN(ms.l3Score),
+    l3AnchorApplied: numN(ms.l3AnchorApplied),
+    l3Mean: numN(ms.l3Mean),
+    l3StdDev: numN(ms.l3StdDev),
+    l3WindowN: ms.l3WindowN ?? null,
+  };
+}
+
+/** Three LensRead views from a derived triplet + atom — mirrors the stock read's
+ *  toLensReads, minus the L3 sparkline series (the PG read carries no per-metric history). */
+function pgToLensReads(
+  atom: MetricLensAtom,
+  acceptableBar: number | null,
+): { l1: LensRead; l2: LensRead; l3: LensRead } {
+  const triplet = deriveLensTriplet(atom);
+  const l1: LensRead = {
+    state: triplet.l1,
+    evaluable: triplet.l1 !== "not_evaluable",
+    referenceValue: acceptableBar,
+    reason: triplet.l1 === "not_evaluable" ? (atom.l1Available ? "no_bar" : "l1_unavailable") : null,
+  };
+  const l2Reason = (): string | null => {
+    if (triplet.l2 !== "not_evaluable") return null;
+    if (!atom.l2Available) return "l2_unavailable";
+    if (atom.peerSampleN === null || atom.peerMean === null) return "no_peer_stats";
+    if (atom.peerSampleN < DEFAULT_PEER_MIN_N) return "insufficient_peers";
+    if (atom.peerStdDev === 0) return "std_dev_zero";
+    return "l2_unavailable";
+  };
+  const l2: LensRead = {
+    state: triplet.l2,
+    evaluable: triplet.l2 !== "not_evaluable",
+    referenceValue: atom.peerMean,
+    reason: l2Reason(),
+  };
+  const l3Reason = (): string | null => {
+    if (triplet.l3 !== "not_evaluable") return null;
+    if (!atom.l3Available) return "building_history";
+    if (atom.l3Mean === null || atom.l3StdDev === null) return "no_history_stats";
+    return "l3_unavailable";
+  };
+  const l3: LensRead = {
+    state: triplet.l3,
+    evaluable: triplet.l3 !== "not_evaluable",
+    referenceValue: atom.l3Mean,
+    reason: l3Reason(),
+  };
+  return { l1, l2, l3 };
+}
+
+/** Field-verdict from WHERE THE FIELD'S L1 BANDS CLUSTER (not from clearing the passing
+ *  bar). highShare = share of usable members in excellent|good; lowShare = share in
+ *  concerning|distress; acceptable is neutral. A plain MAJORITY (>0.50) of either side
+ *  decides; everything else (mostly-acceptable OR polarized/split) is mixed. 0.50 is a
+ *  bare majority, not a tunable constant. */
+function bandClusterVerdict(highShare: number, lowShare: number): "PG_STRONG" | "PG_WEAK" | "mixed" {
+  if (highShare > 0.5) return "PG_STRONG";
+  if (lowShare > 0.5) return "PG_WEAK";
+  return "mixed";
+}
+
 /** Group the foundation+momentum metric scores across all members by metricKey,
- *  attaching the data-derived bars (from any member's MetricBarSet) and the
- *  persisted peer μ/σ/N with the usable-guard. */
+ *  attaching the data-derived bars (from any member's MetricBarSet) and the persisted
+ *  peer μ/σ/N with the usable-guard. ALSO projects the per-member three-lens reads +
+ *  named LM pattern (Piece 1) and the per-metric field-verdict rollup (Piece 2), both
+ *  via the SAME shared lens primitive the stock read calls — nothing recomputed. */
 function buildMetricDistributions(
   fullSnaps: FullSnap[],
   peerByMetric: Map<string, { mean: number; stdDev: number; sampleN: number }>,
-): PeerMetricDistribution[] {
+): { distributions: PeerMetricDistribution[]; fieldLensVerdicts: PeerGroupFieldLensVerdict[] } {
   type Bucket = {
     pillar: "foundation" | "momentum";
     direction: string | null;
     bars: PeerMetricDistribution["bars"];
-    members: { symbol: string; rawValue: number; l1Band: MetricBand | null; scoreState: string }[];
+    /** Acceptable L1 cut (referenceValue for the per-member L1 read). */
+    acceptableBar: number | null;
+    members: PeerMetricMemberPoint[];
+    /** Rollup accumulators: usable = scored + L1 evaluable (bar present). clearing = above
+     *  the passing bar (supporting evidence only). bandHigh / bandLow = where the field's
+     *  L1 bands CLUSTER (excellent|good / concerning|distress) — the verdict driver;
+     *  acceptable is neutral (counts toward neither). */
+    usable: number;
+    clearing: number;
+    bandHigh: number;
+    bandLow: number;
   };
   const buckets = new Map<string, Bucket>();
 
@@ -598,7 +718,7 @@ function buildMetricDistributions(
     scores: FullSnap["foundationPillar"]["metricScores"],
   ) => {
     for (const ms of scores) {
-      const b = buckets.get(ms.metricKey) ?? {
+      const b: Bucket = buckets.get(ms.metricKey) ?? {
         pillar,
         direction: ms.metricBarSet?.direction ?? null,
         bars: ms.metricBarSet
@@ -610,9 +730,14 @@ function buildMetricDistributions(
               distress: num(ms.metricBarSet.distress),
             }
           : null,
+        acceptableBar: ms.metricBarSet ? num(ms.metricBarSet.acceptable) : null,
         members: [],
+        usable: 0,
+        clearing: 0,
+        bandHigh: 0,
+        bandLow: 0,
       };
-      // fill bars/direction if a later member carries a bar set the first lacked
+      // fill bars/direction/acceptableBar if a later member carries a bar set the first lacked
       if (!b.bars && ms.metricBarSet) {
         b.direction = ms.metricBarSet.direction;
         b.bars = {
@@ -622,13 +747,43 @@ function buildMetricDistributions(
           concerning: num(ms.metricBarSet.concerning),
           distress: num(ms.metricBarSet.distress),
         };
+        b.acceptableBar = num(ms.metricBarSet.acceptable);
       }
-      b.members.push({
+
+      // Per-member three-lens projection (Piece 1) — scored metrics only; non-scored
+      // cells stay raw+band+state (lens/lensPattern undefined = honest-empty).
+      const point: PeerMetricMemberPoint = {
         symbol,
         rawValue: num(ms.rawValue),
         l1Band: (ms.l1Band as MetricBand | null) ?? null,
         scoreState: ms.scoreState,
-      });
+      };
+      if (ms.scoreState === "scored") {
+        const peer = peerByMetric.get(ms.metricKey) ?? null;
+        const atom = pgToAtom(ms, pillar, peer);
+        const triplet = deriveLensTriplet(atom);
+        const acceptableBar = ms.metricBarSet ? num(ms.metricBarSet.acceptable) : null;
+        point.lens = pgToLensReads(atom, acceptableBar);
+        // LM pattern via the shared primitive. LM8's anti-mask opt is omitted (no
+        // pillar-subtotal context here) → the below·below·flat cell honest-empties to
+        // null rather than fabricating LM8, exactly as the primitive specifies.
+        const fired = computeLensPattern(triplet.l1, triplet.l2, triplet.l3);
+        point.lensPattern = fired
+          ? { id: fired.id, label: fired.label, tone: fired.tone, fieldVerdict: fired.fieldVerdict }
+          : null;
+        // Field-verdict rollup accumulation (Piece 2): a member is USABLE when its L1 is
+        // evaluable (scored + bar present). The verdict is driven by WHERE THE BANDS
+        // CLUSTER (bandHigh = excellent|good, bandLow = concerning|distress; acceptable is
+        // neutral). clearing (above the passing bar) is kept as supporting evidence only.
+        if (triplet.l1 !== "not_evaluable") {
+          b.usable += 1;
+          if (triplet.l1 === "above_bar") b.clearing += 1;
+          const band = atom.l1Band;
+          if (band === "excellent" || band === "good") b.bandHigh += 1;
+          else if (band === "concerning" || band === "distress") b.bandLow += 1;
+        }
+      }
+      b.members.push(point);
       buckets.set(ms.metricKey, b);
     }
   };
@@ -638,7 +793,7 @@ function buildMetricDistributions(
     ingest(s.symbol, "momentum", s.momentumPillar.metricScores);
   }
 
-  return [...buckets.entries()]
+  const distributions = [...buckets.entries()]
     .map(([metricKey, b]): PeerMetricDistribution => {
       const ps = peerByMetric.get(metricKey) ?? null;
       return {
@@ -653,4 +808,40 @@ function buildMetricDistributions(
       };
     })
     .sort((a, b) => a.pillar.localeCompare(b.pillar) || a.metricKey.localeCompare(b.metricKey));
+
+  // Piece 2 — one field-verdict row per scored foundation/momentum metric. HONEST-EMPTY:
+  // <5 usable members → verdict/share/magnitude null (row still emitted with usableMembers).
+  const fieldLensVerdicts = [...buckets.entries()]
+    .map(([metricKey, b]): PeerGroupFieldLensVerdict => {
+      if (b.usable < DEFAULT_PEER_MIN_N) {
+        return {
+          metricKey,
+          pillar: b.pillar,
+          label: metricKey,
+          verdict: null,
+          shareClearingBar: null,
+          usableMembers: b.usable,
+          magnitude: null,
+        };
+      }
+      // Verdict driver: where the bands cluster. magnitude = net lean |highShare−lowShare|.
+      const highShare = b.bandHigh / b.usable;
+      const lowShare = b.bandLow / b.usable;
+      const magnitude = Math.min(1, Math.max(0, Math.abs(highShare - lowShare)));
+      // shareClearingBar stays as SUPPORTING EVIDENCE (the "7 of 8 clear the bar" figure) —
+      // it no longer decides the verdict.
+      const shareClearingBar = b.clearing / b.usable;
+      return {
+        metricKey,
+        pillar: b.pillar,
+        label: metricKey,
+        verdict: bandClusterVerdict(highShare, lowShare),
+        shareClearingBar,
+        usableMembers: b.usable,
+        magnitude,
+      };
+    })
+    .sort((a, b) => a.pillar.localeCompare(b.pillar) || a.metricKey.localeCompare(b.metricKey));
+
+  return { distributions, fieldLensVerdicts };
 }

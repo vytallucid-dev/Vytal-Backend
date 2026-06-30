@@ -36,6 +36,14 @@ export interface QuarterPoint {
   profitYoy: number | null; // %
   revenueQoq: number | null; // %
   profitQoq: number | null; // %
+  // P&L waterfall — completes Revenue → Expenses → OPM → Other Income → Interest →
+  // Depreciation → PBT → Tax → Net Profit. All ₹ Cr; zeroToNull-guarded.
+  otherIncome: number | null; // ₹ Cr
+  expenses: number | null; // ₹ Cr (total expenses)
+  depreciation: number | null; // ₹ Cr
+  interest: number | null; // ₹ Cr (finance costs, stored as `interest` on QuarterlyResult)
+  profitBeforeTax: number | null; // ₹ Cr
+  tax: number | null; // ₹ Cr
 }
 
 /** The three DuPont legs (ROE = netMargin × assetTurnover × equityMultiplier). All
@@ -83,6 +91,17 @@ export interface AnnualSnapshot {
   basicEps: number | null;
   bookValuePerShare: number | null;
 
+  // P&L waterfall — stored annual lines completing the full waterfall
+  revenue: number | null; // ₹ Cr (top-line, for waterfall context)
+  otherIncome: number | null; // ₹ Cr
+  expenses: number | null; // ₹ Cr (total expenses)
+  employeeBenefitExpense: number | null; // ₹ Cr
+  financeCosts: number | null; // ₹ Cr
+  depreciation: number | null; // ₹ Cr
+  profitBeforeTax: number | null; // ₹ Cr
+  tax: number | null; // ₹ Cr
+  ebitda: number | null; // ₹ Cr (derived, stored on Fundamental)
+
   // balance-sheet snapshot — ₹ Cr
   totalAssets: number | null;
   totalEquity: number | null;
@@ -91,6 +110,18 @@ export interface AnnualSnapshot {
   inventories: number | null;
   totalDebt: number | null;
   cashAndCashEquivalents: number | null;
+
+  // BS sub-lines — equity & liabilities
+  equityShareCapital: number | null; // ₹ Cr
+  otherEquity: number | null; // ₹ Cr (reserves & surplus)
+  borrowingsCurrent: number | null; // ₹ Cr
+  borrowingsNoncurrent: number | null; // ₹ Cr
+
+  // BS sub-lines — assets
+  propertyPlantAndEquipment: number | null; // ₹ Cr
+  capitalWorkInProgress: number | null; // ₹ Cr
+  noncurrentInvestments: number | null; // ₹ Cr
+  currentInvestments: number | null; // ₹ Cr
 
   // dupont — all three legs
   dupont: DupontLegs | null;
@@ -126,7 +157,8 @@ export interface NfRatioHistoryPoint {
 
 export interface NonFinancialPayload {
   quarters: QuarterPoint[]; // oldest → newest
-  annual: AnnualSnapshot | null;
+  annual: AnnualSnapshot | null; // latest year (= annualSeries[last]); kept for existing readers
+  annualSeries: AnnualSnapshot[]; // oldest → newest; the multi-year statement history
   yields: YieldsBlock | null;
   cashConversion: CashConversionPoint[]; // oldest → newest; empty when no annual CFO on file
   ratioHistory: NfRatioHistoryPoint[]; // oldest → newest; for headline-ratio sparklines
@@ -283,7 +315,8 @@ export interface BankingCasa {
 
 export interface BankingPayload {
   quarters: BankingQuarter[]; // oldest → newest
-  annual: BankingAnnual | null;
+  annual: BankingAnnual | null; // latest year (= annualSeries[last]); kept for existing readers
+  annualSeries: BankingAnnual[]; // oldest → newest; the multi-year statement history
   ratioHistory: BkRatioHistoryPoint[]; // oldest → newest; sparkline-eligible, per-stock gated
   casa: BankingCasa; // current CASA (tiered, honest) + full quarter series for the history chart
 }
@@ -324,6 +357,12 @@ export interface NbfcQuarter {
  *  chosen basis. NO fcf/capex (NBFCs carry no meaningful FCF). */
 export interface NbfcAnnual {
   fiscalYear: string;
+
+  // P&L — bug fix: netProfit / netMargin were stored but not served (live fix)
+  netProfit: number | null; // ₹ Cr
+  netMargin: number | null; // % DERIVED (netProfit / revenue × 100)
+  interestIncome: number | null; // ₹ Cr
+  feeAndCommissionIncome: number | null; // ₹ Cr
 
   // profitability & spread (fraction→%)
   roe: number | null; // %
@@ -366,7 +405,8 @@ export interface NbfcAnnual {
 
 export interface NbfcPayload {
   quarters: NbfcQuarter[]; // oldest → newest
-  annual: NbfcAnnual | null;
+  annual: NbfcAnnual | null; // latest year (= annualSeries[last]); kept for existing readers
+  annualSeries: NbfcAnnual[]; // oldest → newest; the multi-year statement history
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -466,7 +506,8 @@ export interface LiRatioHistoryPoint {
 
 export interface LifeInsurancePayload {
   quarters: LifeInsuranceQuarter[]; // oldest → newest
-  annual: LifeInsuranceAnnual | null;
+  annual: LifeInsuranceAnnual | null; // latest year (= annualSeries[last]); kept for existing readers
+  annualSeries: LifeInsuranceAnnual[]; // oldest → newest; the multi-year statement history
   ratioHistory: LiRatioHistoryPoint[]; // oldest → newest; for solvency/persistency sparklines
 }
 
@@ -549,7 +590,8 @@ export interface GeneralInsuranceAnnual {
 
 export interface GeneralInsurancePayload {
   quarters: GeneralInsuranceQuarter[]; // oldest → newest
-  annual: GeneralInsuranceAnnual | null;
+  annual: GeneralInsuranceAnnual | null; // latest year (= annualSeries[last]); kept for existing readers
+  annualSeries: GeneralInsuranceAnnual[]; // oldest → newest; the multi-year statement history
 }
 
 /** THE top-level read-model returned by GET /api/stocks/:symbol/fundamentals. */

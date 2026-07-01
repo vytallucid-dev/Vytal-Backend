@@ -549,8 +549,12 @@ type BankingQuarterRow = {
   nii: unknown;
   otherIncome: unknown;
   totalIncome: unknown;
+  employeesCost: unknown;
+  operatingExpenses: unknown;
+  expenditureExclProvisions: unknown;
   ppop: unknown;
   provisions: unknown;
+  exceptionalItems: unknown;
   netProfit: unknown;
   netMargin: unknown; // ALREADY percent
   // asset quality (fraction)
@@ -585,6 +589,24 @@ type BankingAnnualRow = {
   interestEarned: unknown;
   interestOnAdvances: unknown;
   revenueOnInvestments: unknown;
+  interestOnRbiBalances: unknown;
+  otherInterest: unknown;
+  // full-year P&L waterfall (₹ Cr)
+  interestExpended: unknown;
+  nii: unknown;
+  otherIncome: unknown;
+  totalIncome: unknown;
+  employeesCost: unknown;
+  operatingExpenses: unknown;
+  otherOperatingExpenses: unknown;
+  expenditureExclProvisions: unknown;
+  ppop: unknown;
+  provisions: unknown;
+  exceptionalItems: unknown;
+  extraordinaryItems: unknown;
+  profitBeforeTax: unknown;
+  tax: unknown;
+  netProfit: unknown;
   // franchise (₹ Cr) + ratio (fraction)
   deposits: unknown;
   advances: unknown;
@@ -608,9 +630,15 @@ type BankingAnnualRow = {
   // balance sheet (₹ Cr)
   capital: unknown;
   reservesAndSurplus: unknown;
+  reserveExclRevaluation: unknown;
   netWorth: unknown;
-  totalAssets: unknown;
+  otherLiabilities: unknown;
+  capitalAndLiabilities: unknown;
   cashAndBalancesWithRbi: unknown;
+  balancesWithBanks: unknown;
+  fixedAssets: unknown;
+  otherAssets: unknown;
+  totalAssets: unknown;
   // per-share (₹)
   basicEps: unknown;
   bookValuePerShare: unknown;
@@ -618,6 +646,7 @@ type BankingAnnualRow = {
   cashFromOperating: unknown;
   cashFromInvesting: unknown;
   cashFromFinancing: unknown;
+  netCashFlow: unknown;
 };
 
 async function buildBanking(
@@ -648,8 +677,12 @@ async function buildBanking(
         nii: true,
         otherIncome: true,
         totalIncome: true,
+        employeesCost: true,
+        operatingExpenses: true,
+        expenditureExclProvisions: true,
         ppop: true,
         provisions: true,
+        exceptionalItems: true,
         netProfit: true,
         netMargin: true,
         gnpaPct: true,
@@ -681,6 +714,23 @@ async function buildBanking(
         interestEarned: true,
         interestOnAdvances: true,
         revenueOnInvestments: true,
+        interestOnRbiBalances: true,
+        otherInterest: true,
+        interestExpended: true,
+        nii: true,
+        otherIncome: true,
+        totalIncome: true,
+        employeesCost: true,
+        operatingExpenses: true,
+        otherOperatingExpenses: true,
+        expenditureExclProvisions: true,
+        ppop: true,
+        provisions: true,
+        exceptionalItems: true,
+        extraordinaryItems: true,
+        profitBeforeTax: true,
+        tax: true,
+        netProfit: true,
         deposits: true,
         advances: true,
         investments: true,
@@ -700,14 +750,21 @@ async function buildBanking(
         tier1Ratio: true,
         capital: true,
         reservesAndSurplus: true,
+        reserveExclRevaluation: true,
         netWorth: true,
+        otherLiabilities: true,
+        capitalAndLiabilities: true,
         totalAssets: true,
         cashAndBalancesWithRbi: true,
+        balancesWithBanks: true,
+        fixedAssets: true,
+        otherAssets: true,
         basicEps: true,
         bookValuePerShare: true,
         cashFromOperating: true,
         cashFromInvesting: true,
         cashFromFinancing: true,
+        netCashFlow: true,
       },
     }) as Promise<BankingAnnualRow[]>,
     // CASA (entered supplementary) — current tiered value + full quarter series, for display.
@@ -733,8 +790,12 @@ async function buildBanking(
       nii: zeroToNull(norm.money(q.nii)),
       otherIncome: zeroToNull(norm.money(q.otherIncome)),
       totalIncome: zeroToNull(norm.money(q.totalIncome)),
+      employeesCost: zeroToNull(norm.money(q.employeesCost)),
+      operatingExpenses: zeroToNull(norm.money(q.operatingExpenses)),
+      expenditureExclProvisions: zeroToNull(norm.money(q.expenditureExclProvisions)),
       ppop: zeroToNull(norm.money(q.ppop)),
       provisions: zeroToNull(norm.money(q.provisions)),
+      exceptionalItems: zeroToNull(norm.money(q.exceptionalItems)),
       netProfit: zeroToNull(norm.money(q.netProfit)),
       netMargin: zeroToNull(passPct(q.netMargin)), // ALREADY percent → NO ×100
 
@@ -777,6 +838,28 @@ async function buildBanking(
         interestEarned: norm.money(a.interestEarned),
         interestOnAdvances: norm.money(a.interestOnAdvances),
         revenueOnInvestments: norm.money(a.revenueOnInvestments),
+        interestOnRbiBalances: norm.money(a.interestOnRbiBalances),
+        otherInterest: norm.money(a.otherInterest),
+
+        // full-year P&L waterfall (₹ Cr) — Interest Expended → NII → Other Income → Total Income
+        // → opex breakdown → PPOP → Provisions → Exceptional/Extraordinary → PBT → Tax → Net Profit.
+        // netMargin is DERIVED (netProfit ÷ totalIncome — banking's revenue-equivalent), guarded.
+        interestExpended: norm.money(a.interestExpended),
+        nii: norm.money(a.nii),
+        otherIncome: norm.money(a.otherIncome),
+        totalIncome: norm.money(a.totalIncome),
+        employeesCost: norm.money(a.employeesCost),
+        operatingExpenses: norm.money(a.operatingExpenses),
+        otherOperatingExpenses: norm.money(a.otherOperatingExpenses),
+        expenditureExclProvisions: norm.money(a.expenditureExclProvisions),
+        ppop: norm.money(a.ppop),
+        provisions: norm.money(a.provisions),
+        exceptionalItems: norm.money(a.exceptionalItems),
+        extraordinaryItems: norm.money(a.extraordinaryItems),
+        profitBeforeTax: norm.money(a.profitBeforeTax),
+        tax: norm.money(a.tax),
+        netProfit: norm.money(a.netProfit),
+        netMargin: pctOf(norm.money(a.netProfit), norm.money(a.totalIncome)),
 
         // franchise (₹ Cr) + credit-deposit ratio (fraction→%)
         deposits: norm.money(a.deposits),
@@ -804,9 +887,15 @@ async function buildBanking(
         // balance-sheet snapshot (₹ Cr)
         capital: norm.money(a.capital),
         reservesAndSurplus: norm.money(a.reservesAndSurplus),
+        reserveExclRevaluation: norm.money(a.reserveExclRevaluation),
         netWorth: norm.money(a.netWorth),
-        totalAssets: norm.money(a.totalAssets),
+        otherLiabilities: norm.money(a.otherLiabilities),
+        capitalAndLiabilities: norm.money(a.capitalAndLiabilities),
         cashAndBalancesWithRbi: norm.money(a.cashAndBalancesWithRbi),
+        balancesWithBanks: norm.money(a.balancesWithBanks),
+        fixedAssets: norm.money(a.fixedAssets),
+        otherAssets: norm.money(a.otherAssets),
+        totalAssets: norm.money(a.totalAssets),
 
         // per-share (₹)
         basicEps: norm.ratio(a.basicEps),
@@ -816,6 +905,7 @@ async function buildBanking(
         cashFromOperating: norm.money(a.cashFromOperating),
         cashFromInvesting: norm.money(a.cashFromInvesting),
         cashFromFinancing: norm.money(a.cashFromFinancing),
+        netCashFlow: norm.money(a.netCashFlow),
   });
   // oldest→newest series (matching the quarterly spine); annual (latest) == annualSeries[last].
   const annualSeries: BankingAnnual[] = [...annualRows].reverse().map(mapAnnual);
@@ -881,9 +971,14 @@ type NbfcQuarterRow = {
   revenue: unknown;
   interestIncome: unknown;
   feeAndCommissionIncome: unknown;
+  otherIncome: unknown;
+  totalIncome: unknown;
   financeCosts: unknown;
   impairmentOnFinancialInstruments: unknown;
+  totalExpenses: unknown;
   nii: unknown;
+  profitBeforeTax: unknown;
+  tax: unknown;
   netProfit: unknown;
   netMargin: unknown; // ALREADY percent
   // growth (ALREADY percent)
@@ -895,11 +990,23 @@ type NbfcQuarterRow = {
 
 type NbfcAnnualRow = {
   fiscalYear: string;
-  // P&L (stored but previously omitted — bug fix)
+  // P&L waterfall
   revenue: unknown;
-  netProfit: unknown;
   interestIncome: unknown;
   feeAndCommissionIncome: unknown;
+  otherIncome: unknown;
+  totalIncome: unknown;
+  financeCosts: unknown;
+  feeAndCommissionExpense: unknown;
+  netGainOnFairValueChanges: unknown;
+  impairmentOnFinancialInstruments: unknown;
+  employeeBenefitExpense: unknown;
+  depreciation: unknown;
+  otherExpenses: unknown;
+  totalExpenses: unknown;
+  profitBeforeTax: unknown;
+  tax: unknown;
+  netProfit: unknown;
   // profitability & spread (fraction)
   roe: unknown;
   nim: unknown;
@@ -918,12 +1025,27 @@ type NbfcAnnualRow = {
   aumGrowthYoy: unknown;
   revenueGrowthYoy: unknown;
   patGrowthYoy: unknown;
-  // balance sheet (₹ Cr)
-  totalAssets: unknown;
+  // balance sheet — Ind-AS financial-statement layout (₹ Cr)
+  equityShareCapital: unknown;
+  otherEquity: unknown;
   totalEquity: unknown;
   netWorth: unknown;
-  investments: unknown;
   cashAndCashEquivalents: unknown;
+  bankBalanceOther: unknown;
+  investments: unknown;
+  receivablesTrade: unknown;
+  otherFinancialAssets: unknown;
+  financialAssets: unknown;
+  propertyPlantAndEquipment: unknown;
+  nonFinancialAssets: unknown;
+  totalAssets: unknown;
+  payables: unknown;
+  subordinatedLiabilities: unknown;
+  otherFinancialLiabilities: unknown;
+  financialLiabilities: unknown;
+  provisions: unknown;
+  nonFinancialLiabilities: unknown;
+  totalLiabilities: unknown;
   // per-share (₹)
   basicEps: unknown;
   bookValuePerShare: unknown;
@@ -931,6 +1053,7 @@ type NbfcAnnualRow = {
   cashFromOperating: unknown;
   cashFromInvesting: unknown;
   cashFromFinancing: unknown;
+  netCashFlow: unknown;
 };
 
 async function buildNbfc(
@@ -961,9 +1084,14 @@ async function buildNbfc(
         revenue: true,
         interestIncome: true,
         feeAndCommissionIncome: true,
+        otherIncome: true,
+        totalIncome: true,
         financeCosts: true,
         impairmentOnFinancialInstruments: true,
+        totalExpenses: true,
         nii: true,
+        profitBeforeTax: true,
+        tax: true,
         netProfit: true,
         netMargin: true,
         revenueYoy: true,
@@ -978,9 +1106,21 @@ async function buildNbfc(
       select: {
         fiscalYear: true,
         revenue: true,
-        netProfit: true,
         interestIncome: true,
         feeAndCommissionIncome: true,
+        otherIncome: true,
+        totalIncome: true,
+        financeCosts: true,
+        feeAndCommissionExpense: true,
+        netGainOnFairValueChanges: true,
+        impairmentOnFinancialInstruments: true,
+        employeeBenefitExpense: true,
+        depreciation: true,
+        otherExpenses: true,
+        totalExpenses: true,
+        profitBeforeTax: true,
+        tax: true,
+        netProfit: true,
         roe: true,
         nim: true,
         spread: true,
@@ -995,16 +1135,32 @@ async function buildNbfc(
         aumGrowthYoy: true,
         revenueGrowthYoy: true,
         patGrowthYoy: true,
-        totalAssets: true,
+        equityShareCapital: true,
+        otherEquity: true,
         totalEquity: true,
         netWorth: true,
-        investments: true,
         cashAndCashEquivalents: true,
+        bankBalanceOther: true,
+        investments: true,
+        receivablesTrade: true,
+        otherFinancialAssets: true,
+        financialAssets: true,
+        propertyPlantAndEquipment: true,
+        nonFinancialAssets: true,
+        totalAssets: true,
+        payables: true,
+        subordinatedLiabilities: true,
+        otherFinancialLiabilities: true,
+        financialLiabilities: true,
+        provisions: true,
+        nonFinancialLiabilities: true,
+        totalLiabilities: true,
         basicEps: true,
         bookValuePerShare: true,
         cashFromOperating: true,
         cashFromInvesting: true,
         cashFromFinancing: true,
+        netCashFlow: true,
       },
     }) as Promise<NbfcAnnualRow[]>,
   ]);
@@ -1019,9 +1175,14 @@ async function buildNbfc(
     revenue: zeroToNull(norm.money(q.revenue)),
     interestIncome: zeroToNull(norm.money(q.interestIncome)),
     feeAndCommissionIncome: zeroToNull(norm.money(q.feeAndCommissionIncome)),
+    otherIncome: zeroToNull(norm.money(q.otherIncome)),
+    totalIncome: zeroToNull(norm.money(q.totalIncome)),
     financeCosts: zeroToNull(norm.money(q.financeCosts)),
     impairmentOnFinancialInstruments: zeroToNull(norm.money(q.impairmentOnFinancialInstruments)),
+    totalExpenses: zeroToNull(norm.money(q.totalExpenses)),
     nii: zeroToNull(norm.money(q.nii)),
+    profitBeforeTax: zeroToNull(norm.money(q.profitBeforeTax)),
+    tax: zeroToNull(norm.money(q.tax)),
     netProfit: zeroToNull(norm.money(q.netProfit)),
     netMargin: zeroToNull(passPct(q.netMargin)), // ALREADY percent → NO ×100
 
@@ -1037,12 +1198,25 @@ async function buildNbfc(
   const mapAnnual = (a: NbfcAnnualRow): NbfcAnnual => ({
         fiscalYear: a.fiscalYear,
 
-        // P&L — bug fix: netProfit/netMargin/interestIncome/feeAndCommissionIncome were
-        // stored on NbfcFundamental but not in the SELECT; NBFC annual net profit was missing.
-        netProfit: norm.money(a.netProfit),
-        netMargin: pctOf(norm.money(a.netProfit), norm.money(a.revenue)),
+        // P&L waterfall (₹ Cr) — Interest Income + Fee/Commission + Other → Total Income →
+        // Finance Costs + Impairment + opex → Total Expenses → PBT → Tax → Net Profit → Net Margin%.
+        // netMargin is DERIVED (netProfit ÷ revenue). netGainOnFairValueChanges can be negative.
         interestIncome: zeroToNull(norm.money(a.interestIncome)),
         feeAndCommissionIncome: zeroToNull(norm.money(a.feeAndCommissionIncome)),
+        otherIncome: norm.money(a.otherIncome),
+        totalIncome: norm.money(a.totalIncome),
+        financeCosts: norm.money(a.financeCosts),
+        feeAndCommissionExpense: norm.money(a.feeAndCommissionExpense),
+        netGainOnFairValueChanges: norm.money(a.netGainOnFairValueChanges), // can be negative
+        impairmentOnFinancialInstruments: norm.money(a.impairmentOnFinancialInstruments),
+        employeeBenefitExpense: norm.money(a.employeeBenefitExpense),
+        depreciation: norm.money(a.depreciation),
+        otherExpenses: norm.money(a.otherExpenses),
+        totalExpenses: norm.money(a.totalExpenses),
+        profitBeforeTax: norm.money(a.profitBeforeTax),
+        tax: norm.money(a.tax),
+        netProfit: norm.money(a.netProfit),
+        netMargin: pctOf(norm.money(a.netProfit), norm.money(a.revenue)),
 
         // profitability & spread (fraction→%)
         roe: pct(a.roe),
@@ -1068,12 +1242,28 @@ async function buildNbfc(
         revenueGrowthYoy: passPct(a.revenueGrowthYoy),
         patGrowthYoy: passPct(a.patGrowthYoy),
 
-        // balance-sheet snapshot (₹ Cr)
-        totalAssets: norm.money(a.totalAssets),
+        // balance-sheet — Ind-AS financial-statement layout (₹ Cr). Equity → Financial Assets →
+        // Non-Financial Assets → Total Assets; Financial Liabilities → Non-Financial Liabilities.
+        equityShareCapital: norm.money(a.equityShareCapital),
+        otherEquity: norm.money(a.otherEquity),
         totalEquity: norm.money(a.totalEquity),
         netWorth: norm.money(a.netWorth),
-        investments: norm.money(a.investments),
         cashAndCashEquivalents: norm.money(a.cashAndCashEquivalents),
+        bankBalanceOther: norm.money(a.bankBalanceOther),
+        investments: norm.money(a.investments),
+        receivablesTrade: norm.money(a.receivablesTrade),
+        otherFinancialAssets: norm.money(a.otherFinancialAssets),
+        financialAssets: norm.money(a.financialAssets),
+        propertyPlantAndEquipment: norm.money(a.propertyPlantAndEquipment),
+        nonFinancialAssets: norm.money(a.nonFinancialAssets),
+        totalAssets: norm.money(a.totalAssets),
+        payables: norm.money(a.payables),
+        subordinatedLiabilities: norm.money(a.subordinatedLiabilities),
+        otherFinancialLiabilities: norm.money(a.otherFinancialLiabilities),
+        financialLiabilities: norm.money(a.financialLiabilities),
+        provisions: norm.money(a.provisions),
+        nonFinancialLiabilities: norm.money(a.nonFinancialLiabilities),
+        totalLiabilities: norm.money(a.totalLiabilities),
 
         // per-share (₹)
         basicEps: norm.ratio(a.basicEps),
@@ -1083,6 +1273,7 @@ async function buildNbfc(
         cashFromOperating: norm.money(a.cashFromOperating),
         cashFromInvesting: norm.money(a.cashFromInvesting),
         cashFromFinancing: norm.money(a.cashFromFinancing),
+        netCashFlow: norm.money(a.netCashFlow),
   });
   // oldest→newest series (matching the quarterly spine); annual (latest) == annualSeries[last].
   const annualSeries: NbfcAnnual[] = [...annualRows].reverse().map(mapAnnual);
@@ -1172,16 +1363,50 @@ type LiAnnualRow = {
   incomeFirstYearPremium: unknown;
   incomeRenewalPremium: unknown;
   incomeSinglePremium: unknown;
+  // full annual P&L — Revenue Account (Policyholders) → Shareholders' Account (₹ Cr)
+  grossPremiumIncome: unknown;
+  netPremiumIncome: unknown;
+  reinsuranceCeded: unknown;
+  incomeFromInvestments: unknown; // can be negative
+  otherIncomePolicyholders: unknown;
+  totalRevenuePolicyholders: unknown;
+  commissionFirstYearPremium: unknown;
+  commissionRenewalPremium: unknown;
+  commissionSinglePremium: unknown;
+  totalCommission: unknown;
+  employeesRemuneration: unknown;
+  administrationExpenses: unknown;
+  totalOperatingExpenses: unknown;
+  benefitsPaidNet: unknown;
+  changeInValuationOfLiabilities: unknown; // can be negative
+  surplusFromRevenueAccount: unknown;
+  transferFromPolicyholders: unknown;
+  incomeFromInvestmentsShareholders: unknown; // can be negative
+  shareholdersExpenses: unknown;
+  profitBeforeTax: unknown;
+  tax: unknown;
+  netProfit: unknown;
   // growth (ALREADY percent)
   premiumGrowthYoy: unknown;
   patGrowthYoy: unknown;
-  // balance sheet (₹ Cr)
-  policyholdersFunds: unknown;
-  assetsHeldToCoverLinkedLiabilities: unknown;
-  investmentsShareholders: unknown;
-  investmentsPolicyholders: unknown;
+  // balance sheet — Sources / Application of Funds (₹ Cr)
   shareCapital: unknown;
   reservesAndSurplus: unknown;
+  fairValueChangeAccount: unknown; // can be negative
+  borrowings: unknown;
+  policyholdersFunds: unknown;
+  fundsForFutureAppropriations: unknown;
+  totalSourcesOfFunds: unknown;
+  investmentsShareholders: unknown;
+  investmentsPolicyholders: unknown;
+  assetsHeldToCoverLinkedLiabilities: unknown;
+  loansApplicationOfFunds: unknown;
+  fixedAssets: unknown;
+  cashAndBankBalances: unknown;
+  advancesAndOtherAssets: unknown;
+  currentLiabilities: unknown;
+  provisions: unknown;
+  totalApplicationOfFunds: unknown;
   netWorth: unknown;
   totalAssets: unknown;
   // per-share (₹)
@@ -1266,14 +1491,47 @@ async function buildLifeInsurance(
         incomeFirstYearPremium: true,
         incomeRenewalPremium: true,
         incomeSinglePremium: true,
+        grossPremiumIncome: true,
+        netPremiumIncome: true,
+        reinsuranceCeded: true,
+        incomeFromInvestments: true,
+        otherIncomePolicyholders: true,
+        totalRevenuePolicyholders: true,
+        commissionFirstYearPremium: true,
+        commissionRenewalPremium: true,
+        commissionSinglePremium: true,
+        totalCommission: true,
+        employeesRemuneration: true,
+        administrationExpenses: true,
+        totalOperatingExpenses: true,
+        benefitsPaidNet: true,
+        changeInValuationOfLiabilities: true,
+        surplusFromRevenueAccount: true,
+        transferFromPolicyholders: true,
+        incomeFromInvestmentsShareholders: true,
+        shareholdersExpenses: true,
+        profitBeforeTax: true,
+        tax: true,
+        netProfit: true,
         premiumGrowthYoy: true,
         patGrowthYoy: true,
-        policyholdersFunds: true,
-        assetsHeldToCoverLinkedLiabilities: true,
-        investmentsShareholders: true,
-        investmentsPolicyholders: true,
         shareCapital: true,
         reservesAndSurplus: true,
+        fairValueChangeAccount: true,
+        borrowings: true,
+        policyholdersFunds: true,
+        fundsForFutureAppropriations: true,
+        totalSourcesOfFunds: true,
+        investmentsShareholders: true,
+        investmentsPolicyholders: true,
+        assetsHeldToCoverLinkedLiabilities: true,
+        loansApplicationOfFunds: true,
+        fixedAssets: true,
+        cashAndBankBalances: true,
+        advancesAndOtherAssets: true,
+        currentLiabilities: true,
+        provisions: true,
+        totalApplicationOfFunds: true,
         netWorth: true,
         totalAssets: true,
         basicEps: true,
@@ -1336,17 +1594,55 @@ async function buildLifeInsurance(
         incomeRenewalPremium: norm.money(a.incomeRenewalPremium),
         incomeSinglePremium: norm.money(a.incomeSinglePremium),
 
+        // full annual P&L — Revenue Account (Policyholders) → Surplus → Shareholders' Account (₹ Cr).
+        // incomeFromInvestments(-Shareholders) / changeInValuationOfLiabilities can be negative —
+        // preserved (not zero-stripped). reinsuranceCeded is a deduction, stored positive.
+        grossPremiumIncome: norm.money(a.grossPremiumIncome),
+        netPremiumIncome: norm.money(a.netPremiumIncome),
+        reinsuranceCeded: norm.money(a.reinsuranceCeded),
+        incomeFromInvestments: norm.money(a.incomeFromInvestments), // can be negative
+        otherIncomePolicyholders: norm.money(a.otherIncomePolicyholders),
+        totalRevenuePolicyholders: norm.money(a.totalRevenuePolicyholders),
+        commissionFirstYearPremium: norm.money(a.commissionFirstYearPremium),
+        commissionRenewalPremium: norm.money(a.commissionRenewalPremium),
+        commissionSinglePremium: norm.money(a.commissionSinglePremium),
+        totalCommission: norm.money(a.totalCommission),
+        employeesRemuneration: norm.money(a.employeesRemuneration),
+        administrationExpenses: norm.money(a.administrationExpenses),
+        totalOperatingExpenses: norm.money(a.totalOperatingExpenses),
+        benefitsPaidNet: norm.money(a.benefitsPaidNet),
+        changeInValuationOfLiabilities: norm.money(a.changeInValuationOfLiabilities), // can be negative
+        surplusFromRevenueAccount: norm.money(a.surplusFromRevenueAccount),
+        transferFromPolicyholders: norm.money(a.transferFromPolicyholders),
+        incomeFromInvestmentsShareholders: norm.money(a.incomeFromInvestmentsShareholders), // can be negative
+        shareholdersExpenses: norm.money(a.shareholdersExpenses),
+        profitBeforeTax: norm.money(a.profitBeforeTax),
+        tax: norm.money(a.tax),
+        netProfit: norm.money(a.netProfit),
+
         // growth (ALREADY percent → NO ×100)
         premiumGrowthYoy: passPct(a.premiumGrowthYoy),
         patGrowthYoy: passPct(a.patGrowthYoy),
 
-        // balance sheet (₹ Cr) — policyholders' fund dominates
-        policyholdersFunds: norm.money(a.policyholdersFunds),
-        assetsHeldToCoverLinkedLiabilities: norm.money(a.assetsHeldToCoverLinkedLiabilities),
-        investmentsShareholders: norm.money(a.investmentsShareholders),
-        investmentsPolicyholders: norm.money(a.investmentsPolicyholders),
+        // balance sheet — Sources / Application of Funds (₹ Cr) — policyholders' fund dominates.
+        // fairValueChangeAccount can be negative — preserved.
         shareCapital: norm.money(a.shareCapital),
         reservesAndSurplus: norm.money(a.reservesAndSurplus),
+        fairValueChangeAccount: norm.money(a.fairValueChangeAccount), // can be negative
+        borrowings: norm.money(a.borrowings),
+        policyholdersFunds: norm.money(a.policyholdersFunds),
+        fundsForFutureAppropriations: norm.money(a.fundsForFutureAppropriations),
+        totalSourcesOfFunds: norm.money(a.totalSourcesOfFunds),
+        investmentsShareholders: norm.money(a.investmentsShareholders),
+        investmentsPolicyholders: norm.money(a.investmentsPolicyholders),
+        assetsHeldToCoverLinkedLiabilities: norm.money(a.assetsHeldToCoverLinkedLiabilities),
+        loansApplicationOfFunds: norm.money(a.loansApplicationOfFunds),
+        fixedAssets: norm.money(a.fixedAssets),
+        cashAndBankBalances: norm.money(a.cashAndBankBalances),
+        advancesAndOtherAssets: norm.money(a.advancesAndOtherAssets),
+        currentLiabilities: norm.money(a.currentLiabilities),
+        provisions: norm.money(a.provisions),
+        totalApplicationOfFunds: norm.money(a.totalApplicationOfFunds),
         netWorth: norm.money(a.netWorth),
         totalAssets: norm.money(a.totalAssets),
 
@@ -1446,14 +1742,47 @@ type GiAnnualRow = {
   // growth (ALREADY percent)
   gpwGrowthYoy: unknown;
   patGrowthYoy: unknown;
+  // full annual P&L — Revenue Account (underwriting) → Shareholders' Account (₹ Cr)
+  grossPremiumsWritten: unknown;
+  netPremiumWritten: unknown;
+  netPremium: unknown;
+  premiumEarned: unknown;
+  reinsuranceCeded: unknown;
+  reinsuranceAccepted: unknown;
+  changeInUnexpiredRiskReserve: unknown; // can be negative
+  incomeFromInvestments: unknown; // can be negative
+  otherIncome: unknown;
+  totalRevenue: unknown;
+  claimsPaid: unknown;
+  changeInOutstandingClaims: unknown; // can be negative
+  reinsuranceRecoveriesOnClaims: unknown;
+  incurredClaims: unknown;
+  commissionPaid: unknown;
+  commissionReceivedFromReinsurance: unknown;
+  netCommission: unknown;
+  totalOperatingExpensesRelatedToInsurance: unknown;
+  underwritingProfitOrLoss: unknown; // can be negative
+  profitBeforeTax: unknown;
+  tax: unknown;
+  netProfit: unknown;
   // reserve adequacy (₹ Cr)
   premiumDeficiency: unknown;
-  // balance sheet (₹ Cr)
-  investments: unknown;
-  totalAssets: unknown;
+  // balance sheet — Sources / Application of Funds (₹ Cr)
   shareCapital: unknown;
   reservesAndSurplus: unknown;
+  fairValueChangeAccount: unknown; // can be negative
+  borrowings: unknown;
+  totalSourcesOfFunds: unknown;
+  investments: unknown;
+  loansApplicationOfFunds: unknown;
+  fixedAssets: unknown;
+  cashAndBankBalances: unknown;
+  advancesAndOtherAssets: unknown;
+  currentLiabilities: unknown;
+  provisions: unknown;
+  totalApplicationOfFunds: unknown;
   netWorth: unknown;
+  totalAssets: unknown;
   // per-share (₹)
   basicEps: unknown;
   bookValuePerShare: unknown;
@@ -1518,12 +1847,44 @@ async function buildGeneralInsurance(
         netUnderwritingMargin: true,
         gpwGrowthYoy: true,
         patGrowthYoy: true,
+        grossPremiumsWritten: true,
+        netPremiumWritten: true,
+        netPremium: true,
+        premiumEarned: true,
+        reinsuranceCeded: true,
+        reinsuranceAccepted: true,
+        changeInUnexpiredRiskReserve: true,
+        incomeFromInvestments: true,
+        otherIncome: true,
+        totalRevenue: true,
+        claimsPaid: true,
+        changeInOutstandingClaims: true,
+        reinsuranceRecoveriesOnClaims: true,
+        incurredClaims: true,
+        commissionPaid: true,
+        commissionReceivedFromReinsurance: true,
+        netCommission: true,
+        totalOperatingExpensesRelatedToInsurance: true,
+        underwritingProfitOrLoss: true,
+        profitBeforeTax: true,
+        tax: true,
+        netProfit: true,
         premiumDeficiency: true,
-        investments: true,
-        totalAssets: true,
         shareCapital: true,
         reservesAndSurplus: true,
+        fairValueChangeAccount: true,
+        borrowings: true,
+        totalSourcesOfFunds: true,
+        investments: true,
+        loansApplicationOfFunds: true,
+        fixedAssets: true,
+        cashAndBankBalances: true,
+        advancesAndOtherAssets: true,
+        currentLiabilities: true,
+        provisions: true,
+        totalApplicationOfFunds: true,
         netWorth: true,
+        totalAssets: true,
         basicEps: true,
         bookValuePerShare: true,
       },
@@ -1579,16 +1940,53 @@ async function buildGeneralInsurance(
         gpwGrowthYoy: passPct(a.gpwGrowthYoy),
         patGrowthYoy: passPct(a.patGrowthYoy),
 
+        // full annual P&L — Revenue Account (underwriting) → Shareholders' Account (₹ Cr).
+        // changeInUnexpiredRiskReserve / changeInOutstandingClaims / incomeFromInvestments /
+        // underwritingProfitOrLoss can be negative — preserved. reinsuranceCeded stored positive.
+        grossPremiumsWritten: norm.money(a.grossPremiumsWritten),
+        netPremiumWritten: norm.money(a.netPremiumWritten),
+        netPremium: norm.money(a.netPremium),
+        premiumEarned: norm.money(a.premiumEarned),
+        reinsuranceCeded: norm.money(a.reinsuranceCeded),
+        reinsuranceAccepted: norm.money(a.reinsuranceAccepted),
+        changeInUnexpiredRiskReserve: norm.money(a.changeInUnexpiredRiskReserve), // can be negative
+        incomeFromInvestments: norm.money(a.incomeFromInvestments), // can be negative
+        otherIncome: norm.money(a.otherIncome),
+        totalRevenue: norm.money(a.totalRevenue),
+        claimsPaid: norm.money(a.claimsPaid),
+        changeInOutstandingClaims: norm.money(a.changeInOutstandingClaims), // can be negative
+        reinsuranceRecoveriesOnClaims: norm.money(a.reinsuranceRecoveriesOnClaims),
+        incurredClaims: norm.money(a.incurredClaims),
+        commissionPaid: norm.money(a.commissionPaid),
+        commissionReceivedFromReinsurance: norm.money(a.commissionReceivedFromReinsurance),
+        netCommission: norm.money(a.netCommission),
+        totalOperatingExpensesRelatedToInsurance: norm.money(a.totalOperatingExpensesRelatedToInsurance),
+        underwritingProfitOrLoss: norm.money(a.underwritingProfitOrLoss), // can be negative
+        profitBeforeTax: norm.money(a.profitBeforeTax),
+        tax: norm.money(a.tax),
+        netProfit: norm.money(a.netProfit),
+
         // reserve adequacy (₹ Cr) — 0 is a real value (no deficiency reserve required), NOT
         // zeroToNull'd; a positive figure flags pricing that doesn't cover expected claims.
         premiumDeficiency: norm.money(a.premiumDeficiency),
 
-        // balance sheet (₹ Cr) — investments is its OWN line; do NOT reconcile to totalAssets
-        investments: norm.money(a.investments),
-        totalAssets: norm.money(a.totalAssets),
+        // balance sheet — Sources / Application of Funds (₹ Cr). investments is its OWN line;
+        // do NOT reconcile to totalAssets (GI convention). fairValueChangeAccount can be negative.
         shareCapital: norm.money(a.shareCapital),
         reservesAndSurplus: norm.money(a.reservesAndSurplus),
+        fairValueChangeAccount: norm.money(a.fairValueChangeAccount), // can be negative
+        borrowings: norm.money(a.borrowings),
+        totalSourcesOfFunds: norm.money(a.totalSourcesOfFunds),
+        investments: norm.money(a.investments),
+        loansApplicationOfFunds: norm.money(a.loansApplicationOfFunds),
+        fixedAssets: norm.money(a.fixedAssets),
+        cashAndBankBalances: norm.money(a.cashAndBankBalances),
+        advancesAndOtherAssets: norm.money(a.advancesAndOtherAssets),
+        currentLiabilities: norm.money(a.currentLiabilities),
+        provisions: norm.money(a.provisions),
+        totalApplicationOfFunds: norm.money(a.totalApplicationOfFunds),
         netWorth: norm.money(a.netWorth),
+        totalAssets: norm.money(a.totalAssets),
 
         // per-share (₹)
         basicEps: norm.ratio(a.basicEps),

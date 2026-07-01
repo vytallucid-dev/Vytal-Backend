@@ -24,7 +24,19 @@
 // metric with no backing data is `null` with the key PRESENT; every value is already
 // canonical (percent as percent, money as ₹ Cr, ratios/multiples as-is).
 
-import type { IndustryFamily } from "./fundamentals-view.types.js";
+import type {
+  IndustryFamily,
+  QuarterPoint,
+  AnnualSnapshot,
+  BankingQuarter,
+  BankingAnnual,
+  NbfcQuarter,
+  NbfcAnnual,
+  LifeInsuranceQuarter,
+  LifeInsuranceAnnual,
+  GeneralInsuranceQuarter,
+  GeneralInsuranceAnnual,
+} from "./fundamentals-view.types.js";
 import type { InsiderEvent, BlockEvent } from "./ownership-series.types.js";
 import type {
   LabelBand,
@@ -76,6 +88,20 @@ export interface FamilyMetric {
   unit: MetricUnit;
   value: number | null;
 }
+
+/** THE FULL STATEMENT SERIES for one entity — the SAME family-shaped `quarters[]` +
+ *  `annualSeries[]` the per-stock Fundamentals tab already renders, forwarded verbatim
+ *  (ZERO re-mapping; ZERO new reads — the fundamentals view is already fetched). Both are
+ *  oldest→newest; annual (latest) == annualSeries[last]. A discriminated union on `family`
+ *  so the frontend picks the right per-family line-defs. Insurers carry NO cash flow (their
+ *  annual shape has no CFO/CFI/CFF) — honest absence, not a gap. Present on both same- and
+ *  cross-family payloads; the frontend decides the layout off `familyContext.comparableDirectly`. */
+export type CompareeStatements =
+  | { family: "non_financial"; quarters: QuarterPoint[]; annualSeries: AnnualSnapshot[] }
+  | { family: "banking"; quarters: BankingQuarter[]; annualSeries: BankingAnnual[] }
+  | { family: "nbfc"; quarters: NbfcQuarter[]; annualSeries: NbfcAnnual[] }
+  | { family: "life_insurance"; quarters: LifeInsuranceQuarter[]; annualSeries: LifeInsuranceAnnual[] }
+  | { family: "general_insurance"; quarters: GeneralInsuranceQuarter[]; annualSeries: GeneralInsuranceAnnual[] };
 
 /** Each entity's within-PG standing. NEVER compared across entities unless they sit
  *  in the SAME peer group (see `peerStandingComparable`) — ranks are relative to
@@ -138,6 +164,14 @@ export interface Comparee {
     patGrowthYoy: number | null;
     totalAssets: number | null;
     netWorth: number | null;
+    // BS + CF comparable metrics — cross-family-meaningful (present AND same meaning in every
+    // family). totalDebt = borrowings; insurers have NO cash flow → their CFO/CFI/CFF stay null
+    // (honest-empty, dashed — not a gap). These enrich the cross-family universal table beyond P&L.
+    totalDebt: number | null;
+    cashAndCashEquivalents: number | null;
+    cashFromOperating: number | null;
+    cashFromInvesting: number | null;
+    cashFromFinancing: number | null;
     return1y: number | null;
     return3y: number | null;
     pctFrom52WHigh: number | null;
@@ -152,6 +186,12 @@ export interface Comparee {
     marketCap: number | null;
   };
   familySpecific: FamilyMetric[];
+  /** THE FULL STATEMENT SERIES — this entity's family-shaped `quarters[]` + `annualSeries[]`,
+   *  forwarded verbatim from the per-stock fundamentals view (ZERO re-mapping; ZERO extra reads).
+   *  Drives the same-family side-by-side statements AND the cross-family per-stock statement
+   *  blocks. Insurers carry no CF (honest absence). null only when the fundamentals view has no
+   *  payload for the family (defensive — never in practice). */
+  statements: CompareeStatements | null;
   /** Per-pillar metric breakdown — passed through verbatim from this entity's health
    *  view (already fetched by fetchEntity; ZERO extra reads). Foundation/Momentum carry
    *  `metrics[]`, Market carries `marketSubs[]`, Ownership carries `ownership`. Per-pillar

@@ -214,6 +214,75 @@ export async function getSnapshotSeries(
 }
 
 /**
+ * The DAILY trajectory series: one point per CALENDAR DAY (asOfDate) over a trailing
+ * window of `windowDays`, OLDEST→NEWEST. Unlike getSnapshotSeries (which collapses the
+ * whole supersede chain to ONE point per quarter), this surfaces the intra-quarter
+ * version history — the daily-changing Market/Ownership recomputes that are physically
+ * stored as successive versions of the same quarterly-keyed snapshot.
+ *
+ * REDUCTION: many versions can share one asOfDate (a backfill or several same-day
+ * event rescores). For each asOfDate we keep the MAX(version) row — the in-force value
+ * for that day. So the result is exactly one honest point per day a rescore landed;
+ * non-trading days simply have no point (natural gaps, never fabricated).
+ *
+ * WINDOW: bounded by [latest asOfDate − windowDays, latest asOfDate]. If retention holds
+ * fewer daily points than the window, we return what exists — honestly partial, never padded.
+ * Foundation/Momentum subtotals carry forward unchanged across these daily points (their
+ * PillarScore rows are input-fingerprint deduped), so they render FLAT between quarters —
+ * which is correct, not interpolated.
+ */
+export async function getDailySnapshotSeries(
+  stockId: string,
+  windowDays = 60,
+  snapshotType: SnapshotType = "quarterly",
+): Promise<SeriesPoint[]> {
+  const rows = await prisma.scoreSnapshot.findMany({
+    where: { stockId, snapshotType },
+    select: {
+      periodKey: true,
+      asOfDate: true,
+      version: true,
+      composite: true,
+      labelBand: true,
+      foundationSubtotal: true,
+      momentumSubtotal: true,
+      marketSubtotal: true,
+      ownershipSubtotal: true,
+    },
+  });
+  if (rows.length === 0) return [];
+
+  // MAX(version) per asOfDate (one in-force point per calendar day).
+  const byDay = new Map<string, (typeof rows)[number]>();
+  for (const r of rows) {
+    const key = r.asOfDate.toISOString().slice(0, 10);
+    const cur = byDay.get(key);
+    if (!cur || r.version > cur.version) byDay.set(key, r);
+  }
+
+  // Trailing window: windowDays back from the latest asOfDate present.
+  const latestMs = Math.max(...[...byDay.values()].map((r) => r.asOfDate.getTime()));
+  const cutoffMs = latestMs - windowDays * 24 * 60 * 60 * 1000;
+
+  const points: SeriesPoint[] = [...byDay.values()]
+    .filter((r) => r.asOfDate.getTime() >= cutoffMs)
+    .map((r) => ({
+      periodKey: r.periodKey,
+      asOfDate: r.asOfDate,
+      version: r.version,
+      composite: num(r.composite),
+      labelBand: r.labelBand as string,
+      foundationSubtotal: num(r.foundationSubtotal),
+      momentumSubtotal: num(r.momentumSubtotal),
+      marketSubtotal: num(r.marketSubtotal),
+      ownershipSubtotal: num(r.ownershipSubtotal),
+    }));
+
+  points.sort((a, b) => a.asOfDate.getTime() - b.asOfDate.getTime());
+  return points;
+}
+
+/**
  * The windowed in-force snapshot REFS (id + period + asOfDate), OLDEST→NEWEST — the
  * SAME supersede-aware reduction + windowing getSnapshotSeries uses, but returning
  * the row IDs so a caller can load the full pillar graph (ownership flows, anatomy)

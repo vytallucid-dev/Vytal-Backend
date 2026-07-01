@@ -411,9 +411,38 @@ export interface CorporateEventView {
   impactLevel: string;
 }
 
+/** One DAILY trajectory point — same shape as TrajectoryPoint, but one per calendar
+ *  day (asOfDate) rather than one per quarter. Market/Ownership move day-to-day here;
+ *  Foundation/Momentum carry forward flat between quarters (honest, not interpolated). */
+export interface DailyTrajectoryPoint {
+  asOfDate: string;
+  periodKey: string;
+  composite: number;
+  labelBand: LabelBand;
+  foundation: number;
+  momentum: number;
+  market: number;
+  ownership: number;
+}
+
+/** A day within the daily window on which a NEW quarter's results landed and stepped
+ *  all four pillars (the periodKey changed between consecutive daily points). Drives the
+ *  chart's vertical "Result — <period>" reference marker that explains the F/M step. */
+export interface ResultDayMarker {
+  asOfDate: string;
+  periodKey: string;
+}
+
 export interface TrajectorySection {
   windowQuarters: number;
   series: TrajectoryPoint[];
+  /** Sub-quarterly series (one point per calendar day over a trailing ~60D window),
+   *  exposing the daily-changing Market/Ownership recomputes. Empty when no daily
+   *  version history exists yet. The 60D/30D/15D chart timeframes read from this. */
+  dailySeries: DailyTrajectoryPoint[];
+  /** Result-landing days inside the daily window (periodKey transitions) — the days a
+   *  quarterly rescore stepped all four pillars. Empty when no result landed in-window. */
+  resultDays: ResultDayMarker[];
   /** Model-derived band + pillar-zone crossings computed from the series. */
   crossings: CrossingEvent[];
   /** External overlay — CorporateEvent rows in the series window. */

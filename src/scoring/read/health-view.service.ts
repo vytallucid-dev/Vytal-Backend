@@ -11,6 +11,7 @@ import { PILLAR_WEIGHTS } from "../composite/weights.js";
 import {
   getLatestSnapshot,
   getSnapshotSeries,
+  getDailySnapshotSeries,
   getInForceSeriesRefs,
   getPeerSiblings,
   getPeerMetricValues,
@@ -54,6 +55,8 @@ import type {
   DivergenceView,
   DivergenceFlag,
   TrajectoryPoint,
+  DailyTrajectoryPoint,
+  ResultDayMarker,
   CrossingEvent,
   CorporateEventView,
   RedFlagView,
@@ -850,9 +853,38 @@ export async function buildHealthSnapshotView(
     impactLevel: e.impactLevel,
   }));
 
+  // ── daily sub-quarterly series (one point per calendar day, trailing window) ──
+  // Exposes the intra-quarter Market/Ownership recomputes stored as successive
+  // versions. Fetch a wide (~13-month) window so the client can serve every daily
+  // timeframe (60/30/15D) AND an arbitrary custom date-range purely client-side by
+  // slicing; the range is honestly bounded by whatever retention actually holds.
+  // Empty when the stock has no daily version history yet.
+  const dailyRaw = await getDailySnapshotSeries(stock.id, 400);
+  const dailySeries: DailyTrajectoryPoint[] = dailyRaw.map((p) => ({
+    asOfDate: ymd(p.asOfDate),
+    periodKey: p.periodKey,
+    composite: p.composite,
+    labelBand: p.labelBand as LabelBand,
+    foundation: p.foundationSubtotal,
+    momentum: p.momentumSubtotal,
+    market: p.marketSubtotal,
+    ownership: p.ownershipSubtotal,
+  }));
+
+  // Result-days = periodKey transitions between consecutive daily points (the day a
+  // new quarter's rescore stepped all four pillars). Explains the F/M step on the chart.
+  const resultDays: ResultDayMarker[] = [];
+  for (let i = 1; i < dailySeries.length; i++) {
+    if (dailySeries[i].periodKey !== dailySeries[i - 1].periodKey) {
+      resultDays.push({ asOfDate: dailySeries[i].asOfDate, periodKey: dailySeries[i].periodKey });
+    }
+  }
+
   const trajectory: HealthSnapshotView["trajectory"] = {
     windowQuarters,
     series: seriesView,
+    dailySeries,
+    resultDays,
     crossings,
     events,
   };

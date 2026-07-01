@@ -303,6 +303,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       members: [],
       notAtCurrentPeriod: [],
       pathology: [],
+      lensPathology: [],
       movers: { risers: [], slippers: [] },
       sinceLastWeek: EMPTY_WEEK,
     };
@@ -600,9 +601,14 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
   }
 
   // ── Pathology census ──────────────────────────────────────────────────────
+  // The LOUD three-lens patterns (LM3/LM7/LP2/LP5) persist to score_patterns with
+  // `lens_*` keys (see lens-findings.ts). Partition them OUT of the P-series/structural
+  // pathology into their own lens census — same shape, a distinct family for the board.
+  const patternCensus = buildCensus(patternAcc, "pattern", M);
+  const lensPathology = patternCensus.filter((p) => p.key.startsWith("lens_"));
   const pathology: PathologyCensusItem[] = [
     ...buildCensus(flagAcc, "red_flag", M),
-    ...buildCensus(patternAcc, "pattern", M),
+    ...patternCensus.filter((p) => !p.key.startsWith("lens_")),
   ];
 
   // ── Movers (from in-memory lean batch) ────────────────────────────────────
@@ -675,6 +681,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
     members: memberViews,
     notAtCurrentPeriod: xs.lagging,
     pathology,
+    lensPathology,
     movers: { risers, slippers },
     sinceLastWeek,
   };

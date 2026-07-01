@@ -113,10 +113,17 @@ export interface UniverseHealthView {
   members: UniverseMemberView[];
   /** Members at an older period than the cross-section — listed, never silently folded in. */
   notAtCurrentPeriod: { symbol: string; latestPeriod: string }[];
-  /** Flag + pattern census universe-wide.
+  /** Flag + pattern census universe-wide (P-series / structural patterns + red flags).
    *  Reach thresholds: isolated (N=1) | cluster (N≥2 and N/M<0.20) | widespread (N/M≥0.20).
-   *  Scaled down from the pond's 0.50 — 20% of a 93-stock universe is systemic. */
+   *  Scaled down from the pond's 0.50 — 20% of a 93-stock universe is systemic.
+   *  NOTE: the three-lens (LM/LP) patterns are partitioned OUT of this list into
+   *  `lensPathology` below — the same PathologyCensusItem shape, a distinct family. */
   pathology: PathologyCensusItem[];
+  /** Three-lens (LM/LP) cross-lens pattern census — the LOUD escalated lens patterns
+   *  (LM3/LM7/LP2/LP5, keyed `lens_*`) aggregated universe-wide. Same shape + reach rules
+   *  as `pathology`; separated so the Hub Flags board can surface them as their own family.
+   *  Empty when no lens patterns fire this snapshot. */
+  lensPathology: PathologyCensusItem[];
   /** Top-10 risers / slippers vs the prior period. */
   movers: { risers: PeerGroupMover[]; slippers: PeerGroupMover[] };
   sinceLastWeek: UniverseSinceLastWeek;

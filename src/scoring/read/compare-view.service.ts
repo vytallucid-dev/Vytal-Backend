@@ -37,6 +37,7 @@ import type {
   ClassContext,
   Comparability,
   Comparee,
+  CompareeStatements,
   ComparisonView,
   FamilyMetric,
   UniversalMetric,
@@ -77,6 +78,14 @@ interface UniversalAnnual {
   patGrowthYoy: number | null;
   totalAssets: number | null;
   netWorth: number | null;
+  // BS + CF cross-family-meaningful additions. totalDebt folds each family's borrowings line
+  // (non-financial: totalDebt; every financial family: borrowings). CF is honest-null for
+  // insurers (no cash-flow statement stored) → dashes downstream.
+  totalDebt: number | null;
+  cashAndCashEquivalents: number | null;
+  cashFromOperating: number | null;
+  cashFromInvesting: number | null;
+  cashFromFinancing: number | null;
 }
 
 function emptyUniversalAnnual(): UniversalAnnual {
@@ -87,6 +96,11 @@ function emptyUniversalAnnual(): UniversalAnnual {
     patGrowthYoy: null,
     totalAssets: null,
     netWorth: null,
+    totalDebt: null,
+    cashAndCashEquivalents: null,
+    cashFromOperating: null,
+    cashFromInvesting: null,
+    cashFromFinancing: null,
   };
 }
 
@@ -102,6 +116,11 @@ function universalAnnual(f: FundamentalsView): UniversalAnnual {
         patGrowthYoy: a.profitGrowthYoy, // non-financial's pat-growth equivalent
         totalAssets: a.totalAssets,
         netWorth: a.totalEquity, // non-financial has no netWorth line
+        totalDebt: a.totalDebt,
+        cashAndCashEquivalents: a.cashAndCashEquivalents,
+        cashFromOperating: a.cashFromOperating,
+        cashFromInvesting: a.cashFromInvesting,
+        cashFromFinancing: a.cashFromFinancing,
       };
     }
     case "banking": {
@@ -114,6 +133,11 @@ function universalAnnual(f: FundamentalsView): UniversalAnnual {
         patGrowthYoy: a.patGrowthYoy,
         totalAssets: a.totalAssets,
         netWorth: a.netWorth,
+        totalDebt: a.borrowings, // a bank's debt line
+        cashAndCashEquivalents: a.cashAndBalancesWithRbi, // the bank's cash-equivalent line
+        cashFromOperating: a.cashFromOperating,
+        cashFromInvesting: a.cashFromInvesting,
+        cashFromFinancing: a.cashFromFinancing,
       };
     }
     case "nbfc": {
@@ -126,6 +150,11 @@ function universalAnnual(f: FundamentalsView): UniversalAnnual {
         patGrowthYoy: a.patGrowthYoy,
         totalAssets: a.totalAssets,
         netWorth: a.netWorth,
+        totalDebt: a.borrowings,
+        cashAndCashEquivalents: a.cashAndCashEquivalents,
+        cashFromOperating: a.cashFromOperating,
+        cashFromInvesting: a.cashFromInvesting,
+        cashFromFinancing: a.cashFromFinancing,
       };
     }
     case "life_insurance": {
@@ -138,6 +167,12 @@ function universalAnnual(f: FundamentalsView): UniversalAnnual {
         patGrowthYoy: a.patGrowthYoy,
         totalAssets: a.totalAssets,
         netWorth: a.netWorth,
+        totalDebt: a.borrowings,
+        cashAndCashEquivalents: a.cashAndBankBalances,
+        // insurers have NO cash-flow statement stored — honest-null (dashes downstream)
+        cashFromOperating: null,
+        cashFromInvesting: null,
+        cashFromFinancing: null,
       };
     }
     case "general_insurance": {
@@ -150,6 +185,12 @@ function universalAnnual(f: FundamentalsView): UniversalAnnual {
         patGrowthYoy: a.patGrowthYoy,
         totalAssets: a.totalAssets,
         netWorth: a.netWorth,
+        totalDebt: a.borrowings,
+        cashAndCashEquivalents: a.cashAndBankBalances,
+        // insurers have NO cash-flow statement stored — honest-null (dashes downstream)
+        cashFromOperating: null,
+        cashFromInvesting: null,
+        cashFromFinancing: null,
       };
     }
     default:
@@ -249,6 +290,41 @@ function familySpecific(f: FundamentalsView): FamilyMetric[] {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Full-statement forwarding — the family-shaped quarters[] + annualSeries[] the
+// per-stock Fundamentals tab already renders, passed through VERBATIM (no re-mapping,
+// no new reads — the fundamentals view is already in memory). A discriminated union on
+// family so the frontend picks the matching per-family line-defs. Insurers carry no CF
+// (their annual shape has no CFO/CFI/CFF) — honest absence. Returns null only when the
+// family payload is absent (defensive; the family always matches f.family in practice).
+// ─────────────────────────────────────────────────────────────────────────────
+function compareeStatements(f: FundamentalsView): CompareeStatements | null {
+  switch (f.family) {
+    case "non_financial":
+      return f.nonFinancial
+        ? { family: "non_financial", quarters: f.nonFinancial.quarters, annualSeries: f.nonFinancial.annualSeries }
+        : null;
+    case "banking":
+      return f.banking
+        ? { family: "banking", quarters: f.banking.quarters, annualSeries: f.banking.annualSeries }
+        : null;
+    case "nbfc":
+      return f.nbfc
+        ? { family: "nbfc", quarters: f.nbfc.quarters, annualSeries: f.nbfc.annualSeries }
+        : null;
+    case "life_insurance":
+      return f.lifeInsurance
+        ? { family: "life_insurance", quarters: f.lifeInsurance.quarters, annualSeries: f.lifeInsurance.annualSeries }
+        : null;
+    case "general_insurance":
+      return f.generalInsurance
+        ? { family: "general_insurance", quarters: f.generalInsurance.quarters, annualSeries: f.generalInsurance.annualSeries }
+        : null;
+    default:
+      return null;
+  }
+}
+
 /** Pull a pillar subtotal from the health view (null when unscored / pillar absent). */
 function pillarSubtotal(health: HealthSnapshotView | null, key: PillarKey): number | null {
   const p = health?.pillars?.find((x) => x.pillar === key);
@@ -302,6 +378,11 @@ function buildComparee(symbol: string, data: EntityData): Comparee {
       patGrowthYoy: ua.patGrowthYoy,
       totalAssets: ua.totalAssets,
       netWorth: ua.netWorth,
+      totalDebt: ua.totalDebt,
+      cashAndCashEquivalents: ua.cashAndCashEquivalents,
+      cashFromOperating: ua.cashFromOperating,
+      cashFromInvesting: ua.cashFromInvesting,
+      cashFromFinancing: ua.cashFromFinancing,
       return1y: price?.stock.returns.r1y ?? null,
       return3y: price?.stock.returns.r3y ?? null,
       pctFrom52WHigh: price?.current.pctFrom52WHigh ?? null,
@@ -313,6 +394,10 @@ function buildComparee(symbol: string, data: EntityData): Comparee {
       marketCap: price?.current.marketCap ?? null,
     },
     familySpecific: familySpecific(fundamentals),
+    // Full statement series (quarters + annualSeries) — forwarded verbatim from the
+    // fundamentals view already in memory (ZERO new reads). Drives the same-family
+    // side-by-side statements and the cross-family per-stock statement blocks.
+    statements: compareeStatements(fundamentals),
     // Per-pillar metric depth — straight pass-through of the health view already in
     // memory (fetchEntity fetched it). ZERO new reads. Alignment of these (same vs
     // cross family) is decided downstream off the same comparability flag, not here.
@@ -362,6 +447,11 @@ function buildUniversalMetrics(a: Comparee, b: Comparee): UniversalMetric[] {
     m("bookValuePerShare", "Book Value / Share", "rupees", ua.bookValuePerShare, ub.bookValuePerShare),
     m("totalAssets", "Total Assets", "cr", ua.totalAssets, ub.totalAssets),
     m("netWorth", "Net Worth", "cr", ua.netWorth, ub.netWorth),
+    m("totalDebt", "Total Debt / Borrowings", "cr", ua.totalDebt, ub.totalDebt),
+    m("cashAndCashEquivalents", "Cash & Equivalents", "cr", ua.cashAndCashEquivalents, ub.cashAndCashEquivalents),
+    m("cashFromOperating", "Cash from Operating", "cr", ua.cashFromOperating, ub.cashFromOperating),
+    m("cashFromInvesting", "Cash from Investing", "cr", ua.cashFromInvesting, ub.cashFromInvesting),
+    m("cashFromFinancing", "Cash from Financing", "cr", ua.cashFromFinancing, ub.cashFromFinancing),
     m("return1y", "1Y Price Return", "pct", ua.return1y, ub.return1y),
     m("return3y", "3Y Price Return", "pct", ua.return3y, ub.return3y),
     m("pctFrom52WHigh", "% from 52W High", "pct", ua.pctFrom52WHigh, ub.pctFrom52WHigh),

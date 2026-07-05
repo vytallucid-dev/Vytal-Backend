@@ -62,6 +62,30 @@ export const JobTypes = {
   // runEodPriceIngest) — the "re-fetch the feed for this date" resolution action
   // offered alongside a manual price fill. Idempotent (upsert/skip-duplicates).
   PRICES_REFETCH: "prices_refetch",
+  // ── User-created alerts: daily evaluation pass ─────────────
+  // One pass over every ACTIVE user alert (price / health_band / finding): evaluate the
+  // condition against current computed data, RECORD fires into alert_events, flip
+  // (active, armed). Sends NOTHING (email is a later stage). Hung on the daily EOD cycle,
+  // scheduled AFTER the EOD-price → PG-rescore cascade so band/findings reflect the day's
+  // rescore. Read-only over computed data; idempotent (still-true condition = no-op).
+  ALERTS_EVAL_DAILY: "alerts_eval_daily",
+  // ── User-created alerts: daily email drain ─────────────────
+  // Drains alert_events WHERE delivered=false: render + send each via Resend, flip
+  // delivered=true on success. Scheduled just AFTER ALERTS_EVAL_DAILY so tonight's fires go
+  // out tonight; drains the whole undelivered backlog, so it also retries prior failures.
+  // Idempotent (delivered flag is the guard); a failed send is left for the next run.
+  ALERTS_DELIVER_DAILY: "alerts_deliver_daily",
+  // ── Event reminders: daily evaluation pass ─────────────────
+  // One pass over every ACTIVE reminder: re-resolve the stock's nearest upcoming event of the
+  // reminder's type (follows reschedules), fire (record an event_reminder_event) when today is
+  // in the lead window, dedupe per occurrence. Sends NOTHING. Runs EVERY DAY (date-based
+  // reminders must fire on weekends too, unlike price-driven alerts).
+  REMINDERS_EVAL_DAILY: "reminders_eval_daily",
+  // ── Event reminders: daily email drain ─────────────────────
+  // Drains event_reminder_events WHERE delivered=false via the SAME Resend mailer alerts use.
+  // Scheduled just AFTER REMINDERS_EVAL_DAILY; drains the whole backlog so it also retries
+  // prior failures. Idempotent (delivered guard). Runs every day.
+  REMINDERS_DELIVER_DAILY: "reminders_deliver_daily",
 } as const;
 
 export type JobType = (typeof JobTypes)[keyof typeof JobTypes];
@@ -247,6 +271,10 @@ export interface FillCascadeRescorePayload {
 // ── Daily operational payloads (no config — always "today") ──
 
 export interface EodPricesDailyPayload {}
+export interface AlertsEvalDailyPayload {}
+export interface AlertsDeliverDailyPayload {}
+export interface RemindersEvalDailyPayload {}
+export interface RemindersDeliverDailyPayload {}
 export interface DealsDailyIngestPayload {}
 export interface EventsWeeklyIngestPayload {}
 export interface EventsDailyRefreshPayload {}
@@ -314,7 +342,11 @@ export type JobPayload =
   | { type: typeof JobTypes.PG_RESCORE; data: PgRescorePayload }
   | { type: typeof JobTypes.PG_CASCADE_RESCORE; data: PgCascadeRescorePayload }
   | { type: typeof JobTypes.FILL_CASCADE_RESCORE; data: FillCascadeRescorePayload }
-  | { type: typeof JobTypes.PRICES_REFETCH; data: PricesRefetchPayload };
+  | { type: typeof JobTypes.PRICES_REFETCH; data: PricesRefetchPayload }
+  | { type: typeof JobTypes.ALERTS_EVAL_DAILY; data: AlertsEvalDailyPayload }
+  | { type: typeof JobTypes.ALERTS_DELIVER_DAILY; data: AlertsDeliverDailyPayload }
+  | { type: typeof JobTypes.REMINDERS_EVAL_DAILY; data: RemindersEvalDailyPayload }
+  | { type: typeof JobTypes.REMINDERS_DELIVER_DAILY; data: RemindersDeliverDailyPayload };
 
 // ── Retry policy per job type ────────────────────────────────
 // Conservative defaults. Most ingest jobs should NOT auto-retry —
@@ -367,6 +399,22 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   [JobTypes.FILL_CASCADE_RESCORE]: { maxAttempts: 2 },
   // Prices re-fetch — network-bound NSE bhavcopy fetch; idempotent (upsert). 2 attempts.
   [JobTypes.PRICES_REFETCH]: { maxAttempts: 2 },
+  // Alerts eval — DB-only, idempotent (fire-once via the armed flag; a still-true
+  // condition is a no-op). A retry after a transient DB error re-runs cleanly (each fire
+  // is its own transaction; already-fired alerts are disarmed → skipped). 2 attempts.
+  [JobTypes.ALERTS_EVAL_DAILY]: { maxAttempts: 2 },
+  // Alerts deliver — the email drain. Idempotent (delivered=true guard; a re-run over an
+  // already-drained log sends zero, and the per-event Resend Idempotency-Key covers the
+  // send→flip crash window). A retry re-drains cleanly: sent events are skipped, only the
+  // still-undelivered (previously-failed) ones are re-attempted. 2 attempts.
+  [JobTypes.ALERTS_DELIVER_DAILY]: { maxAttempts: 2 },
+  // Reminders eval — DB-only, idempotent (dedupe on resolvedEventDate; the DB unique is the
+  // race backstop). A retry after a transient DB error re-runs cleanly (already-fired
+  // occurrences dedupe → skipped). 2 attempts.
+  [JobTypes.REMINDERS_EVAL_DAILY]: { maxAttempts: 2 },
+  // Reminders deliver — the email drain, same shape/guarantees as ALERTS_DELIVER_DAILY
+  // (delivered=true guard + per-event Idempotency-Key). 2 attempts.
+  [JobTypes.REMINDERS_DELIVER_DAILY]: { maxAttempts: 2 },
 };
 
 // ── Job status constants ────────────────────────────────────

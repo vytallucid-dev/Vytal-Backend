@@ -115,7 +115,9 @@ async function main() {
   await cleanup(); // idempotent re-runs
 
   // ── 1. NORMAL DAY — ZERO false positives ──
-  console.log("\n[1] Normal ~202-row day — expect ZERO flags");
+  // (the 202-row CSV is a synthetic PARSER fixture; the count guard is
+  //  exercised against the live 505 universe just below.)
+  console.log("\n[1] Normal healthy day — expect ZERO flags");
   const normalPrices = await provider.processBhavcopyBody(buildNormalCsv(202), SENTINEL_DATE);
   const afterNormal = await prisma.ingestionError.count({
     where: { runRef: { startsWith: SENTINEL_RUNREF_PREFIX } },
@@ -123,7 +125,8 @@ async function main() {
   check("provider parses 202 healthy rows", normalPrices.length === 202, normalPrices.length);
   check("provider guards write 0 rows on a healthy day", afterNormal === 0, afterNormal);
   // cron-guard detection on a healthy batch (predicates = the real logic):
-  check("count(202) clean", classifyCount(202) === null);
+  // count is DERIVED from the live universe now — a full 505-universe day is clean.
+  check("count(504/505) clean", classifyCount(504, 505) === null, classifyCount(504, 505));
   check("prevClose null-rate ~2% clean", checkNullRate(4, 202, PREV_CLOSE_NULL_MAX) === null);
   check("tradedValue null-rate ~4% clean", checkNullRate(8, 202, TRADED_VALUE_NULL_MAX) === null);
   check("close 103 in range", checkCloseRange(103) === false);
@@ -153,15 +156,19 @@ async function main() {
   check("skip severity=high", skipRow?.severity === "high", skipRow?.severity);
   check("skip observed shows 20/100", !!skipRow?.observed.includes("20/100"), skipRow?.observed);
 
-  // ── 4. COUNT — truncated/duplicated bands (detection + mapping) ──
-  console.log("\n[4] Count bands — truncated 12-row, low 170, dup 300");
-  check("count(12) → high (truncated)", classifyCount(12)?.severity === "high", classifyCount(12));
-  check("count(170) → medium (investigate)", classifyCount(170)?.severity === "medium", classifyCount(170));
-  check("count(300) → high (duplication)", classifyCount(300)?.severity === "high", classifyCount(300));
+  // ── 4. COUNT — bands DERIVED from the live universe (self-scaling) ──
+  console.log("\n[4] Count bands derived from active universe (505) — truncated, short, duplicate");
+  check("count(12/505) → high (truncated)", classifyCount(12, 505)?.severity === "high", classifyCount(12, 505));
+  check("count(400/505) → medium (short — investigate)", classifyCount(400, 505)?.severity === "medium", classifyCount(400, 505));
+  check("count(1010/505) → high (duplication, ~2× coverage)", classifyCount(1010, 505)?.severity === "high", classifyCount(1010, 505));
+  // SELF-SCALING: the SAME code that flagged 300 rows at the old ~202 universe
+  // now treats ~504 rows at 505 as CLEAN — no manual re-tuning needed.
+  check("count(300/202) → high (was a dup at the OLD universe)", classifyCount(300, 202)?.severity === "high", classifyCount(300, 202));
+  check("count(504/505) clean (would-be-dup band at old universe, now normal)", classifyCount(504, 505) === null, classifyCount(504, 505));
   await reportIngestionError({
     source: "nse-bhavcopy-csv", cron: SENTINEL_CRON, guardType: "count",
     targetTable: "DailyPrice", severity: "high", resolutionPath: "source_code",
-    expected: "150–250 rows inserted (≈202 universe)", observed: "12 rows inserted",
+    expected: "454–556 rows for the day (derived from 505 active-stock universe)", observed: "12 rows inserted",
     detail: "below floor", runRef: "1990-01-01:nse-bhavcopy-csv",
   });
   const countRow = await prisma.ingestionError.findFirst({ where: { cron: SENTINEL_CRON, guardType: "count" } });

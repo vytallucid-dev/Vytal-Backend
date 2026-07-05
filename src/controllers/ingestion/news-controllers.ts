@@ -116,17 +116,23 @@ export const getNewsBySymbol = async (req: Request, res: Response) => {
   }
 };
 
-export const getTodayNewsFeed = async (_req: Request, res: Response) => {
+export const getTodayNewsFeed = async (req: Request, res: Response) => {
   try {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    // Window is parametrized (default 7d, clamped) so the feed isn't hostage to a bare 24h.
+    const daysRaw = parseInt(String(req.query.days ?? "7"), 10);
+    const days = Number.isFinite(daysRaw) ? Math.min(Math.max(daysRaw, 1), 30) : 7;
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - days);
 
+    // Fallback ladder in ONE ordered read: high-impact rows first, then recent normal news
+    // (each block newest-first). So the feed leads with high-impact when it exists, but stays
+    // populated on quiet days instead of reading empty — never a fabricated headline.
     const news = await prisma.stockNews.findMany({
       where: {
         publishedAt: { gte: since },
-        isHighImpact: true,
         stock: { isActive: true },
       },
-      orderBy: { publishedAt: "desc" },
+      orderBy: [{ isHighImpact: "desc" }, { publishedAt: "desc" }],
       take: 50,
       include: {
         stock: {
@@ -152,6 +158,7 @@ export const getTodayNewsFeed = async (_req: Request, res: Response) => {
         category: n.category,
         pdfUrl: n.pdfUrl,
         externalUrl: n.externalUrl,
+        isHighImpact: n.isHighImpact,
         hasFullContent: n.extractionStatus === "extracted",
         publishedAt: n.publishedAt.toISOString(),
       })),

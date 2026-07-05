@@ -46,8 +46,11 @@ export interface ScoredStockListItem {
 /** One lean row per stock in the FULL universe (scored + not-yet-scored) — the
  *  screener typeahead spans every tracked stock, not just the scored subset.
  *  `scored=false` rows carry null composite/band (no in-force snapshot yet); the
- *  detail surface answers them with the honest not-scored notice. */
+ *  detail surface answers them with the honest not-scored notice.
+ *  `id` is the Stock UUID — the universe-gated key the watchlist POST pins on
+ *  (the read row already carries stockId for unpin; this closes the add path). */
 export interface UniverseStockListItem {
+  id: string;
   symbol: string;
   name: string;
   sector: SectorRef | null;

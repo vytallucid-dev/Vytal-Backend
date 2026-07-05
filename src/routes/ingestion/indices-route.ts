@@ -13,12 +13,18 @@
 import { Router } from "express";
 import {
   getIndexFetchLogs,
+  getLatestIndices,
   triggerIndexIngest,
   triggerIndexBackfill,
 } from "../../controllers/ingestion/indices-controllers.js";
 
 export const indicesRouter = Router();
 export const adminIndicesRouter = Router();
+
+// ── GET /api/v1/indices/latest ────────────────────────────────
+// Headline indices board (latest close + day change + sparkline) for the dashboard.
+
+indicesRouter.get("/latest", getLatestIndices);
 
 // ── GET /api/v1/indices/index-logs ────────────────────────────
 

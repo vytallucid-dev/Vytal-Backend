@@ -203,6 +203,7 @@ export async function buildUniverseStocksList(): Promise<UniverseStockListItem[]
       const rows = byStock.get(st.id);
       if (!rows || rows.length === 0) {
         return {
+          id: st.id,
           symbol: st.symbol,
           name: st.name,
           sector: sectorRef(st.sector),
@@ -213,6 +214,7 @@ export async function buildUniverseStocksList(): Promise<UniverseStockListItem[]
       }
       const latest = inForceNewestFirst(rows)[0];
       return {
+        id: st.id,
         symbol: st.symbol,
         name: st.name,
         sector: sectorRef(st.sector),

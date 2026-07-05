@@ -11,6 +11,11 @@
     "target": "esnext",
     "types": ["node"],
 
+    // JSX — used ONLY by the React Email templates (src/alerts/email/*.tsx).
+    // Additive: the automatic runtime affects .tsx files only; every existing .ts
+    // file compiles byte-for-byte the same.
+    "jsx": "react-jsx",
+
     // Recommended Options
     "strict": true,
     "verbatimModuleSyntax": true,

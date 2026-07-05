@@ -33,10 +33,20 @@ export const REQUIRED_BHAV_COLUMNS = [
 // never fire. The real silent-loss signal is the parse skip rate.
 export const MAX_PARSE_SKIP_RATE = 0.05; // > 5% of EQ rows → high
 
-// ── GUARD 3: COUNT ──  totalInserted bands (universe ≈ 202).
-export const COUNT_FLOOR = 150; // < this → high (<75% universe)
-export const COUNT_LOW = 180; // (FLOOR..this] → medium (investigate)
-export const COUNT_CEIL = 250; // > this → high (duplication)
+// ── GUARD 3: COUNT ──  DERIVED from the live active universe, so it self-
+// scales as the universe grows (202 → 505 → …) instead of staling to a
+// hardcoded row band. Bands are FRACTIONS of the active-stock count passed
+// in at call time:
+//   observed < FLOOR_FRAC·expected  → high   (truncated / missing ingests)
+//   observed < LOW_FRAC·expected    → medium (short of coverage — investigate)
+//   observed > CEIL_FRAC·expected   → high   (meaningfully exceeds → duplication)
+//   else                            → healthy
+// FLOOR/LOW leave downward tolerance for legit same-day shortfalls (a stock
+// with no price — new listing, halt, suspension). CEIL keeps a sane
+// duplication ceiling just above full coverage.
+export const COUNT_FLOOR_FRAC = 0.75; // < 75% of universe → high (grounded on old 150/202)
+export const COUNT_LOW_FRAC = 0.9; // [75%, 90%) of universe → medium (old 180/202)
+export const COUNT_CEIL_FRAC = 1.1; // > 110% of universe → high · duplication (old 250/202 ≈ 1.24, tightened)
 
 // ── GUARD 4: NULL-RATE ──  genuinely-nullable fields only.
 export const PREV_CLOSE_NULL_MAX = 0.1; // normal ~1–3% (IPO days)
@@ -78,14 +88,48 @@ export type CountVerdict = {
   note: string;
 } | null;
 
-/** GUARD 3 — classify totalInserted into a severity band (null = healthy). */
-export function classifyCount(inserted: number): CountVerdict {
-  if (inserted < COUNT_FLOOR)
-    return { severity: "high", note: "below floor (<75% of ~202 universe)" };
-  if (inserted <= COUNT_LOW)
-    return { severity: "medium", note: "below expected band — investigate" };
-  if (inserted > COUNT_CEIL)
-    return { severity: "high", note: "above expected band — possible duplication" };
+/** The derived row-count band for a given live active-universe size. */
+export function countBand(expected: number): {
+  floor: number;
+  low: number;
+  ceil: number;
+} {
+  return {
+    floor: Math.floor(expected * COUNT_FLOOR_FRAC),
+    low: Math.floor(expected * COUNT_LOW_FRAC),
+    ceil: Math.ceil(expected * COUNT_CEIL_FRAC),
+  };
+}
+
+/**
+ * GUARD 3 — classify the day's persisted row-count against the LIVE active-
+ * universe size (`expected`); null = healthy. Bands scale with `expected`,
+ * so the guard self-adjusts as the universe grows and still catches real
+ * duplication (observed meaningfully above full coverage).
+ */
+export function classifyCount(observed: number, expected: number): CountVerdict {
+  // Unknown/degenerate universe → can't derive a band; a real empty-universe
+  // problem surfaces via other guards, so don't false-flag here.
+  if (expected <= 0) return null;
+
+  const { floor, low, ceil } = countBand(expected);
+  const pct = Math.round((observed / expected) * 100);
+
+  if (observed < floor)
+    return {
+      severity: "high",
+      note: `below floor (${observed}/${expected}, ${pct}% of active universe)`,
+    };
+  if (observed < low)
+    return {
+      severity: "medium",
+      note: `short of expected coverage (${observed}/${expected}, ${pct}%) — investigate`,
+    };
+  if (observed > ceil)
+    return {
+      severity: "high",
+      note: `above expected (${observed}/${expected}, ${pct}%) — possible duplication`,
+    };
   return null;
 }
 

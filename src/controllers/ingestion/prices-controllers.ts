@@ -5,9 +5,6 @@ import {
   PriceBackfillSchema,
   PriceLogsQuerySchema,
 } from "../../schema/schema.js";
-import {
-  runEodPriceIngest,
-} from "../../ingestions/prices/ingest-prices.js";
 import { enqueueJob } from "../../jobs/enqueue.js";
 import { JobTypes } from "../../jobs/types.js";
 
@@ -200,10 +197,18 @@ export const getDailyPricesForSymbol = async (req: Request, res: Response) => {
 // ── POST /api/v1/admin/prices/trigger ─────────────────────────
 // Manually trigger EOD price ingest for today (or a specific date).
 // Body: { date?: "YYYY-MM-DD" }
+//
+// ENQUEUES rather than runs inline: the ingest fans a per-stock snapshot recompute
+// (returns / 52w / market-cap + upsert) across the WHOLE active universe (~112s+ of
+// DB reads for 505 stocks, before writes — see ingest-prices.updateSnapshots), which
+// blows past any request timeout. The worker runs it fire-and-forget and, on success,
+// its central scoring-trigger fires the PG rescore exactly like the scheduled cron
+// (EOD_PRICES_DAILY → all 13 scored PGs; PRICES_REFETCH fires its own). Poll the
+// returned statusUrl for progress — same job pattern as the backfill below.
 
 export const triggerEodIngest = async (req: Request, res: Response) => {
   try {
-    let targetDate: Date | undefined;
+    let dateIso: string | undefined;
 
     if (req.body?.date) {
       const parsed = new Date(req.body.date);
@@ -213,12 +218,44 @@ export const triggerEodIngest = async (req: Request, res: Response) => {
           error: "Invalid date format. Use YYYY-MM-DD.",
         });
       }
-      targetDate = parsed;
+      dateIso = parsed.toISOString().slice(0, 10);
     }
 
-    console.log("[Admin] Manual EOD price ingest triggered");
-    const result = await runEodPriceIngest(targetDate);
-    return res.json({ success: true, data: result });
+    console.log(
+      `[Admin] Manual EOD price ingest enqueued${dateIso ? ` for ${dateIso}` : ""}`,
+    );
+
+    // No date → EOD_PRICES_DAILY (self-healing last-few-days sweep, the scheduled
+    // cron's exact sibling). Specific date → PRICES_REFETCH (single-date wrap of
+    // runEodPriceIngest). Priority 10 (urgent) so a hand-triggered run jumps the queue.
+    const job = dateIso
+      ? await enqueueJob({
+          type: JobTypes.PRICES_REFETCH,
+          payload: {
+            dateIso,
+            triggeredBy: "user:admin",
+            reason: "manual admin price trigger",
+          },
+          triggeredBy: "user:admin",
+          priority: 10,
+        })
+      : await enqueueJob({
+          type: JobTypes.EOD_PRICES_DAILY,
+          payload: {},
+          triggeredBy: "user:admin",
+          priority: 10,
+        });
+
+    return res.status(202).json({
+      success: true,
+      data: {
+        jobId: job.id,
+        statusUrl: `/api/v1/admin/jobs/${job.id}`,
+        message: dateIso
+          ? `EOD price ingest for ${dateIso} enqueued. Poll the status URL for progress.`
+          : `EOD price ingest enqueued. Poll the status URL for progress.`,
+      },
+    });
   } catch (err) {
     return res
       .status(500)

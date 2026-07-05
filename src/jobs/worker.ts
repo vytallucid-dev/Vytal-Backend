@@ -18,6 +18,7 @@ import { makeJobContext, JobCancelledError } from "./context.js";
 import { getHandler } from "./dispatcher.js";
 import { JobStatus } from "./types.js";
 import { maybeEnqueueRescoresForJob } from "./scoring-triggers.js";
+import { maybeRefreshPortfolioHealthForScoringJob } from "../portfolio/phs/refresh.js";
 import { surfaceFailedScoringJobById, resolveHealedScoringErrors } from "../scoring/errors/failed-job-guard.js";
 
 interface WorkerOptions {
@@ -228,6 +229,24 @@ class JobWorker {
         } catch (err) {
           console.error(
             `[worker] job ${job.id} (${job.type}) scoring-trigger error (job still SUCCEEDED):`,
+            err,
+          );
+        }
+        // ── PORTFOLIO-HEALTH REFRESH (the nightly-rescore trigger) ───────────
+        // When a scoring job (PG_RESCORE / cascades) SUCCEEDS with genuine score
+        // changes, recompute PHS for the users holding the changed symbols. No-op for
+        // non-scoring jobs and for clean no-op rescores. Best-effort — the job already
+        // SUCCEEDED; a PHS failure never changes its outcome.
+        try {
+          const phs = await maybeRefreshPortfolioHealthForScoringJob(job.type, result);
+          if (phs && phs.users > 0) {
+            console.log(
+              `[worker] job ${job.id} (${job.type}) → PHS refresh: ${phs.written} snapshot(s) written, ${phs.skipped} unchanged, ${phs.failed} failed across ${phs.users} user(s)`,
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[worker] job ${job.id} (${job.type}) PHS-refresh error (job still SUCCEEDED):`,
             err,
           );
         }

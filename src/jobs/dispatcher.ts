@@ -46,6 +46,10 @@ import {
   handleInsiderTradesDaily,
 } from "./handlers/daily-ingest-ops.handler.js";
 import { handleShareholdingBackfill } from "./handlers/shareholding-backfill.handler.js";
+import { handleAlertsEvalDaily } from "./handlers/alerts-eval.handler.js";
+import { handleAlertsDeliverDaily } from "./handlers/alerts-deliver.handler.js";
+import { handleRemindersEvalDaily } from "./handlers/reminders-eval.handler.js";
+import { handleRemindersDeliverDaily } from "./handlers/reminders-deliver.handler.js";
 import { JobTypes, type JobType } from "./types.js";
 
 export type JobHandler<TPayload = any, TResult = any> = (
@@ -80,6 +84,10 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.PG_CASCADE_RESCORE]: handlePgCascadeRescore,
   [JobTypes.FILL_CASCADE_RESCORE]: handleFillCascadeRescore,
   [JobTypes.PRICES_REFETCH]: handlePricesRefetch,
+  [JobTypes.ALERTS_EVAL_DAILY]: handleAlertsEvalDaily,
+  [JobTypes.ALERTS_DELIVER_DAILY]: handleAlertsDeliverDaily,
+  [JobTypes.REMINDERS_EVAL_DAILY]: handleRemindersEvalDaily,
+  [JobTypes.REMINDERS_DELIVER_DAILY]: handleRemindersDeliverDaily,
 };
 
 export function getHandler(type: string): JobHandler | null {

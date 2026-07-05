@@ -52,7 +52,7 @@ const YAHOO_SYMBOL_OVERRIDES: Record<string, string> = {
 
 // ── Types ──────────────────────────────────────────────────────
 
-interface CliArgs {
+export interface CliArgs {
   years: number;
   batchSize: number;
   batchDelayMs: number;
@@ -61,7 +61,7 @@ interface CliArgs {
   dryRun: boolean;
 }
 
-interface StockResult {
+export interface StockResult {
   symbol: string;
   status: "success" | "failed" | "skipped" | "no_data";
   rowsInserted: number;
@@ -109,7 +109,7 @@ function parseArgs(argv: string[]): CliArgs {
 // ── Symbol helpers ────────────────────────────────────────────
 
 /** Convert NSE symbol to Yahoo Finance ticker (appends .NS) */
-function toYahooTicker(nseSymbol: string): string {
+export function toYahooTicker(nseSymbol: string): string {
   return YAHOO_SYMBOL_OVERRIDES[nseSymbol] ?? `${nseSymbol}.NS`;
 }
 
@@ -348,7 +348,7 @@ async function updateSnapshot(
 
 // ── Per-stock orchestrator ────────────────────────────────────
 
-async function backfillStock(
+export async function backfillStock(
   prisma: PrismaClient,
   stockId: string,
   symbol: string,
@@ -601,14 +601,24 @@ function msAgo(from: Date, days: number): Date {
 }
 
 // ── CLI entry point ───────────────────────────────────────────
+// Guard so this module can be IMPORTED (e.g. by the Pass-3 wrapper that reuses
+// backfillStock) without auto-running the full-universe CLI. Only runs when this
+// file is the directly-invoked entry (tsx src/scripts/yahoo-price-backfill.ts …).
 
-const args = parseArgs(process.argv.slice(2));
+import { pathToFileURL } from "url";
 
-runYahooBackfill(args)
-  .then((summary) => {
-    process.exit(summary.failed > 0 ? 1 : 0);
-  })
-  .catch((err) => {
-    console.error("Fatal:", err);
-    process.exit(1);
-  });
+const invokedDirectly =
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  const args = parseArgs(process.argv.slice(2));
+  runYahooBackfill(args)
+    .then((summary) => {
+      process.exit(summary.failed > 0 ? 1 : 0);
+    })
+    .catch((err) => {
+      console.error("Fatal:", err);
+      process.exit(1);
+    });
+}

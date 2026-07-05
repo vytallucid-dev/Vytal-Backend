@@ -21,6 +21,7 @@ import {
   CLOSE_MIN,
   CLOSE_MAX,
   classifyCount,
+  countBand,
   checkNullRate,
   checkCloseRange,
   checkContinuity,
@@ -38,6 +39,21 @@ export interface IngestPricesResult {
   totalSkipped: number;
   durationMs: number;
   error?: string;
+  /**
+   * Per-phase wall-clock (ms) — populated on the full (non-market-closed) path.
+   * Exposes WHERE the run spends its time; `snapshots` (the per-stock returns +
+   * market-cap recompute + upsert) is the dominant cost on a large universe. It
+   * now runs ONLY over genuinely-new closes, so on a re-run of an already-ingested
+   * day `snapshotStocks` is 0 and `snapshots` ≈ 0ms. See updateSnapshots.
+   */
+  phaseMs?: {
+    fetch: number;
+    insert: number;
+    guards: number;
+    snapshots: number;
+    /** How many stocks updateSnapshots recomputed (= genuinely-new closes this run). */
+    snapshotStocks: number;
+  };
 }
 
 // ── Universe loader ────────────────────────────────────────────
@@ -154,6 +170,43 @@ async function computeReturns(
   };
 }
 
+// ── Genuinely-new selector ─────────────────────────────────────
+/**
+ * Partition the mapped feed → ONLY the prices whose (stockId, date) row does NOT
+ * yet exist (genuinely-new closes). createMany(skipDuplicates) returns only a
+ * COUNT, not the inserted set, so we diff a pre-insert existence query — keyed on
+ * the @@unique([stockId, date]), index-backed — against the mapped set. The result
+ * is the sole set updateSnapshots must recompute: a re-run of an already-ingested
+ * day yields [] → the ~250s snapshot phase becomes a no-op.
+ *
+ * MUST be called BEFORE the createMany (it reads pre-insert state). Returns the SAME
+ * element objects it was given (a filter, never a transform), so a recomputed stock's
+ * updateSnapshots input is byte-identical to the old all-recompute path's. Exported
+ * for the Part C verification harness. Same-day pipeline → one date, but keyed on
+ * (stockId, date) so a batch that ever spans dates stays correct.
+ */
+export async function selectGenuinelyNewPrices(
+  mappedStocks: Array<{ stockId: string; price: EodPrice }>,
+): Promise<Array<{ stockId: string; price: EodPrice }>> {
+  if (mappedStocks.length === 0) return [];
+  const dayKey = (stockId: string, d: Date) =>
+    `${stockId}::${d.toISOString().slice(0, 10)}`;
+  const batchDates = [
+    ...new Set(mappedStocks.map((m) => m.price.date.getTime())),
+  ].map((t) => new Date(t));
+  const preExisting = await prisma.dailyPrice.findMany({
+    where: {
+      stockId: { in: mappedStocks.map((m) => m.stockId) },
+      date: { in: batchDates },
+    },
+    select: { stockId: true, date: true },
+  });
+  const existingKeys = new Set(preExisting.map((p) => dayKey(p.stockId, p.date)));
+  return mappedStocks.filter(
+    (m) => !existingKeys.has(dayKey(m.stockId, m.price.date)),
+  );
+}
+
 // ── Core insert ────────────────────────────────────────────────
 
 async function insertDailyPrices(
@@ -163,10 +216,16 @@ async function insertDailyPrices(
 ): Promise<{
   inserted: number;
   skipped: number;
-  stocksWithNewPrices: Array<{ stockId: string; price: EodPrice }>;
+  /** Every universe-mapped price this run (the full feed) — feeds the batch-level
+   *  guards (null-rate), which measure the day's feed regardless of re-run state. */
+  mappedStocks: Array<{ stockId: string; price: EodPrice }>;
+  /** ONLY the prices whose (stockId, date) row did NOT already exist — i.e. genuinely
+   *  new closes. This is the set updateSnapshots must recompute; on a re-run of an
+   *  already-ingested day it is empty (nothing changed → nothing to recompute). */
+  newlyInsertedStocks: Array<{ stockId: string; price: EodPrice }>;
 }> {
   let skipped = 0;
-  const stocksWithNewPrices: Array<{ stockId: string; price: EodPrice }> = [];
+  const mappedStocks: Array<{ stockId: string; price: EodPrice }> = [];
   const rows: Prisma.DailyPriceCreateManyInput[] = [];
   // GUARD 5 (RANGE): collect per-row close violations; the row still LANDS
   // (medium = lands + flags), we just record each for admin review.
@@ -201,11 +260,15 @@ async function insertDailyPrices(
       provider,
     });
 
-    stocksWithNewPrices.push({ stockId, price });
+    mappedStocks.push({ stockId, price });
   }
 
   if (rows.length === 0)
-    return { inserted: 0, skipped, stocksWithNewPrices: [] };
+    return { inserted: 0, skipped, mappedStocks: [], newlyInsertedStocks: [] };
+
+  // BEFORE the insert: capture which (stockId, date) are genuinely new — the ONLY
+  // set updateSnapshots recomputes (a re-run of an ingested day → []). See helper.
+  const newlyInsertedStocks = await selectGenuinelyNewPrices(mappedStocks);
 
   const result = await prisma.dailyPrice.createMany({
     data: rows,
@@ -231,7 +294,7 @@ async function insertDailyPrices(
     });
   }
 
-  return { inserted: result.count, skipped, stocksWithNewPrices };
+  return { inserted: result.count, skipped, mappedStocks, newlyInsertedStocks };
 }
 
 // ── Snapshot updater ───────────────────────────────────────────
@@ -367,10 +430,14 @@ export async function runEodPriceIngest(
   }
 
   try {
+    // ── PROFILING: time each phase so a slow run is diagnosable from the log /
+    // job result (fetch vs insert vs the per-stock snapshot fan-out). ──
+    const tFetch0 = Date.now();
     const [universe, fetchResult] = await Promise.all([
       loadUniverse(),
       fetchWithFallback(priceDate),
     ]);
+    const fetchMs = Date.now() - tFetch0;
 
     // Market closed — log and return cleanly
     if (fetchResult.prices.length === 0) {
@@ -403,27 +470,35 @@ export async function runEodPriceIngest(
       };
     }
 
-    const { inserted, skipped, stocksWithNewPrices } = await insertDailyPrices(
-      fetchResult.prices,
-      universe,
-      fetchResult.provider,
-    );
+    const tInsert0 = Date.now();
+    const { inserted, skipped, mappedStocks, newlyInsertedStocks } =
+      await insertDailyPrices(
+        fetchResult.prices,
+        universe,
+        fetchResult.provider,
+      );
+    const insertMs = Date.now() - tInsert0;
 
+    const tGuards0 = Date.now();
     // ── GUARDS 3 + 4: run post-insert. This path is only reached on
     // NON-market-closed days (the market_closed branch returned above),
     // so no holiday false-flags.
     const runRefStr = runRef(priceDate, fetchResult.provider);
 
-    // GUARD 3: COUNT (high/medium · source_code · flag). Expected ≈ 202.
+    // GUARD 3: COUNT (high/medium · source_code · flag). Expected band is
+    // DERIVED from the live active universe (universe.size), so it self-scales
+    // as the universe grows (202 → 505 → …) and still catches duplication.
     // Measure the DAY's persisted coverage, NOT result.count: a healthy
     // self-healing re-run inserts 0 new rows (skipDuplicates) even though
     // the day is complete, so result.count would false-flag "below floor"
     // — exactly the alert-fatigue failure this system must avoid.
+    const activeUniverse = universe.size;
     const dayRowCount = await prisma.dailyPrice.count({
       where: { date: priceDate },
     });
-    const countVerdict = classifyCount(dayRowCount);
+    const countVerdict = classifyCount(dayRowCount, activeUniverse);
     if (countVerdict) {
+      const band = countBand(activeUniverse);
       await reportIngestionError({
         source: fetchResult.provider,
         cron: PRICES_CRON,
@@ -431,7 +506,7 @@ export async function runEodPriceIngest(
         targetTable: "DailyPrice",
         severity: countVerdict.severity,
         resolutionPath: "source_code",
-        expected: `150–250 rows for the day (≈202 universe)`,
+        expected: `${band.low}–${band.ceil} rows for the day (derived from ${activeUniverse} active-stock universe)`,
         observed: `${dayRowCount} rows for ${priceDate.toISOString().slice(0, 10)} (${inserted} new this run)`,
         detail: countVerdict.note,
         runRef: runRefStr,
@@ -441,8 +516,10 @@ export async function runEodPriceIngest(
     // GUARD 4: NULL-RATE (medium · source_code · flag). Batch-level rate
     // on genuinely-nullable fields only. NOT a fillable cell → source_code.
     // marketCap is intentionally gated (split-gate) and is NOT guarded.
-    if (stocksWithNewPrices.length > 0) {
-      const batch = stocksWithNewPrices.map((s) => s.price);
+    // Measured over the FULL mapped feed (not just newly-inserted) so the day's
+    // feed quality is assessed identically on first run and re-run — unchanged.
+    if (mappedStocks.length > 0) {
+      const batch = mappedStocks.map((s) => s.price);
       const n = batch.length;
       const prevCloseNulls = batch.filter((p) => p.prevClose == null).length;
       const tradedValueNulls = batch.filter(
@@ -492,12 +569,24 @@ export async function runEodPriceIngest(
       }
     }
 
-    // Update snapshots with returns (only for newly inserted)
-    if (stocksWithNewPrices.length > 0) {
-      await updateSnapshots(stocksWithNewPrices, fetchResult.provider);
+    const guardsMs = Date.now() - tGuards0;
+
+    // Update snapshots (returns / 52w / market-cap + upsert), one per stock —
+    // ONLY for genuinely-new closes (newlyInsertedStocks). A stock with no new row
+    // today already has a snapshot reflecting its latest close, so recomputing it
+    // would reproduce the identical value; skipping it is the ~250s win. On a re-run
+    // of an already-ingested day this set is empty → the snapshot phase is a no-op.
+    const tSnap0 = Date.now();
+    if (newlyInsertedStocks.length > 0) {
+      await updateSnapshots(newlyInsertedStocks, fetchResult.provider);
     }
+    const snapshotsMs = Date.now() - tSnap0;
 
     const durationMs = Date.now() - start;
+    console.log(
+      `[PriceIngest] phases — fetch=${fetchMs}ms insert=${insertMs}ms guards=${guardsMs}ms ` +
+        `snapshots=${snapshotsMs}ms (recomputed ${newlyInsertedStocks.length} of ${mappedStocks.length} mapped, ${inserted} newly inserted) total=${durationMs}ms`,
+    );
 
     await prisma.priceFetchLog.upsert({
       where: {
@@ -534,6 +623,13 @@ export async function runEodPriceIngest(
       totalInserted: inserted,
       totalSkipped: skipped,
       durationMs,
+      phaseMs: {
+        fetch: fetchMs,
+        insert: insertMs,
+        guards: guardsMs,
+        snapshots: snapshotsMs,
+        snapshotStocks: newlyInsertedStocks.length,
+      },
     };
   } catch (error) {
     const durationMs = Date.now() - start;

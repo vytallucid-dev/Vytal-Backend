@@ -97,6 +97,24 @@ model Stock {
   // ── Editorial overview content (hand-authored, separate lifecycle) ──
   overview StockOverview?
 
+  // ── Monthly frozen market-cap tier snapshots (display/PHS; never scored) ──
+  marketCapTierSnapshots MarketCapTierSnapshot[]
+
+  // ── Portfolio layer (per-user holdings/ledger; display/PHS, never scored) ──
+  transactions Transaction[]
+  holdings     Holding[]
+
+  // ── Watchlist back-relation (per-user pins; display-only, never scored) ──
+  watchlistEntries Watchlist[]
+
+  // ── Alerts back-relations (per-user rules + fired events; display-only, never scored) ──
+  alerts      Alert[]
+  alertEvents AlertEvent[]
+
+  // ── Event-reminder back-relations (per-user, date-triggered; never scored) ──
+  eventReminders      EventReminder[]
+  eventReminderEvents EventReminderEvent[]
+
   @@index([industryType])
   @@map("stocks")
 }
@@ -303,30 +321,30 @@ model QuarterlyResult {
 // Will be refreshed by yfinance later.
 // ─────────────────────────────────────────────
 model StockPrice {
-  id           String    @id @default(uuid())
-  stockId      String    @unique @map("stock_id")
-  price        Decimal   @db.Decimal(10, 2)
-  marketCap    Decimal?  @map("market_cap") @db.Decimal(20, 2) // ₹ Cr = close × total_shares / 1e7; null when split-gated / no shares
+  id             String    @id @default(uuid())
+  stockId        String    @unique @map("stock_id")
+  price          Decimal   @db.Decimal(10, 2)
+  marketCap      Decimal?  @map("market_cap") @db.Decimal(20, 2) // ₹ Cr = close × total_shares / 1e7; null when split-gated / no shares
   // The shareholding filing as-of date whose total_shares fed marketCap — auditability
   // (spot stale shares) + the split-gate's stale-window lower bound. Null ⇔ marketCap null.
   sharesAsOfDate DateTime? @map("shares_as_of_date") @db.Date
-  faceValue    Decimal?  @map("face_value") @db.Decimal(10, 2)
-  updatedAt    DateTime  @updatedAt @map("updated_at")
-  open         Decimal?  @db.Decimal(12, 2)
-  high         Decimal?  @db.Decimal(12, 2) // today's high
-  low          Decimal?  @db.Decimal(12, 2) // today's low
-  prevClose    Decimal?  @map("prev_close") @db.Decimal(12, 2)
-  dayChangePct Decimal?  @map("day_change_pct") @db.Decimal(8, 4)
-  volume       BigInt?
-  week52High   Decimal?  @map("week_52_high") @db.Decimal(12, 2)
-  week52Low    Decimal?  @map("week_52_low") @db.Decimal(12, 2)
-  return1m     Decimal?  @map("return_1m") @db.Decimal(12, 4)
-  return3m     Decimal?  @map("return_3m") @db.Decimal(12, 4)
-  return6m     Decimal?  @map("return_6m") @db.Decimal(12, 4)
-  return1y     Decimal?  @map("return_1y") @db.Decimal(12, 4)
-  sparkline    Json? // last 30 close prices array
-  priceDate    DateTime? @map("price_date") @db.Date
-  provider     String    @default("nse-bhavcopy-csv")
+  faceValue      Decimal?  @map("face_value") @db.Decimal(10, 2)
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  open           Decimal?  @db.Decimal(12, 2)
+  high           Decimal?  @db.Decimal(12, 2) // today's high
+  low            Decimal?  @db.Decimal(12, 2) // today's low
+  prevClose      Decimal?  @map("prev_close") @db.Decimal(12, 2)
+  dayChangePct   Decimal?  @map("day_change_pct") @db.Decimal(8, 4)
+  volume         BigInt?
+  week52High     Decimal?  @map("week_52_high") @db.Decimal(12, 2)
+  week52Low      Decimal?  @map("week_52_low") @db.Decimal(12, 2)
+  return1m       Decimal?  @map("return_1m") @db.Decimal(12, 4)
+  return3m       Decimal?  @map("return_3m") @db.Decimal(12, 4)
+  return6m       Decimal?  @map("return_6m") @db.Decimal(12, 4)
+  return1y       Decimal?  @map("return_1y") @db.Decimal(12, 4)
+  sparkline      Json? // last 30 close prices array
+  priceDate      DateTime? @map("price_date") @db.Date
+  provider       String    @default("nse-bhavcopy-csv")
 
   stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
@@ -2579,7 +2597,7 @@ model OwnershipScore {
   r1Fired            Boolean @default(false) @map("r1_fired")
   r1TriggeringValues Json?   @map("r1_triggering_values")
 
-  createdAt             DateTime                @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at")
 
   pillarScore    PillarScore             @relation(fields: [pillarScoreId], references: [id], onDelete: Cascade)
   flowCategories OwnershipFlowCategory[]
@@ -2640,25 +2658,25 @@ enum GuardrailRuling {
 
 // First-class detected patterns (divergence, trajectory structure).
 model ScorePattern {
-  id         String   @id @default(uuid())
-  snapshotId String   @map("snapshot_id")
-  symbol     String // denormalised
-  asOfDate   DateTime @map("as_of_date") @db.Date // denormalised
-  patternKey String   @map("pattern_key")
-  direction  String?
-  severity   String?
+  id           String   @id @default(uuid())
+  snapshotId   String   @map("snapshot_id")
+  symbol       String // denormalised
+  asOfDate     DateTime @map("as_of_date") @db.Date // denormalised
+  patternKey   String   @map("pattern_key")
+  direction    String?
+  severity     String?
   // Three mandatory display states (File 1 §5E): "active" | "pending_data_integration"
   // | "dampened". Free String (matches the codebase convention for soft-classification
   // fields, e.g. severity/direction) — defaults to "active" so existing readers are safe.
-  displayState String @default("active") @map("display_state")
+  displayState String   @default("active") @map("display_state")
   // EFFECTIVE score impact applied this snapshot (File 1 §5E: Green +5 / Amber −3 / Red
   // −8 / P13 ±5). For a dampened pattern this is the HALVED value (so −3 → −1.5 — Decimal,
   // not Int, to survive halving). Nullable: a pending_data_integration chip carries no
   // numeric impact. The base catalog magnitude is reconstructable from patternKey.
-  magnitude  Decimal? @db.Decimal(6, 2)
-  evidence   Json? // the underlying values (the UI reads this to build the verdict sentence)
-  metricRefs Json?    @map("metric_refs") // array of metricKeys
-  createdAt  DateTime @default(now()) @map("created_at")
+  magnitude    Decimal? @db.Decimal(6, 2)
+  evidence     Json? // the underlying values (the UI reads this to build the verdict sentence)
+  metricRefs   Json?    @map("metric_refs") // array of metricKeys
+  createdAt    DateTime @default(now()) @map("created_at")
 
   snapshot ScoreSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
 
@@ -2985,13 +3003,13 @@ model IngestionError {
   //    The dedup still rides the existing (cron, guardType, targetField, targetEntity,
   //    status) index — periodKey is folded into targetEntity for cascade rows, so these
   //    columns are structured/UI metadata, not part of the dedup key.
-  pgId             String? @map("pg_id") // PG_RESCORE entity ("PG5"); null for symbol-keyed cascades
-  periodKey        String? @map("period_key") // cascade edited period ("FY26Q2"); null for live pg_rescore
-  failureType      String? @map("failure_type") // "job_failed" | "degraded" | "stale"
-  degradationDetail Json?  @map("degradation_detail") // pillar/metric/presentRatio/lens — Stages 3/4
-  recomputeAction  String? @map("recompute_action") // "rescore" | "fill_then_rescore" | "source_code"
-  triggeringJobId  String? @map("triggering_job_id") // the failed BackgroundJob id (job_failed)
-  snapshotId       String? @map("snapshot_id") // the affected ScoreSnapshot — Stages 3/4
+  pgId              String? @map("pg_id") // PG_RESCORE entity ("PG5"); null for symbol-keyed cascades
+  periodKey         String? @map("period_key") // cascade edited period ("FY26Q2"); null for live pg_rescore
+  failureType       String? @map("failure_type") // "job_failed" | "degraded" | "stale"
+  degradationDetail Json?   @map("degradation_detail") // pillar/metric/presentRatio/lens — Stages 3/4
+  recomputeAction   String? @map("recompute_action") // "rescore" | "fill_then_rescore" | "source_code"
+  triggeringJobId   String? @map("triggering_job_id") // the failed BackgroundJob id (job_failed)
+  snapshotId        String? @map("snapshot_id") // the affected ScoreSnapshot — Stages 3/4
 
   @@index([status, severity]) // triage queue
   @@index([cron, createdAt]) // per-cron history
@@ -3023,4 +3041,513 @@ model RawFieldEdit {
   @@index([targetTable, targetRowId])
   @@index([createdAt])
   @@map("raw_field_edits")
+}
+
+// ═════════════════════════════════════════════════════════════════
+// USER LAYER  (Phase 1 — Supabase Auth)
+// Five tables keyed to Supabase auth.users. auth.users is NOT modelled
+// here (no multiSchema); the cross-schema FK on users.auth_user_id →
+// auth.users.id lives in raw SQL in the migration, as does the signup
+// trigger (handle_new_user) that seeds this row set on every new auth
+// user. PK ids carry a DB-level gen_random_uuid()::text default (unlike
+// the client-generated @default(uuid()) used elsewhere) because those
+// rows are born inside the Postgres trigger, server-side.
+// ═════════════════════════════════════════════════════════════════
+
+enum UserRole {
+  user
+  admin
+}
+
+enum AiLevel {
+  plain
+  balanced
+  technical
+}
+
+/// The spine. One row per Supabase auth user. Session middleware
+/// resolves a request (JWT sub == auth.users.id) to this row; `role`
+/// gates admin routes.
+model User {
+  id         String   @id @default(dbgenerated("gen_random_uuid()::text"))
+  authUserId String   @unique @map("auth_user_id") @db.Uuid // FK → auth.users.id (declared in SQL)
+  email      String
+  role       UserRole @default(user)
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  ledger         UserLedger?
+  register       UserRegister?
+  onboardingMeta UserOnboardingMeta?
+  linkedAccounts LinkedAccount[]
+
+  // ── Portfolio layer (user-authored ledger + materialized holdings) ──
+  transactions Transaction[]
+  holdings     Holding[]
+
+  // ── Portfolio Health Score snapshots (compute-once, append-only) ──
+  portfolioHealthSnapshots PortfolioHealthSnapshot[]
+
+  // ── Watchlist (per-user pinned research surface; display-only, never scored) ──
+  watchlist Watchlist[]
+
+  // ── User-created alerts (rules) + the fired-events log (records only; no email) ──
+  alerts      Alert[]
+  alertEvents AlertEvent[]
+
+  // ── Event reminders (date-triggered sibling of alerts) + their fired log ──
+  eventReminders      EventReminder[]
+  eventReminderEvents EventReminderEvent[]
+
+  @@map("users")
+}
+
+/// Durable onboarding FACTS. One row per user; columns nullable so
+/// onboarding fills them progressively (resumable).
+model UserLedger {
+  id          String  @id @default(dbgenerated("gen_random_uuid()::text"))
+  userId      String  @unique @map("user_id")
+  displayName String? @map("display_name")
+
+  // categorical (text + CHECK in SQL — may evolve)
+  financeDepth        String? @map("finance_depth") // casual | formal | professional
+  termComfort         String? @map("term_comfort") // explain | follow | assume
+  investingExperience String? @map("investing_experience") // starting | few_years | experienced
+  investingStyle      String? @map("investing_style") // long_term | mix | active
+
+  // adaptive flags (nullable booleans)
+  selfTaught            Boolean? @map("self_taught")
+  aspirationalTechnical Boolean? @map("aspirational_technical")
+  concisePro            Boolean? @map("concise_pro")
+  explainLeaning        Boolean? @map("explain_leaning")
+  trustCredential       Boolean? @map("trust_credential")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_ledger")
+}
+
+/// Mutable SETTINGS (sovereign; may intentionally disagree with the ledger).
+model UserRegister {
+  id        String   @id @default(dbgenerated("gen_random_uuid()::text"))
+  userId    String   @unique @map("user_id")
+  aiLevel   AiLevel  @default(balanced) @map("ai_level") // never null — the doc's fallback
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_register")
+}
+
+/// Onboarding completion + LEGAL record. Disclaimer fields are the
+/// liability shield — write-once in spirit (no overwrite path).
+model UserOnboardingMeta {
+  id                 String  @id @default(dbgenerated("gen_random_uuid()::text"))
+  userId             String  @unique @map("user_id")
+  onboardingComplete Boolean @default(false) @map("onboarding_complete")
+
+  currentStep    String? @map("current_step") // step key where the user is
+  completedSteps Json    @default("[]") @map("completed_steps") // array of completed step keys
+
+  disclaimerAcceptedAt  DateTime? @map("disclaimer_accepted_at")
+  disclaimerTextVersion String?   @map("disclaimer_text_version") // WHICH wording they accepted
+  onboardingVersion     String?   @map("onboarding_version")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_onboarding_meta")
+}
+
+/// BROKER connections only (Zerodha/Upstox/Groww — future). NOT for
+/// email/Google identity (Supabase's own provider-linking handles that).
+model LinkedAccount {
+  id                String   @id @default(dbgenerated("gen_random_uuid()::text"))
+  userId            String   @map("user_id")
+  provider          String // zerodha | upstox | groww | ...
+  providerAccountId String?  @map("provider_account_id")
+  metadata          Json?
+  status            String   @default("pending")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@index([userId])
+  @@map("linked_accounts")
+}
+
+// ─────────────────────────────────────────────
+// MARKET-CAP TIER SNAPSHOT — monthly FROZEN large/mid/small tier per stock, ranked
+// on derived market cap (latest total_shares × latest daily close, via the existing
+// computeMarketCap). Append-only: each monthly freeze appends a full set under a new
+// as_of_date; prior sets are NEVER mutated (audit of tier movement — mirrors
+// ScoreSnapshot's "captured at stamp time"). Latest as_of_date per stock = the live
+// tier PHS reads. Live-ranking flickers near the 100/250 cuts (<1% gaps), so the tier
+// is frozen monthly, not computed on read. DISPLAY/PHS only — a null-PG stock is still
+// never scored. Additive; apply via the drift-safe db-execute + migrate-resolve path
+// (see the RawFieldEdit comment / [[invest-iq-migration-drift]]).
+// ─────────────────────────────────────────────
+model MarketCapTierSnapshot {
+  id            String        @id @default(uuid())
+  stockId       String        @map("stock_id")
+  tier          MarketCapTier
+  rank          Int? // 1-based rank among rankable stocks; null ⇔ tier = unknown
+  marketCap     Decimal?      @map("market_cap") @db.Decimal(20, 2) // ₹Cr ranked on; null ⇔ unknown
+  // Why a stock is unknown (null when tier ≠ unknown). Distinct lifecycles: gated_split
+  // self-heals at the next freeze; no_total_shares persists until a filing lands.
+  unknownReason String?       @map("unknown_reason") // no_total_shares | no_price | gated_split
+  asOfDate      DateTime      @map("as_of_date") @db.Date
+  createdAt     DateTime      @default(now()) @map("created_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, asOfDate]) // idempotency + natural key: one row per stock per freeze
+  @@index([asOfDate]) // fetch a whole freeze / the latest freeze
+  @@map("market_cap_tier_snapshot")
+}
+
+enum MarketCapTier {
+  large
+  mid
+  small
+  unknown
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PORTFOLIO LAYER — the foundation PHS reads. Three tables:
+//   transactions  — SOURCE OF TRUTH (append-only, user-authored)
+//   holdings      — MATERIALIZED, recomputed on every txn write (never hand-set)
+//   holding_lots  — MATERIALIZED FIFO open-lot register (remainder after last replay)
+// Broker-match: display cost = weighted-avg of OPEN lots; realized P&L = FIFO
+// (oldest lot consumed first, IT-dept mandated). Full-replay-on-write so a
+// back-dated insert or a late split recomputes everything. DISPLAY/PHS only —
+// never touches scoring. Additive; apply via the drift-safe path.
+// ═══════════════════════════════════════════════════════════════
+
+enum TransactionType {
+  buy
+  sell
+  split
+  bonus
+  dividend
+}
+
+/// SOURCE OF TRUTH — append-only, user-authored. Never mutated except a
+/// correction (PATCH/DELETE), which triggers a full FIFO replay.
+model Transaction {
+  id        String          @id @default(uuid())
+  userId    String          @map("user_id")
+  stockId   String          @map("stock_id")
+  type      TransactionType
+  quantity  Decimal?        @db.Decimal(18, 4) // buy/sell shares; null for split/bonus/dividend
+  price     Decimal?        @db.Decimal(18, 6) // buy/sell ₹/share; dividend ₹/share; null for split/bonus
+  fees      Decimal?        @default(0) @db.Decimal(18, 6) // ₹ total charges (brokerage+STT+…); folds into cost basis (buy) / proceeds (sell); null = 0
+  tradeDate DateTime        @map("trade_date") @db.Date
+  ratio     String? // "a:b" for split/bonus (a additional per b held → factor (a+b)/b); null otherwise
+  notes     String?
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@index([userId, stockId, tradeDate, createdAt]) // the replay-order query
+  @@map("transactions")
+}
+
+/// MATERIALIZED — one row per (user, stock) that has any transaction. Recomputed on
+/// every write. qty may be 0 (fully exited): the row is KEPT so realized_pnl survives
+/// (tax + broker Tax P&L); GET /holdings filters qty>0 for the current-holdings view.
+model Holding {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  stockId        String   @map("stock_id")
+  quantity       Decimal  @db.Decimal(18, 4) // current open qty (Σ open lots)
+  avgCost        Decimal  @map("avg_cost") @db.Decimal(18, 6) // wtd-avg of OPEN lots = broker display cost
+  investedValue  Decimal  @map("invested_value") @db.Decimal(20, 2) // Σ(lot.qty × lot.cost)
+  realizedPnl    Decimal  @map("realized_pnl") @db.Decimal(20, 2) // cumulative FIFO-matched
+  lastComputedAt DateTime @map("last_computed_at")
+
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock        @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  lots  HoldingLot[]
+
+  @@unique([userId, stockId])
+  @@index([userId])
+  @@map("holdings")
+}
+
+/// MATERIALIZED FIFO open-lot register — the frozen open remainder after the last
+/// replay (consumed lots are not stored). Ordered by buy_date (FIFO). buy_date is
+/// PRESERVED through splits/bonus so per-lot holding period (STCG/LTCG) is exact.
+model HoldingLot {
+  id           String   @id @default(uuid())
+  holdingId    String   @map("holding_id")
+  quantity     Decimal  @db.Decimal(18, 4)
+  costPerShare Decimal  @map("cost_per_share") @db.Decimal(18, 6)
+  buyDate      DateTime @map("buy_date") @db.Date
+  sourceTxnId  String   @map("source_txn_id") // soft ref to the originating buy txn (lots are rebuilt each replay)
+
+  holding Holding @relation(fields: [holdingId], references: [id], onDelete: Cascade)
+
+  @@index([holdingId, buyDate])
+  @@map("holding_lots")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PORTFOLIO HEALTH SCORE SNAPSHOT (PHS Part A) — compute-once, append-only.
+// One row per (portfolio=user, compute-event). The single source every surface
+// reads (Overview, Health tab) — no surface re-runs the engine. PHS = holdings'
+// quality (anchor) − penalty-only Structure/Signals, capped by coverage confidence.
+// All constants stamped `portfolio-spec 1.0` (declared, not derived). Skip-write when
+// the input fingerprint is unchanged from the user's latest snapshot. Additive; apply
+// via the drift-safe path (see [[invest-iq-migration-drift]]).
+// ═══════════════════════════════════════════════════════════════
+model PortfolioHealthSnapshot {
+  id     String @id @default(uuid())
+  userId String @map("user_id") // the portfolio = the user's book
+
+  // ── headline ──
+  phs            Int? // published integer PHS; null when c=0 (construction-read only)
+  phsRaw         Decimal? @map("phs_raw") @db.Decimal(8, 4) // pre-ceiling
+  band           String? // Strong|Steady|Mixed|Fragile|Weak; null when no PHS
+  provisional    Boolean  @default(false) // c < 0.40 (PROVISIONAL_BELOW)
+  evaluable      Boolean  @default(true) // false ⇔ c=0 (no scored holdings)
+  ceilingApplied Boolean  @map("ceiling_applied") // did the ceiling bind (ceiling < phs_raw)?
+  ceilingValue   Int?     @map("ceiling_value") // ceiling in force; null when c≥0.80 (none)
+
+  // ── pillars ──
+  quality   Decimal? @db.Decimal(8, 4) // null when not evaluable
+  structure Decimal  @db.Decimal(8, 4) // always computed (whole book)
+  signals   Decimal  @db.Decimal(8, 4)
+
+  // ── coverage + bucket value splits ──
+  coverage                Decimal @db.Decimal(6, 4) // c
+  totalValue              Decimal @map("total_value") @db.Decimal(20, 2)
+  scoredValue             Decimal @map("scored_value") @db.Decimal(20, 2)
+  recognizedUnscoredValue Decimal @map("recognized_unscored_value") @db.Decimal(20, 2)
+  smallUnscoredValue      Decimal @map("small_unscored_value") @db.Decimal(20, 2)
+
+  // ── full deduction ledgers (A.12) ──
+  structureLedger Json  @map("structure_ledger") // every fired S-rule with its points
+  signalsLedger   Json  @map("signals_ledger") // per-holding resolved Signals deduction + winning source
+  firedFindings   Json? @map("fired_findings") // PF IDs (Part B) — always [] for Part A, column reserved
+
+  // ── provenance ──
+  constantVersion String   @map("constant_version") // 'portfolio-spec 1.0'
+  fingerprint     String // skip-write if == the user's latest snapshot's
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)]) // latest snapshot per user (the read path)
+  @@index([fingerprint])
+  @@map("portfolio_health_snapshot")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// WATCHLIST — per-user pinned research surface. One row per (user, stock) tracked.
+// pinned_* is a BASELINE captured ONCE at add-time (the stock's health/band/price the
+// moment it was pinned) — cheap now, unreconstructable later; the anchor for the future
+// "changed since you added" signal. NEVER updated after insert. Everything else the
+// surface shows (current health, findings, three-lens verdicts, live price) is
+// READ-JOINED at query time from existing computed tables — never stored here. DISPLAY
+// only; never scored. Additive; apply via the drift-safe db-execute + migrate-resolve
+// path (see [[invest-iq-migration-drift]]).
+// ═══════════════════════════════════════════════════════════════
+model Watchlist {
+  id      String @id @default(uuid())
+  userId  String @map("user_id")
+  stockId String @map("stock_id")
+
+  addedAt DateTime @default(now()) @map("added_at")
+
+  // ── two-tier favorites: star promotes a pin to a favorite (a MUTABLE flag, unlike the
+  //    pinned_* baseline). Toggled via PATCH /me/watchlist/:stockId; drives the filter. ──
+  favorite Boolean @default(false)
+
+  // ── pin-time baseline (captured ONCE at insert; never updated) ──
+  pinnedHealth Int?     @map("pinned_health") // composite (rounded) at pin-time; null ⇔ unscored then
+  pinnedBand   String?  @map("pinned_band") // LabelBand string at pin-time; null ⇔ unscored then
+  pinnedPrice  Decimal? @map("pinned_price") @db.Decimal(12, 2) // last close at pin-time; null ⇔ no price then
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stockId]) // idempotency + natural key: one pin per (user, stock)
+  @@index([userId, addedAt(sort: Desc)]) // the list read path (a user's pins, newest first)
+  @@map("watchlist")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ALERTS — user-created rules on a stock (price / health_band / finding) + the
+// fired-events log that email drains LATER. This build RECORDS fires only; it sends
+// NOTHING. Same architecture as the other /me/* surfaces: auth-gated, IDOR-scoped,
+// read-only over already-computed data (price / band / findings) — evaluate, never
+// recompute. Firing is on CROSSING, not STATE (the `armed` re-arm flag is the anti-spam
+// rule; see src/alerts/). Universe-gated (stock in the 505). A user may have many alerts
+// per stock. Additive; applied via the drift-safe path ([[invest-iq-migration-drift]]).
+// ═══════════════════════════════════════════════════════════════
+model Alert {
+  id      String @id @default(uuid())
+  userId  String @map("user_id")
+  stockId String @map("stock_id")
+
+  type     AlertType
+  operator AlertOperator // price/health_band → above|below; finding → fires (DB CHECK-enforced)
+
+  // Polymorphic target — exactly ONE populated per type (DB CHECK-enforced):
+  //   price       → thresholdPrice (compared to the latest EOD close)
+  //   health_band → thresholdBand  (compared to the current band rank; enum ⇒ never invalid)
+  //   finding     → findingKey     (a specific finding key, or null ⇒ "any new finding")
+  thresholdPrice Decimal?   @map("threshold_price") @db.Decimal(14, 4)
+  thresholdBand  LabelBand? @map("threshold_band")
+  findingKey     String?    @map("finding_key")
+
+  repeatMode AlertRepeatMode @default(one_shot) @map("repeat_mode")
+
+  // Lifecycle. active: one_shot self-deactivates after firing; repeating stays active.
+  // armed: the crossing/re-arm flag — fire only if armed && condition-true, then disarm;
+  // re-arm (armed=true) only when the condition goes FALSE again. This is what stops a
+  // persistently-true condition from firing every single day.
+  active Boolean @default(true)
+  armed  Boolean @default(true)
+
+  lastTriggeredAt DateTime? @map("last_triggered_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock  Stock        @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  events AlertEvent[]
+
+  @@index([userId, createdAt(sort: Desc)]) // the user's alerts list, newest first
+  @@index([active]) // the daily eval pass scans ACTIVE alerts
+  @@index([stockId])
+  @@map("alerts")
+}
+
+// The FIRED log — one row per time an alert's condition crossed into true. This is what
+// the (separate, later) email stage drains: `delivered` flips true when an email is sent.
+// user_id + stock_id are denormalised so the IDOR-scoped log read needs no join. FK to
+// alerts is CASCADE (delete an alert → its fired history goes with it, per spec).
+model AlertEvent {
+  id        String   @id @default(uuid())
+  alertId   String   @map("alert_id")
+  userId    String   @map("user_id")
+  stockId   String   @map("stock_id")
+  firedAt   DateTime @default(now()) @map("fired_at")
+  snapshot  String // the value that triggered it, rendered (price / band / finding key)
+  delivered Boolean  @default(false) // email flips this LATER; nothing sends in this build
+  createdAt DateTime @default(now()) @map("created_at")
+
+  alert Alert @relation(fields: [alertId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@index([userId, firedAt(sort: Desc)]) // the user's fired-events log (in-app surface)
+  @@index([alertId])
+  @@index([delivered]) // the future email drain scans undelivered rows
+  @@map("alert_events")
+}
+
+enum AlertType {
+  price
+  health_band
+  finding
+}
+
+enum AlertOperator {
+  above
+  below
+  fires
+}
+
+enum AlertRepeatMode {
+  one_shot
+  repeating
+}
+
+// ─────────────────────────────────────────────
+// EVENT REMINDERS — the "simpler sibling" of alerts (Alert): a user asks to be reminded
+// N days before a stock's next event of a given type. The trigger is a DATE, not a
+// condition — that is the whole difference from an alert.
+//
+// SEMANTIC BINDING (not eventId): a reminder binds by (stockId, eventType), NOT to a
+// specific corporate_events row. Every eval re-resolves "the stock's NEAREST upcoming
+// event of that type", so a rescheduled date — which lands as a NEW corporate_events row
+// (the upsert key is stockId+eventType+eventDate) — is FOLLOWED automatically. A reminder
+// can never pin to a stale row.
+//
+// Simpler lifecycle than alerts: pause/resume (active) + delete only — there is no
+// threshold to edit. Delivery REUSES the alerts email pipeline (the same Resend mailer +
+// send-then-flip drain); this build only adds the reminder-shaped fired log + template.
+model EventReminder {
+  id      String @id @default(uuid())
+  userId  String @map("user_id")
+  stockId String @map("stock_id")
+
+  // The corporate-event type this reminder watches (earnings | dividend | agm |
+  // board_meeting | bonus | split | rights | buyback | record_date). Free TEXT to mirror
+  // corporate_events.event_type (which is TEXT, not a native enum) — validated at the API.
+  eventType String @map("event_type")
+
+  // Lead time in days. Default 1 (the point is lead time — we never fire ON the event day).
+  daysBefore Int @default(1) @map("days_before")
+
+  // Lifecycle. active=false ⇔ paused (the PATCH endpoint toggles this and nothing else).
+  active      Boolean   @default(true)
+  lastFiredAt DateTime? @map("last_fired_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user   User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock  Stock                @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  events EventReminderEvent[]
+
+  // One reminder per (user, stock, eventType) — the semantic bind is unique per user, so a
+  // POST for an existing pair updates it (idempotent) rather than piling up duplicates.
+  @@unique([userId, stockId, eventType], name: "event_reminder_unique")
+  @@index([userId, createdAt(sort: Desc)]) // the user's reminders list, newest first
+  @@index([active]) // the daily eval pass scans ACTIVE reminders
+  @@index([stockId])
+  @@map("event_reminders")
+}
+
+// The FIRED log — one row per reminder per resolved event OCCURRENCE. The email drain reads
+// delivered=false rows and sends via the SAME mailer alerts use (delivered flips true on a
+// confirmed send). `resolvedEventDate` is the DEDUPE key: fire once per (reminder,
+// occurrence date) — a re-eval on the same day never double-sends, while a genuinely new
+// date (a reschedule) is a new occurrence that may fire again. Mirrors AlertEvent; user_id
+// + stock_id are denormalised so the IDOR-scoped log read needs no join.
+model EventReminderEvent {
+  id                String   @id @default(uuid())
+  reminderId        String   @map("reminder_id")
+  userId            String   @map("user_id")
+  stockId           String   @map("stock_id")
+  eventType         String   @map("event_type") // denormalised (the reminder's type at fire)
+  resolvedEventDate DateTime @map("resolved_event_date") @db.Date // the occurrence reminded for
+  firedAt           DateTime @default(now()) @map("fired_at")
+  delivered         Boolean  @default(false) // email flips this true after a confirmed send
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  reminder EventReminder @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock    Stock         @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  // Hard dedupe: one fired row per reminder per occurrence date (belt-and-braces with the
+  // eval's own pre-check — a race can never double-insert for the same occurrence).
+  @@unique([reminderId, resolvedEventDate], name: "event_reminder_event_occurrence")
+  @@index([userId, firedAt(sort: Desc)]) // the user's reminder feed (in-app surface)
+  @@index([reminderId])
+  @@index([delivered]) // the email drain scans undelivered rows
+  @@map("event_reminder_events")
 }

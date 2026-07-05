@@ -123,6 +123,73 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
       ).then(() => {}),
   },
 
+  // ── User-created alerts: daily evaluation pass ─────────────
+  // Hung on the daily EOD cycle, but scheduled DELIBERATELY LATE — after the 7:00 PM IST
+  // EOD-price ingest AND the PG rescores it enqueues (all 13 scored PGs) have had time to
+  // land. Runs at 8:30 PM IST so each alert reads the day's fresh band / findings, not a
+  // stale pre-rescore snapshot. Weekdays only (prices only move Mon–Fri). Evaluation
+  // RECORDS fires into alert_events and flips (active, armed) — it SENDS NOTHING.
+  {
+    name: "daily-alerts-eval",
+    schedule: "0 15 * * 1-5", // 8:30 PM IST, Mon–Fri (≈1.5h after EOD prices → post-rescore)
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.ALERTS_EVAL_DAILY,
+        {},
+        "cron:daily-alerts-eval",
+      ).then(() => {}),
+  },
+
+  // ── User-created alerts: daily email drain ─────────────────
+  // Runs 15 min AFTER daily-alerts-eval so tonight's fires (recorded into alert_events by
+  // the eval pass) go out tonight. The eval pass is a fast read-only scan + a few small
+  // transactions, so its events have long committed by 8:45 PM. Drains the WHOLE
+  // undelivered backlog, so this also retries any events a prior run failed to send.
+  // Idempotent (delivered flag is the guard) → a race or double-tick never double-sends.
+  // Weekdays only, mirroring the eval cron.
+  {
+    name: "daily-alerts-deliver",
+    schedule: "15 15 * * 1-5", // 8:45 PM IST, Mon–Fri (15 min after daily-alerts-eval)
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.ALERTS_DELIVER_DAILY,
+        {},
+        "cron:daily-alerts-deliver",
+      ).then(() => {}),
+  },
+
+  // ── Event reminders: daily evaluation pass ─────────────────
+  // Runs EVERY DAY (not just weekdays like the alerts eval) — reminders are date-based, so a
+  // Monday event with a 1-day lead must fire on the (weekend) Sunday. Scheduled after the
+  // alerts crons; re-resolves each reminder's nearest upcoming event (follows reschedules)
+  // and records fires into event_reminder_events. Sends NOTHING.
+  {
+    name: "daily-reminders-eval",
+    schedule: "20 15 * * *", // 8:50 PM IST, every day
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.REMINDERS_EVAL_DAILY,
+        {},
+        "cron:daily-reminders-eval",
+      ).then(() => {}),
+  },
+
+  // ── Event reminders: daily email drain ─────────────────────
+  // Runs 5 min AFTER daily-reminders-eval so tonight's fires go out tonight, EVERY DAY (must
+  // cover weekends, mirroring the eval cadence). Drains event_reminder_events via the SAME
+  // Resend mailer alerts use; drains the whole backlog so it also retries prior failures.
+  // Idempotent (delivered flag is the guard) → a race or double-tick never double-sends.
+  {
+    name: "daily-reminders-deliver",
+    schedule: "25 15 * * *", // 8:55 PM IST, every day (5 min after daily-reminders-eval)
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.REMINDERS_DELIVER_DAILY,
+        {},
+        "cron:daily-reminders-deliver",
+      ).then(() => {}),
+  },
+
   // ── Block / Bulk Deals ─────────────────────────────────────
   {
     name: "daily-block-deals",

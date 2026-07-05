@@ -43,7 +43,7 @@ export interface ReportIngestionErrorInput {
   severity: IngestionSeverity;
   /** source_code (no fill-button) | admin_fill (fill-button). */
   resolutionPath: ResolutionPath;
-  /** What the guard expected, e.g. "150–250 rows". */
+  /** What the guard expected, e.g. "454–556 rows". */
   expected: string;
   /** What it actually saw, e.g. "12 rows". */
   observed: string;

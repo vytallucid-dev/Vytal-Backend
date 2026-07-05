@@ -8,6 +8,73 @@ import { runIndexIngest } from "../../ingestions/indices/ingest-indices.js";
 import { enqueueJob } from "../../jobs/enqueue.js";
 import { JobTypes } from "../../jobs/types.js";
 
+// ── GET /api/v1/indices/latest ────────────────────────────────
+// Compact read-only board of the headline indices for the dashboard strip.
+// READ-ONLY over index_prices (EOD closes) — no compute, no store. For each of the
+// core full-history indices present in the feed it returns the latest close, the
+// prior close, the day change %, and a short trailing sparkline. Public (index data
+// is public market data), mirroring the equity /prices reads.
+const CORE_INDICES = [
+  "Nifty 50",
+  "Nifty Bank",
+  "Nifty IT",
+  "Nifty Pharma",
+  "Sensex",
+  "Nifty Auto",
+  "Nifty FMCG",
+  "Nifty Metal",
+  "Nifty Realty",
+] as const;
+
+// A couple of friendlier display labels; every other name renders verbatim.
+const INDEX_LABEL: Record<string, string> = { "Nifty Bank": "Bank Nifty" };
+
+export const getLatestIndices = async (_req: Request, res: Response) => {
+  try {
+    // Wide enough to carry ~40 trading sessions for the sparkline even across holidays.
+    const since = new Date();
+    since.setUTCDate(since.getUTCDate() - 80);
+
+    const rows = await prisma.indexPrice.findMany({
+      where: { indexName: { in: [...CORE_INDICES] }, date: { gte: since } },
+      orderBy: [{ indexName: "asc" }, { date: "asc" }],
+      select: { indexName: true, date: true, close: true },
+    });
+
+    const byName = new Map<string, { date: Date; close: number }[]>();
+    for (const r of rows) {
+      const arr = byName.get(r.indexName) ?? [];
+      arr.push({ date: r.date, close: Number(r.close) });
+      byName.set(r.indexName, arr);
+    }
+
+    // Preserve CORE_INDICES order; drop any index without ≥2 points (no honest day change).
+    const indices = CORE_INDICES.filter((n) => (byName.get(n)?.length ?? 0) >= 2).map((n) => {
+      const series = byName.get(n)!;
+      const closes = series.map((s) => s.close);
+      const last = closes[closes.length - 1];
+      const prev = closes[closes.length - 2];
+      const changePct = prev ? ((last - prev) / prev) * 100 : 0;
+      return {
+        indexName: n,
+        label: INDEX_LABEL[n] ?? n,
+        close: last,
+        prevClose: prev,
+        changePct,
+        asOf: series[series.length - 1].date.toISOString().slice(0, 10),
+        spark: closes.slice(-40), // ascending closes for the inline sparkline
+      };
+    });
+
+    return res.json({ success: true, data: { indices, count: indices.length } });
+  } catch (err) {
+    console.error("[indices/latest]", err);
+    return res
+      .status(500)
+      .json({ success: false, error: "Failed to load indices" });
+  }
+};
+
 // ── GET /api/v1/indices/index-logs ────────────────────────────
 // Returns paginated IndexFetchLog rows for monitoring (mirrors the
 // price-logs endpoint so the admin UI renders both identically).

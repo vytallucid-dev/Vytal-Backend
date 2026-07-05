@@ -15,6 +15,8 @@
   "dependencies": {
     "@prisma/adapter-pg": "^7.7.0",
     "@prisma/client": "^7.7.0",
+    "@react-email/components": "^1.0.12",
+    "@react-email/render": "^2.0.10",
     "adm-zip": "^0.5.17",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
@@ -23,11 +25,15 @@
     "express": "^5.2.1",
     "fast-xml-parser": "^5.7.1",
     "helmet": "^8.1.0",
+    "jose": "^6.2.3",
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
     "pdf-parse": "^2.4.5",
     "pg": "^8.20.0",
     "prisma": "^7.7.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "resend": "^6.17.1",
     "xlsx": "^0.18.5",
     "yahoo-finance2": "^3.14.0",
     "zod": "^4.3.6"
@@ -43,6 +49,7 @@
     "@types/node-cron": "^3.0.11",
     "@types/pdf-parse": "^1.1.5",
     "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.17",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }

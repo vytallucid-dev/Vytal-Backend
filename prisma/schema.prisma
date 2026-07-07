@@ -3306,9 +3306,10 @@ model HoldingLot {
 // One row per (portfolio=user, compute-event). The single source every surface
 // reads (Overview, Health tab) — no surface re-runs the engine. PHS = holdings'
 // quality (anchor) − penalty-only Structure/Signals, capped by coverage confidence.
-// All constants stamped `portfolio-spec 1.0` (declared, not derived). Skip-write when
-// the input fingerprint is unchanged from the user's latest snapshot. Additive; apply
-// via the drift-safe path (see [[invest-iq-migration-drift]]).
+// All constants stamped `portfolio-spec 1.1` (declared, not derived). Skip-write when
+// the input fingerprint is unchanged from the user's latest snapshot (fingerprint UNCHANGED
+// by 1.1 — the copy-only tiers are not in it). Additive; apply via the drift-safe path
+// (see [[invest-iq-migration-drift]]).
 // ═══════════════════════════════════════════════════════════════
 model PortfolioHealthSnapshot {
   id     String @id @default(uuid())
@@ -3340,8 +3341,22 @@ model PortfolioHealthSnapshot {
   signalsLedger   Json  @map("signals_ledger") // per-holding resolved Signals deduction + winning source
   firedFindings   Json? @map("fired_findings") // PF IDs (Part B) — always [] for Part A, column reserved
 
+  // ── copy-only tiers (portfolio-spec 1.1, Change 2) — STORAGE + Part B copy SELECTOR.
+  //    structureTier from holding count N; capitalTier from total value ₹. HARD LOCK:
+  //    nothing in the score reads these — the PHS is byte-identical with or without them.
+  //    Nullable: pre-1.1 rows keep NULL (migration-gated, no backfill). ──
+  structureTier String? @map("structure_tier") // Starter | Building | Established
+  capitalTier   String? @map("capital_tier") //   Modest | Moderate | Substantial
+
+  // ── health-read enrichments (portfolio-spec 1.2, Change 4/5) — computed at snapshot time
+  //    over the SCORED holdings. pillarProfile = position-weighted pillar means; lensProfile =
+  //    findings-CHARACTER shares by lens nature (never attribution). Nullable: NULL when no
+  //    scored holdings (both) or no lens patterns fired (lensProfile). Migration-gated. ──
+  pillarProfile Json? @map("pillar_profile") // { foundation, momentum, market, ownership } | null
+  lensProfile   Json? @map("lens_profile") //   { absolute, peer, trend } | null
+
   // ── provenance ──
-  constantVersion String   @map("constant_version") // 'portfolio-spec 1.0'
+  constantVersion String   @map("constant_version") // 'portfolio-spec 1.2'
   fingerprint     String // skip-write if == the user's latest snapshot's
   createdAt       DateTime @default(now()) @map("created_at")
 

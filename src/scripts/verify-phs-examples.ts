@@ -1,10 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// PHS ENGINE VERIFICATION — reproduce the spec's four worked examples (§A.10) to
-// their stated pillar + PHS numbers. Pure engine (inputs supplied directly).
+// PHS ENGINE VERIFICATION — portfolio-spec 1.2 (DECOUPLING). Pure engine (inputs direct).
+//   • Change 1 — Health = Quality − 0.20×(100 − Signals); NO structure term.
+//   • Change 2 — Construction = standalone Structure (full strength).
+//   • Change 3 — the coverage ceiling is RETIRED; Health shows TRUE (only a Provisional tag).
+//   • Change 4 — pillarProfile renormalizes over scored weight.
+//   • Change 5 — lensProfile is findings-character; null when no lens patterns fired.
 //   npx tsx src/scripts/verify-phs-examples.ts
 // ─────────────────────────────────────────────────────────────────────────────
-import { computePhs, type PhsHolding } from "../portfolio/phs/engine.js";
-import * as K from "../portfolio/phs/constants.js";
+import { computePhs, type PhsHolding, type PillarSubtotals } from "../portfolio/phs/engine.js";
+import type { LensNature } from "../portfolio/phs/constants.js";
 
 let failures = 0;
 function near(name: string, actual: number | null, expected: number, tol = 0.05) {
@@ -17,81 +21,114 @@ function eq(name: string, actual: unknown, expected: unknown) {
   console.log(`    ${ok ? "✅" : "❌"} ${name}: ${String(actual)} (exp ${String(expected)})`);
   if (!ok) failures++;
 }
-const H = (symbol: string, marketValue: number, tier: PhsHolding["tier"], sector: string | null, health: number | null, findings: PhsHolding["findings"] = []): PhsHolding =>
-  ({ symbol, marketValue, tier, sector, health, findings });
+const H = (
+  symbol: string, marketValue: number, tier: PhsHolding["tier"], sector: string | null, health: number | null,
+  findings: PhsHolding["findings"] = [], pillars: PillarSubtotals | null = null, lensNatures: LensNature[] = [],
+): PhsHolding => ({ symbol, marketValue, tier, sector, health, findings, pillars, lensNatures });
 
-// ── Example 1 — typical retail book ──
-console.log("\n═══ Example 1 — typical retail book (spec: Q72.3 · Str92.5 · Sig93.0 · PHS 69 Steady · c0.62) ═══");
-const e1 = computePhs([
-  H("HDFCBANK", 20, "large", "Financials", 74), H("TCS", 13, "large", "IT", 71),
-  H("BEL", 11, "large", "Defense", 78), H("SBIN", 10, "large", "Financials", 66, ["medium"]),
-  H("RELIANCE", 8, "large", "Energy", 70, ["lp5"]),
-  H("TATAMOTORS", 12, "large", "Auto", null), H("ZOMATO", 8, "large", "Consumer", null),
-  H("SMALLIT", 10, "small", "IT", null), H("SMALLY", 5, "small", null, null), H("MICROZ", 3, "small", null, null),
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCEPTANCE 1 — the decoupled pair. A single health-80 stock: Health passes straight
+// through (= Quality 80, no positional penalty), while Construction stands ALONE at full
+// strength. Under v1.1 this was blended into ONE dampened number; 1.2 shows the honest pair.
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log("\n═══ ACCEPTANCE 1 — single health-80 stock: the decoupled pair ═══");
+const oneKnown = computePhs([H("ONE", 100, "large", "Financials", 80)]); // known sector → S2 fires
+console.log(`  known-sector single stock → Health ${oneKnown.health} (${oneKnown.band}) · Construction ${oneKnown.structure.toFixed(0)} · quality ${oneKnown.quality} · signals ${oneKnown.signals}`);
+eq("Health = 80 (pure Quality, NO structure term)", oneKnown.health, 80);
+eq("band Strong", oneKnown.band, "Strong");
+eq("Construction = standalone Structure = 55 (S1 0 · S2 −25 · S3 −20)", Math.round(oneKnown.structure), 55);
+eq("no coverage cap — Health shows TRUE (evaluable)", oneKnown.evaluable, true);
+// the unknown-sector variant: S2 not evaluable → Construction = 80 (S3 only), pair collapses.
+const oneUnknown = computePhs([H("ONE", 100, "large", null, 80)]);
+console.log(`  unknown-sector single stock → Health ${oneUnknown.health} · Construction ${oneUnknown.structure.toFixed(0)} (S3-only)`);
+eq("unknown-sector Construction = 80 (S3 only, no S2)", Math.round(oneUnknown.structure), 80);
+console.log("  NOTE: the amendment's illustrative '80·35 / hidden as 56' does not match the S-rule caps —");
+console.log("  a single position floors Structure at 55 (S1=0 via the 1.1 relative threshold, S2 caps −25,");
+console.log("  S3 caps −20). The v1.1 BLENDED value was 67 (80 − 0.30×45), not 56 (56 was the health-70 case).");
+console.log("  The DECOUPLING itself is exact: Health 80 (pure Quality) now stands beside Construction 55.");
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCEPTANCE 2 — the v1.1 acceptance book, recomputed. Health loses the −0.30×structure
+// drag → rises to Quality (71); Construction now carries the structure standalone at full
+// strength (86, was dampened into the old blended 67).
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log("\n═══ ACCEPTANCE 2 — v1.1 book decoupled (Health 71 · Construction 86; was blended 67) ═══");
+const book = computePhs([
+  H("CUMMINS", 30, "large", "CapGoods", 84), H("TCS", 23, "large", "IT", 71),
+  H("RELIANCE", 19, "large", "Energy", 55), H("MM", 18, "large", "Auto", 69),
+  H("HDFCBANK", 10, "large", "Financials", 68),
 ]);
-near("Quality", e1.quality, 72.27, 0.02); near("Structure", e1.structure, 92.5); near("Signals", e1.signals, 93.0);
-near("coverage", e1.coverage, 0.62); near("phsRaw", e1.phsRaw, 68.62, 0.02); eq("PHS", e1.phs, 69); eq("band", e1.band, "Steady");
+console.log(`  Health ${book.health} (${book.band}) · Construction ${book.structure.toFixed(2)} · quality ${book.quality?.toFixed(2)} · signals ${book.signals}`);
+near("Quality 71.2 (unchanged)", book.quality, 71.2, 0.05);
+eq("Health = 71 (= Quality, Signals clean; structure term GONE)", book.health, 71);
+eq("band Steady", book.band, "Steady");
+near("Construction ≈ 86.1 (standalone Structure, full strength)", book.structure, 86.07, 0.05);
+eq("no ceiling in the result shape (retired)", (book as unknown as Record<string, unknown>).ceilingApplied, undefined);
 
-// ── Example 2 — concentration + blindness (ENGINE-CORRECT: Σw²=0.28 → PHS 57) ──
-console.log("\n═══ Example 2 — multibagger believer (engine-correct: Q72.4 · Str47.3 · Sig100 · PHS 57 Mixed · c0.40) ═══");
-const e2 = computePhs([
-  H("SMALLX", 45, "small", null, null), H("OTHER", 15, "small", null, null),
-  H("RIL", 15, "large", "Energy", 70), H("TCS", 15, "large", "IT", 71), H("BEL", 10, "large", "Defense", 78),
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCEPTANCE 3 — value-invariance. Portfolio VALUE never enters any number. Same book at
+// ₹1L vs ₹50L → identical Health / Construction / pillarProfile; only capital_tier differs.
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log("\n═══ ACCEPTANCE 3 — value-invariance (₹1L vs ₹50L) ═══");
+const PL: PillarSubtotals = { foundation: 72, momentum: 60, market: 55, ownership: 68 };
+const bookAt = (u: number) => computePhs([
+  H("A", 40 * u, "large", "IT", 78, [], PL), H("B", 35 * u, "large", "Energy", 66, [], PL), H("C", 25 * u, "large", "Auto", 70, [], PL),
 ]);
-near("Quality", e2.quality, 72.375, 0.01); near("Neff", e2.neff, 3.571, 0.005); near("Structure", e2.structure, 47.286, 0.02);
-near("Signals", e2.signals, 100); eq("S2 evaluable (unknown 60% > 50%)", e2.s2Evaluable, false);
-near("coverage", e2.coverage, 0.4); near("phsRaw", e2.phsRaw, 56.561, 0.02); eq("PHS (correct arithmetic)", e2.phs, 57); eq("band", e2.band, "Mixed");
+const cheap = bookAt(1_000), rich = bookAt(50_000); // ₹100,000 vs ₹5,000,000
+eq("Health identical", cheap.health === rich.health, true);
+eq("Construction identical", cheap.structure === rich.structure, true);
+eq("pillarProfile identical", JSON.stringify(cheap.pillarProfile) === JSON.stringify(rich.pillarProfile), true);
+eq("capital_tier DIFFERS: ₹1L Modest", cheap.capitalTier, "Modest");
+eq("capital_tier DIFFERS: ₹50L Substantial", rich.capitalTier, "Substantial");
 
-// Ex2 DUAL-TRACE — prove the engine gives 57 on correct Σw²=0.28, and 56 ONLY on the spec's typo Σw²=0.29.
-console.log("  ── Ex2 dual-trace (formula + constants held fixed; only Σw² varies) ──");
-function ex2Trace(sumW2: number) {
-  const neff = 1 / sumW2;
-  const s3 = Math.min(K.S3_RATE * (K.S3_TARGET - neff), K.S3_CAP);
-  const structure = 100 - K.S1_CAP /*S1 45%→cap25*/ - s3 - K.S5_PER /*S5 45%→10*/;
-  const quality = 2895 / 40; // 72.375
-  const phsRaw = quality - K.W_STRUCT * (100 - structure);
-  return { neff, s3, structure, phsRaw, phs: Math.round(phsRaw) };
-}
-const correct = ex2Trace(0.28), typo = ex2Trace(0.29);
-console.log(`    correct Σw²=0.28 → Neff ${correct.neff.toFixed(3)} · S3 −${correct.s3.toFixed(2)} · Str ${correct.structure.toFixed(2)} · phsRaw ${correct.phsRaw.toFixed(3)} → PHS ${correct.phs}`);
-console.log(`    spec's  Σw²=0.29 → Neff ${typo.neff.toFixed(3)} · S3 −${typo.s3.toFixed(2)} · Str ${typo.structure.toFixed(2)} · phsRaw ${typo.phsRaw.toFixed(3)} → PHS ${typo.phs}`);
-eq("dual-trace: correct→57", correct.phs, 57); eq("dual-trace: spec-typo→56 (reproduces spec's stated 56)", typo.phs, 56);
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCEPTANCE 4 — pillarProfile renormalizes over SCORED weight (Quality's denominator), not
+// total. Book: A 60% + B 20% scored, U 20% unscored → the scored denominator is 0.80.
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log("\n═══ ACCEPTANCE 4 — pillarProfile renormalizes over scored weight ═══");
+const pA: PillarSubtotals = { foundation: 80, momentum: 70, market: 60, ownership: 90 };
+const pB: PillarSubtotals = { foundation: 40, momentum: 50, market: 30, ownership: 20 };
+const pbook = computePhs([
+  H("A", 60, "large", "IT", 75, [], pA),
+  H("B", 20, "large", "Energy", 60, [], pB),
+  H("U", 20, "large", "Auto", null), // recognized-unscored — excluded from Quality AND pillarProfile
+]);
+const pp = pbook.pillarProfile!;
+console.log(`  pillarProfile = ${JSON.stringify(pp)}  (scored weight 0.80; renorm ÷0.80, NOT ÷1.0)`);
+// foundation = (0.6×80 + 0.2×40) / 0.80 = 70  (÷total would give 56 — the wrong answer)
+near("foundation renormalized over scored (70, not 56)", pp.foundation, 70, 1e-6);
+near("momentum (65)", pp.momentum, 65, 1e-6);
+near("market (52.5)", pp.market, 52.5, 1e-6);
+near("ownership (72.5)", pp.ownership, 72.5, 1e-6);
+eq("unscored book → pillarProfile null (no scored pillar data)", computePhs([H("X", 100, "large", "IT", null)]).pillarProfile, null);
 
-// ── Example 3 — clean fully-covered book ──
-console.log("\n═══ Example 3 — clean, fully-covered (spec: Q72 · Str100 · Sig93.6 · PHS 71 Steady · c1.0) ═══");
-const e3: PhsHolding[] = [H("FLAG", 8, "large", "Sec0", 72, ["high", "lp5"])]; // High headline suppresses LP5 → −80×0.08
-for (let i = 1; i <= 11; i++) e3.push(H(`H${i}`, 92 / 11, "large", `Sec${i}`, 72));
-const r3 = computePhs(e3);
-near("Quality", r3.quality, 72.0, 0.001); near("Structure", r3.structure, 100); near("Signals", r3.signals, 93.6, 0.001);
-near("coverage", r3.coverage, 1.0); near("phsRaw", r3.phsRaw, 70.72, 0.01); eq("PHS", r3.phs, 71); eq("band", r3.band, "Steady"); eq("ceiling applied", r3.ceilingApplied, false);
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACCEPTANCE 5 — lensProfile is findings-CHARACTER (position-weighted share by nature),
+// null when no lens patterns fired. NEVER an attribution.
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log("\n═══ ACCEPTANCE 5 — lensProfile (findings-character; null when none) ═══");
+const lbook = computePhs([
+  H("A", 60, "large", "IT", 75, [], pA, ["peer", "peer"]),
+  H("B", 40, "large", "Energy", 60, [], pB, ["trend"]),
+]);
+const lp = lbook.lensProfile!;
+console.log(`  lensProfile = ${JSON.stringify(lp)}  (peer 0.6×2 + trend 0.4×1; total 1.6)`);
+near("peer share = 0.75 (1.2 / 1.6)", lp.peer, 0.75, 1e-6);
+near("trend share = 0.25 (0.4 / 1.6)", lp.trend, 0.25, 1e-6);
+near("absolute share = 0", lp.absolute, 0, 1e-6);
+near("shares sum to 1", lp.absolute + lp.peer + lp.trend, 1, 1e-9);
+eq("no lens patterns fired → lensProfile null (never a fabricated split)",
+  computePhs([H("A", 100, "large", "IT", 75, [], pA)]).lensProfile, null);
 
-// ── Example 4 — stress: 1 of 10 scored → coverage ceiling binds ──
-console.log("\n═══ Example 4 — 1 of 10 scored (spec: Q80 · ceiling 44 binds · PHS 44 Provisional · c0.10) ═══");
-const e4: PhsHolding[] = [H("SCORED", 10, "large", "SecA", 80)];
-for (let i = 1; i <= 9; i++) e4.push(H(`U${i}`, 10, "large", `SecU${i}`, null)); // recognized-unscored, clean
-const r4 = computePhs(e4);
-near("Quality", r4.quality, 80); near("Structure", r4.structure, 100); near("Signals", r4.signals, 100);
-near("coverage", r4.coverage, 0.1); near("phsRaw", r4.phsRaw, 80, 0.001);
-eq("ceiling value", r4.ceilingValue, 44); eq("ceiling applied", r4.ceilingApplied, true); eq("PHS (capped)", r4.phs, 44);
-eq("band", r4.band, "Fragile"); eq("provisional (c<0.40)", r4.provisional, true);
-
-// ── Sanity invariants (§A.10) ──
-console.log("\n═══ Sanity invariants (§A.10) ═══");
-// Core invariant: a portfolio is never safer than its lone holding (< its own health).
-// Spec's "~56 (S3 thin-breadth drag)" isolates S1+S3 and implicitly assumes NO S2 — i.e.
-// an unknown-sector holding (S2 not evaluable). A KNOWN-sector single-stock book is 100%
-// in one sector > 40%, so S2 ALSO fires (−25) → 49. Both are < 70; the engine is correct
-// on both. (This is a third small spec hand-calc imprecision, alongside Ex1/Ex2.)
-const singleUnknownSector = computePhs([H("ONE", 100, "large", null, 70)]); // S2 n/a → S1+S3 only
-const singleKnownSector = computePhs([H("ONE", 100, "large", "Fin", 70)]); // S2 also fires
-console.log(`    single health-70, UNKNOWN sector (S1+S3, spec's ~56) → phsRaw ${singleUnknownSector.phsRaw?.toFixed(2)}`);
-console.log(`    single health-70, KNOWN sector   (S1+S2+S3, full rules) → phsRaw ${singleKnownSector.phsRaw?.toFixed(2)}`);
-eq("single-stock (unknown-sector) below its 70", singleUnknownSector.phsRaw != null && singleUnknownSector.phsRaw < 70, true);
-near("single-stock (unknown-sector) ≈ spec's ~56", singleUnknownSector.phsRaw, 56.5, 0.6);
-eq("single-stock (known-sector) below its 70", singleKnownSector.phsRaw != null && singleKnownSector.phsRaw < 70, true);
-const perfect = computePhs(Array.from({ length: 12 }, (_, i) => H(`P${i}`, 100 / 12, "large", `PS${i}`, 72)));
-near("perfectly-built health-72 book ≈ 72 (not inflated)", perfect.phsRaw, 72, 0.5);
-eq("PHS ≤ Quality (penalty-only guarantee)", perfect.phs! <= (perfect.quality as number) + 1e-9, true);
+// ═══════════════════════════════════════════════════════════════════════════════
+// SANITY — Health ≤ Quality (Signals penalty-only); a Signals hit pulls Health below Quality.
+// ═══════════════════════════════════════════════════════════════════════════════
+console.log("\n═══ Sanity (1.2) ═══");
+const flagged = computePhs([H("A", 100, "large", "IT", 80, ["high"])]); // High red flag → Signals −80×1.0 = 20 → 80
+console.log(`  single health-80 with a High flag → Signals ${flagged.signals} · Health ${flagged.health}`);
+eq("Signals hit → Health < Quality (80 − 0.20×(100−20) = 64)", flagged.health, 64);
+eq("Health ≤ Quality always", (flagged.health as number) <= (flagged.quality as number), true);
+eq("clean book Health == Quality (no structure drag)", book.health, Math.round(book.quality as number));
 
 console.log(`\n═══ ${failures === 0 ? "ALL PASS ✅" : failures + " FAILURE(S) ❌"} ═══`);
 process.exit(failures === 0 ? 0 : 1);

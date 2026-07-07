@@ -45,7 +45,15 @@ async function main() {
     ok("structure ≤ 100 and signals ≤ 100 (penalty-only)", Number(snap?.structure) <= 100 && Number(snap?.signals) <= 100, `str=${snap?.structure} sig=${snap?.signals}`);
     ok("PHS ≤ Quality (penalty-only guarantee)", snap?.phs == null || snap?.quality == null || snap!.phs <= Math.ceil(Number(snap!.quality)), `phs=${snap?.phs} q=${snap?.quality}`);
     ok("structureLedger + signalsLedger are arrays", Array.isArray(snap?.structureLedger) && Array.isArray(snap?.signalsLedger), "json");
-    ok("constant_version stamped", snap?.constantVersion === "portfolio-spec 1.0", `${snap?.constantVersion}`);
+    ok("constant_version stamped (1.2)", snap?.constantVersion === "portfolio-spec 1.2", `${snap?.constantVersion}`);
+    // (1.1 Change 2) copy-only tiers persisted on the snapshot.
+    ok("structure_tier persisted (valid label)", ["Starter", "Building", "Established"].includes(snap?.structureTier ?? ""), `${snap?.structureTier}`);
+    ok("capital_tier persisted (valid label)", ["Modest", "Moderate", "Substantial"].includes(snap?.capitalTier ?? ""), `${snap?.capitalTier}`);
+    // (1.2 Change 3/4/5) ceiling retired → shows TRUE; pillarProfile persisted (scored book).
+    ok("ceiling retired (ceilingApplied false, no cap)", snap?.ceilingApplied === false, `ceilingApplied=${snap?.ceilingApplied}`);
+    const pp = snap?.pillarProfile as { foundation: number } | null | undefined;
+    ok("pillar_profile persisted (4 pillars, scored book)", !!pp && typeof pp.foundation === "number", `${JSON.stringify(pp)}`);
+    console.log(`     pillarProfile=${JSON.stringify(snap?.pillarProfile)} · lensProfile=${JSON.stringify(snap?.lensProfile)}`);
 
     // Re-run identical inputs → fingerprint match → skip (no duplicate snapshot).
     const second = await computeAndPersistPhs(userId);

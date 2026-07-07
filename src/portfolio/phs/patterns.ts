@@ -8,15 +8,23 @@
 //  • Definitional, not predictive/advisory: every Read states what the book IS.
 //  • Field-verdicts (LM3/LP2) NEVER become a penalty or a negative finding — they
 //    feed ONLY PX5, explicitly-neutral (they are NOT in `findings`, never deducted).
-//  • Honest-empty: a pattern whose threshold is not declared in portfolio-spec 1.0
-//    (PQ2 std-dev tolerance, PQ3 low-dispersion cutoff) does NOT fire — not-evaluable,
-//    never fabricated.
+//  • Honest-empty: a pattern whose threshold is not declared in portfolio-spec 1.1
+//    (PQ2 std-dev tolerance, PQ3 low-dispersion cutoff — still undeclared) does NOT fire —
+//    not-evaluable, never fabricated.
 //
 // Copy is the spec's VERBATIM Read where the spec provides one, with bound values
 // interpolated; patterns without a spec Read carry label + bind (UI composes copy).
+//
+// AMENDMENT 1.1 (Change 2) — TIER COPY-TONE WIRING. structure_tier + capital_tier (from
+// the Part A snapshot `r`) SELECT the narrative framing of PC/PB-family reads, and are
+// stamped into every PC/PB finding's bind. This is backend-owns-string: the reframed
+// sentence is composed HERE and rendered verbatim by the UI (same pattern as lens
+// verdicts). HARD LOCK: tiers touch COPY ONLY — never a number, never the `tone` enum,
+// never `loud`, never WHICH findings fire. The factual spec sentence is preserved
+// verbatim after the tier clause; the score is byte-identical with or without tiers.
 // ─────────────────────────────────────────────────────────────────────────────
 import type { PhsHolding, PhsResult } from "./engine.js";
-import { bandOf, BAND_MIXED } from "./constants.js";
+import { bandOf, BAND_MIXED, type StructureTier, type CapitalTier } from "./constants.js";
 
 export type Tone = "Constructive" | "Neutral" | "Caution" | "Concern";
 
@@ -37,6 +45,29 @@ export interface PfContext {
 
 const pct = (w: number) => `${(w * 100).toFixed(1)}%`;
 
+// ── (1.1 Change 2) Tier copy framing — structure_tier (row) × capital_tier (col) selects
+// a LEAD clause prepended to PC/PB reads. Every clause is a self-contained sentence
+// (ends "…. ") so the spec's factual sentence stays byte-verbatim after it — no
+// mid-sentence recapitalisation. Descriptive only: states the book's shape/size, never an
+// instruction or a forecast (§B.0 lock). Established+Moderate is the baseline (no lead). ─
+const PC_PB_LEAD: Record<StructureTier, Record<CapitalTier, string>> = {
+  Starter: {
+    Modest: "This is an early-stage book of modest size, where weight naturally sits in a few names. ",
+    Moderate: "This is an early-stage book, where weight naturally sits in a few names. ",
+    Substantial: "This is an early-stage book carrying substantial capital, where weight still sits in a few names. ",
+  },
+  Building: {
+    Modest: "Your book is still taking shape at a modest size, so some concentration is part of the picture. ",
+    Moderate: "Your book is still taking shape, so some concentration is part of the picture. ",
+    Substantial: "Your book is still taking shape while carrying substantial capital, so some concentration is part of the picture. ",
+  },
+  Established: {
+    Modest: "This is an established book of modest size. ",
+    Moderate: "", // baseline — an established, moderately-sized book's read stands on the fact alone
+    Substantial: "This is an established book carrying substantial capital. ",
+  },
+};
+
 export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx: PfContext = { fieldWeakSymbols: new Set() }): PfFinding[] {
   const out: PfFinding[] = [];
   const total = holdings.reduce((s, h) => s + h.marketValue, 0);
@@ -46,6 +77,13 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
 
   const isHeadline = (h: PhsHolding) => h.findings.some((f) => f === "distress" || f === "critical" || f === "high" || f === "medium");
 
+  // (1.1 Change 2) Backend-composed, tier-framed PC/PB read. Prepends the tier LEAD clause
+  // to the spec's verbatim sentence. Copy only — no number is touched.
+  const framePcPb = (baseRead: string) => PC_PB_LEAD[r.structureTier][r.capitalTier] + baseRead;
+  // The tier stamp every PC/PB finding carries in its bind (so the UI/telemetry can see the
+  // selector that shaped the copy, and recompose if it ever localises the string itself).
+  const tierBind = { structureTier: r.structureTier, capitalTier: r.capitalTier };
+
   // ── PC — Concentration (headline for S1/S2/S3; explanation, not extra penalty) ──
   let maxW = 0, maxWi = -1;
   W.forEach((w, i) => { if (w > maxW) { maxW = w; maxWi = i; } });
@@ -53,12 +91,12 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
     const h = holdings[maxWi];
     const hb = h.health != null ? bandOf(h.health) : "unscored";
     out.push({ id: "PC1", family: "PC", label: "Heavy single position", tone: "Caution", loud: true,
-      bind: { symbol: h.symbol, weight: maxW, healthBand: hb },
-      read: `Your largest holding is ${pct(maxW)} of the book. Its health contributes ${pct(maxW)} of the aggregate, so the portfolio read leans heavily on this one name (${h.symbol}, ${hb}).` });
+      bind: { symbol: h.symbol, weight: maxW, healthBand: hb, ...tierBind },
+      read: framePcPb(`Your largest holding is ${pct(maxW)} of the book. Its health contributes ${pct(maxW)} of the aggregate, so the portfolio read leans heavily on this one name (${h.symbol}, ${hb}).`) });
   }
   if (maxW > 0.40) {
     const h = holdings[maxWi];
-    out.push({ id: "PC2", family: "PC", label: "Dominant single position", tone: "Concern", loud: true, bind: { symbol: h.symbol, weight: maxW } });
+    out.push({ id: "PC2", family: "PC", label: "Dominant single position", tone: "Concern", loud: true, bind: { symbol: h.symbol, weight: maxW, ...tierBind } });
   }
 
   // sector weights (whole book; unknown pooled) — PC3/PC4/PB1 need known sectors
@@ -68,26 +106,26 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
   for (const [name, sw] of sectorW) if (sw > maxSector) { maxSector = sw; maxSectorName = name; }
   if (r.s2Evaluable && maxSector > 0.40) {
     out.push({ id: "PC3", family: "PC", label: "Sector concentration", tone: "Caution", loud: true,
-      bind: { sector: maxSectorName, weight: maxSector },
-      read: `${maxSectorName} makes up ${pct(maxSector)} of your book. Health and risk in this book move substantially with that one sector's fortunes.` });
+      bind: { sector: maxSectorName, weight: maxSector, ...tierBind },
+      read: framePcPb(`${maxSectorName} makes up ${pct(maxSector)} of your book. Health and risk in this book move substantially with that one sector's fortunes.`) });
   }
   if (r.s2Evaluable && maxSector > 0.60) {
-    out.push({ id: "PC4", family: "PC", label: "Single-sector book", tone: "Concern", loud: true, bind: { sector: maxSectorName, weight: maxSector } });
+    out.push({ id: "PC4", family: "PC", label: "Single-sector book", tone: "Concern", loud: true, bind: { sector: maxSectorName, weight: maxSector, ...tierBind } });
   }
   if (r.neff < 5) {
     out.push({ id: "PC5", family: "PC", label: "Thin effective spread", tone: "Caution", loud: true,
-      bind: { neff: r.neff, holdingCount: n },
-      read: `Although you hold ${n} stocks, weight is concentrated enough that your book behaves like roughly ${r.neff.toFixed(1)} equally-sized positions.` });
+      bind: { neff: r.neff, holdingCount: n, ...tierBind },
+      read: framePcPb(`Although you hold ${n} stocks, weight is concentrated enough that your book behaves like roughly ${r.neff.toFixed(1)} equally-sized positions.`) });
   }
 
-  // ── PB — Breadth & diversification quality ──
+  // ── PB — Breadth & diversification quality (also tier-framed per 1.1 Change 2) ──
   if (r.s2Evaluable && r.neff >= 8 && maxSector <= 0.40) {
-    out.push({ id: "PB1", family: "PB", label: "Well-spread book", tone: "Constructive", loud: false, bind: { neff: r.neff, maxSectorWeight: maxSector } });
+    out.push({ id: "PB1", family: "PB", label: "Well-spread book", tone: "Constructive", loud: false, bind: { neff: r.neff, maxSectorWeight: maxSector, ...tierBind } });
   }
-  if (n > 25) out.push({ id: "PB2", family: "PB", label: "Very broad book", tone: "Neutral", loud: false, bind: { holdingCount: n } });
+  if (n > 25) out.push({ id: "PB2", family: "PB", label: "Very broad book", tone: "Neutral", loud: false, bind: { holdingCount: n, ...tierBind } });
   if (n > 40) {
-    out.push({ id: "PB3", family: "PB", label: "Closet-index breadth", tone: "Caution", loud: false, bind: { holdingCount: n },
-      read: `With ${n} holdings, your book approaches an index in breadth — individual position moves have little effect on the whole, and it is a lot to monitor by hand.` });
+    out.push({ id: "PB3", family: "PB", label: "Closet-index breadth", tone: "Caution", loud: false, bind: { holdingCount: n, ...tierBind },
+      read: framePcPb(`With ${n} holdings, your book approaches an index in breadth — individual position moves have little effect on the whole, and it is a lot to monitor by hand.`) });
   }
 
   // ── PQ — Quality composition (scored-holding health distribution) ──
@@ -97,7 +135,7 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
     out.push({ id: "PQ1", family: "PQ", label: "Uniformly sound holdings", tone: "Constructive", loud: false, bind: { quality: r.quality, minScoredHealth: Math.min(...scoredHealth) } });
   }
   // PQ2 (barbell / std-dev "above tolerance") + PQ3 (Quality≤55 "low dispersion"): the
-  // std-dev tolerance / low-dispersion cutoff are NOT declared in portfolio-spec 1.0 →
+  // std-dev tolerance / low-dispersion cutoff are NOT declared in portfolio-spec 1.1 →
   // HONEST-EMPTY (do not invent a threshold). Reported by the harness.
   holdings.forEach((h, i) => {
     if (h.health != null && h.health < BAND_MIXED && W[i] >= 0.10) {
@@ -135,11 +173,9 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
   const smallW = r.totalValue > 0 ? r.smallUnscoredValue / r.totalValue : 0;
   if (c >= 0.90) out.push({ id: "PV1", family: "PV", label: "Fully verified book", tone: "Constructive", loud: false, bind: { coverage: c } });
   if (c < 0.60) out.push({ id: "PV2", family: "PV", label: "Partly verified book", tone: "Neutral", loud: true, bind: { coverage: c } });
-  if (r.ceilingApplied) {
-    out.push({ id: "PV3", family: "PV", label: "Confidence-limited read", tone: "Neutral", loud: true,
-      bind: { coverage: c, ceiling: r.ceilingValue, phsRaw: r.phsRaw },
-      read: `Your verified holdings read healthy, but we've confirmed only ${pct(c)} of your book by value, so the score is held at ${r.ceilingValue} rather than the ${r.phsRaw?.toFixed(0)} the verified portion alone would suggest. The read rises as more of your holdings are covered.` });
-  }
+  // PV3 "Confidence-limited read" is RETIRED in 1.2 (Change 3): the coverage ceiling is gone,
+  // so the Health number is never held below its true value — there is no cap to explain. The
+  // coverage line + Provisional tag carry the honesty now. (Forced by the ceiling retirement.)
   if (recogW >= 0.15) out.push({ id: "PV4", family: "PV", label: "Awaiting-coverage names", tone: "Neutral", loud: false, bind: { weight: recogW } });
   if (smallW >= 0.25) out.push({ id: "PV5", family: "PV", label: "Untracked small-caps in book", tone: "Caution", loud: false, bind: { weight: smallW } });
 
@@ -167,5 +203,5 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
   return out;
 }
 
-/** Which patterns are honest-empty because portfolio-spec 1.0 declares no threshold. */
+/** Which patterns are honest-empty because portfolio-spec 1.1 declares no threshold. */
 export const NOT_EVALUABLE_UNDECLARED = ["PQ2", "PQ3"] as const;

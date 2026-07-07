@@ -69,13 +69,15 @@ export async function computeAndPersistPhs(userId: string): Promise<PersistOutco
   const snap = await prisma.portfolioHealthSnapshot.create({
     data: {
       userId,
-      phs: r.phs,
-      phsRaw: dec(r.phsRaw),
+      phs: r.health, // (1.2) the `phs` column now stores the uncapped Health Score
+      // (1.2 Change 3) the coverage ceiling is RETIRED — columns kept for back-compat but no
+      // longer carry meaning: Health shows TRUE, so there is no pre-ceiling / cap to record.
+      phsRaw: null,
       band: r.band,
       provisional: r.provisional,
       evaluable: r.evaluable,
-      ceilingApplied: r.ceilingApplied,
-      ceilingValue: r.ceilingValue,
+      ceilingApplied: false,
+      ceilingValue: null,
       quality: dec(r.quality),
       structure: new Prisma.Decimal(r.structure),
       signals: new Prisma.Decimal(r.signals),
@@ -87,10 +89,19 @@ export async function computeAndPersistPhs(userId: string): Promise<PersistOutco
       structureLedger: r.structureLedger as unknown as Prisma.InputJsonValue,
       signalsLedger: r.signalsLedger as unknown as Prisma.InputJsonValue,
       firedFindings: findings as unknown as Prisma.InputJsonValue, // Part B — fired PF findings
+      // (1.2 Change 4/5) health-read enrichments — position-weighted pillar means +
+      // findings-character lens shares. Null when !evaluable (no scored holdings) or (lens)
+      // no lens patterns fired. Derived from the same score snapshots already in the fingerprint.
+      pillarProfile: (r.pillarProfile ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
+      lensProfile: (r.lensProfile ?? Prisma.DbNull) as Prisma.InputJsonValue | typeof Prisma.DbNull,
+      // (1.1 Change 2) copy-only tiers — stored for the Part B copy selector. NOT in the
+      // fingerprint (they don't move the score; fingerprint unchanged per spec 1.1/1.2).
+      structureTier: r.structureTier,
+      capitalTier: r.capitalTier,
       constantVersion: CONSTANT_VERSION,
       fingerprint,
     },
     select: { id: true },
   });
-  return { skipped: false, snapshotId: snap.id, phs: r.phs, band: r.band, fingerprint };
+  return { skipped: false, snapshotId: snap.id, phs: r.health, band: r.band, fingerprint };
 }

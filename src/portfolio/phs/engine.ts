@@ -1,17 +1,29 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// PHS ENGINE (Part A) — pure. Turns a book of holdings into the Portfolio Health
-// Score + pillars + full deduction ledgers. No DB, no findings analysis, no advice.
+// PHS ENGINE (Part A) — pure. Turns a book of holdings into the Health Score +
+// standalone Structure + full deduction ledgers. No DB, no findings analysis, no advice.
 //
 // INVIOLABLE LAWS enforced HERE (not just copied):
-//  • Structure & Signals are PENALTY-ONLY (start 100, only subtract) → PHS ≤ Quality
-//    always. Construction can never inflate a book above its holdings' quality.
+//  • Signals is PENALTY-ONLY (start 100, only subtract) → Health ≤ Quality always.
+//    Active flags can only pull a book below its holdings' quality, never lift it.
 //  • Field-verdicts (LM3/LM4/LP2/LP3, all LM1–LM8) are NOT in the Signals deduction
 //    table → they can never deduct (a fact about a peer group, never a penalty).
-//  • Honest-empty: no scored holdings (c=0) → NO PHS (construction-read only), never
+//  • Honest-empty: no scored holdings (c=0) → NO Health (construction-read only), never
 //    a fabricated number.
 // All math to the A.13 constants exactly.
+//
+// AMENDMENT 1.2 — DECOUPLING:
+//  • Change 1 — Health = Quality − 0.20×(100 − Signals). The structure term is GONE; no
+//    positional penalty enters Health. "PHS" is retired → the number is the Health Score.
+//  • Change 2 — Construction = standalone Structure (S1–S5, full strength). `structure`
+//    is the Construction read's headline; nothing dampens it.
+//  • Change 3 — the coverage ceiling / c_eff are RETIRED. Health shows TRUE, uncapped;
+//    `provisional` (coverage < 40%) is the only honesty tag left on the number.
+//  • Change 4 — pillarProfile: position-weighted pillar means over scored holdings.
+//  • Change 5 — lensProfile: findings-CHARACTER share of fired lens patterns by nature.
+// AMENDMENT 1.1 (in force): S1 relative threshold; copy-only structure/capital tiers.
 // ─────────────────────────────────────────────────────────────────────────────
 import * as K from "./constants.js";
+import type { StructureTier, CapitalTier, LensNature } from "./constants.js";
 
 export type McapTier = "large" | "mid" | "small" | "unknown";
 export type Bucket = "scored" | "recognized_unscored" | "small_unscored";
@@ -19,6 +31,25 @@ export type Bucket = "scored" | "recognized_unscored" | "small_unscored";
 /** The fired findings Signals consumes (already deduplicated by the findings store). */
 export type FindingKind = "distress" | "critical" | "high" | "medium" | "lp5" | "lp6";
 
+/** The four pillar subtotals of a scored holding (0..100 each) — from its ScoreSnapshot. */
+export interface PillarSubtotals {
+  foundation: number;
+  momentum: number;
+  market: number;
+  ownership: number;
+}
+/** Book-level pillar means (0..100), position-weighted + renormalized over scored weight. */
+export type PillarProfile = PillarSubtotals;
+/** (1.2 Change 5) findings-CHARACTER shares by lens nature — position-weighted share of the
+ *  book's fired lens findings. Shares sum to 1. null ⇔ no lens patterns fired. NEVER an
+ *  attribution ("X% of your health is peer-relative") — a character read of the FINDINGS. */
+export type LensProfile = { absolute: number; peer: number; trend: number } | null;
+
+// NON-SCOPE BOUNDARY (1.1 Change 4): this is the ENGINE INPUT seam. The engine reads ONLY
+// the position-and-health facts below — value, mcap tier, sector, health, fired findings,
+// pillar subtotals, and lens-finding natures. Growth / behaviour / returns history (XIRR,
+// TWR, holding period, buy-sell timing, P&L) belongs to the Performance surface and MUST
+// NEVER be added here or read by the score (legal boundary, §A.1/B.0).
 export interface PhsHolding {
   symbol: string;
   marketValue: number; // quantity × current price (any consistent unit)
@@ -26,6 +57,8 @@ export interface PhsHolding {
   sector: string | null; // null ⇒ unknown-sector
   health: number | null; // scored ⇒ 0..100; unscored ⇒ null
   findings: FindingKind[]; // fired findings for this holding (empty if none/unscored)
+  pillars?: PillarSubtotals | null; // (1.2 Change 4) scored ⇒ its 4 pillar subtotals; else null
+  lensNatures?: LensNature[]; // (1.2 Change 5) natures of this holding's fired lens patterns
 }
 
 export interface StructureDeduction {
@@ -43,16 +76,13 @@ export interface SignalsDeduction {
 
 export interface PhsResult {
   evaluable: boolean; // false ⇔ c=0 (no scored holdings)
-  phs: number | null; // published integer; null when !evaluable
-  phsRaw: number | null; // pre-ceiling (full precision)
+  health: number | null; // (1.2) the Health Score — published integer; null when !evaluable. UNCAPPED.
   band: string | null;
-  provisional: boolean; // c < 0.40
-  ceilingApplied: boolean; // ceiling < phsRaw
-  ceilingValue: number | null; // ceiling in force (null when none / not evaluable)
-  quality: number | null;
-  structure: number;
+  provisional: boolean; // c < 0.40 — the only honesty tag on the number (ceiling retired)
+  quality: number | null; // the anchor (weighted health over scored)
+  structure: number; // (1.2 Change 2) the standalone Construction read (full strength)
   signals: number;
-  coverage: number;
+  coverage: number; // true scored share (c)
   totalValue: number;
   scoredValue: number;
   recognizedUnscoredValue: number;
@@ -61,6 +91,13 @@ export interface PhsResult {
   signalsLedger: SignalsDeduction[];
   s2Evaluable: boolean; // false ⇔ unknown-sector weight > 50% (S2 omitted honestly)
   neff: number; // effective holdings (inverse Herfindahl)
+  // (1.2 Change 4/5) — health-read enrichments (null when !evaluable)
+  pillarProfile: PillarProfile | null; // position-weighted pillar means over scored weight
+  lensProfile: LensProfile; // findings-character shares by nature; null ⇔ no lens patterns
+  // (1.1 Change 2) COPY-ONLY tiers — derived from N and total value; NOTHING in the score
+  // reads them (the number is byte-identical with or without them). Part B copy selector.
+  structureTier: StructureTier; // Starter | Building | Established (from holding count N)
+  capitalTier: CapitalTier; // Modest | Moderate | Substantial (from total book value ₹)
 }
 
 /** Bucket per A.4: scored ⇔ has health; else large/mid ⇒ recognized-unscored;
@@ -100,14 +137,18 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
   // ── Structure (A.6) — start 100, penalty-only ──
   const structureLedger: StructureDeduction[] = [];
 
-  // S1 — single position (per-holding, additive, each capped)
+  // S1 — single position (per-holding, additive, each capped). (1.1 Change 1) the
+  // threshold is RELATIVE to breadth: max(15% floor, 1.5 × fair_share), fair_share=100/N.
+  // On a thin book the bar rises, so S1 no longer double-charges the concentration S3/Neff
+  // already prices (fixes the S1/S3 double-charge). S3 is untouched.
+  const s1Threshold = K.s1ThresholdPct(holdings.length);
   let s1 = 0;
   holdings.forEach((h, i) => {
     const pct = w[i] * 100;
-    if (pct > K.S1_THRESH) {
-      const ded = Math.min(K.S1_RATE * (pct - K.S1_THRESH), K.S1_CAP);
+    if (pct > s1Threshold) {
+      const ded = Math.min(K.S1_RATE * (pct - s1Threshold), K.S1_CAP);
       s1 += ded;
-      structureLedger.push({ rule: "S1", symbol: h.symbol, points: ded, detail: `${pct.toFixed(1)}% > ${K.S1_THRESH}% → −${ded.toFixed(2)}` });
+      structureLedger.push({ rule: "S1", symbol: h.symbol, points: ded, detail: `${pct.toFixed(1)}% > ${s1Threshold.toFixed(1)}% → −${ded.toFixed(2)}` });
     }
   });
 
@@ -182,28 +223,72 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
   });
   const signals = Math.max(0, 100 - signalsDed);
 
-  // ── Combine + coverage ceiling (A.8) ──
+  // (1.2 Change 4/5) health-read enrichments — computed over the SCORED holdings only.
+  const pillarProfile = computePillarProfile(holdings, bucket, w);
+  const lensProfile = computeLensProfile(holdings, bucket, w);
+
+  // (1.1 Change 2) COPY-ONLY tiers — pure functions of N and total value. Computed here
+  // for a single source, but NOTHING above (S-rules, pillars) reads them and NOTHING below
+  // feeds them back into the number. Part B uses them to select copy tone.
+  const structureTier = K.structureTierOf(holdings.length);
+  const capitalTier = K.capitalTierOf(totalValue);
+
+  // ── Combine (1.2 Change 1+3) — Health = Quality − 0.20×(100−Signals), NO structure term,
+  //    NO coverage ceiling. Floored at 0, rounded, banded. The number shows TRUE. ──
   if (!evaluable) {
-    // c=0 → no PHS; construction-read only (Structure/Signals still computed).
+    // c=0 → no Health; construction-read only (Structure/Signals still computed).
     return {
-      evaluable: false, phs: null, phsRaw: null, band: null, provisional: false,
-      ceilingApplied: false, ceilingValue: null, quality: null, structure, signals,
-      coverage, totalValue, scoredValue, recognizedUnscoredValue, smallUnscoredValue,
-      structureLedger, signalsLedger, s2Evaluable, neff,
+      evaluable: false, health: null, band: null, provisional: false,
+      quality: null, structure, signals, coverage, totalValue, scoredValue,
+      recognizedUnscoredValue, smallUnscoredValue, structureLedger, signalsLedger,
+      s2Evaluable, neff, pillarProfile: null, lensProfile: null, structureTier, capitalTier,
     };
   }
 
-  const phsRaw = Math.max(0, (quality as number) - K.W_STRUCT * (100 - structure) - K.W_SIGNAL * (100 - signals));
-  const ceiling = K.ceilingFor(coverage);
-  const capped = Math.min(phsRaw, ceiling);
-  const phs = Math.round(capped);
-  const ceilingApplied = ceiling < phsRaw;
-  const provisional = coverage < K.PROVISIONAL_BELOW;
+  const health = Math.round(Math.max(0, (quality as number) - K.W_SIGNAL * (100 - signals)));
+  const provisional = coverage < K.PROVISIONAL_BELOW; // the only honesty tag on the number now
 
   return {
-    evaluable: true, phs, phsRaw, band: K.bandOf(phs), provisional,
-    ceilingApplied, ceilingValue: Number.isFinite(ceiling) ? ceiling : null,
+    evaluable: true, health, band: K.bandOf(health), provisional,
     quality, structure, signals, coverage, totalValue, scoredValue,
     recognizedUnscoredValue, smallUnscoredValue, structureLedger, signalsLedger, s2Evaluable, neff,
+    pillarProfile, lensProfile, structureTier, capitalTier,
   };
+}
+
+// ── (1.2 Change 4) pillarProfile — position-weighted pillar means over the SCORED holdings,
+//    renormalized over the scored weight that carries pillar data (== Quality's denominator,
+//    since every real ScoreSnapshot has pillar subtotals). Characterizes where the quality
+//    comes from; NEVER predicts. null when not evaluable / no pillar data. ─────────────────
+function computePillarProfile(holdings: PhsHolding[], bucket: Bucket[], w: number[]): PillarProfile | null {
+  let f = 0, m = 0, mk = 0, o = 0, wp = 0;
+  holdings.forEach((h, i) => {
+    if (bucket[i] !== "scored" || !h.pillars) return;
+    f += w[i] * h.pillars.foundation;
+    m += w[i] * h.pillars.momentum;
+    mk += w[i] * h.pillars.market;
+    o += w[i] * h.pillars.ownership;
+    wp += w[i];
+  });
+  if (wp <= 0) return null;
+  return { foundation: f / wp, momentum: m / wp, market: mk / wp, ownership: o / wp };
+}
+
+// ── (1.2 Change 5) lensProfile — position-weighted share of the book's fired lens FINDINGS
+//    by nature (absolute / peer / trend). A findings-CHARACTER read: each fired lens pattern
+//    contributes its holding's weight to its nature bucket. NEVER score attribution. null
+//    when no lens patterns fired across the book. ───────────────────────────────────────────
+function computeLensProfile(holdings: PhsHolding[], bucket: Bucket[], w: number[]): LensProfile {
+  let a = 0, p = 0, t = 0;
+  holdings.forEach((h, i) => {
+    if (bucket[i] !== "scored" || !h.lensNatures) return;
+    for (const nat of h.lensNatures) {
+      if (nat === "absolute") a += w[i];
+      else if (nat === "peer") p += w[i];
+      else if (nat === "trend") t += w[i];
+    }
+  });
+  const total = a + p + t;
+  if (total <= 0) return null; // no lens patterns fired → honest null (never a fabricated split)
+  return { absolute: a / total, peer: p / total, trend: t / total };
 }

@@ -245,6 +245,19 @@ One scored stock at 80 (10% weight), nine unscored, structure otherwise clean. �
 - **Quality** = 80 (over the scored 10% only). Structure/Signals ≈ 100. PHS_raw ≈ **80** (minus small structure hits from the tiny weights).
 - **Ceiling:** c = 0.10 → **cap 44 · Provisional.**
 - **Result: `PHS 44 · Provisional — reflects 10% of value · 9 holdings unscored`.** The number exists, is honest, and **cannot flatter**. This is the case that killed every naive "just average the scored ones" approach.
+
+> **⚠ portfolio-spec 1.1 ERRATUM (Change 3 — c_eff ceiling).** Under 1.1 the ceiling is
+> looked up on **effective** coverage `c_eff = c + 0.40 × recognized-unscored weight`, not
+> raw `c`. This example's nine unscored names are large-cap (**recognized-unscored**), so
+> `c_eff = 0.10 + 0.40×0.90 = 0.46` → ceiling **69**, and the result becomes
+> **`PHS 69 · Steady`** (displayed coverage still 10%, still **Provisional**). Example 4 is
+> the intended beneficiary of Change 3, so it MOVES under 1.1. The amendment's verification
+> note *"the other 4 worked examples still hold"* was scoped to Change 1 only and is an
+> erratum with respect to Change 3 — Ex4 correctly moves 44 → 69. (Proof the loosening is
+> earned, not blanket: the same book with **small-unscored** names keeps `c_eff = 0.10` →
+> ceiling **44**, since small-unscored contributes 0 to `c_eff`. Both asserted in
+> `verify-phs-examples.ts`.) Ex1/Ex3 are unchanged; Ex2 shifts on Change 1 (S1 −25 → −22.5)
+> but its published PHS stays **57**.
 **Sanity invariants the build must satisfy** (assert these in tests):
 - A single-stock book of a health-70 stock resolves to ~56 (S3 thin-breadth drag), **below** the stock's own 70 — a portfolio is never *safer* than its lone holding.
 - A perfectly-built book of health-72 stocks resolves to ~72, **not** inflated upward.

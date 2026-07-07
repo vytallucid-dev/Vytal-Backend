@@ -4,9 +4,17 @@
 // snapshot), sector, health (latest ScoreSnapshot.composite IF scored), and the
 // fired findings Signals consumes. PHS READS these — it never recomputes a score
 // or re-fires a finding.
+//
+// NON-SCOPE BOUNDARY (1.1 Change 4): this is the ONLY seam feeding the PHS engine. It
+// attaches position + health facts and NOTHING ELSE. Growth / behaviour / returns history
+// (a holding's XIRR, TWR, P&L, holding period, buy-sell cadence) lives on the Performance
+// surface and MUST NEVER be assembled onto a PhsHolding — PHS is a HEALTH read, never a
+// performance read (legal boundary, §A.1/B.0). If a future task needs behaviour context,
+// it belongs on a Performance/behaviour snapshot, not here and not in the score.
 // ─────────────────────────────────────────────────────────────────────────────
 import { prisma } from "../../db/prisma.js";
-import type { PhsHolding, McapTier, FindingKind } from "./engine.js";
+import type { PhsHolding, McapTier, FindingKind, PillarSubtotals } from "./engine.js";
+import { LENS_NATURE, type LensNature } from "./constants.js";
 import type { PhsProvenance } from "./persist.js";
 
 /** RedFlag.severity (free text) → the Signals headline class it maps to. */
@@ -36,7 +44,13 @@ export async function assemblePortfolio(userId: string): Promise<{ holdings: Phs
     const [price, tierRow, score] = await Promise.all([
       prisma.stockPrice.findUnique({ where: { stockId }, select: { price: true } }),
       prisma.marketCapTierSnapshot.findFirst({ where: { stockId }, orderBy: { asOfDate: "desc" }, select: { tier: true, asOfDate: true } }),
-      prisma.scoreSnapshot.findFirst({ where: { stockId }, orderBy: [{ asOfDate: "desc" }, { version: "desc" }], select: { id: true, composite: true, labelBand: true } }),
+      prisma.scoreSnapshot.findFirst({
+        where: { stockId },
+        orderBy: [{ asOfDate: "desc" }, { version: "desc" }],
+        // (1.2 Change 4) the four pillar subtotals ride the same read — they are frozen on
+        // the ScoreSnapshot, so pillarProfile needs no extra join.
+        select: { id: true, composite: true, labelBand: true, foundationSubtotal: true, momentumSubtotal: true, marketSubtotal: true, ownershipSubtotal: true },
+      }),
     ]);
 
     const marketValue = price ? Number(h.quantity) * Number(price.price) : 0;
@@ -48,6 +62,11 @@ export async function assemblePortfolio(userId: string): Promise<{ holdings: Phs
 
     // Scored ⇔ a health snapshot exists. health = composite.
     const health = score ? Number(score.composite) : null;
+    // (1.2 Change 4) pillar subtotals for a scored holding (else null).
+    const pillars: PillarSubtotals | null = score
+      ? { foundation: Number(score.foundationSubtotal), momentum: Number(score.momentumSubtotal), market: Number(score.marketSubtotal), ownership: Number(score.ownershipSubtotal) }
+      : null;
+    const lensNatures: LensNature[] = []; // (1.2 Change 5) natures of this holding's fired lens patterns
     const findings: FindingKind[] = [];
     if (score) {
       healthSnapshotIds.push(score.id);
@@ -73,10 +92,16 @@ export async function assemblePortfolio(userId: string): Promise<{ holdings: Phs
         if (p.patternKey === "LP5") { findings.push("lp5"); findingIds.push(p.id); }
         else if (p.patternKey === "LP6") { findings.push("lp6"); findingIds.push(p.id); }
         else if (p.patternKey === "LM3" || p.patternKey === "LP2") { fieldWeakSymbols.add(h.stock.symbol); findingIds.push(p.id); }
+        // (1.2 Change 5) EVERY fired three-lens pattern (LM1–8 / LP1–6) contributes its
+        // primary nature to lensProfile — a findings-character read, orthogonal to whether
+        // it also feeds Signals (LP5/LP6) or the field-weak context (LM3/LP2). Not added to
+        // the fingerprint: patterns are regenerated WITH the score snapshot (already tracked).
+        const nat = LENS_NATURE[p.patternKey];
+        if (nat) lensNatures.push(nat);
       }
     }
 
-    holdings.push({ symbol: h.stock.symbol, marketValue, tier, sector: h.stock.sector?.name ?? null, health, findings });
+    holdings.push({ symbol: h.stock.symbol, marketValue, tier, sector: h.stock.sector?.name ?? null, health, findings, pillars, lensNatures });
   }
 
   return { holdings, prov: { healthSnapshotIds, findingIds, tierAsOfDate, sectorVersion: "nse-sector-v1" }, fieldWeakSymbols };

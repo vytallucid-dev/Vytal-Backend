@@ -43,6 +43,38 @@ export async function refreshPhsForSymbols(symbols: string[]): Promise<PhsRefres
   return { users: holders.length, written, skipped, failed };
 }
 
+/** ONE-TIME DEPLOY BACKFILL (portfolio-spec 1.2 decoupling). Force-recompute + persist PHS
+ *  for EVERY user with open holdings — bypassing the normal trigger gate (a transaction write
+ *  or a per-member rescore only ever refreshes the users a change touched, so nothing would
+ *  otherwise revisit a book that hasn't moved since before the deploy). On the 1.2 cutover the
+ *  CONSTANT_VERSION bump changes every user's input fingerprint, so each call writes ONE fresh
+ *  DECOUPLED row and the stale blended-1.1 row stops being the latest served. Idempotent + safe
+ *  to re-run: a second pass finds each fingerprint unchanged and skips every user (0 written).
+ *  Best-effort per user — a single failure is logged and skipped, never thrown. */
+export async function backfillAllPhs(onProgress?: (done: number, total: number) => void): Promise<PhsRefreshOutcome> {
+  const holders = await prisma.holding.findMany({
+    where: { quantity: { gt: 0 } },
+    select: { userId: true },
+    distinct: ["userId"],
+  });
+
+  let written = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (let i = 0; i < holders.length; i++) {
+    try {
+      const out = await computeAndPersistPhs(holders[i].userId);
+      if (out.skipped) skipped++;
+      else written++;
+    } catch (e) {
+      failed++;
+      console.error(`[phs-backfill] user ${holders[i].userId} recompute failed:`, (e as Error).message);
+    }
+    onProgress?.(i + 1, holders.length);
+  }
+  return { users: holders.length, written, skipped, failed };
+}
+
 /** Best-effort convenience for the transaction-write path: refresh ONE user's PHS.
  *  Never throws — a PHS failure must not fail the transaction that already committed. */
 export async function refreshPhsForUser(userId: string): Promise<void> {

@@ -3,6 +3,9 @@
 // worked-example books + the real seeded book. Prove: fired PF-IDs match what each
 // example should surface, NO field-verdict became a penalty, honest-empty holds for
 // undeclared thresholds (PQ2/PQ3), and Part B changed NO number (byte-identical).
+// v1.1: also proves the tier COPY wiring (Change 2) — structure_tier/capital_tier reframe
+// PC/PB reads and stamp their binds, while touching NO number, tone, loud flag, or the
+// finding set (copy-only, byte-identical score).
 //   npx tsx src/scripts/verify-phs-patterns.ts
 // ─────────────────────────────────────────────────────────────────────────────
 import { randomUUID } from "crypto";
@@ -67,9 +70,9 @@ async function main() {
   for (let i = 1; i <= 9; i++) e4.push(H(`U${i}`, 10, "large", `SecU${i}`, null));
   const ex4 = fireOn(e4);
   const ex4Ids = ex4.findings.map((f) => f.id);
-  console.log(`  Ex4 fired: [${ex4Ids.join(", ")}]  (PV3 confidence-limited read = the on-brand one, PV2/PV4 coverage, PQ1, PS5, PB1)`);
-  ok("Ex4 = {PB1,PQ1,PS5,PV2,PV3,PV4}", setEq(ex4Ids, ["PB1", "PQ1", "PS5", "PV2", "PV3", "PV4"]), ex4Ids.join(","));
-  ok("Ex4 PV3 present (ceiling binds → confidence-limited read)", ex4Ids.includes("PV3"), "PV3");
+  console.log(`  Ex4 fired: [${ex4Ids.join(", ")}]  (1.2: PV3 RETIRED with the ceiling; PV2/PV4 coverage, PQ1, PS5, PB1)`);
+  ok("Ex4 = {PB1,PQ1,PS5,PV2,PV4} (PV3 retired in 1.2)", setEq(ex4Ids, ["PB1", "PQ1", "PS5", "PV2", "PV4"]), ex4Ids.join(","));
+  ok("Ex4 PV3 GONE (ceiling retired → no confidence-limited read)", !ex4Ids.includes("PV3"), "no PV3");
   ok("Ex4 byte-identical", !ex4.mutated, "result unchanged");
 
   // ── Field-verdict lock (LM3/LP2 never penalize; surface ONLY as PX5 Neutral) ──
@@ -84,7 +87,34 @@ async function main() {
   // ── Honest-empty: undeclared-threshold patterns never fire ──
   console.log("\n═══ Honest-empty (undeclared thresholds) ═══");
   const allFired = [...ex1Ids, ...ex2Ids, ...ex3Ids, ...ex4Ids, ...fw.findings.map((f) => f.id)];
-  for (const id of NOT_EVALUABLE_UNDECLARED) ok(`${id} never fires (no declared threshold in spec 1.0)`, !allFired.includes(id), "honest-empty");
+  for (const id of NOT_EVALUABLE_UNDECLARED) ok(`${id} never fires (no declared threshold in spec 1.1)`, !allFired.includes(id), "honest-empty");
+
+  // ── (1.1 Change 2) Tier copy-tone wiring — structure_tier/capital_tier reframe PC/PB
+  //    reads and stamp their binds, changing NO number, tone, loud flag, or finding set. ──
+  console.log("\n═══ Tier copy-tone wiring (PC/PB reframed; score untouched) ═══");
+  // Same weights, different N → different structure_tier. Concentrated so PC1 fires.
+  const starter = fireOn([H("A", 50, "large", "S1", 80), H("B", 30, "large", "S2", 72), H("C", 20, "large", "S3", 68)]); // N=3 Starter
+  const estab = fireOn([H("A", 30, "large", "S1", 80), H("B", 10, "large", "S2", 72), H("C", 10, "large", "S3", 68),
+    H("D", 10, "large", "S4", 70), H("E", 10, "large", "S5", 74), H("F", 10, "large", "S6", 66), H("G", 10, "large", "S7", 71), H("I", 10, "large", "S8", 69)]); // N=8 Established
+  const pc1Starter = starter.findings.find((f) => f.id === "PC1")!;
+  const pc1Estab = estab.findings.find((f) => f.id === "PC1")!;
+  ok("PC1 fires on both books", !!pc1Starter && !!pc1Estab, "PC1×2");
+  ok("PC1 bind carries structure_tier", (pc1Starter.bind as any).structureTier === "Starter" && (pc1Estab.bind as any).structureTier === "Established", `${(pc1Starter.bind as any).structureTier}/${(pc1Estab.bind as any).structureTier}`);
+  ok("PC1 bind carries capital_tier", (pc1Starter.bind as any).capitalTier === "Modest", `${(pc1Starter.bind as any).capitalTier}`);
+  ok("PC1 read REFRAMED by structure_tier (Starter read ≠ Established read)", pc1Starter.read !== pc1Estab.read, "reads differ");
+  ok("Starter read leads with the early-stage clause", pc1Starter.read!.startsWith("This is an early-stage book"), pc1Starter.read!.slice(0, 42));
+  ok("both reads preserve the verbatim fact tail", pc1Starter.read!.includes("Your largest holding is 50.0% of the book") && pc1Estab.read!.includes("Your largest holding is 30.0% of the book"), "fact intact");
+  ok("copy-only: PC1 tone + loud identical across tiers", pc1Starter.tone === pc1Estab.tone && pc1Starter.loud === pc1Estab.loud, `${pc1Starter.tone}/${pc1Estab.loud}`);
+  ok("copy-only: score byte-identical on both books", !starter.mutated && !estab.mutated, "unchanged");
+
+  // capital_tier selector — SAME book (same N, same weights) at ₹1L vs ₹50L: PHS identical,
+  // only the capital clause in the PC1 read changes (Modest vs Substantial).
+  const capBook = (u: number) => fireOn([H("A", 50 * u, "large", "S1", 80), H("B", 30 * u, "large", "S2", 72), H("C", 20 * u, "large", "S3", 68)]);
+  const modest = capBook(1_000), subst = capBook(50_000); // ₹100k vs ₹5,000,000
+  const p1m = modest.findings.find((f) => f.id === "PC1")!, p1s = subst.findings.find((f) => f.id === "PC1")!;
+  ok("capital_tier selects copy: Modest read ≠ Substantial read", p1m.read !== p1s.read, "reads differ");
+  ok("capital_tier bind Modest vs Substantial", (p1m.bind as any).capitalTier === "Modest" && (p1s.bind as any).capitalTier === "Substantial", `${(p1m.bind as any).capitalTier}/${(p1s.bind as any).capitalTier}`);
+  ok("value changed copy only: Health identical", modest.r.health === subst.r.health && modest.r.structure === subst.r.structure, `health ${modest.r.health}/${subst.r.health}`);
 
   // ── Real seeded book — byte-identical persisted proof + LP5/LP6 live wiring ──
   console.log("\n═══ Real seeded book (live prices/tiers/scores/patterns) ═══");
@@ -106,12 +136,12 @@ async function main() {
     // byte-identical: the snapshot's numbers == an independent Part-A-only computePhs of the same book
     const { holdings } = await assemblePortfolio(user.id);
     const partA = computePhs(holdings);
-    const same = snap!.phs === partA.phs
+    const same = snap!.phs === partA.health
       && Number(snap!.quality) === Number(partA.quality?.toFixed(4) ?? partA.quality)
       && Math.abs(Number(snap!.structure) - partA.structure) < 1e-4
       && Math.abs(Number(snap!.signals) - partA.signals) < 1e-4
       && Math.abs(Number(snap!.coverage) - partA.coverage) < 1e-4;
-    ok("byte-identical score (snapshot numbers == Part A numbers; Part B added findings, changed no number)", same, `phs ${snap!.phs}/${partA.phs} · str ${snap!.structure}/${partA.structure.toFixed(4)} · sig ${snap!.signals}/${partA.signals.toFixed(4)}`);
+    ok("byte-identical score (snapshot numbers == Part A numbers; Part B added findings, changed no number)", same, `health ${snap!.phs}/${partA.health} · str ${snap!.structure}/${partA.structure.toFixed(4)} · sig ${snap!.signals}/${partA.signals.toFixed(4)}`);
     ok("no field-verdict became a penalty in the real book (PX5, if any, is Neutral)", fired.every((f: any) => f.id !== "PX5" || f.tone === "Neutral"), "clean");
   } finally {
     await prisma.$executeRawUnsafe(`DELETE FROM auth.users WHERE id = $1::uuid`, authId);

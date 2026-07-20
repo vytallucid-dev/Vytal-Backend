@@ -48,6 +48,7 @@ model Stock {
   id                String        @id @default(uuid())
   symbol            String        @unique // "TCS", "HDFCBANK"
   name              String // "Tata Consultancy Services Limited"
+  isin              String        @unique // ISIN — immutable security identifier; the dedup spine for the instrument catalog (Step 1.5). Symbols drift (LTIM→LTM); ISIN does not.
   sectorId          String?       @map("sector_id")
   exchange          String        @default("NSE")
   marketCapCategory String?       @map("market_cap_category") // large_cap | mid_cap | small_cap
@@ -82,6 +83,10 @@ model Stock {
   giFundamentals           GeneralInsuranceFundamental[]
   giQuarterlyResults       GeneralInsuranceQuarterlyResult[]
 
+  /// The catalog pointer-row for this stock (1:1). Every stock has exactly one Instrument;
+  /// the portfolio layer holds Instruments, not Stocks.
+  instrument Instrument?
+
   // ── Scoring layer back-relations (additive only; no columns added to `stocks`) ──
   // These are virtual Prisma relation fields; the FK constraints live on the
   // score_* child tables. Required so the per-stock scoring relations validate
@@ -103,6 +108,9 @@ model Stock {
   // ── Portfolio layer (per-user holdings/ledger; display/PHS, never scored) ──
   transactions Transaction[]
   holdings     Holding[]
+
+  // ── Broker-mirrored holdings (snapshot-import; resolved to this stock; never scored) ──
+  brokerHoldings BrokerHolding[]
 
   // ── Watchlist back-relation (per-user pins; display-only, never scored) ──
   watchlistEntries Watchlist[]
@@ -489,9 +497,14 @@ model DailyPrice {
   stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
   @@unique([stockId, date])
-  @@index([stockId])
   @@index([date])
-  @@index([stockId, date(sort: Desc)]) // for "latest N prices" queries
+  // NOTE: @@index([stockId]) and @@index([stockId, date(sort: Desc)]) were DROPPED
+  // (migration 20260713150000_drop_redundant_indexes, ~70 MB).
+  //   · [stockId] is fully covered by the unique's LEADING COLUMN.
+  //   · [stockId, date DESC] is redundant because Postgres reads a btree BACKWARDS for free —
+  //     EXPLAIN confirms the hot path (WHERE stockId=? ORDER BY date DESC) uses
+  //     "Index Scan Backward using daily_prices_stock_id_date_key".
+  // Re-add either one if a query ever regresses; nothing is lost by their absence.
   @@map("daily_prices")
 }
 
@@ -552,9 +565,10 @@ model IndexPrice {
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   @@unique([indexName, date])
-  @@index([indexName])
   @@index([date])
-  @@index([indexName, date(sort: Desc)]) // for "latest N values" chart queries
+  // NOTE: @@index([indexName]) and @@index([indexName, date(sort: Desc)]) were DROPPED
+  // (migration 20260713150000_drop_redundant_indexes, ~12 MB) — same reasoning as DailyPrice.
+  // The DESC index had ONE lifetime scan; the unique took 222,238.
   @@map("index_prices")
 }
 
@@ -2931,6 +2945,18 @@ enum GuardType {
   null_rate // per-field population rate (genuinely-nullable fields)
   range // value within bounds
   continuity // delta vs history
+  // ── Step 9 (AMFI). The five guards above all describe a well-formed value that is out of
+  //    expectation. These two describe a value that is malformed, or that collides a spine.
+  validity // present, but NOT THE KIND OF THING IT CLAIMS TO BE (AMFI ships "Redeemed" as an ISIN)
+  uniqueness // well-formed, but COLLIDES A UNIQUE SPINE (one ISIN under two AMFI scheme codes)
+  // ── BROKER-SEEDED AUDIT class (Step 17, source="broker") — NOT A FAULT.
+  //    A holding arrived from a broker carrying an ISIN we had never seen, and it was ADMITTED to
+  //    the catalogue. Nothing is broken; nothing needs fixing. This row exists so an operator can
+  //    SEE what the brokers are adding to shared, canonical data — and so a pile of them becomes the
+  //    DEMAND SIGNAL for what to ingest next. Severity is always `info`, and every consumer that
+  //    counts faults MUST exclude it (see ingestion-errors-controller) or a healthy admission reads
+  //    as a problem.
+  broker_seeded
   // ── SCORING error class (source="scoring") — a SCORE that failed to compute
   //    properly even when the input data is fine. Distinct from the ingestion
   //    guards above (which catch bad data coming IN). Added so scoring errors
@@ -2938,6 +2964,13 @@ enum GuardType {
   scoring_job_failed // a terminal-failed rescore BackgroundJob (Stage 1)
   scoring_degraded // a committed snapshot degraded unexpectedly (Stage 4)
   scoring_stale // a snapshot whose inputs moved since it was computed (Stage 3)
+  // ── PHS-COMPUTE class (source="scoring") — the PORTFOLIO Health Score compute (the
+  //    composite over a user's whole book) THREW. Distinct from the three above, which
+  //    concern a single stock/PG ScoreSnapshot: this is the book-level composite, keyed
+  //    on the USER, targetTable "portfolio_health". ONLY a caught exception lands here —
+  //    a correct-null (no scored holdings) or low-coverage book is a valid RETURN, never
+  //    a row (that separation is the whole point; see phs-compute-guard.ts). Its own tab.
+  scoring_phs_failed
 }
 
 enum IngestionSeverity {
@@ -2945,6 +2978,10 @@ enum IngestionSeverity {
   high // count anomaly / skip-rate spike
   medium // null-rate spike / range violation
   low // continuity flag (human eyeball)
+  /// NOT A SEVERITY — the ABSENCE of one (Step 17). Carries the broker-seeded audit class: a thing
+  /// that HAPPENED and is worth seeing, not a thing that WENT WRONG. It is not a quieter problem; it
+  /// is not a problem. Excluded from the fault count and the triage queue by construction.
+  info
 }
 
 enum ResolutionPath {
@@ -3079,14 +3116,23 @@ model User {
   ledger         UserLedger?
   register       UserRegister?
   onboardingMeta UserOnboardingMeta?
-  linkedAccounts LinkedAccount[]
 
-  // ── Portfolio layer (user-authored ledger + materialized holdings) ──
-  transactions Transaction[]
-  holdings     Holding[]
+  // ── Portfolio layer (accounts + user-authored ledger + materialized holdings) ──
+  portfolioAccounts PortfolioAccount[]
+  transactions      Transaction[]
+  holdings          Holding[]
+
+  // ── Broker integration (read-only holdings import; snapshot-mirror, never scored) ──
+  brokerConnections BrokerConnection[]
+  brokerHoldings    BrokerHolding[]
+  brokerAuthStates  BrokerAuthState[]
 
   // ── Portfolio Health Score snapshots (compute-once, append-only) ──
   portfolioHealthSnapshots PortfolioHealthSnapshot[]
+
+  // ── Portfolio score history (one row per day; the PHS-over-time graph; SIBLING of the
+  //    snapshot, best-effort, never load-bearing) ──
+  portfolioScoreHistory PortfolioScoreHistory[]
 
   // ── Watchlist (per-user pinned research surface; display-only, never scored) ──
   watchlist Watchlist[]
@@ -3165,25 +3211,6 @@ model UserOnboardingMeta {
   @@map("user_onboarding_meta")
 }
 
-/// BROKER connections only (Zerodha/Upstox/Groww — future). NOT for
-/// email/Google identity (Supabase's own provider-linking handles that).
-model LinkedAccount {
-  id                String   @id @default(dbgenerated("gen_random_uuid()::text"))
-  userId            String   @map("user_id")
-  provider          String // zerodha | upstox | groww | ...
-  providerAccountId String?  @map("provider_account_id")
-  metadata          Json?
-  status            String   @default("pending")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, provider])
-  @@index([userId])
-  @@map("linked_accounts")
-}
-
 // ─────────────────────────────────────────────
 // MARKET-CAP TIER SNAPSHOT — monthly FROZEN large/mid/small tier per stock, ranked
 // on derived market cap (latest total_shares × latest daily close, via the existing
@@ -3240,12 +3267,68 @@ enum TransactionType {
   dividend
 }
 
+/// Account lifecycle. `manual` = user-authored ledger (manual entry allowed). `linked_live`
+/// / `linked_stale` = broker-managed (a broker connection mirrors it; manual entry DISABLED,
+/// enforced in the transaction-write path). Linking + stale transitions land in Step 2/4.
+enum PortfolioAccountState {
+  manual
+  linked_live
+  linked_stale
+}
+
+/// PORTFOLIO ACCOUNT — the first-class unit of the portfolio (not the broker, not the user).
+/// A user has ≥1 account; the same stock in two accounts is two INDEPENDENT FIFO lot queues.
+/// Every user gets a default "My Holdings" account (backfilled for existing users; auto-created
+/// on the first manual transaction for new ones — same find-or-create mechanism). `broker` /
+/// `broker_connection_id` are null for a pure-manual account (linking is Step 2).
+model PortfolioAccount {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  name   String
+  /// THE ACCOUNT'S BROKER — its identity, set at CREATION and NOT NULL (Step 5.5). Every account
+  /// belongs to a broker: a manual account is "my Zerodha book, hand-tracked"; linking is the act
+  /// of connecting that already-tagged book to the real feed. So `link` CHECKS this against the
+  /// connection's broker (409 on mismatch) rather than assigning it — you cannot bolt an Upstox
+  /// connection onto a book that says Zerodha. Retag (PATCH) is allowed ONLY while manual+unbound.
+  /// A LABEL, never a number: it is not an input to FIFO, PHS, or any price (§2.4).
+  broker             BrokerId
+  /// §2.3 ONE ACCOUNT PER CONNECTION. @unique on a NULLABLE column ⇒ Postgres NULLS DISTINCT ⇒
+  /// unlimited *unlinked* (manual) accounts still allowed, but a given connection can back at
+  /// most one account. Multi-account-per-broker comes from multiple CONNECTIONS, not from
+  /// relaxing this. Null until linked (Step 2b owns the link path).
+  brokerConnectionId String?               @unique @map("broker_connection_id")
+  state              PortfolioAccountState @default(manual)
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brokerConnection BrokerConnection? @relation(fields: [brokerConnectionId], references: [id], onDelete: SetNull)
+  transactions     Transaction[]
+  holdings         Holding[]
+
+  @@unique([userId, name]) // one account name per user → clean find-or-create of "My Holdings"
+  @@index([userId])
+  @@map("portfolio_accounts")
+}
+
 /// SOURCE OF TRUTH — append-only, user-authored. Never mutated except a
 /// correction (PATCH/DELETE), which triggers a full FIFO replay.
 model Transaction {
   id        String          @id @default(uuid())
   userId    String          @map("user_id")
-  stockId   String          @map("stock_id")
+  accountId String          @map("account_id") // the portfolio account this txn belongs to (FIFO grouping)
+  /// THE SPINE (Step 20). A transaction is OF an instrument — a stock, an ETF, a fund, a REIT, a
+  /// bond. NOT NULL: every catalogue row has one, and the FIFO queue is keyed on it.
+  instrumentId String       @map("instrument_id")
+  /// THE DENORMALISED CONVENIENCE, and NOTHING MORE. NULL for every non-stock instrument — a bond
+  /// has no row in `stocks`. It was the spine until Step 20; it is now a shortcut for the 504 equity
+  /// rows and is dropped in a later cleanup.
+  ///
+  /// ⚠️  NOTHING UNIQUE MAY EVER KEY ON THIS. Postgres treats NULLs as DISTINCT in a unique index, so
+  ///     a unique constraint over a nullable stock_id would enforce nothing for non-stocks and let
+  ///     every re-entry insert a duplicate. (Step 19 learned this the expensive way on
+  ///     instrument_corporate_events.) The FIFO key stays on instrument_id, which is NOT NULL.
+  stockId   String?         @map("stock_id")
   type      TransactionType
   quantity  Decimal?        @db.Decimal(18, 4) // buy/sell shares; null for split/bonus/dividend
   price     Decimal?        @db.Decimal(18, 6) // buy/sell ₹/share; dividend ₹/share; null for split/bonus
@@ -3255,32 +3338,589 @@ model Transaction {
   notes     String?
   createdAt DateTime        @default(now()) @map("created_at")
 
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account    PortfolioAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  instrument Instrument       @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  stock      Stock?           @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@index([userId, stockId, tradeDate, createdAt]) // the replay-order query
+  @@index([userId, instrumentId, tradeDate, createdAt]) // whole-user reads (NAV/TWR/XIRR)
+  @@index([accountId, instrumentId, tradeDate, createdAt]) // the account-scoped REPLAY-ORDER query
+  @@index([userId, stockId, tradeDate, createdAt]) // retained: equity-scoped reads still key on the stock
+  @@index([accountId, stockId, tradeDate, createdAt])
   @@map("transactions")
 }
 
-/// MATERIALIZED — one row per (user, stock) that has any transaction. Recomputed on
+/// ASSET CLASS — what kind of thing an Instrument is. `stock` rows are pointer-rows into
+/// `stocks`; every other class carries `stockId` NULL and is therefore HELD-NOT-SCORED by
+/// construction (the scoring universe is PeerGroup → StockPeerGroup → Stock, so it cannot
+/// see them). `bond`/`gsec`/`sgb` exist so the catalog can absorb those without a schema
+/// change; they carry no rows yet.
+///
+/// `reit` (NSE series RR) and `invit` (NSE series IV) are TRUSTS that trade like equities.
+/// They are kept SEPARATE, not folded into one `trust`, because the SOURCE distinguishes them
+/// (SctySrs) — collapsing them would throw away information the feed gives us for free.
+enum AssetClass {
+  stock
+  etf
+  bond
+  gsec
+  sgb
+  mutual_fund
+  reit
+  invit
+}
+
+/// INSTRUMENT CATALOG — the shared spine every holdable thing references. Keyed on ISIN
+/// (immutable; symbols drift, ISINs don't — see the LTIM→LTM rename). A `stock` instrument
+/// is a POINTER row: `stockId` set, `attributes` null. Future non-equity classes carry
+/// `stockId` NULL + class-specific `attributes`, so the portfolio layer reads ONE uniform
+/// catalog instead of branching on "stock vs bond".
+///
+/// HONEST-EMPTY: an instrument with a NULL `stockId` is HELD-NOT-SCORED — the portfolio must
+/// carry it through (value it if it can) and skip it in scoring, never crash, never fabricate.
+model Instrument {
+  id         String     @id @default(uuid())
+  isin       String     @unique // the dedup spine
+  symbol     String? // NULL for funds — a mutual fund has no ticker (Step 9). Always set for stocks.
+  name       String
+  assetClass AssetClass @map("asset_class")
+  stockId    String?    @map("stock_id") // set ONLY for asset_class = stock; null = non-equity (held-not-scored)
+  attributes Json? // class-specific ref data (coupon, maturity, expense ratio…); null for stocks
+  isActive   Boolean    @default(true) @map("is_active")
+
+  // ── MF/ETF payload (Step 9 — AMFI). All NULL for stocks. ──
+  /// The AMFI scheme code. Layer-C (NAV-history) join key — NOT a family key: Direct and
+  /// Regular are SEPARATE scheme codes, so this groups at most the 2 ISINs (growth/payout +
+  /// div-reinvestment) of ONE plan+option.
+  amfiSchemeCode String?   @map("amfi_scheme_code")
+  /// Raw AMFI scheme name — kept verbatim as the material for a LATER family derivation.
+  schemeName     String?   @map("scheme_name")
+  fundHouse      String?   @map("fund_house")
+  category       String?
+  planType       String?   @map("plan_type") // direct | regular; NULL when underivable — never guessed
+  /// (18,8) not the house (12,2): AMFI publishes up to 8 dp and NAVs up to 2,510,326.4049.
+  /// NULL on blank/N.A. — a missing NAV is NEVER coerced to 0.
+  currentNav     Decimal?  @map("current_nav") @db.Decimal(18, 8)
+  /// 44.8% of schemes carry a stale NAV (matured funds still listed) — never render NAV without this.
+  navDate        DateTime? @map("nav_date") @db.Date
+
+  // ── EXCHANGE-TRADED NON-STOCK payload (Step 14 — REIT/InvIT). All NULL for stocks (which
+  // are priced through `stock_prices`) and for mutual funds (which have a NAV, not a close).
+  /// Latest close, from `instrument_prices`. The `stock_prices` analogue for a stock_id-NULL
+  /// instrument — the ONE number a holdings read needs, without an ORDER BY date DESC LIMIT 1.
+  /// (12,2) mirrors the source: NSE's udiff BhavCopy publishes ClsPric to 2dp.
+  lastPrice     Decimal?  @map("last_price") @db.Decimal(12, 2)
+  /// The day `lastPrice` belongs to. LOAD-BEARING, not decoration: a thinly-traded InvIT can
+  /// be days stale, and a stale price rendered as live is a lie. Never show one without this.
+  lastPriceDate DateTime? @map("last_price_date") @db.Date
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stock           Stock?                     @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  holdings        Holding[]
+  transactions    Transaction[]
+  brokerHoldings  BrokerHolding[]
+  prices          InstrumentPrice[]
+  corporateEvents InstrumentCorporateEvent[]
+  priceHistory    InstrumentPriceHistory[] // Step 21 — weekly 4y rolling chart series (held non-stocks)
+
+  @@unique([stockId]) // one instrument per stock (Postgres UNIQUE is NULLS DISTINCT → unlimited null-stock rows)
+  @@index([assetClass])
+  @@index([amfiSchemeCode])
+  @@index([symbol]) // exact-symbol arm (tier 1) of /instruments/search — see 20260715120000_instrument_search_indexes
+  // A pg_trgm GIN index on `name` (instruments_name_trgm_idx) ALSO backs that search's
+  // `name ILIKE '%q%'` contains-match, but Prisma cannot express gin_trgm_ops without the
+  // postgresqlExtensions preview, so it lives in that migration ONLY. Do not drop it as "drift".
+  @@map("instruments")
+}
+
+/// INSTRUMENT PRICE HISTORY (Step 14) — the price spine for a NON-STOCK instrument.
+///
+/// A deliberate MIRROR of `DailyPrice`, keyed on `instrumentId` instead of `stockId`. It is not
+/// a generalisation of it: `daily_prices` / `stock_prices` stay EXACTLY as they are, because the
+/// equity path feeds scoring, NAV/TWR/XIRR, market-cap and the 504-stock fingerprint — none of
+/// which should be put at risk to price 17 trusts. Unifying the two spines is a real future step,
+/// not a thing to smuggle in here.
+///
+/// Fed by the NSE udiff BhavCopy (series RR/IV), which — unlike `sec_bhavdata_full`, the file the
+/// equity pipeline reads — carries an ISIN column, so a row joins the catalogue on the ISIN spine
+/// directly, with no symbol-matching and no guessing.
+model InstrumentPrice {
+  id           String   @id @default(uuid())
+  instrumentId String   @map("instrument_id")
+  isin         String? // provenance/audit, as DailyPrice carries it
+  date         DateTime @db.Date // trading date, UTC midnight
+  open         Decimal  @db.Decimal(12, 2)
+  high         Decimal  @db.Decimal(12, 2)
+  low          Decimal  @db.Decimal(12, 2)
+  close        Decimal  @db.Decimal(12, 2)
+  prevClose    Decimal? @map("prev_close") @db.Decimal(12, 2) // null on a listing day
+  volume       BigInt
+  tradedValue  Decimal? @map("traded_value") @db.Decimal(16, 4) // ₹ Cr
+  provider     String   @default("nse-udiff-bhavcopy")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  @@unique([instrumentId, date]) // append-only spine → ON CONFLICT DO NOTHING is the idempotency
+  @@index([date])
+  // NO standalone [instrumentId] index — covered by the unique's LEADING column, and Postgres
+  // reads a btree backwards for free. Same lesson as 20260713150000_drop_redundant_indexes.
+  @@map("instrument_prices")
+}
+
+/// ═══════════════════════════════════════════════════════════════
+/// INSTRUMENT PRICE HISTORY (Step 21) — the WEEKLY, 4-YEAR, ROLLING chart series for a HELD
+/// non-stock instrument. Distinct from `InstrumentPrice` above: that is the DAILY, RAW OHLCV close
+/// spine (nse-udiff); THIS is a WEEKLY, single-`value` sample that also carries CORRECTED fund NAV,
+/// which the raw daily spine structurally cannot hold. Held-only, backfilled on first hold.
+///
+/// `value` = "what one unit was worth that week": the fold's CORRECTED NAV for a fund (post
+/// split-rescale; sampled from the tier-matched Growth twin for an IDCW plan) or the udiff CLOSE for
+/// a listed non-stock. `source` says which. NOT OHLCV — a chart needs one number per week.
+///
+/// ROLLING WINDOW is a DB-level invariant: an AFTER INSERT trigger (see the migration) trims each
+/// instrument to its newest 4 years on every append, so rows/instrument ≤ ~209 by construction —
+/// storage is constant, it cannot creep. The LIVE final point of every chart is read from
+/// `stock_prices` / `instruments.last_price` / `instruments.current_nav` via price-resolver.ts at
+/// request time — NEVER from this table — so the chart endpoint equals the overview by construction.
+model InstrumentPriceHistory {
+  instrumentId String   @map("instrument_id")
+  /// The weekly SAMPLE day — the last trading day of the ISO week the point represents.
+  date         DateTime @db.Date
+  /// Corrected NAV (funds) | udiff close (listed). (18,6): wide enough for the largest AMFI NAV,
+  /// ample for a chart line. The authoritative live NAV is `instruments.current_nav` (18,8).
+  value        Decimal  @db.Decimal(18, 6)
+  /// 'nav_corrected' | 'market_close' — a CHECK constraint enforces the closed set (Prisma can't).
+  source       String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  /// Composite PK, BOTH columns NOT NULL — a real ON CONFLICT idempotency key (a nullable unique
+  /// would be NULLS DISTINCT and enforce nothing; the Step-19 lesson). No surrogate uuid id: keeps
+  /// the row lean, and the store is already bounded by the rolling window.
+  @@id([instrumentId, date])
+  @@index([date])
+  @@map("instrument_price_history")
+}
+
+/// ═══════════════════════════════════════════════════════════════
+/// CORPORATE ACTIONS FOR FUNDS (Step 19) — the instrument spine's own event table.
+///
+/// WHY THIS EXISTS: AMFI's NAV history is RAW — it is not split-adjusted. When an ETF sub-divides
+/// its units 1:10, the published NAV simply steps down by 90% overnight, and every metric derived
+/// from that series believes the fund lost 90% in a day. Measured live before this step:
+/// max_drawdown_3y = -90.7% (that IS the split day), vol_3y = 134%, alpha_3y = -60%. The fix is to
+/// rescale the NAV series by the REAL corporate action before any metric is computed — which means
+/// the real corporate action has to live somewhere. Here.
+///
+/// WHY A SEPARATE TABLE AND NOT A NULLABLE FK ON `corporate_events`:
+/// `corporate_events.stock_id` is a REQUIRED FK to `stocks`, and NO fund has a `stocks` row (that is
+/// Step 13's held-not-scored guarantee, not an oversight). Relaxing it to nullable would need:
+///   (a) a CHECK for exactly-one-spine, and
+///   (b) PARTIAL unique indexes — because Postgres treats NULLs as DISTINCT, so
+///       `UNIQUE (stock_id, event_type, event_date)` enforces NOTHING the moment stock_id is NULL.
+///       `ON CONFLICT` would never match for an ETF and every backfill would silently duplicate every
+///       split row. (The same trap `Instrument.@@unique([stockId])` already documents above.)
+/// Prisma can express NEITHER, so both would be permanent schema drift — the repo's first.
+///
+/// Step 14 already answered this exact question the other way: `instrument_prices` is its own table
+/// with a REQUIRED `instrument_id`, not a nullable column bolted onto `daily_prices`. Two spines, two
+/// tables. It also makes "the 7,433 equity corporate_events rows are untouched" STRUCTURAL rather than
+/// asserted: this migration does not ALTER that table at all.
+/// ═══════════════════════════════════════════════════════════════
+model InstrumentCorporateEvent {
+  id           String @id @default(uuid())
+  instrumentId String @map("instrument_id")
+  /// The NSE ticker the action was fetched under — provenance, and the only way to re-derive the row.
+  symbol       String
+
+  /// split | bonus | dividend | … — the same vocabulary as CorporateEvent.eventType.
+  eventType  String    @map("event_type")
+  eventDate  DateTime  @map("event_date") @db.Date
+  exDate     DateTime? @map("ex_date") @db.Date
+  recordDate DateTime? @map("record_date") @db.Date
+
+  /// THE ADJUSTMENT FACTOR — exact, and the ONLY thing the fold reads.
+  ///
+  /// NOT derived from a `split_ratio` GCD string. That parser scales face values by 100 before
+  /// reducing, which turns a clean 1:10 (Rs 299.92 → Rs 29.992) into "29992:2999" — a ratio that is
+  /// both unreadable and 0.007% wrong. This is oldFaceValue / newFaceValue, SNAPPED to the nearest
+  /// integer: a sub-division ratio IS an integer (you cannot issue 10.0043 units for one), so NSE's
+  /// published 10.004314 is its own rounding of the new face value, not a real ratio.
+  ///
+  /// NULL for any event that is not a unit split — a dividend has no adjustment factor.
+  splitFactor Decimal? @map("split_factor") @db.Decimal(12, 6)
+
+  /// THE FIRST DAY AMFI'S NAV IS QUOTED ON THE NEW UNIT BASIS. Reconciled once, then stored.
+  ///
+  /// WHY THIS IS NOT SIMPLY `exDate`: NSE's ex-date is when the UNIT trades on the new basis. AMFI's
+  /// NAV is struck by the AMC, and the AMC does not always apply the split on the same day. The lag was
+  /// MEASURED across all 63 real splits, counted in PUBLISHED NAVs (weekends and holidays print none):
+  /// offset 0 → 11 splits · offset 1 → 24 · offset 2 → 23 (NIFTYBEES) · offset 3 → 5 · beyond 3 → NONE.
+  /// There is no fixed rule — so a fixed rule is wrong for somebody, and it is not harmlessly wrong:
+  /// rescaling on the wrong side leaves a NAV on the OLD basis surrounded by adjusted ones, which
+  /// MANUFACTURES a +900% spike followed by a -90% crash where there was only a step. (That is not
+  /// hypothetical: it is what the first cut of this feature did to 22 ETFs, and the implausibility
+  /// guard caught it and withheld them.)
+  ///
+  /// SO THE APPLICATION DAY IS RECONCILED, NOT SEARCHED FOR. The candidates are the FIRST FOUR PRINTS
+  /// ON/AFTER the real event's OWN ex-date — four because that is the measured range of the lag, not a
+  /// hedge. The event's published ratio is applied at each, and the one that yields a CONTINUOUS series
+  /// wins. If NONE reconciles this stays NULL, the fold does not adjust that fund at all, and its
+  /// affected windows are withheld. The series is never scanned for a step, and continuity is never
+  /// forced. Widening 2 → 4 cannot create a false match: split factors are 5-100×, and no market print
+  /// moves 5×, so the two magnitude regimes cannot be confused.
+  ///
+  /// It reconciles a KNOWN, SOURCED event to the day our other source applied it. It never infers
+  /// that a split happened, and never derives a ratio.
+  ///
+  /// NULL ⇒ UNRECONCILED ⇒ DO NOT ADJUST. (Also NULL for any non-split event.)
+  appliedDate DateTime? @map("applied_date") @db.Date
+
+  /// The raw NSE subject, VERBATIM ("Face Value Split (Sub-Division) - From Rs 10/- To Re 1/-").
+  /// This is the EVIDENCE for `splitFactor`, and it is why the snap is honest rather than a guess:
+  /// a snapped number whose source you cannot read is indistinguishable from an inferred one. The
+  /// evidence travels with the adjustment.
+  description String?
+  source      String   @default("nse")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  instrument Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  /// IDEMPOTENCY, and it actually ENFORCES — because instrument_id is NOT NULL. Same instrument +
+  /// same type + same date = the same event, so a re-run of the backfill or the nightly capture
+  /// inserts nothing new.
+  @@unique([instrumentId, eventType, eventDate])
+  @@index([eventDate])
+  @@index([instrumentId, eventType])
+  @@map("instrument_corporate_events")
+}
+
+/// ═══════════════════════════════════════════════════════════════
+/// MF ANALYTICS (Step 10+11, Option B) — COMPUTE-AND-DISCARD.
+///
+/// Raw NAV NEVER PERSISTS. The nightly job streams the universe's NAV history, folds it
+/// into per-scheme accumulators in memory, writes ONLY these derived numbers, and throws
+/// the raw series away. There is deliberately NO nav_history table: recon measured a
+/// persistent one at ~26 M rows / ~2.5 GB, against a 500 MB ceiling with 114 MB of headroom.
+///
+/// KEYED ON SCHEME CODE, not ISIN: the scheme code IS the NAV series (Direct and Regular
+/// have genuinely different NAVs). A code groups at most the 2 ISINs of ONE plan, which
+/// share a NAV — so keying on ISIN would store identical analytics twice for 3,863 codes.
+///
+/// EVERY METRIC IS NULLABLE, AND THAT IS THE POINT. A fund without 5 years of history has
+/// ret5yCagr = NULL — never 0, never fabricated. `omissions` carries the REASON for each
+/// NULL, so an absent number is always explainable rather than merely missing.
+model MfAnalytics {
+  /// The AMFI scheme code — joins to Instrument.amfiSchemeCode (soft: that column is
+  /// non-unique by design, so a FK is impossible).
+  schemeCode String @id @map("scheme_code")
+
+  /// The scheme code whose NAV series these metrics were MEASURED ON — what /chart draws so the
+  /// picture matches the number. Self for a Growth plan / ETF; the tier-matched Growth twin for an
+  /// inherited IDCW/Bonus plan; NULL for a distribution decline (idcw_nav_not_total_return). Set once
+  /// in the fold, exactly where the metric is inherited or declined — one stored fact, no re-resolve.
+  seriesSchemeCode String? @map("series_scheme_code")
+
+  // ── Provenance / freshness ──
+  asOfDate   DateTime @map("as_of_date") @db.Date // newest NAV date folded into this row
+  computedAt DateTime @default(now()) @map("computed_at")
+  /// NAV observations folded. The EVIDENCE behind every honest-empty decision.
+  navPoints  Int      @default(0) @map("nav_points")
+  windowFrom DateTime? @map("window_from") @db.Date
+  windowTo   DateTime? @map("window_to") @db.Date
+
+  // ── RETURNS — fractions, NOT percents (0.152345 = +15.2345%) ──
+  ret1m      Decimal? @map("ret_1m") @db.Decimal(12, 6)
+  ret3m      Decimal? @map("ret_3m") @db.Decimal(12, 6)
+  ret6m      Decimal? @map("ret_6m") @db.Decimal(12, 6)
+  ret1y      Decimal? @map("ret_1y") @db.Decimal(12, 6)
+  ret3yCagr  Decimal? @map("ret_3y_cagr") @db.Decimal(12, 6)
+  ret5yCagr  Decimal? @map("ret_5y_cagr") @db.Decimal(12, 6)
+
+  // ── REMOVED: retSinceEarliestCagr, earliestNav, earliestNavDate ──
+  //
+  // A "since earliest observed NAV" CAGR was folded from AMFI's raw NAV history, and AMFI's raw NAV
+  // is neither split-adjusted nor total-return. That makes the since-earliest span the WORST case for
+  // both corruptions, not an edge case: the further back the anchor sits, the more unit splits and
+  // IDCW payouts fall between it and today. NIFTYBEES read -11.19% a year since 2019 — it had done a
+  // 1:10 sub-division, and the "return" was mostly the split.
+  //
+  // Step 19 repairs the 1Y/3Y/5Y windows because those are BOUNDED: we can enumerate every real NSE
+  // corporate action inside them and rescale from the published ratio. A since-earliest span has no
+  // such bound — it reaches back to whatever AMFI happens to publish (~2009), across corporate
+  // actions no exchange lists for an unlisted fund and payouts nobody publishes a history of.
+  //
+  // So the metric was not "temporarily unpopulated pending a backfill". It was UNCOMPUTABLE from the
+  // only source we have, and a column that can only ever hold a wrong number is worse than no column:
+  // it invites someone to populate it. The two anchor columns existed solely to feed it, and they go
+  // with it.
+
+  // ── RISK — annualised fractions ──
+  vol1y Decimal? @map("vol_1y") @db.Decimal(10, 6)
+  vol3y Decimal? @map("vol_3y") @db.Decimal(10, 6)
+  /// Sharpe/Sortino gate on TWO independent honest-empty conditions: the fund's own NAV
+  /// depth AND the risk-free series covering that horizon. index_prices holds only ~1 y of
+  /// the G-Sec / 1D-Rate index today, so 3Y/5Y stay NULL until INDEX_PRICES_BACKFILL is
+  /// re-run at days=1825.
+  sharpe1y  Decimal? @map("sharpe_1y") @db.Decimal(10, 6)
+  sharpe3y  Decimal? @map("sharpe_3y") @db.Decimal(10, 6)
+  sharpe5y  Decimal? @map("sharpe_5y") @db.Decimal(10, 6)
+  sortino1y Decimal? @map("sortino_1y") @db.Decimal(10, 6)
+  sortino3y Decimal? @map("sortino_3y") @db.Decimal(10, 6)
+  /// NEGATIVE fractions (-0.4231 = a 42.31% peak-to-trough fall).
+  maxDrawdown1y Decimal? @map("max_drawdown_1y") @db.Decimal(10, 6)
+  maxDrawdown3y Decimal? @map("max_drawdown_3y") @db.Decimal(10, 6)
+  maxDrawdown5y Decimal? @map("max_drawdown_5y") @db.Decimal(10, 6)
+
+  // ── ROLLING 1-YEAR RETURNS (folded from the 260-slot ring) ──
+  roll1yN          Int?     @map("roll_1y_n")
+  roll1yMin        Decimal? @map("roll_1y_min") @db.Decimal(12, 6)
+  roll1yMax        Decimal? @map("roll_1y_max") @db.Decimal(12, 6)
+  roll1yAvg        Decimal? @map("roll_1y_avg") @db.Decimal(12, 6)
+  roll1yPctPositive Decimal? @map("roll_1y_pct_positive") @db.Decimal(5, 2)
+
+  // ── CATEGORY RANK ──
+  /// Bucket = (normalised leaf category, plan_type), OPEN-ENDED + ACTIVE only.
+  /// NULL = deliberately unranked: close-ended/FMP, dormant, NULL plan_type (880 funds —
+  /// Step 9 refused to guess a plan, so we refuse to guess a bucket), or a bucket with
+  /// <5 funds (a rank in a 4-fund pool is noise, not information).
+  rankBucket     String? @map("rank_bucket")
+  /// How many funds are in the CATEGORY at all (the whole bucket). "only N comparable funds."
+  rankBucketSize Int?    @map("rank_bucket_size")
+  rank1y Int? @map("rank_1y") // 1 = best in bucket
+  rank3y Int? @map("rank_3y")
+  rank5y Int? @map("rank_5y")
+  /// THE RANK DENOMINATOR — how many funds a rank was actually measured AGAINST (the pool with a
+  /// non-null return for that horizon). Paired 1:1 with the rank: null ⇔ that rank is null. Distinct
+  /// from rankBucketSize (the whole category) — "rank1y of rankPool1y", never "rank1y of bucketSize",
+  /// which would mix "12th among funds we could measure" with "41 funds that exist".
+  rankPool1y Int? @map("rank_pool_1y")
+  rankPool3y Int? @map("rank_pool_3y")
+  rankPool5y Int? @map("rank_pool_5y")
+  pct1y  Decimal? @map("pct_1y") @db.Decimal(5, 2) // percentile within bucket (100 = best)
+  pct3y  Decimal? @map("pct_3y") @db.Decimal(5, 2)
+  pct5y  Decimal? @map("pct_5y") @db.Decimal(5, 2)
+
+  // ── GROUP-3: BENCHMARK-RELATIVE ANALYTICS (Step 18) ──
+  //
+  // A beta is meaningless without the benchmark it is a beta TO. So the index is stored ON the row,
+  // and every read path must render them together — "1.18" says nothing; "1.18 vs Nifty Midcap 150"
+  // says everything.
+  //
+  // ~49% of ACTIVE schemes carry NO benchmark at all, and that is a deliberate output, not a gap:
+  // credit-bearing debt funds are benchmarked (by their own AMCs) against CRISIL credit indices
+  // that NSE does not publish. The available G-Sec indices would report the fund's CREDIT SPREAD as
+  // ALPHA — dressing a risk premium up as manager skill. A null beats a confidently wrong number.
+  /// The index beta/alpha/tracking-error were measured against. NULL ⇒ no defensible benchmark;
+  /// `omissions` says which of several reasons.
+  benchmarkIndex String? @map("benchmark_index")
+  /// HOW the benchmark was chosen — 'category' | 'name' | 'sector'. These carry DIFFERENT
+  /// confidence and the difference is what lets a reader trust or discount the alpha:
+  ///   category — the AMFI leaf maps to a standard benchmark (a Large Cap fund → Nifty 100).
+  ///   name     — the fund's own name states the index it tracks (an index fund / ETF), matched
+  ///              longest-first with a WHOLE-MATCH guard (T-3): a substring match is accepted only when
+  ///              the name does not extend the matched index into a longer one we don't hold (e.g.
+  ///              "Sensex Next 50" must NOT match "Sensex"). Reliable, NOT "near-certain" — a substring
+  ///              match is only as good as the guard, and a fund tracking an index we lack stays NULL.
+  ///   sector   — an AUDITED sector allow-list over thematic funds. A defensible editorial call,
+  ///              not a fact from the source. Never a fuzzy match: unmapped sectors stay NULL.
+  benchmarkVia   String? @map("benchmark_via")
+
+  /// β = cov(fund, benchmark) / var(benchmark). Gated on BOTH histories (fund AND benchmark must
+  /// cover the horizon) — the same two-independent-gates rule as Sharpe's risk-free leg.
+  beta1y Decimal? @map("beta_1y") @db.Decimal(10, 6)
+  beta3y Decimal? @map("beta_3y") @db.Decimal(10, 6)
+  beta5y Decimal? @map("beta_5y") @db.Decimal(10, 6)
+
+  /// Jensen's α = fundRet − (rf + β × (benchRet − rf)). An annualised FRACTION, so it takes the
+  /// (12,6) of the returns it is derived from — not the (10,6) of its beta.
+  alpha1y Decimal? @map("alpha_1y") @db.Decimal(12, 6)
+  alpha3y Decimal? @map("alpha_3y") @db.Decimal(12, 6)
+  alpha5y Decimal? @map("alpha_5y") @db.Decimal(12, 6)
+
+  /// Annualised stdev(fundRet − benchRet). For an INDEX fund/ETF this is the number that matters:
+  /// it measures how well the thing actually tracks what it claims to track.
+  trackingError1y Decimal? @map("tracking_error_1y") @db.Decimal(10, 6)
+  trackingError3y Decimal? @map("tracking_error_3y") @db.Decimal(10, 6)
+  trackingError5y Decimal? @map("tracking_error_5y") @db.Decimal(10, 6)
+
+  /// The honest-empty ledger — WHY each NULL is NULL.
+  /// {"ret_5y_cagr":"insufficient_history: 412 pts, need >=1150",
+  ///  "sharpe_3y":"risk_free_series_covers_only_1y", "pct_1y":"bucket_too_small: 4 funds"}
+  /// A NULL metric with no entry here would be an unexplained gap. This is what makes
+  /// honest-empty auditable rather than merely absent.
+  omissions Json?
+
+  @@index([rankBucket])
+  @@index([asOfDate])
+  @@map("mf_analytics")
+}
+
+/// ═══════════════════════════════════════════════════════════════
+/// MF FAMILIES (Step 16) — the "same fund" grouping. A DISPLAY LABEL OVER ROWS, NOT A REWRITE.
+///
+/// "HDFC Large Cap Fund" is ONE fund that AMFI publishes as 4 scheme codes (Direct/Regular ×
+/// Growth/IDCW). The catalogue stores those 4 honestly and separately — they have genuinely
+/// different NAVs — but the fund page must show one fund with four variants, not four lookalike
+/// rows. These two tables ARE that grouping and nothing else: they do not touch per-scheme
+/// identity, NAV, or analytics, and NOTHING reads them to compute a number.
+///
+/// DERIVED FROM MESSY TEXT, AND THAT DICTATES THE SHAPE. There is no clean key for "same fund":
+/// the scheme CODE does not group a fund's plans (Step 9), so the grouping must be parsed out of
+/// `scheme_name` — 13,704 hand-typed strings, with typos, all-caps, no delimiters, and another
+/// fund's name embedded in "(formerly known as …)". A heuristic over that WILL have bugs, so it
+/// lives where a bug in it CANNOT REACH the catalogue: a re-derive is DELETE + re-INSERT here,
+/// and `instruments` is not in the statement at all. Its fingerprint cannot move.
+///
+/// THE RULE THAT GOVERNS IT: group only what normalizes CONFIDENTLY. A WRONG grouping is strictly
+/// worse than an ungrouped singleton — it would show one fund's plans under another fund's name.
+/// So when a name does not clearly resolve, we DO NOT GROUP, and `ungroupedReason` says why.
+model MfFamily {
+  id String @id @default(uuid())
+
+  /// The normalized key the grouping is BY — the scheme name with every KNOWN plan/option token
+  /// tail-stripped ("hdfc large cap fund"). Lowercased, punctuation-collapsed: it is a KEY, not a
+  /// label. Read `canonicalName` to show a human.
+  familyKey String @map("family_key")
+  /// The AMC — and the family key is SCOPED BY IT. Two houses both publish a "Large Cap Fund";
+  /// the house is the one hard, non-derived discriminator we already trust (it comes from AMFI's
+  /// own header, Step 9). Scoping by it makes a cross-AMC merge structurally impossible.
+  fundHouse String @map("fund_house")
+  /// The display name, in the AMC's own casing ("HDFC Large Cap Fund"), carried over from the raw
+  /// `scheme_name` rather than title-cased back out of the key.
+  canonicalName String @map("canonical_name")
+  /// mutual_fund | etf. A family NEVER mixes the two — asserted in verification, not assumed.
+  /// ETFs have no Direct/Regular plans, so 331 of 337 are singletons — but 3 liquid-rate ETFs
+  /// genuinely DO publish Growth and IDCW variants, so they are grouped. Measured, not presumed.
+  assetClass AssetClass @map("asset_class")
+  /// Denormalized fan-out, so the page never needs a COUNT() to say "4 variants".
+  schemeCount Int @map("scheme_count")
+  /// TRUE when the family holds exactly one scheme. Two different things land here and
+  /// `ungroupedReason` tells them apart: a fund that genuinely has one variant (reason NULL), and
+  /// one we REFUSED to group (reason set). Both are honest; only the second is a normalizer gap.
+  isSingleton Boolean @map("is_singleton")
+  /// HONEST-EMPTY, AS A COLUMN. NULL = grouped confidently. Non-null = we declined, and this is
+  /// the reason ("unclaimed-amount scheme — not a plan variant"). It is the triage signal for
+  /// normalizer gaps. Never fabricate a family just to leave this NULL.
+  ungroupedReason String? @map("ungrouped_reason")
+
+  derivedAt DateTime         @default(now()) @map("derived_at")
+  members   MfFamilyMember[]
+
+  @@unique([fundHouse, familyKey]) // the identity of a family — and what makes re-derive deterministic
+  @@index([fundHouse])
+  @@index([assetClass])
+  @@map("mf_families")
+}
+
+/// MEMBERSHIP — one row per SCHEME CODE (the NAV grain, the same grain `MfAnalytics` is keyed on).
+///
+/// 17,567 MF catalogue rows collapse to 13,704 scheme codes: one code carries up to 2 ISINs (the
+/// payout and the reinvestment ISIN share one NAV series). The code is therefore what a family
+/// groups — grouping ISINs would double-count every fund's variants.
+model MfFamilyMember {
+  /// PRIMARY KEY — and that IS the invariant: a scheme code belongs to EXACTLY ONE family. The
+  /// database refuses to represent it in two, so the job cannot get it wrong.
+  ///
+  /// No relation to Instrument: `Instrument.amfiSchemeCode` is non-unique by design (2 ISINs per
+  /// code), so a FK is impossible. Soft-joined on the code — exactly as `MfAnalytics` already is,
+  /// for exactly the same reason.
+  schemeCode String @id @map("scheme_code")
+  familyId   String @map("family_id")
+
+  /// PROVENANCE — the raw AMFI name this membership was derived FROM, verbatim. When a grouping
+  /// looks wrong, this is the evidence. Without it the derivation would be unfalsifiable.
+  schemeName String @map("scheme_name")
+  /// The plan/option tokens the normalizer STRIPPED to reach the key ("direct plan + growth");
+  /// NULL when nothing was stripped. It is the variant label the fund page renders — AND the
+  /// column that makes over-merge DETECTABLE: a real fund has exactly one "Direct + Growth", so
+  /// two members claiming one slot is either an AMFI duplicate or a bad merge. Without this
+  /// column that check cannot be made at all.
+  planOption String? @map("plan_option")
+
+  family MfFamily @relation(fields: [familyId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@map("mf_family_members")
+}
+
+/// The MF pipeline's RUN-LOG. Mirrors PriceFetchLog / IndexFetchLog exactly — same columns,
+/// same status vocabulary, same (date, discriminator) uniqueness. Nothing invented.
+///
+/// ONE table for the whole MF pipeline, discriminated by `job`, because the MF pipeline is
+/// one pipeline with three jobs. Step 9's amfi_nav_daily is retro-fitted here: it shipped
+/// with NO run-log, no admin route and no manual trigger — a mystery cron. Now it is
+/// observable like every other pipeline.
+model MfFetchLog {
+  id      String   @id @default(uuid())
+  runDate DateTime @map("run_date") @db.Date
+  /// amfi_nav_daily | etf_nav_daily | mf_analytics_daily
+  /// (historical rows also carry mf_inception_walk — that job is gone, but its run history is a
+  /// record of what actually ran and is not rewritten.)
+  job     String
+  source  String   @default("amfi")
+  /// success | partial | failed — the same vocabulary the sibling logs use.
+  status  String
+
+  /// schemesProcessed vs rowsFolded is the memory-proof evidence: rowsFolded runs to
+  /// millions while the job's heap stays O(schemes).
+  schemesProcessed Int @default(0) @map("schemes_processed")
+  rowsFolded       Int @default(0) @map("rows_folded")
+  analyticsWritten Int @default(0) @map("analytics_written")
+  faults           Int @default(0)
+
+  /// The window this run actually folded — so a short or failed run is visible AS short.
+  windowFrom DateTime? @map("window_from") @db.Date
+  windowTo   DateTime? @map("window_to") @db.Date
+  pulls      Int       @default(0)
+
+  durationMs Int?     @map("duration_ms")
+  error      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([runDate, job]) // a same-day re-run UPDATES its row rather than piling up
+  @@index([runDate])
+  @@index([job, createdAt])
+  @@map("mf_fetch_logs")
+}
+
+/// MATERIALIZED — one row per (account, instrument) that has any transaction. Recomputed on
 /// every write. qty may be 0 (fully exited): the row is KEPT so realized_pnl survives
 /// (tax + broker Tax P&L); GET /holdings filters qty>0 for the current-holdings view.
 model Holding {
   id             String   @id @default(uuid())
   userId         String   @map("user_id")
-  stockId        String   @map("stock_id")
+  accountId      String   @map("account_id") // the account whose FIFO queue produced this row
+  instrumentId   String   @map("instrument_id") // the catalog row this holding is OF (the FIFO key)
+  /// THE DENORMALISED CONVENIENCE — NULL for every non-stock holding (Step 20). A bond has no row in
+  /// `stocks`, so it cannot have one, and the holding does not need it: `instrumentId` is the spine.
+  ///
+  /// ⚠️  THE UNIQUE KEY DELIBERATELY DOES NOT TOUCH THIS. `@@unique([accountId, instrumentId])` sits
+  ///     on two NOT-NULL columns. Moving it onto a nullable stock_id would break it silently: Postgres
+  ///     treats NULLs as DISTINCT, so the constraint would enforce NOTHING for non-stocks and every
+  ///     re-entry would insert a duplicate holding. Step 19 hit exactly this on
+  ///     instrument_corporate_events; the fix there was a NOT-NULL key, and it is the fix here too.
+  stockId        String?  @map("stock_id")
   quantity       Decimal  @db.Decimal(18, 4) // current open qty (Σ open lots)
   avgCost        Decimal  @map("avg_cost") @db.Decimal(18, 6) // wtd-avg of OPEN lots = broker display cost
   investedValue  Decimal  @map("invested_value") @db.Decimal(20, 2) // Σ(lot.qty × lot.cost)
   realizedPnl    Decimal  @map("realized_pnl") @db.Decimal(20, 2) // cumulative FIFO-matched
   lastComputedAt DateTime @map("last_computed_at")
 
-  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  stock Stock        @relation(fields: [stockId], references: [id], onDelete: Cascade)
-  lots  HoldingLot[]
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account    PortfolioAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  instrument Instrument       @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  stock      Stock?           @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  lots       HoldingLot[]
 
-  @@unique([userId, stockId])
-  @@index([userId])
+  @@unique([accountId, instrumentId]) // one materialized row per (account, instrument) — the FIFO queue key
+  @@index([userId]) // whole-user reads (holdings-controller / phs-assemble) unchanged
+  @@index([instrumentId])
   @@map("holdings")
 }
 
@@ -3302,6 +3942,156 @@ model HoldingLot {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// BROKER INTEGRATION (Phase 1) — READ-ONLY holdings import. The lifecycle
+// (integrate → active → sync → deactivate → clear) is broker-AGNOSTIC and lives in
+// src/brokers; ONLY session establishment differs per broker (a thin adapter). Two tables:
+//   broker_connections — one row per (user, broker): the ENCRYPTED session blob + the
+//                        legal disclaimer record + enabled/session_state lifecycle flags.
+//   broker_holdings    — the verified snapshot MIRROR (broker is truth). Overwritten each
+//                        sync (delete-then-insert), NO FIFO, NO lot register. Stored BESIDE
+//                        the transaction-derived `holdings` (never merged into it), so the
+//                        FIFO path is untouched; a union read joins them later.
+// Additive; apply via the drift-safe db-execute + migrate-resolve path
+// (see [[invest-iq-migration-drift]]).
+// ═══════════════════════════════════════════════════════════════
+
+/// THE BROKER CATALOG (Step 5.5) — every broker an ACCOUNT can belong to. This enum is now
+/// TWO things at once, and the difference is load-bearing:
+///
+///   CATALOG  (this enum)        — what a portfolio_account can be TAGGED as, at CREATION.
+///   LINKABLE (IMPLEMENTED_BROKERS) — the subset with a working adapter (zerodha today).
+///
+/// A catalog-only broker is CREATE-NOW-LINK-LATER: a user creates an Angel One account and
+/// hand-tracks it today; the day the Angel adapter ships it becomes linkable and NO DATA MOVES,
+/// because the account's identity was already correct. src/brokers/registry.ts maps every
+/// adapter-less member to notYet() — the same pattern upstox/groww already used.
+///
+/// `other` is the NOT-AT-A-BROKER member (Stage 1): SGBs bought from a bank, bonds held directly
+/// in NSDL, physical holdings — capital the user holds nowhere we can connect to. It is a VALUE,
+/// not an absence (broker stays NOT NULL): a null would say "we don't know"; `other` says "the user
+/// told us, and the answer is nowhere". It is PERMANENTLY UNLINKABLE — no adapter, ever — and
+/// POST /accounts/:id/link rejects it (409). It is NOT a fallback for a real broker missing from
+/// the catalog: completeness stays load-bearing (a real broker with no member here is a user with
+/// no home). Adding a real broker is still a one-line enum add.
+///
+/// `mock` is the reference/test adapter — creatable via the API (harnesses need it), HIDDEN from
+/// the picker list (src/brokers/catalog.ts). Mirrors the BrokerId union in src/brokers/types.ts.
+enum BrokerId {
+  mock
+  zerodha
+  upstox
+  groww
+  angelone
+  dhan
+  fyers
+  icicidirect
+  hdfcsecurities
+  kotak
+  sharekhan
+  fivepaisa
+  motilaloswal
+  iifl
+  sbisecurities
+  paytmmoney
+  axisdirect
+  other // Stage 1 — not held at a broker; a value, not an absence. Permanently unlinkable.
+}
+
+/// Token liveness — orthogonal to `enabled`. 'dead' ⇒ the stored session is expired/revoked
+/// (re-auth needed before the next sync can succeed).
+enum BrokerSessionState {
+  live
+  dead
+}
+
+/// One row per (user, broker). Holds the ENCRYPTED BrokerSession (AES-256-GCM, key in env —
+/// never plaintext, never returned to a client) + the legal disclaimer record. disclaimer_*
+/// are NOT NULL ⇒ a connection cannot exist without an accepted, versioned disclaimer.
+/// enabled = active(true)/inactive(false); session_state = token live/dead. clear (only when
+/// inactive) DELETEs the row → cascades holdings → the encrypted token is forgotten.
+model BrokerConnection {
+  id     String   @id @default(uuid())
+  userId String   @map("user_id")
+  broker BrokerId
+  /// The BROKER's own per-account identifier (Kite `user_id` / client code; `clientcode` on
+  /// Angel — every Indian broker issues one per demat). This is the second key dimension that
+  /// makes TWO demats at ONE broker representable. NOT NULL by design: Postgres UNIQUE treats
+  /// NULLs as DISTINCT, so a nullable ref would silently permit duplicate connections — the
+  /// exact failure this key prevents. No ref from the adapter ⇒ persist FAILS LOUD.
+  brokerAccountRef     String             @map("broker_account_ref")
+  enabled              Boolean            @default(true)
+  sessionState         BrokerSessionState @default(live) @map("session_state")
+  sessionBlob          String             @map("session_blob") // AES-256-GCM ciphertext of the BrokerSession (v1:iv:tag:ct)
+  sessionExpiresAt     DateTime?          @map("session_expires_at") // queryable mirror of token expiry; null = non-expiring
+  disclaimerVersion    String             @map("disclaimer_version") // WHICH wording was accepted (liability record)
+  disclaimerAcceptedAt DateTime           @map("disclaimer_accepted_at")
+  lastSyncedAt         DateTime?          @map("last_synced_at") // null until the first successful sync
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  holdings BrokerHolding[]
+  accounts PortfolioAccount[] // account(s) linked to this connection (Step 2+; none in Step 1)
+
+  @@unique([userId, broker, brokerAccountRef]) // two demats at one broker = two connections
+  @@index([userId])
+  @@map("broker_connections")
+}
+
+/// The verified snapshot MIRROR — broker is truth, NEVER synthesized into transactions.
+/// symbol = raw broker tradingsymbol (stored verbatim even for names outside our 505 →
+/// stock_id NULL, stored + displayable, unscored). avg_cost/current_value are the broker's
+/// figures, never recomputed. Overwritten each sync; wiped by clear (connection cascade).
+model BrokerHolding {
+  id                 String   @id @default(uuid())
+  userId             String   @map("user_id") // denormalised for direct per-user union reads
+  brokerConnectionId String   @map("broker_connection_id")
+  symbol             String // raw broker tradingsymbol (broker truth)
+  instrumentId       String?  @map("instrument_id") // catalog row; NULLABLE FOREVER — an unmapped broker symbol has NO instrument (held-not-scored), which is valid, not an error
+  stockId            String?  @map("stock_id") // resolved to our universe; null = outside the 504
+  quantity           Decimal  @db.Decimal(18, 4)
+  avgCost            Decimal  @map("avg_cost") @db.Decimal(18, 6) // broker's avg cost, never recomputed
+  currentValue       Decimal? @map("current_value") @db.Decimal(20, 2) // broker's ₹ value; null ⇒ union re-enriches mapped names
+  source             String   @default("broker") // discriminator (CHECK-locked in SQL) for the union with manual holdings
+  syncedAt           DateTime @map("synced_at")
+
+  connection BrokerConnection @relation(fields: [brokerConnectionId], references: [id], onDelete: Cascade)
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrument Instrument?      @relation(fields: [instrumentId], references: [id], onDelete: SetNull)
+  stock      Stock?           @relation(fields: [stockId], references: [id], onDelete: SetNull)
+
+  @@unique([brokerConnectionId, symbol]) // symbol = broker truth (always present); instrument_id/stock_id nullable
+  @@index([userId])
+  @@index([stockId])
+  @@index([instrumentId])
+  @@map("broker_holdings")
+}
+
+/// Short-lived CSRF/state tokens for INTERACTIVE (OAuth) broker auth (Phase 2a). One row per
+/// initiated flow. `state` is an unguessable 256-bit single-use token bound to (user, broker);
+/// the callback verifies + ATOMICALLY consumes it (consumed_at) before completing the link.
+/// Also the pending-integration record: it carries the disclaimer accepted at initiate time,
+/// so completion writes the connection with the consent already captured. Expired/consumed
+/// rows are inert (rejected) and swept opportunistically. Additive; drift-safe apply.
+model BrokerAuthState {
+  id                   String    @id @default(uuid())
+  userId               String    @map("user_id")
+  broker               BrokerId
+  state                String    @unique // 256-bit base64url CSRF token; the login-URL nonce
+  disclaimerVersion    String    @map("disclaimer_version") // captured at initiate → written on complete
+  disclaimerAcceptedAt DateTime  @map("disclaimer_accepted_at")
+  expiresAt            DateTime  @map("expires_at") // short TTL (minutes)
+  consumedAt           DateTime? @map("consumed_at") // set ATOMICALLY on use → single-use (replay-proof)
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("broker_auth_states")
+}
+
+// ═══════════════════════════════════════════════════════════════
 // PORTFOLIO HEALTH SCORE SNAPSHOT (PHS Part A) — compute-once, append-only.
 // One row per (portfolio=user, compute-event). The single source every surface
 // reads (Overview, Health tab) — no surface re-runs the engine. PHS = holdings'
@@ -3316,13 +4106,14 @@ model PortfolioHealthSnapshot {
   userId String @map("user_id") // the portfolio = the user's book
 
   // ── headline ──
-  phs            Int? // published integer PHS; null when c=0 (construction-read only)
-  phsRaw         Decimal? @map("phs_raw") @db.Decimal(8, 4) // pre-ceiling
-  band           String? // Strong|Steady|Mixed|Fragile|Weak; null when no PHS
-  provisional    Boolean  @default(false) // c < 0.40 (PROVISIONAL_BELOW)
-  evaluable      Boolean  @default(true) // false ⇔ c=0 (no scored holdings)
-  ceilingApplied Boolean  @map("ceiling_applied") // did the ceiling bind (ceiling < phs_raw)?
-  ceilingValue   Int?     @map("ceiling_value") // ceiling in force; null when c≥0.80 (none)
+  //    (Stage 7 §12) phs_raw / ceiling_applied / ceiling_value are GONE. The coverage ceiling was
+  //    retired in 1.2 — Health shows TRUE and uncapped — so they carried null/false ever since.
+  //    Dropped, not kept: 0 of 31 rows ever held a ceiling, so no history was destroyed. A column
+  //    written null forever is a fact with a home and no meaning.
+  phs         Int? // published integer PHS; null when c=0 (construction-read only)
+  band        String? // Strong|Steady|Mixed|Fragile|Weak; null when no PHS
+  provisional Boolean @default(false) // c < 0.40 (PROVISIONAL_BELOW)
+  evaluable   Boolean @default(true) // false ⇔ c=0 (no scored holdings)
 
   // ── pillars ──
   quality   Decimal? @db.Decimal(8, 4) // null when not evaluable
@@ -3337,7 +4128,11 @@ model PortfolioHealthSnapshot {
   smallUnscoredValue      Decimal @map("small_unscored_value") @db.Decimal(20, 2)
 
   // ── full deduction ledgers (A.12) ──
-  structureLedger Json  @map("structure_ledger") // every fired S-rule with its points
+  /// (Stage 9) NULLABLE: S1–S5 are deleted, so persist no longer writes this. The 31 pre-Stage-9 rows
+  /// KEEP their ledgers — the only surviving record of how books were read before the Construction
+  /// cutover, and what PX1/2/4 were built on. Stage 7's rule: you cannot un-drop history, so a retired
+  /// column that CARRIES history goes nullable, never dropped (contrast phs_raw: 0 rows, droppable).
+  structureLedger Json? @map("structure_ledger") // every fired S-rule with its points (pre-Stage-9 rows only)
   signalsLedger   Json  @map("signals_ledger") // per-holding resolved Signals deduction + winning source
   firedFindings   Json? @map("fired_findings") // PF IDs (Part B) — always [] for Part A, column reserved
 
@@ -3355,6 +4150,15 @@ model PortfolioHealthSnapshot {
   pillarProfile Json? @map("pillar_profile") // { foundation, momentum, market, ownership } | null
   lensProfile   Json? @map("lens_profile") //   { absolute, peer, trend } | null
 
+  // ── (Construction v2 Stage 6) the full Construction decomposition for the DISPLAY read.
+  //    Persisted so getPortfolioSnapshot (a PURE read — never recomputes the engine) can serve it:
+  //    { gross, net, archetype, exposures{nameRisk,basket,debt,commodity},
+  //      rules[C1…C6: {rule, evaluable, points, subjectShare, firedSubject, detail}] }.
+  //    firedSubject/subjectShare are STRUCTURED so the FE renders from fields, never by parsing `detail`
+  //    prose. Nullable: pre-2.0 rows + no-holding users keep NULL (FE degrades to value+band). NOT in
+  //    fingerprintOf — §12 fingerprint inclusion is Stage 7. Migration-gated, additive, no backfill. ──
+  constructionData Json? @map("construction_data")
+
   // ── provenance ──
   constantVersion String   @map("constant_version") // 'portfolio-spec 1.2'
   fingerprint     String // skip-write if == the user's latest snapshot's
@@ -3365,6 +4169,59 @@ model PortfolioHealthSnapshot {
   @@index([userId, createdAt(sort: Desc)]) // latest snapshot per user (the read path)
   @@index([fingerprint])
   @@map("portfolio_health_snapshot")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// PORTFOLIO SCORE HISTORY — the daily "PHS over time" series (one row per user per day).
+//
+// A DELIBERATE SIBLING of portfolio_health_snapshot, NOT a widening of it. The snapshot
+// is the load-bearing "current" record every surface reads; THIS is a nice-to-have graph.
+// The two must never couple: the history write is BEST-EFFORT and DECOUPLED — it runs
+// OUTSIDE the snapshot's write, in its own try/catch, and a failure here NEVER fails the
+// score and NEVER opens an error-tab row (a missing chart dot is not a fault; see
+// score-history.ts + the …Tracked wrapper in refresh.ts).
+//
+// upsert-on-(user_id, date): the day's LATEST compute wins — same day overwrites, a new
+// day inserts. NO CRON: the EOD price rescore recomputes every active book after close,
+// so the last write of the day is a real daily close, for free. Only written for an
+// EVALUABLE book (phs non-null); a no-scored-holdings book has no PHS to chart.
+//
+// Managed by the retention engine as a NORMAL row from day one: depth_per_key, key
+// user_id, keep 1825 (≈5y), floor 30, ARMED — pruned by the same nightly pass as every
+// other managed table (retention_policy seed in the create migration). Additive; apply
+// via the drift-safe db-execute + migrate-resolve path (see [[invest-iq-migration-drift]]).
+// ═══════════════════════════════════════════════════════════════
+model PortfolioScoreHistory {
+  // The retention engine's depth_per_key handler REQUIRES an `id` column (it deletes by id);
+  // client-generated uuid like every other append table here.
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+  // The calendar day this value is FOR (IST market close). @db.Date — no time component;
+  // the (user_id, date) unique is what makes same-day computes collapse to one row.
+  date   DateTime @db.Date
+
+  phs      Int //   the composite Health (= snapshot.phs) — the graph's primary line
+  quality  Int? //  sub-scores, so the graph can add lines later. null when not evaluable
+  signals  Int?
+  // Construction Net (= snapshot.structure, the SAME column constructionRead.value reads —
+  // see portfolio-snapshot-controller.ts's `structure: num(s.structure)`), rounded to match
+  // phs/quality/signals. FORWARD-ONLY: added after this table already existed, so every row
+  // written before this column has NULL — never backfilled from portfolio_health_snapshot
+  // (that table is event-keyed and noisy, not a calendar series; fabricating a daily
+  // Construction history from it would assert days that were never actually computed).
+  structure Int?
+  coverage Float? // % of book covered (0..1), the snapshot's `coverage` (c); null when unknown
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at") // bumped on same-day overwrite (audit)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // one row per user per day (the upsert key) — this unique index ALSO serves the read
+  // (`where user_id order by date`) and the retention depth scan (partition by user_id,
+  // order by date), so no separate secondary index is needed.
+  @@unique([userId, date], name: "user_id_date")
+  @@map("portfolio_score_history")
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -3565,4 +4422,65 @@ model EventReminderEvent {
   @@index([reminderId])
   @@index([delivered]) // the email drain scans undelivered rows
   @@map("event_reminder_events")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RETENTION POLICY (Layer 1) — the config the generic pruner reads. ONE ROW PER
+// managed table; nothing is hardcoded in the engine. A limit change is an UPDATE,
+// no deploy. A future admin UI writes these rows, so EVERY value is untrusted
+// input: the engine clamps keep/days/supersededDays UP to `floor`, never below,
+// and validates every identifier against the catalog before it builds a delete.
+// `mode` is a CHECK-constrained string (not a PG enum) — the engine's union type is
+// the authority. See src/retention/ for the engine + the drift-safe migration for
+// the grounded seed.
+// ═══════════════════════════════════════════════════════════════
+model RetentionPolicy {
+  id       String @id @default(uuid())
+  table    String @unique @map("table_name") // physical target table
+  mode     String // depth_per_key | time | supersede_chain (CHECK-constrained in SQL)
+  keyCols  String[] @default([]) @map("key_cols") // depth: grouping columns (the real unique key, minus the period)
+  orderCol String?  @map("order_col") // depth: the "newest N" sort column (report_date/date/as_on_date)
+
+  keep           Int? // depth: keep newest N per key
+  days           Int? // time: prune older than N days
+  supersededDays Int? @map("superseded_days") // supersede: prune non-head links older than N days
+
+  floor       Int // THE HARD MINIMUM — engine clamps keep/days/supersededDays UP to this, never below
+  floorReason String @map("floor_reason") // shown when a clamp fires
+
+  exceptWhere String? @map("except_where") // NAMED exemption predicate the engine knows (never free SQL)
+  tsColumn    String? @map("ts_column") // time: which timestamp column
+  enabled     Boolean @default(true) // per-table kill switch (skip entirely)
+  // Live-delete gate. false → counted but NEVER deleted (per-table dry-run), even
+  // in a live run. Default false = safe: nothing deletes until deliberately armed.
+  // Also the standing kill switch — disarm a misbehaving table with one UPDATE.
+  armed       Boolean @default(false)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("retention_policy")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RETENTION POLICY AUDIT (Layer 3) — one row per ADMIN-INITIATED change to a
+// retention_policy row. Written ONLY by the admin UI write path; the retention
+// engine has no reference to this table (it only DELETEs), so a pruner-initiated
+// delete cannot write an audit row. `projectedDelta` is server-computed from the
+// real dry-run against the proposed value at save time — never client-passed. The
+// table is itself a managed policy row (time / 365d / floor 90) and self-prunes.
+// ═══════════════════════════════════════════════════════════════
+model RetentionPolicyAudit {
+  id             String   @id @default(uuid())
+  policyTable    String   @map("policy_table") // which retention_policy row changed
+  field          String // keep | days | supersededDays | armed | enabled
+  oldValue       String?  @map("old_value") // serialized; null if prior was null
+  newValue       String?  @map("new_value")
+  changedBy      String   @map("changed_by") // req.authUser.userId (the token, never a payload value)
+  changedAt      DateTime @default(now()) @map("changed_at")
+  projectedDelta String?  @map("projected_delta") // server-computed dry-run projection at save
+
+  @@index([changedAt(sort: Desc)])
+  @@index([policyTable, changedAt(sort: Desc)])
+  @@map("retention_policy_audit")
 }

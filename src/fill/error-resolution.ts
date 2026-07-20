@@ -76,6 +76,35 @@ export async function resolveErrorRowId(
     const row = await prisma.dailyPrice.findUnique({ where: { stockId_date: { stockId: stock.id, date: new Date(dateIso) } }, select: { id: true } });
     return row?.id ?? null;
   }
+  if (table === "Instrument") {
+    // entity = the ISIN (a fund has no ticker — the spine IS its identity). Step 9 / AMFI.
+    // Only currentNav is fillable; an ISIN fault is source_code and never reaches here.
+    if (!targetEntity) return null;
+    const row = await prisma.instrument.findUnique({ where: { isin: targetEntity }, select: { id: true } });
+    return row?.id ?? null;
+  }
+  if (table === "InstrumentPrice") {
+    // entity = "ISIN@YYYY-MM-DD" — the ISIN AND the session the price belongs to. Steps 14/15/17.
+    //
+    // WHY BOTH, and why not the DailyPrice shape (symbol + the date out of runRef):
+    //   · SYMBOL IS NOT A KEY HERE. `instruments.symbol` is nullable and NOT unique (a mutual fund
+    //     has no ticker at all). The ISIN is the spine; it is the only thing that identifies the row.
+    //   · THE RUN DATE IS NOT THE PRICE DATE. These lanes union a 10-session look-back, so a given
+    //     price belongs to whichever session it actually traded on — which is NOT the day the cron
+    //     ran. Taking the date from runRef (as DailyPrice does, where one run = one day) would
+    //     resolve the WRONG ROW, or none, and a fill that silently edits the wrong day's close is
+    //     worse than no fill at all.
+    if (!targetEntity) return null;
+    const [isin, dateIso] = targetEntity.split("@");
+    if (!isin || !dateIso) return null;
+    const instrument = await prisma.instrument.findUnique({ where: { isin }, select: { id: true } });
+    if (!instrument) return null;
+    const row = await prisma.instrumentPrice.findUnique({
+      where: { instrumentId_date: { instrumentId: instrument.id, date: new Date(dateIso) } },
+      select: { id: true },
+    });
+    return row?.id ?? null;
+  }
   return null;
 }
 
@@ -87,8 +116,15 @@ export interface FillMeta {
 
 /** Editor metadata for a (table, field) — drives the modal's input + validation. */
 export function fillMetaFor(table: string, field: string): FillMeta {
+  // A NAV is ₹/unit. min 0 — NOT 0.01: AMFI genuinely publishes 0.0000 for a defunct /
+  // written-off segregated portfolio, and that IS the NAV. (A MISSING nav stays NULL; it is
+  // never coerced to 0. The two are different, and the bridge must not conflate them.)
+  if (table === "Instrument") return { type: "number", unit: "₹/unit", bounds: { min: 0 } };
   if (table === "ShareholdingPattern") return { type: "number", unit: "%", bounds: { min: 0, max: 100 } };
   if (table === "DailyPrice") return { type: "number", unit: field === "tradedValue" ? "₹ Cr" : "₹", bounds: { min: 0.01 } };
+  // A trust's / G-sec's / bond's exchange close. Same units and same floor as DailyPrice — a rupee
+  // close is a rupee close, whoever issued the instrument.
+  if (table === "InstrumentPrice") return { type: "number", unit: field === "tradedValue" ? "₹ Cr" : "₹", bounds: { min: 0.01 } };
   if (table === "CorporateEvent") return { type: "number", unit: "₹/share", bounds: { min: 0 } };
   // fundamentals: ratios/% vs per-share vs ₹Cr line items
   if (/pct$|ratio$|margin$|roe$|roce$|nim$|spread$|solvency|persistency|coverage$|turnover$/i.test(field)) {

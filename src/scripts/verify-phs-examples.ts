@@ -1,5 +1,33 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// PHS ENGINE VERIFICATION — portfolio-spec 1.2 (DECOUPLING). Pure engine (inputs direct).
+// PHS ENGINE VERIFICATION — §A.10's HEALTH-COMPOSITION canon. Pure engine (inputs direct).
+//
+// ★ (Stage 9 §15 · ODL cv2-s9-a10-construction-historical) THIS FILE NO LONGER ASSERTS CONSTRUCTION.
+//
+// §A.10's Structure figures — "Structure = 100 − 25 − 18.2 − 10 = 46.8", "Construction = 55 (S1 0 ·
+// S2 −25 · S3 −20)", "≈ 86.1" — are S-RULE ARITHMETIC. S1–S5 are deleted; those numbers describe a model
+// that no longer exists. They are HISTORICAL CANON FOR A DELETED MODEL — true when written, and still
+// true ABOUT THAT MODEL.
+//
+// WHY THEY WERE NOT RE-DERIVED UNDER C1–C6. Recomputing 55 → 21 produces a number that LOOKS like a
+// §A.10 value and is not: A NEW FACT WEARING AN OLD CITATION. Nobody downstream could tell whether 21 was
+// RULED or INHERITED. That is the exact disease this stage caught three times (doc 2's fabricated
+// `engine.ts:207-223`; the phantom `catalog.ts:31`; Ex2's status-quo expectation).
+//
+// AND §A.10 NEVER ASSERTED CONSTRUCTION'S CORRECTNESS. It is a PART-A worked example: its job is the
+// Quality/Structure/Signals → PHS COMPOSITION. The Structure figure was an INPUT demonstrating that
+// arithmetic, not a claim about Structure itself. Recomputing it would not make the example right — it
+// would make it A DIFFERENT EXAMPLE SITTING AT THE SAME SECTION NUMBER.
+//
+// NOTHING IS LEFT UNASSERTED. Construction canon is §10 A–D (WRITTEN to assert it: B the 5-stock book,
+// C the NTPC aggregation, D the theme overlap — drift-immune, ruled EXACT at Stage 6), plus the stress
+// table, the invariants (C1=0 equal-weighted at any N · C4=0 distinct-sector · monotonicity) and the
+// identities. §A.10's Structure values were REDUNDANT COVERAGE OF A SUPERSEDED MODEL.
+//
+// ⚠ IF YOU ARE HERE BECAUSE §A.10 SHOWS A STRUCTURE NUMBER AND NOTHING ASSERTS IT: that is deliberate.
+// Do not "restore" it. The split is clean — §A.10 owns HEALTH composition (Quality/Signals/PHS, held
+// EXACTLY below at 80/71/71.2); §10 owns CONSTRUCTION. Neither needs to describe the other.
+//
+// WHAT THIS FILE STILL PROVES — portfolio-spec 1.2 (DECOUPLING):
 //   • Change 1 — Health = Quality − 0.20×(100 − Signals); NO structure term.
 //   • Change 2 — Construction = standalone Structure (full strength).
 //   • Change 3 — the coverage ceiling is RETIRED; Health shows TRUE (only a Provisional tag).
@@ -21,10 +49,23 @@ function eq(name: string, actual: unknown, expected: unknown) {
   console.log(`    ${ok ? "✅" : "❌"} ${name}: ${String(actual)} (exp ${String(expected)})`);
   if (!ok) failures++;
 }
+// (Stage 9) POSITION FACTS — this harness had the SAME gap as verify-phs-patterns: no `isin`/
+// `assetClass`, so every holding read as a BASKET and every book here ran Fund-led with C1/C2/C3
+// not-evaluable. It went unnoticed because this file asserts only Part-A numbers (Health / Quality /
+// Signals / the S-composite), and the S-rules are NATURE-BLIND — they never consulted the class, so
+// nothing it pins could move. That is exactly what made it invisible: **a harness cannot catch a fact
+// it never reads.** `sectorStateOf` now throws on a missing class, so this can no longer pass quietly.
+// Stems must vary in chars 4-7 (the entity key is `isin.slice(0,7)`); see verify-phs-patterns.ts.
+const seq = new Map<string, string>();
+const isinFor = (symbol: string) => {
+  let v = seq.get(symbol);
+  if (!v) { v = `INE${(seq.size + 1).toString(36).toUpperCase().padStart(4, "0")}00000`; seq.set(symbol, v); }
+  return v;
+};
 const H = (
   symbol: string, marketValue: number, tier: PhsHolding["tier"], sector: string | null, health: number | null,
   findings: PhsHolding["findings"] = [], pillars: PillarSubtotals | null = null, lensNatures: LensNature[] = [],
-): PhsHolding => ({ symbol, marketValue, tier, sector, health, findings, pillars, lensNatures });
+): PhsHolding => ({ symbol, marketValue, tier, sector, health, findings, pillars, lensNatures, isin: isinFor(symbol), assetClass: "stock", category: null });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCEPTANCE 1 — the decoupled pair. A single health-80 stock: Health passes straight
@@ -33,15 +74,15 @@ const H = (
 // ═══════════════════════════════════════════════════════════════════════════════
 console.log("\n═══ ACCEPTANCE 1 — single health-80 stock: the decoupled pair ═══");
 const oneKnown = computePhs([H("ONE", 100, "large", "Financials", 80)]); // known sector → S2 fires
-console.log(`  known-sector single stock → Health ${oneKnown.health} (${oneKnown.band}) · Construction ${oneKnown.structure.toFixed(0)} · quality ${oneKnown.quality} · signals ${oneKnown.signals}`);
+console.log(`  known-sector single stock → Health ${oneKnown.health} (${oneKnown.band}) · Construction ${oneKnown.construction.net.toFixed(0)} · quality ${oneKnown.quality} · signals ${oneKnown.signals}`);
 eq("Health = 80 (pure Quality, NO structure term)", oneKnown.health, 80);
 eq("band Strong", oneKnown.band, "Strong");
-eq("Construction = standalone Structure = 55 (S1 0 · S2 −25 · S3 −20)", Math.round(oneKnown.structure), 55);
+// (§15) the "Construction = 55" assertion is DROPPED — S-era. Construction canon is §10 A–D.
 eq("no coverage cap — Health shows TRUE (evaluable)", oneKnown.evaluable, true);
 // the unknown-sector variant: S2 not evaluable → Construction = 80 (S3 only), pair collapses.
 const oneUnknown = computePhs([H("ONE", 100, "large", null, 80)]);
-console.log(`  unknown-sector single stock → Health ${oneUnknown.health} · Construction ${oneUnknown.structure.toFixed(0)} (S3-only)`);
-eq("unknown-sector Construction = 80 (S3 only, no S2)", Math.round(oneUnknown.structure), 80);
+console.log(`  unknown-sector single stock → Health ${oneUnknown.health} · Construction ${oneUnknown.construction.net.toFixed(0)} (S3-only)`);
+// (§15) "Construction = 80 (S3 only)" DROPPED — S3 does not exist. §10 A–D owns Construction.
 console.log("  NOTE: the amendment's illustrative '80·35 / hidden as 56' does not match the S-rule caps —");
 console.log("  a single position floors Structure at 55 (S1=0 via the 1.1 relative threshold, S2 caps −25,");
 console.log("  S3 caps −20). The v1.1 BLENDED value was 67 (80 − 0.30×45), not 56 (56 was the health-70 case).");
@@ -58,11 +99,11 @@ const book = computePhs([
   H("RELIANCE", 19, "large", "Energy", 55), H("MM", 18, "large", "Auto", 69),
   H("HDFCBANK", 10, "large", "Financials", 68),
 ]);
-console.log(`  Health ${book.health} (${book.band}) · Construction ${book.structure.toFixed(2)} · quality ${book.quality?.toFixed(2)} · signals ${book.signals}`);
+console.log(`  Health ${book.health} (${book.band}) · Construction ${book.construction.net.toFixed(2)} · quality ${book.quality?.toFixed(2)} · signals ${book.signals}`);
 near("Quality 71.2 (unchanged)", book.quality, 71.2, 0.05);
 eq("Health = 71 (= Quality, Signals clean; structure term GONE)", book.health, 71);
 eq("band Steady", book.band, "Steady");
-near("Construction ≈ 86.1 (standalone Structure, full strength)", book.structure, 86.07, 0.05);
+// (§15) "Construction ≈ 86.1" DROPPED — S-rule arithmetic. §10 Example B is this book's Construction canon.
 eq("no ceiling in the result shape (retired)", (book as unknown as Record<string, unknown>).ceilingApplied, undefined);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -76,7 +117,7 @@ const bookAt = (u: number) => computePhs([
 ]);
 const cheap = bookAt(1_000), rich = bookAt(50_000); // ₹100,000 vs ₹5,000,000
 eq("Health identical", cheap.health === rich.health, true);
-eq("Construction identical", cheap.structure === rich.structure, true);
+eq("Construction identical", cheap.construction.net === rich.construction.net, true);
 eq("pillarProfile identical", JSON.stringify(cheap.pillarProfile) === JSON.stringify(rich.pillarProfile), true);
 eq("capital_tier DIFFERS: ₹1L Modest", cheap.capitalTier, "Modest");
 eq("capital_tier DIFFERS: ₹50L Substantial", rich.capitalTier, "Substantial");

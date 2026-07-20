@@ -86,6 +86,27 @@ export const FILLABLE: Record<string, ReadonlySet<string>> = {
   ]),
   CorporateEvent: new Set(["dividendAmount"]),
   DailyPrice: new Set(["close", "open", "high", "low", "prevClose", "tradedValue"]),
+  // ── Step 9 (AMFI). currentNav ONLY — deliberately.
+  //    `isin` is NOT fillable and must never become so: the bridge is numeric-only, and more
+  //    importantly a hand-typed ISIN POISONS THE SPINE (universe-admit.ts: "a fabricated ISIN
+  //    would be accepted by the unique index and would look fine — until the real security
+  //    arrived"). An AMFI ISIN fault is resolutionPath=source_code — only AMFI can fix it.
+  //    A NAV, by contrast, an admin CAN honestly source and cite.
+  Instrument: new Set(["currentNav"]),
+  // ── Steps 14 / 15 / 17. The NON-EQUITY price spine — a trust's, a G-sec's or a bond's close.
+  //    The DailyPrice analogue, and it exists for the same reason: a range guard on `close` is a
+  //    LANDS-AND-FLAGS guard (the row is written, then flagged), so an operator who can source and
+  //    CITE the true close must be able to correct it.
+  //
+  //    THIS WAS A BROKEN PROMISE UNTIL NOW. The three lanes all reported their range violation as
+  //    resolutionPath="admin_fill" while `InstrumentPrice` was absent from this map — so the triage
+  //    UI rendered a green "Fully resolves by filling" and then offered NO FILL BUTTON, because
+  //    annotateFill returns fill:null for a table the bridge does not cover. The row said "an admin
+  //    can fix this" and gave the admin no way to do it.
+  //
+  //    `isin` is NOT here, and must never be — same reason as Instrument above: a hand-typed ISIN
+  //    poisons the spine. Only the numbers are fillable.
+  InstrumentPrice: new Set(["close", "open", "high", "low", "prevClose", "tradedValue"]),
 };
 
 export interface RawFieldEditInput {

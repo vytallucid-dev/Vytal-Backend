@@ -23,6 +23,14 @@ import {
   adminPricesRouter,
   pricesRouter,
 } from "./routes/ingestion/prices-route.js";
+import { adminMfRouter, mfRouter } from "./routes/ingestion/mf-route.js";
+import { instrumentsRouter } from "./routes/instrument-search-route.js";
+import { fundsRouter } from "./routes/funds-route.js";
+import {
+  adminReitsRouter,
+  adminGovtSecuritiesRouter,
+  adminCorporateBondsRouter,
+} from "./routes/ingestion/instrument-lanes-route.js";
 import {
   adminIndicesRouter,
   indicesRouter,
@@ -36,6 +44,7 @@ import {
 } from "./routes/ingestion/shareholding-route.js";
 import { jobsRouter } from "./routes/job-routes.js";
 import { pipelinesRouter } from "./routes/pipelines-route.js";
+import { retentionAdminRouter } from "./routes/admin/retention-route.js";
 import { ingestionErrorsRouter } from "./routes/ingestion/ingestion-errors-route.js";
 import { resultsRouter } from "./routes/results-route.js";
 import { stocksRouter } from "./routes/stock-health-route.js";
@@ -47,6 +56,7 @@ import { mePortfolioRouter } from "./routes/me-portfolio-routes.js";
 import { meWatchlistRouter } from "./routes/me-watchlist-routes.js";
 import { meAlertsRouter } from "./routes/me-alerts-routes.js";
 import { meRemindersRouter } from "./routes/me-reminders-routes.js";
+import { meBrokerRouter } from "./routes/me-broker-routes.js";
 
 export const createApp = () => {
   const app = express();
@@ -66,6 +76,23 @@ export const createApp = () => {
   app.use("/api/v1/prices", pricesRouter);
   app.use("/api/v1/admin/prices", requireAdmin, adminPricesRouter);
   app.use("/api/v1/indices", indicesRouter);
+  // ── Mutual funds (Steps 9 + 10/11). Public reads + admin manual triggers, so the MF
+  //    pipeline is observable and triggerable exactly like every other one.
+  app.use("/api/v1/mf", mfRouter);
+  app.use("/api/v1/admin/mf", requireAdmin, adminMfRouter);
+  // ── Universe-wide instrument SEARCH (name / symbol / ISIN). Public read, same posture as the
+  //    stock/fund reads: it makes the ~19k non-equity instruments discoverable for manual entry.
+  //    Additive — no existing route's behaviour changes. ──
+  app.use("/api/v1/instruments", instrumentsRouter);
+  // ── Fund/ETF DISCOVERY — the browse door the fund-detail page had none of. Family-grain,
+  //    filter-and-narrow (category/fundHouse/plan), never a leaderboard. Public read, additive. ──
+  app.use("/api/v1/funds", fundsRouter);
+  // The three udiff instrument lanes (Steps 14 / 15 / 17). They shipped cron-only — registered in
+  // pipelines-controller but with no trigger and no page, which is a mystery cron with a paper
+  // trail. Each is its own mount because each is its own card and its own failure domain.
+  app.use("/api/v1/admin/reits", requireAdmin, adminReitsRouter);
+  app.use("/api/v1/admin/govt-securities", requireAdmin, adminGovtSecuritiesRouter);
+  app.use("/api/v1/admin/corporate-bonds", requireAdmin, adminCorporateBondsRouter);
   app.use("/api/v1/admin/indices", requireAdmin, adminIndicesRouter);
   app.use("/api/v1/events", eventsRouter);
   app.use("/api/v1/admin/events", requireAdmin, adminEventsRouter);
@@ -82,6 +109,7 @@ export const createApp = () => {
   app.use("/api/v1/admin/legacy-backfill", requireAdmin, legacyBackfillRouter);
   app.use("/api/v1/admin/jobs", requireAdmin, jobsRouter);
   app.use("/api/v1/admin/pipelines", requireAdmin, pipelinesRouter);
+  app.use("/api/v1/admin/retention", requireAdmin, retentionAdminRouter);
   app.use("/api/v1/admin/ingestion-errors", requireAdmin, ingestionErrorsRouter);
 
   // Read API — cross-stock results feed (reported + upcoming) for the Results landing.
@@ -135,6 +163,12 @@ export const createApp = () => {
   //    req.authUser.userId. A fifth router on the same base path — the four above are
   //    untouched. Firing is the daily eval pass; delivery reuses the alerts email pipeline. ──
   app.use("/api/v1/me", requireAuth, meRemindersRouter);
+
+  // ── Authenticated user's OWN broker integrations (requireAuth). READ-ONLY holdings
+  //    import: connect/sync/deactivate/clear + status. Owner always req.authUser.userId
+  //    (IDOR-proof). A sixth router on the same base path — the five above are untouched.
+  //    The broker-agnostic lifecycle lives in src/brokers; adapters never place orders. ──
+  app.use("/api/v1/me", requireAuth, meBrokerRouter);
 
   return app;
 };

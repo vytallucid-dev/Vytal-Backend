@@ -1,0 +1,67 @@
+-- ═══════════════════════════════════════════════════════════════
+-- DROP 4 REDUNDANT INDEXES — ~85 MB reclaimed. ZERO ROWS DELETED.
+--
+-- This migration touches NO DATA. It drops four btree indexes whose work is already done by
+-- the unique index on the same table. Row counts, values and fingerprints are untouched by
+-- construction: an index is a lookup structure, not the data.
+--
+-- WHY THESE FOUR, AND HOW IT WAS PROVEN (not assumed):
+--
+--   1. daily_prices_stock_id_date_idx   (stock_id, date DESC)   64 MB
+--      REDUNDANT to daily_prices_stock_id_date_key (stock_id, date). Postgres reads a btree
+--      BACKWARDS for free, so the ascending unique index already serves ORDER BY date DESC.
+--      EXPLAIN ANALYZE on the hot path (WHERE stock_id=? ORDER BY date DESC LIMIT 250) shows:
+--          Index Scan Backward using daily_prices_stock_id_date_key
+--      pg_stat_user_indexes over the DB's lifetime: the unique took 390,031 scans, this one 4,487.
+--
+--      HONEST CAVEAT: this index is NOT dead. A query shaped
+--          WHERE stock_id IN (…) ORDER BY stock_id, date DESC
+--      genuinely prefers it (verified with EXPLAIN). But NO query in this codebase has that
+--      shape — every prisma.dailyPrice.findMany orders by `date` alone (8× desc, 5× asc; zero
+--      order by [stockId, date]). For a single-stock predicate the two indexes are
+--      INTERCHANGEABLE, so dropping this one simply routes its 4,487 scans to the unique.
+--      No query shape is lost.
+--
+--   2. daily_prices_stock_id_idx        (stock_id)              5.6 MB
+--      Fully covered by the unique's LEADING COLUMN. A standalone index on stock_id can never
+--      answer anything (stock_id, date) cannot. 629 lifetime scans.
+--
+--   3. index_prices_index_name_date_idx (index_name, date DESC) 11 MB
+--      Same backward-scan redundancy as (1), against index_prices_index_name_date_key.
+--      ONE lifetime scan. The unique took 222,238.
+--
+--   4. index_prices_index_name_idx      (index_name)            1.1 MB
+--      Same leading-column redundancy as (2). 93 lifetime scans.
+--
+-- WHAT IS KEPT (the workhorses):
+--   daily_prices_stock_id_date_key  65 MB  390,031 scans  ← serves the hot path, both directions
+--   daily_prices_pkey               40 MB  306,093 scans  ← row identity (findUnique/update by id)
+--   daily_prices_date_idx          5.0 MB   26,628 scans  ← cross-stock date scans
+--   index_prices_index_name_date_key 11 MB 222,238 scans  ← the risk-free / benchmark reads
+--   index_prices_pkey               10 MB   11,055 scans
+--   index_prices_date_idx          1.5 MB       31 scans
+--
+-- ── REVERSIBLE BY DESIGN ──────────────────────────────────────────────────────────────
+-- If ANY query regresses, restore the index and the plan comes back. Nothing is lost:
+--
+--   CREATE INDEX "daily_prices_stock_id_date_idx"    ON "daily_prices"("stock_id", "date" DESC);
+--   CREATE INDEX "daily_prices_stock_id_idx"         ON "daily_prices"("stock_id");
+--   CREATE INDEX "index_prices_index_name_date_idx"  ON "index_prices"("index_name", "date" DESC);
+--   CREATE INDEX "index_prices_index_name_idx"       ON "index_prices"("index_name");
+--
+-- (Add CONCURRENTLY if the DB is serving live traffic at that point. It is not today —
+--  pre-launch — which is why the plain, transactional DROP below is safe.)
+--
+-- LOCKING: a plain DROP INDEX takes ACCESS EXCLUSIVE on the table for the duration (seconds).
+-- Operator ruled: pre-launch, no live traffic → a brief lock is a non-event, and the plain form
+-- keeps this inside the normal apply-migration-direct transaction (so a failure ROLLS BACK
+-- cleanly). CONCURRENTLY was deliberately NOT used: it cannot run inside a transaction.
+--
+-- Drift-safe apply: BEGIN/COMMIT over DIRECT_URL via apply-migration-direct.ts, then
+-- `prisma migrate resolve --applied 20260713150000_drop_redundant_indexes`.
+-- ═══════════════════════════════════════════════════════════════
+
+DROP INDEX "daily_prices_stock_id_date_idx";
+DROP INDEX "daily_prices_stock_id_idx";
+DROP INDEX "index_prices_index_name_date_idx";
+DROP INDEX "index_prices_index_name_idx";

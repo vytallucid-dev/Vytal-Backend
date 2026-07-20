@@ -31,10 +31,19 @@ import { handleFillCascadeRescore } from "./handlers/fill-cascade-rescore.handle
 import { handlePricesRefetch } from "./handlers/prices-refetch.handler.js";
 import { handleResultsScan } from "./handlers/results-scan.handler.js";
 import { handlePriceBackfill } from "./handlers/price-backfill.handler.js";
+import { handleInstrumentHistoryBackfill } from "./handlers/instrument-history-backfill.handler.js";
 import {
   handleIndexPricesDaily,
   handleIndexBackfill,
 } from "./handlers/index-ingest.handler.js";
+import { handleAmfiNavDaily } from "./handlers/amfi-ingest.handler.js";
+import { handleEtfNavDaily } from "./handlers/etf-ingest.handler.js";
+import { handleReitDaily } from "./handlers/reit-ingest.handler.js";
+import { handleEtfPricesDaily } from "./handlers/etf-prices.handler.js";
+import { handleGovtSecuritiesDaily } from "./handlers/govt-securities.handler.js";
+import { handleCorporateBondsDaily } from "./handlers/corporate-bonds.handler.js";
+import { handleMfAnalyticsDaily } from "./handlers/mf-analytics.handler.js";
+import { handleInstrumentCorporateActions } from "./handlers/instrument-corporate-actions.handler.js";
 import { handleLegacyBackfill } from "./handlers/legacy-backfill.js";
 import {
   handleEodPricesDaily,
@@ -50,6 +59,8 @@ import { handleAlertsEvalDaily } from "./handlers/alerts-eval.handler.js";
 import { handleAlertsDeliverDaily } from "./handlers/alerts-deliver.handler.js";
 import { handleRemindersEvalDaily } from "./handlers/reminders-eval.handler.js";
 import { handleRemindersDeliverDaily } from "./handlers/reminders-deliver.handler.js";
+import { handleBrokerPollSync } from "./handlers/broker-poll-sync.handler.js";
+import { handleRetentionPrune } from "./handlers/retention-prune.handler.js";
 import { JobTypes, type JobType } from "./types.js";
 
 export type JobHandler<TPayload = any, TResult = any> = (
@@ -64,8 +75,17 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.NEWS_BACKFILL]: handleNewsBackfill,
   [JobTypes.PRICE_BACKFILL]: handlePriceBackfill,
   [JobTypes.INDEX_PRICES_BACKFILL]: handleIndexBackfill,
+  [JobTypes.INSTRUMENT_HISTORY_BACKFILL]: handleInstrumentHistoryBackfill,
   [JobTypes.EOD_PRICES_DAILY]: handleEodPricesDaily,
   [JobTypes.INDEX_PRICES_DAILY]: handleIndexPricesDaily,
+  [JobTypes.AMFI_NAV_DAILY]: handleAmfiNavDaily,
+  [JobTypes.ETF_NAV_DAILY]: handleEtfNavDaily,
+  [JobTypes.REIT_DAILY]: handleReitDaily,
+  [JobTypes.ETF_PRICES_DAILY]: handleEtfPricesDaily,
+  [JobTypes.GOVT_SECURITIES_DAILY]: handleGovtSecuritiesDaily,
+  [JobTypes.CORPORATE_BONDS_DAILY]: handleCorporateBondsDaily,
+  [JobTypes.MF_ANALYTICS_DAILY]: handleMfAnalyticsDaily,
+  [JobTypes.INSTRUMENT_CORPORATE_ACTIONS]: handleInstrumentCorporateActions,
   [JobTypes.DEALS_DAILY_INGEST]: handleDealsDailyIngest,
   [JobTypes.EVENTS_WEEKLY_INGEST]: handleEventsWeeklyIngest,
   [JobTypes.EVENTS_DAILY_REFRESH]: handleEventsDailyRefresh,
@@ -88,6 +108,8 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.ALERTS_DELIVER_DAILY]: handleAlertsDeliverDaily,
   [JobTypes.REMINDERS_EVAL_DAILY]: handleRemindersEvalDaily,
   [JobTypes.REMINDERS_DELIVER_DAILY]: handleRemindersDeliverDaily,
+  [JobTypes.BROKER_POLL_SYNC]: handleBrokerPollSync,
+  [JobTypes.RETENTION_PRUNE]: handleRetentionPrune,
 };
 
 export function getHandler(type: string): JobHandler | null {

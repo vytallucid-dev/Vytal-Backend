@@ -24,6 +24,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import * as K from "./constants.js";
 import type { StructureTier, CapitalTier, LensNature } from "./constants.js";
+import { buildEntityLedger, buildBasketLedger, sleevesOf, c1Of, c2Of, grossOf, buildSectorResolution, c3Of, c4Of, c5Of, c6Of, netOf, buildExposures, archetypeOf, type AssetClass, type EntityLedgerEntry, type BasketEntry, type Sleeves, type GrossResult, type SectorResolution, type ConstructionResult } from "./entity.js";
 
 export type McapTier = "large" | "mid" | "small" | "unknown";
 export type Bucket = "scored" | "recognized_unscored" | "small_unscored";
@@ -59,14 +60,20 @@ export interface PhsHolding {
   findings: FindingKind[]; // fired findings for this holding (empty if none/unscored)
   pillars?: PillarSubtotals | null; // (1.2 Change 4) scored ⇒ its 4 pillar subtotals; else null
   lensNatures?: LensNature[]; // (1.2 Change 5) natures of this holding's fired lens patterns
+  // (Construction v2 Stage 1) POSITION FACTS for the entity model — nature + entity key are derived
+  // from these (see entity.ts). Optional so legacy/synthetic holdings need not carry them; the REAL
+  // path (assemblePortfolio) always sets all three. Inside the §A.1 engine-input boundary: they are
+  // position facts (what the instrument IS), never returns/behaviour.
+  isin?: string | null;
+  assetClass?: AssetClass;
+  category?: string | null; // AMFI category leaf — only used to split commodity from basket ETFs
+  fundHouse?: string | null; // (Stage 5) resolved AMC of a fund product — C5 reads it; null otherwise
+  /** (Stage 9) the instrument's catalog name — DISPLAY ONLY; nothing that scores reads it. A fund's
+   *  `symbol` IS its isin (assemble.ts:509), so PB6's bind would otherwise name a fund "INF204K01234".
+   *  A stock never needs it. Still a §A.1 position fact: what the instrument IS, never how it behaved. */
+  name?: string | null;
 }
 
-export interface StructureDeduction {
-  rule: "S1" | "S2" | "S3" | "S4" | "S5";
-  points: number; // positive magnitude subtracted
-  detail: string;
-  symbol?: string; // for per-holding rules (S1, S5)
-}
 export interface SignalsDeduction {
   symbol: string;
   weight: number;
@@ -80,24 +87,46 @@ export interface PhsResult {
   band: string | null;
   provisional: boolean; // c < 0.40 — the only honesty tag on the number (ceiling retired)
   quality: number | null; // the anchor (weighted health over scored)
-  structure: number; // (1.2 Change 2) the standalone Construction read (full strength)
   signals: number;
   coverage: number; // true scored share (c)
   totalValue: number;
   scoredValue: number;
   recognizedUnscoredValue: number;
   smallUnscoredValue: number;
-  structureLedger: StructureDeduction[];
   signalsLedger: SignalsDeduction[];
-  s2Evaluable: boolean; // false ⇔ unknown-sector weight > 50% (S2 omitted honestly)
-  neff: number; // effective holdings (inverse Herfindahl)
   // (1.2 Change 4/5) — health-read enrichments (null when !evaluable)
   pillarProfile: PillarProfile | null; // position-weighted pillar means over scored weight
   lensProfile: LensProfile; // findings-character shares by nature; null ⇔ no lens patterns
   // (1.1 Change 2) COPY-ONLY tiers — derived from N and total value; NOTHING in the score
   // reads them (the number is byte-identical with or without them). Part B copy selector.
-  structureTier: StructureTier; // Starter | Building | Established (from holding count N)
   capitalTier: CapitalTier; // Modest | Moderate | Substantial (from total book value ₹)
+  // (Construction v2 Stage 1) the entity ledger — name-risk holdings aggregated by 7-char issuer
+  // stem (NTPC stock + NTPC bond = ONE entity at their combined weight). Computed once here alongside
+  // the score; read by NO deduction this stage. NOT in fingerprintOf (nothing consumes it yet — §12
+  // brings the aggregated weight vector into the fingerprint at Stage 7, when C1/C2/C4 read it).
+  entityLedger: EntityLedgerEntry[];
+  // (Stage 9) the basket ledger — every fund/ETF held, UNaggregated. The mirror of entityLedger: name-risk
+  // aggregates by issuer and lands there, baskets land here. Read by NO deduction (C5 does its own loop
+  // over the same set and owns `houseUnknown`); PB6/PC6/PC7 read it, and Stage 7 persists it as
+  // `construction_data.baskets`.
+  basketLedger: BasketEntry[];
+  // (Construction v2 Stage 2) sleeve shares — the book split by nature (name-risk / basket).
+  sleeves: Sleeves;
+  // (Construction v2 Stage 3) C1 + C2 → Gross. The FIRST CV2 deductions. Computed once, read by no
+  // display (§8: Gross is never a competing score) and by none of the live S-rules. NOT in fingerprintOf.
+  gross: GrossResult;
+  // (Construction v2 Stage 4) sector resolution — three states (resolved/unknown/not_applicable), the
+  // sectorable-denominator gate, and per-sector resolved weights for C3/C4 (Stage 5).
+  sectors: SectorResolution;
+  // (Construction v2 Stage 5 — THE CUTOVER) the full Construction decomposition: Gross (C1+C2) − C3 −
+  // C4 − C5 − C6 → net. `construction.net` is THE DISPLAYED Construction — persist writes it into the
+  // `structure` COLUMN (the read/FE render `structure`, now = Net). The engine field `structure` below
+  // stays the LEGACY S-composite: S1–S5 are not deleted this stage (§15 is a DESIGN statement, not a
+  // sequencing one — ruling ①), they simply no longer feed the displayed number. Their last consumers
+  // (patterns.ts's PX findings; the FE structureLedger render) stay alive on `structure`/`structureLedger`
+  // until Stage 6 (display) and Stage 9 (findings) repoint them to `construction`. NOT in fingerprintOf
+  // (Stage 7, §12) — the CONSTANT_VERSION bump is what re-persists every book onto the Net number.
+  construction: ConstructionResult;
 }
 
 /** Bucket per A.4: scored ⇔ has health; else large/mid ⇒ recognized-unscored;
@@ -134,74 +163,42 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
     ? holdings.reduce((s, h, i) => (bucket[i] === "scored" ? s + w[i] * (h.health as number) : s), 0) / sumWScored
     : null;
 
-  // ── Structure (A.6) — start 100, penalty-only ──
-  const structureLedger: StructureDeduction[] = [];
-
-  // S1 — single position (per-holding, additive, each capped). (1.1 Change 1) the
-  // threshold is RELATIVE to breadth: max(15% floor, 1.5 × fair_share), fair_share=100/N.
-  // On a thin book the bar rises, so S1 no longer double-charges the concentration S3/Neff
-  // already prices (fixes the S1/S3 double-charge). S3 is untouched.
-  const s1Threshold = K.s1ThresholdPct(holdings.length);
-  let s1 = 0;
-  holdings.forEach((h, i) => {
-    const pct = w[i] * 100;
-    if (pct > s1Threshold) {
-      const ded = Math.min(K.S1_RATE * (pct - s1Threshold), K.S1_CAP);
-      s1 += ded;
-      structureLedger.push({ rule: "S1", symbol: h.symbol, points: ded, detail: `${pct.toFixed(1)}% > ${s1Threshold.toFixed(1)}% → −${ded.toFixed(2)}` });
-    }
-  });
-
-  // S2 — sector pile-up (whole book; unknown-sector pooled; not-evaluable > 50%)
-  const sectorW = new Map<string, number>();
-  let unknownSectorW = 0;
-  holdings.forEach((h, i) => {
-    if (h.sector == null) unknownSectorW += w[i];
-    else sectorW.set(h.sector, (sectorW.get(h.sector) ?? 0) + w[i]);
-  });
-  const s2Evaluable = unknownSectorW <= K.S2_UNKNOWN_KILL;
-  let s2 = 0;
-  if (s2Evaluable) {
-    let maxSector = 0, maxName = "";
-    for (const [name, sw] of sectorW) if (sw > maxSector) { maxSector = sw; maxName = name; }
-    const pct = maxSector * 100;
-    if (pct > K.S2_THRESH) {
-      s2 = Math.min(K.S2_RATE * (pct - K.S2_THRESH), K.S2_CAP);
-      structureLedger.push({ rule: "S2", points: s2, detail: `${maxName} ${pct.toFixed(1)}% > ${K.S2_THRESH}% → −${s2.toFixed(2)}` });
-    }
-  } else {
-    structureLedger.push({ rule: "S2", points: 0, detail: `not evaluable — unknown-sector weight ${(unknownSectorW * 100).toFixed(1)}% > ${K.S2_UNKNOWN_KILL * 100}%` });
-  }
-
-  // S3 — thin breadth (inverse Herfindahl)
-  const sumW2 = w.reduce((s, x) => s + x * x, 0);
-  const neff = sumW2 > 0 ? 1 / sumW2 : 0;
-  let s3 = 0;
-  if (neff < K.S3_TARGET) {
-    s3 = Math.min(K.S3_RATE * (K.S3_TARGET - neff), K.S3_CAP);
-    structureLedger.push({ rule: "S3", points: s3, detail: `Neff ${neff.toFixed(2)} < ${K.S3_TARGET} → −${s3.toFixed(2)}` });
-  }
-
-  // S4 — over-diversification (holding count)
-  let s4 = 0;
-  if (holdings.length > K.S4_THRESH) {
-    s4 = Math.min(K.S4_RATE * (holdings.length - K.S4_THRESH), K.S4_CAP);
-    structureLedger.push({ rule: "S4", points: s4, detail: `${holdings.length} > ${K.S4_THRESH} holdings → −${s4.toFixed(2)}` });
-  }
-
-  // S5 — unverified mega-position (small-unscored ONLY; recognized-unscored exempt)
-  let s5 = 0;
-  holdings.forEach((h, i) => {
-    if (bucket[i] === "small_unscored" && w[i] * 100 > K.S5_THRESH) {
-      const before = s5;
-      s5 = Math.min(s5 + K.S5_PER, K.S5_CAP);
-      structureLedger.push({ rule: "S5", symbol: h.symbol, points: s5 - before, detail: `small-unscored ${(w[i] * 100).toFixed(1)}% > ${K.S5_THRESH}% → −${(s5 - before).toFixed(0)}` });
-    }
-  });
-
-  const structure = Math.max(0, 100 - s1 - s2 - s3 - s4 - s5);
+  // ── Structure — DELETED (§15). S1–S5 are gone; Construction (C1–C6, entity.ts) is the structural
+  //    read, and `construction.net` is the number persisted into the `structure` COLUMN and displayed.
+  //
+  //    S1 relative-threshold · S2 sector · S3 Neff · S4 count · S5 unverified-mega-position ran from
+  //    v1 to Construction v2 Stage 9. They were the whole structural model; C1–C6 replaced them fact by
+  //    fact (S1≡C1 proven byte-identical at Stage 5; S2→C3 sector; S3→C2 breadth — the mapping is by
+  //    MEANING, not digit: ODL cv2-s9-gate-semantics).
+  //
+  //    ★ THE IDIOM SURVIVES THE RULES (§15 lists it ALIVE). S1's relative threshold —
+  //    `max(15, 1.5 × fairShare)` — was v1's best idea: on a thin book the bar RISES, so a
+  //    concentration rule stops double-charging the thinness a breadth rule already prices. It lives on
+  //    in C1 (`c1Of`, same shape) and is reused by C4's `target = min(C4_TARGET, Neff_unit)`.
+  //    DELETE THE RULES, NOT THE IDEA.
+  //
+  //    The HISTORY survives too: `structure_ledger` is nullable and still holds 31 rows of real S-ledgers
+  //    — the only record of how every book was read before the cutover. persist stops WRITING it; nothing
+  //    drops it. You cannot un-drop history (ODL, Stage 7).
 
   // ── Signals (A.7) — start 100, penalty-only, headline-wins then single-largest ──
+  //
+  // (Construction v2 Stage 0 — Ruling i) A finding's deduction is weighted by the holding's
+  // SCORED-renormalized weight w_i/ΣwScored (== marketValue_i / scoredValue), NOT the whole-book
+  // w_i. This makes Signals SYMMETRIC with Quality: both Health inputs share ONE denominator — the
+  // capital we can actually see (the scored book). A red flag is KNOWLEDGE about a business (§13);
+  // its weight belongs among the businesses we know, and holding ₹90L of gilt funds does not make
+  // the flag less true. Diluting it by the gilt would make the arithmetic say something the model
+  // does not mean.
+  //
+  // Pre-CV2 this used raw w_i, which was identical ONLY while every book was stocks-only-and-scored
+  // (scoredValue == totalValue → ΣwScored == 1). The moment unscored capital (a fund, an unpriced
+  // stock) enters the weight vector, raw w_i would silently shrink a flagged name's deduction and
+  // LIFT Signals — hence Health — for no reason the model means. So this is a §13-adjacent BUG FIX
+  // restoring intended semantics, NOT a redesign: Health's LAW (Quality − 0.20×(100−Signals)) is
+  // untouched; only Signals' weight DENOMINATOR is corrected to match its sibling's. By
+  // construction the weight vector can now never move Health — Quality renormalizes, Signals
+  // renormalizes — so §13's contamination guard is enforced by SYMMETRY, not by exclusion.
   const signalsLedger: SignalsDeduction[] = [];
   let signalsDed = 0;
   holdings.forEach((h, i) => {
@@ -217,9 +214,12 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
     if (candidates.length === 0) return;
     // single largest (do NOT sum two lenses on one troubled name)
     const winner = candidates.reduce((a, b) => (b.base > a.base ? b : a));
-    const points = Math.min(winner.base * w[i], K.SIG_HOLDING_CAP * w[i]); // clamp per-holding
+    // scored-renormalized weight (see the block header). Findings fire ONLY on scored holdings, so
+    // this holding is always inside ΣwScored and wSig is well-defined (never a divide-by-zero).
+    const wSig = sumWScored > 0 ? w[i] / sumWScored : 0;
+    const points = Math.min(winner.base * wSig, K.SIG_HOLDING_CAP * wSig); // clamp per-holding
     signalsDed += points;
-    signalsLedger.push({ symbol: h.symbol, weight: w[i], source: winner.source, points });
+    signalsLedger.push({ symbol: h.symbol, weight: wSig, source: winner.source, points });
   });
   const signals = Math.max(0, 100 - signalsDed);
 
@@ -230,18 +230,49 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
   // (1.1 Change 2) COPY-ONLY tiers — pure functions of N and total value. Computed here
   // for a single source, but NOTHING above (S-rules, pillars) reads them and NOTHING below
   // feeds them back into the number. Part B uses them to select copy tone.
-  const structureTier = K.structureTierOf(holdings.length);
   const capitalTier = K.capitalTierOf(totalValue);
+
+  // (Construction v2 Stage 1) the entity ledger — name-risk holdings aggregated by issuer stem. Pure,
+  // computed once. It is Construction arithmetic over the weight vector; it touches neither Quality
+  // nor Signals.
+  const entityLedger = buildEntityLedger(holdings, totalValue);
+  // (Stage 9) the basket ledger — the other half of the book. Same properties: pure, computed once,
+  // Construction-only, touches neither Quality nor Signals.
+  const basketLedger = buildBasketLedger(holdings, totalValue);
+  // (Construction v2 Stage 2 + 3) sleeve shares, then C1/C2 → Gross. Computed once here. NONE of this
+  // reaches Health (Quality/Signals above are already fixed) or the S-rules — it is a parallel read.
+  // (Stage 7 §12) `exposures` is computed ONCE, here, and `sleeves` is PROJECTED from it. Both used to
+  // sum nameRisk/basket independently — one fact with two homes. Exposures is the superset, so it leads.
+  const exposures = buildExposures(holdings, totalValue);
+  const sleeves = sleevesOf(exposures);
+  const c1 = c1Of(entityLedger, holdings.length, sleeves.nameRisk); // N = POSITIONS (the weight vector length)
+  const c2 = c2Of(entityLedger, sleeves.nameRisk);
+  const gross: GrossResult = { value: grossOf(c1, c2), c1, c2 };
+  // (Construction v2 Stage 4) sector resolution — three states + the sectorable-denominator gate.
+  const sectors = buildSectorResolution(holdings, totalValue);
+  // (Construction v2 Stage 5 — THE CUTOVER) C3–C6 → Net. This is the DISPLAYED Construction (persist
+  // writes construction.net into the `structure` column). It reads ONLY the Construction-side facts
+  // (entity ledger, sleeves, sector resolution, fund houses) — never Quality or Signals, which are
+  // already fixed above — so §13 holds by construction: Health cannot see any of this.
+  const c3 = c3Of(sectors);
+  const c4 = c4Of(entityLedger, sectors);
+  const c5 = c5Of(holdings, totalValue);
+  const c6 = c6Of(holdings.length); // N = positions
+  // (Stage 6) the descriptive composition read — archetype over the exposures computed above. Purely
+  // descriptive, never scored.
+  const archetype = archetypeOf(exposures);
+  const construction: ConstructionResult = { gross, c3, c4, c5, c6, net: netOf(gross.value, c3, c4, c5, c6), archetype, exposures };
 
   // ── Combine (1.2 Change 1+3) — Health = Quality − 0.20×(100−Signals), NO structure term,
   //    NO coverage ceiling. Floored at 0, rounded, banded. The number shows TRUE. ──
   if (!evaluable) {
-    // c=0 → no Health; construction-read only (Structure/Signals still computed).
+    // c=0 → no Health; construction-read only (Construction/Signals still computed).
     return {
       evaluable: false, health: null, band: null, provisional: false,
-      quality: null, structure, signals, coverage, totalValue, scoredValue,
-      recognizedUnscoredValue, smallUnscoredValue, structureLedger, signalsLedger,
-      s2Evaluable, neff, pillarProfile: null, lensProfile: null, structureTier, capitalTier,
+      quality: null, signals, coverage, totalValue, scoredValue,
+      recognizedUnscoredValue, smallUnscoredValue, signalsLedger,
+      pillarProfile: null, lensProfile: null, capitalTier,
+      entityLedger, basketLedger, sleeves, gross, sectors, construction,
     };
   }
 
@@ -250,9 +281,9 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
 
   return {
     evaluable: true, health, band: K.bandOf(health), provisional,
-    quality, structure, signals, coverage, totalValue, scoredValue,
-    recognizedUnscoredValue, smallUnscoredValue, structureLedger, signalsLedger, s2Evaluable, neff,
-    pillarProfile, lensProfile, structureTier, capitalTier,
+    quality, signals, coverage, totalValue, scoredValue,
+    recognizedUnscoredValue, smallUnscoredValue, signalsLedger,
+    pillarProfile, lensProfile, capitalTier, entityLedger, basketLedger, sleeves, gross, sectors, construction,
   };
 }
 

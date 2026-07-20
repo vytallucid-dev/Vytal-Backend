@@ -312,6 +312,13 @@ export async function maybeEnqueueRescoresForJob(jobType: string, result: unknow
       // INDEX_PRICES_BACKFILL): index data is a sibling write to the equity prices
       // and must NEVER move a Health Score, so its job types are deliberately
       // absent from the arms above → they fall here → no PG rescore is enqueued.
+      //
+      // IT ALSO INCLUDES THE WHOLE FUND PIPELINE — AMFI_NAV_DAILY (Step 9), ETF_NAV_DAILY
+      // (Step 13), MF_ANALYTICS_DAILY and MF_INCEPTION_WALK. HELD-NOT-SCORED is enforced HERE,
+      // structurally, by those types being absent from the arms above: a fund or an ETF can be
+      // held, valued, charted and richly analysed, and STILL never move a Vytal Health Score.
+      // The score is an EQUITY judgement built on fundamentals a fund does not have. Adding one
+      // of these to a `case` arm is the single edit that would break that — so don't.
       return null;
   }
 }

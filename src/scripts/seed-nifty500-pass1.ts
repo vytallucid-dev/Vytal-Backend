@@ -82,6 +82,7 @@ async function main() {
     return {
       symbol: s.symbol,
       name: s.name,
+      isin: s.isin,       // the CSV's ISIN — the dedup spine (stocks.isin is NOT NULL + UNIQUE)
       sectorId,           // null → gated (architect fills in Stage 1c)
       isActive: true,     // DISPLAY-ONLY active
       exchange: "NSE",

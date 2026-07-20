@@ -134,6 +134,13 @@ async function main() {
 
   const userA = await seedUser();
   const userB = await seedUser();
+  // Step 5.5: accounts are no longer auto-created on the first txn — every account belongs to a
+  // broker, and this path has none to invent. Each user gets ONE book, so the bare posts below
+  // still resolve to it unambiguously (resolve-don't-create).
+  const mkMain = (userId: string) =>
+    prisma.portfolioAccount.create({ data: { userId, name: "My Holdings", broker: "zerodha", state: "manual" }, select: { id: true } });
+  await mkMain(userA.userId);
+  await mkMain(userB.userId);
   try {
     // Case 1-3 E2E on RELIANCE for user A
     const post = async (userId: string, body: any) => { const r = mockRes(); await addTransaction(mockReq(userId, { body }), r); return r; };

@@ -106,6 +106,7 @@ async function main() {
         data: {
           symbol: "TMPV",
           name: "Tata Motors Passenger Vehicles Ltd",
+          isin: "INE155A01022", // per the demerger record above; stocks.isin is NOT NULL + UNIQUE
           sectorId: sector.id,
           exchange: "NSE",
           isActive: true,

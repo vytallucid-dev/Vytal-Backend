@@ -22,11 +22,79 @@ export const JobTypes = {
   PRICE_BACKFILL: "price_backfill",
   // Display-only index history backfill (sibling of PRICE_BACKFILL; NOT scored).
   INDEX_PRICES_BACKFILL: "index_prices_backfill",
+  // WEEKLY CHART SERIES for HELD non-stock instruments (Step 21). single { instrumentId } on first
+  // hold; refresh_all_held is the weekly cron. Idempotent (ON CONFLICT + rolling-window trigger).
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts → never enqueues a rescore.
+  INSTRUMENT_HISTORY_BACKFILL: "instrument_history_backfill",
   // ── Scheduled / recurring daily-operational jobs ───────────
   EOD_PRICES_DAILY: "eod_prices_daily",
   // Display-only daily index ingest (sibling of EOD_PRICES_DAILY; NOT scored —
   // not a switch arm in scoring-triggers.ts, so it never enqueues a PG rescore).
   INDEX_PRICES_DAILY: "index_prices_daily",
+  // AMFI mutual-fund identity + current NAV (Step 9). ONE file → the whole MF universe.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts, so it never enqueues a rescore.
+  AMFI_NAV_DAILY: "amfi_nav_daily",
+  // ETF identity + current NAV (Step 13). THE SAME AMFI FILE, the 4 ETF sections Step 9 excluded,
+  // plus the NSE ticker joined in by ISIN. Separate job (not a flag on AMFI_NAV_DAILY) so the two
+  // passes fail, retry, log and get triaged independently: an NSE outage must never be able to
+  // take the MF universe's nightly NAV refresh down with it.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts, so it never enqueues a rescore.
+  ETF_NAV_DAILY: "etf_nav_daily",
+  // REIT/InvIT identity + PRICE + distribution yield (Step 14). The NSE udiff BhavCopy (series
+  // RR/IV) — the one NSE file that carries ISIN, series and close together, so a trust joins the
+  // catalogue on the ISIN spine with no symbol-matching.
+  //
+  // UNLIKE the fund jobs, this one MUST run daily for a reason beyond freshness: a trust TRADES,
+  // so `instrument_prices` gets a new close every session. A REIT whose price is a week old is a
+  // REIT rendering a lie.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts, so it never enqueues a rescore.
+  REIT_DAILY: "reit_daily",
+  // ETF MARKET PRICES (Step 14.5) — the TRADED close of a listed fund, from the EQ-series rows of
+  // the SAME udiff BhavCopy the trust lane reads. Step 13 gave every ETF a NAV; a NAV is what a
+  // unit is WORTH, not what you can SELL it for, and a listed ETF trades at a premium/discount to
+  // it. This job is what lets a held ETF be valued at a number the user could actually transact at.
+  //
+  // A SEPARATE job from REIT_DAILY (not a flag on it) for the same reason ETF_NAV_DAILY is separate
+  // from AMFI_NAV_DAILY: the two must fail, retry and get triaged independently. An ETF pricing
+  // problem must never be able to take REIT/InvIT IDENTITY down with it.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts, so it never enqueues a rescore.
+  ETF_PRICES_DAILY: "etf_prices_daily",
+  // GOVERNMENT SECURITIES (Step 15) — G-secs, T-bills, SDLs and Sovereign Gold Bonds, from the
+  // SAME udiff BhavCopy (series GS / TB / SG / GB). Identity-only tier: no detail page, no
+  // analytics, no yield curve — but they all TRADE, so they carry a real close and value correctly
+  // through the instrument_prices lane with no read-path change at all.
+  //
+  // The series ALLOW-LIST is the fence that keeps this out of the corporate-bond step: the same
+  // file carries ~40 corporate debt series, and every one is excluded by construction.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts, so it never enqueues a rescore.
+  GOVT_SECURITIES_DAILY: "govt_securities_daily",
+  // CORPORATE BONDS (Step 17) — NCDs, debentures, municipal green bonds. Identity + price, no
+  // detail page, no analytics. The fence is NOT a series list (a series is a TRADING BOARD, not an
+  // instrument type — fencing on it admits equity: the BL block-deal board carries BAYERCROP). It is
+  // the ISIN's own security-type code, via ingestions/shared/isin-class.ts — the same module the
+  // broker resolver uses to decide what an unknown holding is.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts, so it never enqueues a rescore.
+  CORPORATE_BONDS_DAILY: "corporate_bonds_daily",
+  // MF ANALYTICS (Step 10+11, Option B) — COMPUTE-AND-DISCARD. Streams the universe's 5-year
+  // NAV history, folds it into per-scheme accumulators in memory, writes ~13,704 small rows of
+  // derived analytics, and throws every raw NAV away. There is deliberately NO NAV-history
+  // table: a persistent one measured ~26 M rows / ~2.5 GB against a 500 MB ceiling.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts → never enqueues a rescore.
+  MF_ANALYTICS_DAILY: "mf_analytics_daily",
+  // (REMOVED: MF_INCEPTION_WALK — the one-time earliest-NAV walk. It fed ret_since_earliest_cagr,
+  // which was dropped: AMFI's raw NAV is neither split-adjusted nor total-return, so a span reaching
+  // back to ~2009 is the WORST case for both corruptions and cannot be made correct from any source
+  // we have. The walk, its handler, its anchors and its column are all gone.)
+  // STEP 19 — ETF UNIT SPLITS, from NSE's real corporate actions.
+  //
+  // AMFI's NAV history is RAW: an ETF that sub-divides 1:10 has its NAV step down 90% overnight,
+  // and everything folded from that series (returns AND vol/Sharpe/drawdown/beta/alpha) believes
+  // the fund lost 90% in a day. This job stores the REAL, DATED split so the fold can rescale the
+  // series before it computes anything.
+  //
+  // MUST RUN BEFORE MF_ANALYTICS_DAILY — the fold reads what this writes. See scheduler.ts.
+  // Held-NOT-scored: not a switch arm in scoring-triggers.ts → never enqueues a rescore.
+  INSTRUMENT_CORPORATE_ACTIONS: "instrument_corporate_actions",
   DEALS_DAILY_INGEST: "deals_daily_ingest",
   EVENTS_WEEKLY_INGEST: "events_weekly_ingest",
   EVENTS_DAILY_REFRESH: "events_daily_refresh",
@@ -86,6 +154,22 @@ export const JobTypes = {
   // Scheduled just AFTER REMINDERS_EVAL_DAILY; drains the whole backlog so it also retries
   // prior failures. Idempotent (delivered guard). Runs every day.
   REMINDERS_DELIVER_DAILY: "reminders_deliver_daily",
+  // ── Broker auto-poll (Step 7) ──────────────────────────────
+  // ONE sweep job per firing (not one per connection): it syncs every connection that is
+  // enabled=true AND session_state='live' AND whose lastSyncedAt is older than the 2h cadence.
+  // The cadence lives in that FILTER, not in per-connection timers — so the sweep self-dedups
+  // (a connection synced 10 min ago is simply not selected), self-heals after downtime (a
+  // connection missed for 6h is picked up on the next firing), and needs no scheduling state.
+  // A DEAD session is not in the filter ⇒ it is not polled — and it is NEVER severed for it
+  // (§2.5: token death is routine; the account stays linked_live and the user reconnects).
+  BROKER_POLL_SYNC: "broker_poll_sync",
+  // ── Retention pruner (config-driven, floored, dry-run-gated) ───
+  // Reads the `retention_policy` table and prunes each managed table to its
+  // configured window/depth, clamped UP to the per-table floor so it can never
+  // delete below what scoring needs. Deletes production data irreversibly, so the
+  // payload carries an explicit `dryRun` and the engine defaults to counting-only.
+  // The cron passes dryRun:false ONLY after the first dry-run report is signed off.
+  RETENTION_PRUNE: "retention_prune",
 } as const;
 
 export type JobType = (typeof JobTypes)[keyof typeof JobTypes];
@@ -203,6 +287,13 @@ export interface PriceBackfillPayload {
   days: number;
 }
 
+export interface InstrumentHistoryBackfillPayload {
+  /** SINGLE mode — the one instrument to backfill (on first hold). */
+  instrumentId?: string;
+  /** REFRESH mode — omit instrumentId and set this to sweep the whole held non-stock book. */
+  mode?: "single" | "refresh_all_held";
+}
+
 export interface PricesRefetchPayload {
   /** The trading date to re-fetch, ISO "YYYY-MM-DD". */
   dateIso: string;
@@ -271,9 +362,39 @@ export interface FillCascadeRescorePayload {
 // ── Daily operational payloads (no config — always "today") ──
 
 export interface EodPricesDailyPayload {}
+/** AMFI ingest takes no input — the file IS the worklist (one URL, whole universe). */
+export interface AmfiNavDailyPayload {}
+/** ETF ingest takes no input either — the same file, the complementary sections. */
+export interface EtfNavDailyPayload {}
+export interface ReitDailyPayload {}
+export interface EtfPricesDailyPayload {}
+export interface GovtSecuritiesDailyPayload {}
+/** Corporate bonds take no input either — the same file, fenced on the ISIN. */
+export interface CorporateBondsDailyPayload {}
+/** The analytics fold takes no input — the catalogue IS the worklist, the window is derived. */
+export interface MfAnalyticsDailyPayload {}
+/** ETF corporate actions. No input: the NSE-listed fund catalogue IS the worklist. `symbols`
+ *  narrows it for a targeted re-pull (one ETF just announced a split) or a verification run. */
+export interface InstrumentCorporateActionsPayload {
+  symbols?: string[];
+}
 export interface AlertsEvalDailyPayload {}
 export interface AlertsDeliverDailyPayload {}
 export interface RemindersEvalDailyPayload {}
+
+/** The broker poll sweep takes no input — it derives its worklist from the connections table.
+ *  `staleAfterMinutes` exists only so a harness can force the sweep to consider a just-synced
+ *  connection without waiting two hours. Defaults to the 2h cadence. */
+export interface BrokerPollSyncPayload {
+  staleAfterMinutes?: number;
+}
+
+/** Retention pruner. `dryRun` MUST be explicit — there is no safe default at the
+ *  payload layer for a job that deletes production data. The cron and every manual
+ *  trigger pass it deliberately. */
+export interface RetentionPrunePayload {
+  dryRun: boolean;
+}
 export interface RemindersDeliverDailyPayload {}
 export interface DealsDailyIngestPayload {}
 export interface EventsWeeklyIngestPayload {}
@@ -296,8 +417,17 @@ export type JobPayload =
   | { type: typeof JobTypes.NEWS_BACKFILL; data: NewsBackfillPayload }
   | { type: typeof JobTypes.PRICE_BACKFILL; data: PriceBackfillPayload }
   | { type: typeof JobTypes.INDEX_PRICES_BACKFILL; data: IndexBackfillPayload }
+  | { type: typeof JobTypes.INSTRUMENT_HISTORY_BACKFILL; data: InstrumentHistoryBackfillPayload }
   | { type: typeof JobTypes.EOD_PRICES_DAILY; data: EodPricesDailyPayload }
   | { type: typeof JobTypes.INDEX_PRICES_DAILY; data: IndexPricesDailyPayload }
+  | { type: typeof JobTypes.AMFI_NAV_DAILY; data: AmfiNavDailyPayload }
+  | { type: typeof JobTypes.ETF_NAV_DAILY; data: EtfNavDailyPayload }
+  | { type: typeof JobTypes.REIT_DAILY; data: ReitDailyPayload }
+  | { type: typeof JobTypes.ETF_PRICES_DAILY; data: EtfPricesDailyPayload }
+  | { type: typeof JobTypes.GOVT_SECURITIES_DAILY; data: GovtSecuritiesDailyPayload }
+  | { type: typeof JobTypes.CORPORATE_BONDS_DAILY; data: CorporateBondsDailyPayload }
+  | { type: typeof JobTypes.MF_ANALYTICS_DAILY; data: MfAnalyticsDailyPayload }
+  | { type: typeof JobTypes.INSTRUMENT_CORPORATE_ACTIONS; data: InstrumentCorporateActionsPayload }
   | { type: typeof JobTypes.DEALS_DAILY_INGEST; data: DealsDailyIngestPayload }
   | {
       type: typeof JobTypes.EVENTS_WEEKLY_INGEST;
@@ -346,6 +476,8 @@ export type JobPayload =
   | { type: typeof JobTypes.ALERTS_EVAL_DAILY; data: AlertsEvalDailyPayload }
   | { type: typeof JobTypes.ALERTS_DELIVER_DAILY; data: AlertsDeliverDailyPayload }
   | { type: typeof JobTypes.REMINDERS_EVAL_DAILY; data: RemindersEvalDailyPayload }
+  | { type: typeof JobTypes.BROKER_POLL_SYNC; data: BrokerPollSyncPayload }
+  | { type: typeof JobTypes.RETENTION_PRUNE; data: RetentionPrunePayload }
   | { type: typeof JobTypes.REMINDERS_DELIVER_DAILY; data: RemindersDeliverDailyPayload };
 
 // ── Retry policy per job type ────────────────────────────────
@@ -365,10 +497,39 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   [JobTypes.NEWS_BACKFILL]: { maxAttempts: 1 }, // large batch — avoid double-fetch
   [JobTypes.PRICE_BACKFILL]: { maxAttempts: 1 },
   [JobTypes.INDEX_PRICES_BACKFILL]: { maxAttempts: 1 }, // display-only; idempotent but wasteful to re-run
+  [JobTypes.INSTRUMENT_HISTORY_BACKFILL]: { maxAttempts: 2 }, // idempotent → one retry for a transient mfapi/udiff blip
   // Daily operational — network-bound NSE/external calls; one retry on transient failure
   [JobTypes.EOD_PRICES_DAILY]: { maxAttempts: 2 },
   [JobTypes.INDEX_PRICES_DAILY]: { maxAttempts: 2 }, // network-bound NSE archive fetch
 
+  // AMFI — network-bound single-file fetch; idempotent (upsert on the ISIN spine). One retry.
+  [JobTypes.AMFI_NAV_DAILY]: { maxAttempts: 2 },
+  // ETF — the same AMFI fetch plus the NSE ticker join; idempotent on the same spine. One retry.
+  // The NSE leg cannot fail the job (it degrades to carry-forward), so a retry here is only ever
+  // about AMFI itself — same risk profile as AMFI_NAV_DAILY.
+  [JobTypes.ETF_NAV_DAILY]: { maxAttempts: 2 },
+  // REIT/InvIT — one zip fetch, then 17 polite per-symbol corporate-action calls. The yield leg
+  // cannot fail the job (it degrades to an honest NULL per trust), so a retry here is only ever
+  // about the BhavCopy itself: a transient NSE blip, worth exactly one more attempt.
+  [JobTypes.REIT_DAILY]: { maxAttempts: 2 },
+  // ETF prices — one zip fetch, an ISIN join, two writes. Idempotent (append-only history +
+  // forward-only snapshot), so a retry is free. Same transient-NSE-blip risk profile as the trust lane.
+  [JobTypes.ETF_PRICES_DAILY]: { maxAttempts: 2 },
+  // Government securities — one zip fetch per session, an allow-list filter, two idempotent writes.
+  // Same transient-NSE-blip risk profile as the other two udiff lanes.
+  [JobTypes.GOVT_SECURITIES_DAILY]: { maxAttempts: 2 },
+  // Corporate bonds — one zip fetch per session, an ISIN-keyed fence, two idempotent writes.
+  // Same transient-NSE-blip risk profile as the other udiff lanes.
+  [JobTypes.CORPORATE_BONDS_DAILY]: { maxAttempts: 2 },
+  // MF analytics — ~21 network windows over ~12 min, then a pure in-memory fold. Idempotent
+  // (upsert on scheme_code; a re-run recomputes the same numbers from the same source). The
+  // write barrier sits AFTER every window, so a mid-run failure wrote nothing and a retry starts
+  // clean rather than resuming a half-written table. One retry.
+  [JobTypes.MF_ANALYTICS_DAILY]: { maxAttempts: 2 },
+  // ETF corporate actions — 327 light NSE calls. Idempotent (NOT-NULL instrument_id + a real unique
+  // key, so a re-run collides and updates in place). Retry once: a transient NSE blip must not leave
+  // tonight's fold rescaling from a stale split table.
+  [JobTypes.INSTRUMENT_CORPORATE_ACTIONS]: { maxAttempts: 2 },
   [JobTypes.DEALS_DAILY_INGEST]: { maxAttempts: 2 },
   [JobTypes.EVENTS_WEEKLY_INGEST]: { maxAttempts: 2 },
   [JobTypes.EVENTS_DAILY_REFRESH]: { maxAttempts: 2 },
@@ -415,6 +576,14 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   // Reminders deliver — the email drain, same shape/guarantees as ALERTS_DELIVER_DAILY
   // (delivered=true guard + per-event Idempotency-Key). 2 attempts.
   [JobTypes.REMINDERS_DELIVER_DAILY]: { maxAttempts: 2 },
+  // A failed poll must NOT retry: the next sweep is 30 minutes away and will pick up exactly the
+  // same connections (the filter is stateless). Retrying would only double-hit the broker's API.
+  [JobTypes.BROKER_POLL_SYNC]: { maxAttempts: 1 },
+  // Retention prune — DELETES production data. NEVER auto-retry: a retry after a
+  // partial failure re-scans a table that was already partly pruned, and while each
+  // delete is idempotent, re-running is wasteful and muddies the audit. One attempt;
+  // a failure is surfaced and re-run deliberately on the next nightly tick.
+  [JobTypes.RETENTION_PRUNE]: { maxAttempts: 1 },
 };
 
 // ── Job status constants ────────────────────────────────────

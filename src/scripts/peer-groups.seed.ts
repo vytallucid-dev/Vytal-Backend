@@ -45,7 +45,7 @@ export const PEER_GROUPS: PeerGroupSeed[] = [
     displayName: "Large-Cap IT Services",
     sectorKey: "it_technology",
     buildOrder: 1,
-    stocks: ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTIM"],
+    stocks: ["TCS", "INFY", "HCLTECH", "WIPRO", "TECHM", "LTM"], // LTM = ex-LTIMindtree (renamed Mar 2026)
   },
   {
     key: "pg2_fmcg",

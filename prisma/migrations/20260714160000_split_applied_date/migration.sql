@@ -1,0 +1,24 @@
+-- ═══════════════════════════════════════════════════════════════════════════
+-- STEP 19 — THE RECONCILED SPLIT APPLICATION DAY.
+--
+-- NSE's ex-date says when the UNIT starts trading on the new basis. It does NOT say when AMFI's NAV
+-- does, and those are not the same day for everyone: measured across 12 real splits, 11 switch ON the
+-- ex-date and 2 (QNIFTY, HDFCPVTBAN) switch the day AFTER. There is no fixed rule.
+--
+-- A fixed rule is therefore wrong for somebody — and it is not harmlessly wrong. Rescaling on the
+-- wrong side of the boundary leaves the ex-date's NAV on the OLD basis surrounded by adjusted ones,
+-- which MANUFACTURES a +900% spike followed by a -90% crash where the raw data had only a step. That
+-- is what the first cut of this feature did to 22 ETFs; the implausibility guard caught every one and
+-- withheld them, which is the only reason no false number shipped.
+--
+-- So the application day is RECONCILED and stored: exactly two candidates (D and D+1, both from the
+-- event's own ex-date), the event's own published ratio applied at each, and whichever yields a
+-- CONTINUOUS series wins. NULL means NEITHER reconciled — the fund is then NOT adjusted at all and its
+-- affected windows are withheld. The series is never scanned for a step; continuity is never forced.
+--
+-- PURELY ADDITIVE: one nullable column. Existing rows keep NULL until the backfill reconciles them,
+-- and a NULL is safe by construction (it means "do not adjust").
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- AlterTable
+ALTER TABLE "instrument_corporate_events" ADD COLUMN "applied_date" DATE;

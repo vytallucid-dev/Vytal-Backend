@@ -1,0 +1,24 @@
+-- ═══════════════════════════════════════════════════════════════
+-- RETENTION — per-table ARMED gate (arming sequence, Step 1).
+--
+-- `armed` is the live-delete gate, distinct from `enabled`:
+--   enabled=false → row skipped entirely (not even counted).
+--   armed=false   → row IS counted, but NEVER deleted, even in a live run
+--                   (a per-table dry-run). This is what holds daily_prices back
+--                   while the 30 routine tables are armed and watched.
+--
+-- DEFAULT false = SAFE BY CONSTRUCTION: nothing — not the seed rows, not a future
+-- UI-added row — can delete until it is DELIBERATELY armed. The Step-1 arming of the
+-- 30 routine tables is an explicit, logged UPDATE performed by the arming script
+-- (src/scripts/retention-step1-arm-routine.ts), NOT baked in here, so this migration
+-- stays safe-by-default and the arming decision is a reviewable operational action.
+--
+-- Purely additive: one nullable-defaulted column on one config table. Touches no
+-- data table, no score, no fingerprint.
+--
+-- Drift-safe apply: BEGIN/COMMIT over DIRECT_URL (apply-migration-direct.ts), then
+-- `prisma migrate resolve --applied 20260718130000_retention_armed_flag`, then
+-- `prisma migrate status` clean. NEVER `migrate dev`.
+-- ═══════════════════════════════════════════════════════════════
+
+ALTER TABLE "retention_policy" ADD COLUMN "armed" BOOLEAN NOT NULL DEFAULT false;

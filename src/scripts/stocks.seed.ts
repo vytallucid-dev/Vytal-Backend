@@ -303,12 +303,9 @@ export const STOCKS: StockSeed[] = [
     sectorKey: "it_technology",
     verified: true,
   },
-  {
-    symbol: "MINDTREE",
-    name: "MindTree Limited",
-    sectorKey: "it_technology",
-    verified: true,
-  },
+  // MINDTREE removed — merged into L&T Infotech to form LTIMindtree (2022), which was
+  // renamed LTM (Mar 2026). The surviving row is LTM. Seeding MINDTREE would mint a
+  // phantom stock for a company that no longer exists.
   {
     symbol: "PERSISTENT",
     name: "Persistent Systems Ltd",

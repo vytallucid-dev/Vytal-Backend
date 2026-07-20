@@ -52,6 +52,39 @@ export const FORWARD_DENY_LIST: { term: string; re: RegExp; why: string }[] = [
   // they are descriptive (Family-D's name, present-tense trend, "peak-and-hold").
 ];
 
+/**
+ * (Construction v2 Stage 9) THE PORTFOLIO ADVICE VOCABULARY — the verbs §1 forbids in a PF finding's
+ * Read, on top of FORWARD_DENY_LIST above.
+ *
+ * ONE HOME FOR THE RULE, TWO HOMES FOR THE VOCABULARY — and the split is deliberate, not a compromise.
+ * The RULE (scan the assertive faces, deny-list of word-boundary regexes, fail loud) lives once, here,
+ * and the portfolio reuses it via `scanStringsForForwardLanguage`. A second portfolio-side grep would be
+ * two homes for one rule. But the VOCABULARIES genuinely differ: `"reduced margins"` is DESCRIPTIVE in a
+ * stock Read and would false-positive on a shared `\breduce\b`, so judging LM/LP strings by portfolio
+ * verbs would manufacture reds that train people to ignore the guard.
+ *
+ * SCOPE, NOT AN ALLOWLIST — the same reasoning as the header's: a `doesntMean` NEGATES advice by
+ * construction ("≠ trim it", "≠ it will fall"), so it legitimately contains every forbidden verb. It is
+ * OUT OF SCOPE. Scoping is exact where an allowlist is a guess that needs maintaining forever, and a
+ * missed entry is a false red. Scan what ASSERTS (`read`, `storyClause`); never the negation.
+ */
+export const PORTFOLIO_ADVICE_DENY_LIST: { term: string; re: RegExp; why: string }[] = [
+  { term: "trim", re: /\btrim(s|med|ming)?\b/i, why: "advice ('consider trimming')" },
+  { term: "reduce", re: /\breduc(e|es|ed|ing)\b/i, why: "advice ('reduce the position')" },
+  { term: "switch", re: /\bswitch(es|ed|ing)?\b/i, why: "advice ('switch to Direct')" },
+  { term: "consider", re: /\bconsider(s|ed|ing)?\b/i, why: "advice — the politest instruction is still one" },
+  { term: "rebalance", re: /\brebalanc(e|es|ed|ing)\b/i, why: "advice" },
+  { term: "should", re: /\bshould(n['’]?t)?\b/i, why: "instruction" },
+  { term: "increase", re: /\bincreas(e|es|ed|ing)\b/i, why: "advice ('increase your debt allocation')" },
+  { term: "exit", re: /\bexit(s|ed|ing)?\b/i, why: "advice" },
+  { term: "diversify", re: /\bdiversif(y|ies|ied|ying)\b/i, why: "advice — the verb form; 'diversification' the noun is descriptive" },
+  { term: "add", re: /\badd\s+(more|to\s+your|a\s+few)\b/i, why: "advice ('add more names')" },
+  { term: "need to", re: /\bneed(s)?\s+to\b/i, why: "instruction" },
+  { term: "ought", re: /\bought\b/i, why: "instruction" },
+  { term: "recommend", re: /\brecommend(s|ed|ation|ations|ing)?\b/i, why: "advice, by name" },
+  { term: "too-adjective", re: /\btoo\s+(concentrated|risky|heavy|narrow|many|few|much|little)\b/i, why: "judgment ('38% is too concentrated')" },
+];
+
 export interface ForwardViolation {
   id: string;
   face: "label" | "read" | "fieldVerdict";
@@ -84,11 +117,19 @@ export function scanCatalogForForwardLanguage(): ForwardViolation[] {
   return out;
 }
 
-/** Scan arbitrary assertive strings (for runtime-emitted text, future surfaces). */
-export function scanStringsForForwardLanguage(id: string, strings: string[]): ForwardViolation[] {
+/** Scan arbitrary assertive strings (for runtime-emitted text, future surfaces).
+ *  `extraTerms` appends a caller-specific vocabulary to the shared forward list — the portfolio passes
+ *  PORTFOLIO_ADVICE_DENY_LIST. Pass ONLY strings that ASSERT: a `doesntMean` negates by construction and
+ *  must never be handed to this function. */
+export function scanStringsForForwardLanguage(
+  id: string,
+  strings: string[],
+  extraTerms: { term: string; re: RegExp; why: string }[] = [],
+): ForwardViolation[] {
   const out: ForwardViolation[] = [];
+  const list = [...FORWARD_DENY_LIST, ...extraTerms];
   for (const s of strings) {
-    for (const d of FORWARD_DENY_LIST) {
+    for (const d of list) {
       if (d.re.test(s)) out.push({ id, face: "read", term: d.term, why: d.why, text: s });
     }
   }

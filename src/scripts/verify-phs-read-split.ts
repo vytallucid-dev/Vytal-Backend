@@ -25,7 +25,7 @@ const ids = (fs: PfFinding[]) => fs.map((f) => f.id).sort().join(",");
 
 // A finding stub — only id/family/read matter for partition + byte-identity here.
 const F = (id: string, family: string): PfFinding =>
-  ({ id, family, label: `${id} label`, tone: "Caution", loud: true, bind: { k: id }, read: `${id} read` });
+  ({ id, family, label: `${id} label`, tone: "Caution", loud: true, bind: { k: id }, read: `${id} read`, doesntMean: `${id} doesnt-mean` });
 
 // A mock snapshot row (numbers, not Decimals — num() accepts both). 1.2: `phs` column holds
 // the Health Score; ceiling columns are gone from the read shape; profiles added.
@@ -40,7 +40,15 @@ function row(over: Partial<SnapshotReadInput>): SnapshotReadInput {
     pillarProfile: { foundation: 70, momentum: 60, market: 55, ownership: 65 },
     lensProfile: { absolute: 0.5, peer: 0.3, trend: 0.2 },
     structureTier: "Building", capitalTier: "Modest",
-    constantVersion: "portfolio-spec 1.2", createdAt: new Date(0),
+    constructionData: {
+      gross: 76, net: 62, archetype: "Stock-led",
+      exposures: { nameRisk: 0.8, basket: 0.2, debt: 0, commodity: 0 },
+      rules: [
+        { rule: "C1", evaluable: true, points: 0, subjectShare: 0.8, firedSubject: null, detail: "clean" },
+        { rule: "C5", evaluable: false, points: 0, subjectShare: 0, firedSubject: null, detail: "no fund products — not evaluable" },
+      ],
+    },
+    constantVersion: "portfolio-spec 2.0", createdAt: new Date(0),
     ...over,
   };
 }
@@ -48,7 +56,7 @@ function row(over: Partial<SnapshotReadInput>): SnapshotReadInput {
 // ═══ 1 · PARTIAL book (both reads present) — byte-identical + partition ═══
 console.log("\n═══ Partial book (scored 55%) — both reads, headline = health ═══");
 const partialFindings = [F("PC1", "PC"), F("PC3", "PC"), F("PB1", "PB"), F("PQ4", "PQ"), F("PS1", "PS"), F("PX1", "PX"), F("PV2", "PV"), F("PV4", "PV")];
-const partial = reshapeSnapshot(row({ firedFindings: partialFindings }), { scoredCount: 3, totalCount: 6 });
+const partial = reshapeSnapshot(row({ firedFindings: partialFindings }), { scoredCount: 3, totalCount: 6 }, []);
 
 eq("headline_slot = health", partial.headlineSlot, "health");
 eq("health_read present", partial.healthRead != null, true);
@@ -65,7 +73,10 @@ eq("no ceiling object on health_read (retired in 1.2)", (partial.healthRead as u
 eq("health_read.provisional (false)", partial.healthRead!.provisional, false);
 eq("pillarProfile.foundation (70)", partial.healthRead!.pillarProfile?.foundation, 70);
 eq("lensProfile.peer (0.3, character share)", partial.healthRead!.lensProfile?.peer, 0.3);
-eq("tiers on construction_read", `${partial.constructionRead.structureTier}/${partial.constructionRead.capitalTier}`, "Building/Modest");
+// (Stage 6) archetype published; structureTier RETIRED from the payload; capitalTier survives as copy input only.
+eq("archetype on construction_read (Stock-led)", partial.constructionRead.archetype, "Stock-led");
+eq("capitalTier survives as copy input (Modest)", partial.constructionRead.capitalTier, "Modest");
+eq("structureTier RETIRED from payload", (partial.constructionRead as unknown as Record<string, unknown>).structureTier, undefined);
 // coverage_state
 near("coverage_state.scoredWeight = 0.55", partial.coverageState.scoredWeight, 0.55);
 near("coverage_state.recognizedUnscoredWeight = 0.25", partial.coverageState.recognizedUnscoredWeight, 0.25);
@@ -84,7 +95,10 @@ eq("byte-identical finding set (sorted JSON equal)",
   JSON.stringify([...union].sort((a, b) => a.id.localeCompare(b.id))) === JSON.stringify([...partialFindings].sort((a, b) => a.id.localeCompare(b.id))),
   true);
 // ledger placement
-eq("structureLedger on construction_read", Array.isArray(partial.constructionRead.structureLedger) && (partial.constructionRead.structureLedger as unknown[]).length === 1, true);
+// (Stage 6) the C1–C6 ledger replaces the S-rule ledger on the wire; evaluability (not-evaluable ≠ clean) survives.
+eq("C-ledger (rules) on construction_read", Array.isArray(partial.constructionRead.rules) && partial.constructionRead.rules!.length === 2, true);
+eq("evaluability preserved: C5 not-evaluable (≠ clean-0)", partial.constructionRead.rules!.find((r) => r.rule === "C5")?.evaluable, false);
+eq("structureLedger RETIRED from payload", (partial.constructionRead as unknown as Record<string, unknown>).structureLedger, undefined);
 eq("signalsLedger on health_read", Array.isArray(partial.healthRead!.signalsLedger) && (partial.healthRead!.signalsLedger as unknown[]).length === 1, true);
 // no legacy flat fields leaked onto the top level
 eq("NO flat phs on top level", (partial as unknown as Record<string, unknown>).phs, undefined);
@@ -98,7 +112,7 @@ const zero = reshapeSnapshot(row({
   phs: null, band: null, quality: null, evaluable: false, provisional: false,
   coverage: 0, structure: 80, totalValue: 50000, recognizedUnscoredValue: 30000, smallUnscoredValue: 20000,
   firedFindings: zeroFindings, signalsLedger: [], pillarProfile: null, lensProfile: null,
-}), { scoredCount: 0, totalCount: 4 });
+}), { scoredCount: 0, totalCount: 4 }, []);
 
 eq("headline_slot = construction", zero.headlineSlot, "construction");
 eq("health_read null", zero.healthRead, null);
@@ -112,18 +126,25 @@ eq("byte-identical count preserved", zero.constructionRead.findings.length, zero
 
 // ═══ 3 · FULLY-covered book — no recognized-unscored → unlock false ═══
 console.log("\n═══ Fully-covered book (c=1) — unlock trigger off ═══");
-const full = reshapeSnapshot(row({ coverage: 1, recognizedUnscoredValue: 0, smallUnscoredValue: 0, firedFindings: [F("PV1", "PV")] }), { scoredCount: 6, totalCount: 6 });
+const full = reshapeSnapshot(row({ coverage: 1, recognizedUnscoredValue: 0, smallUnscoredValue: 0, firedFindings: [F("PV1", "PV")] }), { scoredCount: 6, totalCount: 6 }, []);
 near("scoredWeight = 1.0", full.coverageState.scoredWeight, 1);
 near("recognizedUnscoredWeight = 0", full.coverageState.recognizedUnscoredWeight, 0);
 eq("unlockTrigger false (no recognized-unscored)", full.coverageState.unlockTrigger, false);
 eq("headline = health", full.headlineSlot, "health");
 
-// ═══ 4 · Construction band boundaries ═══
-console.log("\n═══ Construction band boundaries ═══");
-eq("90 → Well-built", constructionBandOf(90), "Well-built"); eq("89 → Solid", constructionBandOf(89), "Solid");
-eq("75 → Solid", constructionBandOf(75), "Solid"); eq("74 → Concentrated", constructionBandOf(74), "Concentrated");
-eq("60 → Concentrated", constructionBandOf(60), "Concentrated"); eq("59 → Lopsided", constructionBandOf(59), "Lopsided");
-eq("40 → Lopsided", constructionBandOf(40), "Lopsided"); eq("39 → Fragile", constructionBandOf(39), "Fragile");
+// ═══ 4 · Construction band boundaries (Stage 6 recut: 85/70/55/40 · Fragile → Precarious) ═══
+console.log("\n═══ Construction band boundaries (recut) ═══");
+eq("85 → Well-built", constructionBandOf(85), "Well-built"); eq("84 → Solid", constructionBandOf(84), "Solid");
+eq("70 → Solid (inclusive lower edge)", constructionBandOf(70), "Solid"); eq("69 → Concentrated", constructionBandOf(69), "Concentrated");
+eq("55 → Concentrated", constructionBandOf(55), "Concentrated"); eq("54 → Lopsided", constructionBandOf(54), "Lopsided");
+eq("40 → Lopsided", constructionBandOf(40), "Lopsided"); eq("39 → Precarious (renamed from Fragile)", constructionBandOf(39), "Precarious");
+
+// ═══ 5 · legacy row (no construction_data) degrades to value + band ═══
+console.log("\n═══ Legacy / no-holding row — degrades to value + band ═══");
+const legacy = reshapeSnapshot(row({ constructionData: null }), { scoredCount: 3, totalCount: 6 }, []);
+eq("legacy: archetype null (degraded)", legacy.constructionRead.archetype, null);
+eq("legacy: rules null (degraded)", legacy.constructionRead.rules, null);
+eq("legacy: value + band still served", `${legacy.constructionRead.value}/${legacy.constructionRead.band}`, "62/Concentrated");
 
 console.log(`\n═══ ${failures === 0 ? "ALL PASS ✅" : failures + " FAILURE(S) ❌"} ═══`);
 process.exit(failures === 0 ? 0 : 1);

@@ -304,6 +304,82 @@ export async function reDerivePrice(db: Db, rowId: string): Promise<ReDeriveResu
   return { table: "DailyPrice", rowId, changed: {}, symbol: r.stock.symbol, periodKey: r.date.toISOString().slice(0, 10), edit: { kind: "annual", reportDate: r.date } };
 }
 
+// ── Instrument (Step 9 — AMFI catalogue row). currentNav is the ONLY fillable field.
+//    NOTHING derives from a NAV yet (NAV history + analytics are Steps 10/11), so there is
+//    no intra-row re-derive — the raw write IS the whole correction. And a mutual fund is
+//    HELD-NOT-SCORED (no peer group, no Health Score), so this must NEVER trigger a rescore:
+//    Instrument is in NO_RESCORE_TABLES below. symbol is NULL for a fund, so the audit row
+//    carries the ISIN — the spine — as its identity.
+export async function reDeriveInstrument(db: Db, rowId: string): Promise<ReDeriveResult> {
+  const r = await db.instrument.findUniqueOrThrow({
+    where: { id: rowId },
+    select: { id: true, isin: true, navDate: true },
+  });
+  const when = r.navDate ?? new Date();
+  return {
+    table: "Instrument",
+    rowId,
+    changed: {},
+    symbol: r.isin, // a fund has no ticker — the ISIN IS its identity
+    periodKey: when.toISOString().slice(0, 10),
+    edit: { kind: "annual", reportDate: when },
+  };
+}
+
+// ── InstrumentPrice (Steps 14/15/17) — a trust's / G-sec's / bond's exchange close. ──
+//
+// TWO THINGS HAPPEN HERE, and the second is the one that matters.
+//
+// (a) The raw close is already written by the caller. Nothing derives from it INSIDE the row.
+//
+// (b) THE SNAPSHOT MUST FOLLOW. `instruments.last_price` is what every portfolio surface actually
+//     reads (portfolio/price-resolver.ts takes the exchange-close branch off it) — the
+//     instrument_prices row is the HISTORY. Correcting the history and leaving the snapshot alone
+//     would mean the operator fills a bad close, sees the fill succeed, and the user carries on
+//     being shown the wrong number. So when the row being corrected IS the one the snapshot was
+//     taken from (same instrument, same date), the snapshot moves with it.
+//
+//     The date check is not a nicety: filling an OLD row must NOT drag a stale price forward onto
+//     a fresher snapshot. That is the exact lie `last_price_date` exists to prevent, and the
+//     ingest's own upsert guards it the same way.
+//
+// NO RESCORE, EVER. Every instrument in this table is stock_id-NULL — an ETF, a trust, a G-sec, a
+// bond. They are HELD-NOT-SCORED by construction, so InstrumentPrice joins NO_RESCORE_TABLES below.
+// A corrected bond close must never enqueue an equity rescore.
+export async function reDeriveInstrumentPrice(db: Db, rowId: string): Promise<ReDeriveResult> {
+  const r = await db.instrumentPrice.findUniqueOrThrow({
+    where: { id: rowId },
+    select: {
+      id: true, date: true, close: true, instrumentId: true,
+      instrument: { select: { isin: true, lastPrice: true, lastPriceDate: true } },
+    },
+  });
+
+  const changed: Record<string, { before: string | null; after: string | null }> = {};
+  const snapDate = r.instrument.lastPriceDate;
+
+  // Move the snapshot ONLY if this row is the one it was taken from. Filling an OLD row must never
+  // drag a stale price forward onto a fresher snapshot — that is the exact lie `last_price_date`
+  // exists to prevent, and the ingest's own upsert guards it the same way.
+  if (snapDate && r.date.getTime() === snapDate.getTime()) {
+    const before = r.instrument.lastPrice;
+    await db.instrument.update({ where: { id: r.instrumentId }, data: { lastPrice: r.close } });
+    changed.lastPrice = {
+      before: before?.toString() ?? null,
+      after: r.close.toString(),
+    };
+  }
+
+  return {
+    table: "InstrumentPrice",
+    rowId,
+    changed,
+    symbol: r.instrument.isin, // a bond/trust may have no ticker — the ISIN IS its identity
+    periodKey: r.date.toISOString().slice(0, 10),
+    edit: { kind: "annual", reportDate: r.date },
+  };
+}
+
 // ── Registry — ALL fillable tables wired ──────────────────────
 export const RE_DERIVE: Record<string, (db: Db, rowId: string) => Promise<ReDeriveResult>> = {
   Fundamental: reDeriveFundamentalAnnual,
@@ -320,11 +396,20 @@ export const RE_DERIVE: Record<string, (db: Db, rowId: string) => Promise<ReDeri
   ShareholdingPattern: reDeriveShareholding, // residual othersPct/retailPct + PG cascade
   CorporateEvent: reDeriveEvent, // raw write, no rescore (display-only)
   DailyPrice: reDerivePrice, // raw write + current-frame PG rescore
+  Instrument: reDeriveInstrument, // raw write, NO rescore (a fund is held-not-scored)
+  InstrumentPrice: reDeriveInstrumentPrice, // raw write + snapshot follow, NO rescore (held-not-scored)
 };
 
-/** Tables whose fill triggers NO rescore (display-only, not scored). */
-export const NO_RESCORE_TABLES = new Set<string>(["CorporateEvent"]);
-/** Date-indexed tables → current-frame PG rescore (not the quarterly PIT cascade). */
+/** Tables whose fill triggers NO rescore (display-only, or held-not-scored).
+ *
+ *  InstrumentPrice belongs here for the STRUCTURAL reason, not a policy one: every row in it hangs
+ *  off a stock_id-NULL instrument (an ETF, a trust, a G-sec, a bond). The scoring universe is
+ *  PeerGroup → StockPeerGroup → Stock and literally cannot reach one. A rescore would be a no-op at
+ *  best and a category error at worst — a corrected bond close has nothing to do with an equity's
+ *  Health Score. */
+export const NO_RESCORE_TABLES = new Set<string>(["CorporateEvent", "Instrument", "InstrumentPrice"]);
+/** Date-indexed tables → current-frame PG rescore (not the quarterly PIT cascade).
+ *  InstrumentPrice is deliberately NOT here: it is date-indexed, but it never rescores. */
 export const PRICE_TABLES = new Set<string>(["DailyPrice"]);
 
 export async function reDeriveRow(db: Db, table: string, rowId: string): Promise<ReDeriveResult> {

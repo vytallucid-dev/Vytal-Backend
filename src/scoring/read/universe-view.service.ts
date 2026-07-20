@@ -54,6 +54,14 @@ const DETERIORATION_THRESHOLD = -2.0;
 const RECOVERY_THRESHOLD = 2.0;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+// A stock is "live" in the universe if its latest in-force snapshot's asOfDate is within
+// this window of the freshest asOfDate anywhere. Active names are EOD-rescored ~daily, so
+// they all share a recent asOf even when a fiscal quarter behind on fundamentals; only
+// names that have gone dark (delisted / no longer rescored) fall outside it and are held
+// out as `notAtCurrentPeriod`. Comfortably wider than any holiday gap, tighter than a
+// quarter — so a quarter rollover keeps ALL live names instead of collapsing the universe.
+const STALE_ASOF_DAYS = 45;
+
 // Scaled from pond's 0.50: for a universe of 93, N/M ≥ 0.20 = ~19 stocks firing
 // the same flag — systemic, not isolated.
 const UNIVERSE_WIDESPREAD_RATIO = 0.2;
@@ -111,9 +119,10 @@ interface LeanSnap {
   ownershipSubtotal: unknown;
 }
 
-/** Same supersede-aware cross-section resolution used by buildPeerGroupList.
- *  Per (stock, period) keep MAX(version); per stock keep the latest period;
- *  members at an older period than the majority are "lagging". */
+/** Supersede-aware cross-section: per (stock, period) keep MAX(version), per stock keep
+ *  the latest period. `current` = every stock's latest in-force snapshot that is still
+ *  fresh (asOf within STALE_ASOF_DAYS of the newest); genuinely dark names are `lagging`.
+ *  `periodKey` is a display label (the plurality period) — members may span periods. */
 function resolveCrossSection(rows: LeanSnap[]): {
   periodKey: string;
   asOfDate: Date;
@@ -149,14 +158,31 @@ function resolveCrossSection(rows: LeanSnap[]): {
 
   const all = [...latestPerStock.values()];
   const maxAsOf = all.reduce((a, b) => (b.asOfDate > a.asOfDate ? b : a)).asOfDate;
-  const periodKey = all.find((r) => r.asOfDate.getTime() === maxAsOf.getTime())!.periodKey;
-  const current = all.filter((r) => r.periodKey === periodKey);
+
+  // The universe = every stock at its LATEST in-force snapshot, REGARDLESS of fiscal
+  // period, so a quarter rollover (when only part of the book has the new period yet)
+  // never collapses the cross-section to the handful that rolled first. Only genuinely
+  // STALE names — no longer EOD-rescored, i.e. whose latest snapshot's asOf sits far
+  // behind the freshest one — are held out as lagging. Active names all carry ~the same
+  // recent asOf even a quarter behind on fundamentals, so this cleanly splits live vs dark.
+  const staleCutoff = new Date(maxAsOf.getTime() - STALE_ASOF_DAYS * 24 * 60 * 60 * 1000);
+  const current = all.filter((r) => r.asOfDate >= staleCutoff);
   const lagging = all
-    .filter((r) => r.periodKey !== periodKey)
+    .filter((r) => r.asOfDate < staleCutoff)
     .map((r) => ({ symbol: r.symbol, latestPeriod: r.periodKey }))
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 
-  return { periodKey, asOfDate: maxAsOf, current, lagging };
+  // Representative period LABEL (members can now span periods): the one the plurality of
+  // live members sit at, ties → the newer period. Display-only; not a membership gate.
+  const periodCounts = new Map<string, number>();
+  for (const r of current) periodCounts.set(r.periodKey, (periodCounts.get(r.periodKey) ?? 0) + 1);
+  const periodKey =
+    [...periodCounts.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))[0]?.[0] ??
+    all[0].periodKey;
+  // asOf shown = the freshest rescore date among the live members.
+  const asOfDate = current.reduce((a, b) => (b.asOfDate > a.asOfDate ? b : a), current[0]).asOfDate;
+
+  return { periodKey, asOfDate, current, lagging };
 }
 
 // ── lighter full cross-section load (RT2, no metricScores) ─────────────────
@@ -348,10 +374,12 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
   // the 7-day window), use the OLDEST available version at the current period as the
   // comparison baseline — so v1@Jun-18 → v2@Jun-20 changes are still surfaced.
   const priorAnchorByStock = new Map<string, LeanSnap>();
-  // Pass 1: pre-anchor versions (MAX version where asOfDate ≤ anchor)
+  // Pass 1: pre-anchor versions (MAX version where asOfDate ≤ anchor). Compared within
+  // each stock's OWN current period (members can span periods post-rollover), not one
+  // universe-wide period — so a stock a quarter behind still gets its 7-day baseline.
   for (const r of leanRows) {
     if (!currentStockIds.has(r.stockId)) continue;
-    if (r.periodKey !== xs.periodKey) continue;
+    if (r.periodKey !== currentLeanByStock.get(r.stockId)?.periodKey) continue;
     if (r.asOfDate > anchor) continue;
     const cur = priorAnchorByStock.get(r.stockId);
     if (!cur || r.version > cur.version) priorAnchorByStock.set(r.stockId, r);
@@ -359,7 +387,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
   // Pass 2: fallback — MINIMUM (oldest) in-window version for stocks with no pre-anchor state
   for (const r of leanRows) {
     if (!currentStockIds.has(r.stockId)) continue;
-    if (r.periodKey !== xs.periodKey) continue;
+    if (r.periodKey !== currentLeanByStock.get(r.stockId)?.periodKey) continue;
     if (priorAnchorByStock.has(r.stockId)) continue; // already have pre-anchor baseline
     const currentLean = currentLeanByStock.get(r.stockId);
     if (!currentLean || r.version >= currentLean.version) continue; // skip current version itself
@@ -574,26 +602,31 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
   let medianDrift: number | null = null;
 
   if (priorByStock.size > 0) {
-    priorPeriodKey = [...priorByStock.values()]
-      .map((r) => r.periodKey)
-      .reduce((a, b) => (b > a ? b : a));
+    const priorList = [...priorByStock.values()];
 
-    const priorMembers: ScopeMember[] = [...priorByStock.values()]
-      .filter((r) => r.periodKey === priorPeriodKey)
-      .map((r) => ({
-        stockId: r.stockId,
-        symbol: r.symbol,
-        composite: num(r.composite),
-        labelBand: r.labelBand as LabelBand,
-        pillars: {
-          foundation: num(r.foundationSubtotal),
-          momentum: num(r.momentumSubtotal),
-          market: num(r.marketSubtotal),
-          ownership: num(r.ownershipSubtotal),
-        },
-        firesAnyRedFlag: false,
-        weight: 1,
-      }));
+    // Representative prior-period LABEL = the plurality prior period among live members
+    // (ties → newer). Members can span periods, so there is no single prior period.
+    const priorCounts = new Map<string, number>();
+    for (const r of priorList) priorCounts.set(r.periodKey, (priorCounts.get(r.periodKey) ?? 0) + 1);
+    priorPeriodKey =
+      [...priorCounts.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))[0][0];
+
+    // Drift = universe median now vs one period back, each stock at ITS OWN prior
+    // (second-latest) snapshot — coherent even when members span periods.
+    const priorMembers: ScopeMember[] = priorList.map((r) => ({
+      stockId: r.stockId,
+      symbol: r.symbol,
+      composite: num(r.composite),
+      labelBand: r.labelBand as LabelBand,
+      pillars: {
+        foundation: num(r.foundationSubtotal),
+        momentum: num(r.momentumSubtotal),
+        market: num(r.marketSubtotal),
+        ownership: num(r.ownershipSubtotal),
+      },
+      firesAnyRedFlag: false,
+      weight: 1,
+    }));
 
     const priorAgg = computeScopeAggregate(priorMembers);
     priorMedianComposite = priorAgg.medianComposite;
@@ -626,7 +659,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       priorComposite: priorComp,
       delta,
       fromPeriod: prior.periodKey,
-      toPeriod: xs.periodKey,
+      toPeriod: currentLeanByStock.get(s.stockId)?.periodKey ?? xs.periodKey,
     });
   }
   const risers = moverRows

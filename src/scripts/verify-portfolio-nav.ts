@@ -116,6 +116,9 @@ async function main() {
   console.log(`  Using ${stock.symbol}: buy ${buyDate} · last close ${lastDate} (${dates.length - buyIdx} trading days)`);
 
   const u = await seedUser();
+  // Step 5.5: the auto-create is gone — give the user their one broker-tagged book, so the bare
+  // posts below resolve to it (resolve-don't-create).
+  await prisma.portfolioAccount.create({ data: { userId: u.userId, name: "My Holdings", broker: "zerodha", state: "manual" } });
   try {
     const bought = await post(u.userId, { symbol: stock.symbol, type: "buy", quantity: 100, price: 100, tradeDate: buyDate });
     assert("buy accepted", bought.statusCode === 201, `status=${bought.statusCode}`);

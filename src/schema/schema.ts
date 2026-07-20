@@ -44,8 +44,14 @@ export const DailyPricesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(365).default(90),
 });
 
+// 4 years ≈ 992 trading days at NSE's ~248/yr. The Market pillar's A2 sub-component
+// gates at 756 trading days and D1's sector-vol baseline samples a trailing 3yr window
+// (needing ~846); 3 calendar years is only ~744 bars and silently drops A2 for every
+// stock. 4y is the smallest window that clears both with headroom.
+export const PRICE_BACKFILL_MAX_DAYS = 1461; // 4 calendar years (incl. one leap day)
+
 export const PriceBackfillSchema = z.object({
-  days: z.number().int().min(1).max(365).default(365),
+  days: z.number().int().min(1).max(PRICE_BACKFILL_MAX_DAYS).default(PRICE_BACKFILL_MAX_DAYS),
 });
 
 // ── Indices (display-only — mirror of the price schemas) ──────

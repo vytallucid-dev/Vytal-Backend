@@ -1,0 +1,23 @@
+-- ═══════════════════════════════════════════════════════════════
+-- PHS-COMPUTE ERROR CLASS (Part B) — one additive GuardType value.
+--
+-- `scoring_phs_failed` is the guardType for a THROWN portfolio-health compute
+-- (computeAndPersistPhs raised). It rides the existing ingestion_errors table + the
+-- scoring columns/lifecycle already added by 20260628200000 — NO new column, NO new
+-- table. The Recompute action reuses the `rescore` ResolutionPath value; the FE gates
+-- the button on this guardType, so ResolutionPath needs NO new value.
+--
+-- ⚠ APPLIED OUTSIDE A TRANSACTION (autocommit) via apply-migration-autocommit.ts.
+-- `ALTER TYPE ... ADD VALUE` cannot run inside an explicit BEGIN/COMMIT block that then
+-- uses the value; run as a lone auto-committing statement. Idempotent (IF NOT EXISTS),
+-- so a re-run is a clean no-op. The value is USED only at runtime (by the writer), never
+-- in this migration — no same-transaction-use hazard either way.
+--
+-- Drift-safe apply:
+--   npx tsx src/scripts/apply-migration-autocommit.ts 20260718150000_add_phs_compute_guard
+--   npx prisma migrate resolve --applied 20260718150000_add_phs_compute_guard
+--   npx prisma migrate status   # clean
+-- NEVER `migrate dev`.
+-- ═══════════════════════════════════════════════════════════════
+
+ALTER TYPE "GuardType" ADD VALUE IF NOT EXISTS 'scoring_phs_failed';

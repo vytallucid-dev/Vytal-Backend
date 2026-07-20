@@ -11,8 +11,9 @@ import { prisma } from "../db/prisma.js";
 import { SectorClass } from "../generated/prisma/client.js";
 
 // ── Canonical map: sector `name` (DB key) → SectorClass ───────────────────────
-// Covers both the 7-sector coarse seed (src/lib/seed.ts) and the 20-sector fine
-// seed (src/scripts/sectors.seed.ts), whichever is live in the DB.
+// The 20-sector fine seed (src/scripts/sectors.seed.ts) is what is live in the DB.
+// The coarse keys below are retained defensively for any DB still carrying them;
+// the legacy seed that produced them has been removed.
 const CLASS_MAP: Record<string, SectorClass> = {
   // ── Fine-grained keys (sectors.seed.ts) ────────────────────────────────────
   it_technology:                  SectorClass.Quality,
@@ -36,7 +37,7 @@ const CLASS_MAP: Record<string, SectorClass> = {
   banks:                          SectorClass.Cyclical,   // private-vs-PSU carried by scores/PG, not sector class
   insurance:                      SectorClass.Defensive,  // cashflows defensive regardless of LIC vs private
 
-  // ── Coarse keys (src/lib/seed.ts) ──────────────────────────────────────────
+  // ── Coarse keys (legacy taxonomy; its seed is gone, kept for back-compat) ──
   Technology:                     SectorClass.Quality,
   Healthcare:                     SectorClass.Quality,
   Consumer:                       SectorClass.Quality,    // FMCG-dominant coarse bucket

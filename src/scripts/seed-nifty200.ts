@@ -156,19 +156,14 @@ async function main() {
         stockIdsThisRun.add(existing.id);
         updated++;
       } else {
-        const created = await prisma.stock.create({
-          data: {
-            symbol: stock.symbol,
-            name: stock.name,
-            sectorId,
-            exchange: "NSE",
-            isActive: true,
-            industryType,
-          },
-          select: { id: true },
-        });
-        stockIdsThisRun.add(created.id);
-        inserted++;
+        // UPDATE-ONLY. stocks.isin is NOT NULL + UNIQUE, and this seed's data carries no
+        // ISIN — so it cannot legitimately mint a stock. Fail loud rather than fabricate
+        // an identifier or resurrect a defunct symbol. Add stocks via a purpose-built
+        // script that sources ISIN from the current NSE list.
+        throw new Error(
+          `cannot seed ${stock.symbol}: not in the stocks table, and this seed has no ISIN to create it with. ` +
+            `Add it via a purpose-built script that sources ISIN from the current NSE list, or drop it from stocks.seed.ts if it is defunct.`,
+        );
       }
     }
 

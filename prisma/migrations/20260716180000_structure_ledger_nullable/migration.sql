@@ -1,0 +1,27 @@
+-- ═══════════════════════════════════════════════════════════════
+-- Construction v2 Stage 9 — LET S1–S5 DIE WITHOUT TAKING THE HISTORY WITH THEM.
+--
+-- `structure_ledger` is `Json` NOT NULL and is written from `r.structureLedger` (persist.ts). S1–S5 are
+-- deleted this stage, so that field ceases to exist and the column has nothing to write: every insert
+-- would fail. This is the LAST consumer of S1–S5 outside patterns.ts — missed by the Stage-9 prompt's
+-- list, and the third time running that an asserted consumer list was incomplete (Stage 5 ruling ①,
+-- Stage 6 ruling ②). Grep, don't assert.
+--
+-- NULLABLE, NOT DROPPED — and the distinction is Stage 7's own rule, verbatim:
+--   "Had ANY row carried one, 'retire' would have meant 'stop writing', never 'drop':
+--    you cannot un-drop history."
+-- `phs_raw` was droppable because 0 of 31 rows ever carried a ceiling. This column carries 31 rows of
+-- REAL S-rule ledgers — the complete record of how every book was read before the Construction cutover,
+-- and the only surviving evidence of the S-composite that PX1/2/4 were built on. Dropping it would
+-- destroy the thing that makes the cutover auditable after the fact.
+--
+-- So: the column stays, the history stays, and persist simply stops writing it. New rows carry NULL
+-- (honest: "this row was never scored by S-rules"); old rows keep their ledger. A reader can still tell
+-- the two eras apart — which is exactly what an append-only table is for.
+--
+-- APPLIED via the drift-safe db-execute + migrate-resolve path ([[invest-iq-migration-drift]]).
+-- IF EXISTS is not available for ALTER COLUMN; the statement is idempotent anyway (dropping a NOT NULL
+-- that is already dropped is a no-op in Postgres).
+-- ═══════════════════════════════════════════════════════════════
+
+ALTER TABLE "portfolio_health_snapshot" ALTER COLUMN "structure_ledger" DROP NOT NULL;

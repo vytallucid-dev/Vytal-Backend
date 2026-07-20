@@ -1,0 +1,21 @@
+-- ═══════════════════════════════════════════════════════════════
+-- `other` BROKER (Stage 1) — the NOT-AT-A-BROKER account.
+--
+-- `PortfolioAccount.broker` is NOT NULL and BrokerId had no member for "I did not buy this at a
+-- broker": SGBs from a bank, bonds held directly in NSDL, physical holdings. Those users had to
+-- name a broker they do not use — a false statement in our data. `other` is that value.
+--
+-- A VALUE, NOT AN ABSENCE: broker stays NOT NULL. A null would say "we don't know"; `other` says
+-- "the user told us, and the answer is nowhere". `other` is PERMANENTLY UNLINKABLE (no adapter,
+-- ever) — enforced in POST /accounts/:id/link (409), not in the schema.
+--
+-- APPENDED, existing labels unmoved. No table, row, or index is touched; there is no backfill. An
+-- unused enum label is inert, so existing accounts and their states are byte-unchanged.
+--
+-- ALONE IN ITS TRANSACTION: Postgres allows ALTER TYPE … ADD VALUE inside a tx (PG12+), but the new
+-- label cannot be USED until the tx commits — no INSERT casts to 'other' here, so that is fine. Do
+-- not merge this with a data migration. IF NOT EXISTS makes a re-apply a no-op.
+--
+-- Drift-safe apply: BEGIN/COMMIT over DIRECT_URL, then `migrate resolve --applied`.
+-- ═══════════════════════════════════════════════════════════════
+ALTER TYPE "BrokerId" ADD VALUE IF NOT EXISTS 'other';

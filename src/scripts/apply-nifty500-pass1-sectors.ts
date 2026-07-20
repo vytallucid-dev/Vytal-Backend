@@ -12,6 +12,7 @@
 //   npx tsx src/scripts/apply-nifty500-pass1-sectors.ts <filled-json> --commit   # write
 // ─────────────────────────────────────────────────────────────────────────────
 import { prisma } from "../db/prisma.js";
+import { refreshPhsForCataloguedIsins } from "../portfolio/phs/refresh.js";
 import fs from "fs";
 
 interface Row { symbol: string; name?: string; nseIndustry?: string; assignSector: string; }
@@ -88,6 +89,31 @@ async function main() {
   );
   const updated = res.reduce((s, u) => s + u.count, 0);
   console.log(`\nsectors applied (rows updated): ${updated} across ${symbolsBySector.size} sector groups`);
+
+  // ── (Construction v2 Stage 7 — §12) THE SECTOR-RESOLUTION TRIGGER ───────────────────────────────
+  // Resolving a stock's sector is not a private fact about that stock. A held BOND inherits its
+  // issuer's sector by 7-char ISIN stem (Stage 4, `cv2-s4-bond-sector-catalogued`), so the rows just
+  // updated can change a DIFFERENT instrument's sector — and with it that book's C3/C4 and its
+  // displayed Construction. Nothing else would ever revisit those books: the symbol trigger reaches
+  // users through `instrument.stock.symbol`, and a bond has no stock relation, so a bond-only holder
+  // is unreachable by it. Their number would just quietly stop matching their inputs.
+  //
+  // §12 called this "symbol-master refresh resolving a previously-unknown sector". There is no such
+  // runtime job — THIS SCRIPT is the event. So the trigger fires here, where the fact actually changes.
+  // Fingerprint-gated downstream: a book whose resolution did not really move skips the write.
+  if (updated > 0) {
+    const touched = await prisma.stock.findMany({
+      where: { symbol: { in: rows.map((r) => r.symbol) } },
+      select: { isin: true },
+    });
+    const isins = touched.map((s) => s.isin).filter((i): i is string => !!i);
+    const out = await refreshPhsForCataloguedIsins(isins);
+    console.log(
+      out.users === 0
+        ? `[phs] no book holds a bond issued by any of these ${isins.length} issuers — nothing to recompute (expected: 0 bonds are held today)`
+        : `[phs] bond-issuer resolution → users=${out.users} written=${out.written} skipped=${out.skipped} failed=${out.failed}`,
+    );
+  }
 
   await prisma.$disconnect();
 }

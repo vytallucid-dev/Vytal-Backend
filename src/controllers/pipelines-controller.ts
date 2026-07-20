@@ -49,6 +49,45 @@ const PIPELINE_JOB_TYPES: Record<string, JobType[]> = {
     JobTypes.NEWS_CONTENT_EXTRACTION,
     JobTypes.NEWS_BACKFILL,
   ],
+  // The MF pipeline (Steps 9 + 10/11). Step 9's amfi_nav_daily was a MYSTERY CRON — it ran
+  // nightly and appeared on no admin card, with no run-log and no manual trigger. It is a
+  // first-class pipeline now, alongside the analytics fold and the one-time inception walk.
+  // Step 13 adds ETF_NAV_DAILY here rather than opening a separate "etfs" card: an ETF is an
+  // AMFI-registered fund whose analytics come out of the SAME fold, so it is one pipeline with
+  // two identity feeds, not two pipelines. A mystery cron is exactly what Step 10 fixed — the
+  // ETF pass is not allowed to become one.
+  //
+  // Step 14.5 adds ETF_PRICES_DAILY here too: it prices the SAME instrument the NAV lane owns,
+  // just from the exchange rather than from AMFI. One instrument, one card — two numbers on it
+  // (what a unit is worth, and what it trades at).
+  //
+  // INSTRUMENT_CORPORATE_ACTIONS belongs here and had been LEFT OFF. It is the job that reads NSE's
+  // real unit splits so the fold can rescale an ETF's NAV series before folding it — i.e. it decides
+  // whether this card's numbers are right. Shipping it cron-only made it precisely the "mystery cron"
+  // Step 10 went back and eliminated for amfi_nav_daily: a job an operator cannot see is a job they
+  // cannot debug, and this one runs 15 minutes before the fold that depends on it.
+  //
+  // (MF_INCEPTION_WALK is gone from this card and from the codebase — see the drop migration.)
+  "mutual-funds": [
+    JobTypes.AMFI_NAV_DAILY,
+    JobTypes.ETF_NAV_DAILY,
+    JobTypes.ETF_PRICES_DAILY,
+    JobTypes.INSTRUMENT_CORPORATE_ACTIONS,
+    JobTypes.MF_ANALYTICS_DAILY,
+  ],
+  // REITs/InvITs get their OWN card, not a seat on the mutual-funds one: they share no source
+  // with it (NSE BhavCopy, not AMFI), no cadence (a trading day, not a NAV publish) and no fold.
+  // Listed here so REIT_DAILY can never become the "mystery cron" that Step 10 had to go back
+  // and fix — every pipeline in this codebase is visible, and this one is too, from day one.
+  reits: [JobTypes.REIT_DAILY],
+  // Government paper (Step 15) gets its own card: a different issuer, a different instrument and a
+  // different universe from anything else in this list. Visible from day one — no mystery crons.
+  "govt-securities": [JobTypes.GOVT_SECURITIES_DAILY],
+  // Corporate debt (Step 17) gets its own card for the same reason government paper does — and one
+  // more: it is the lane whose universe is still GROWING. The BhavCopy shows only what traded, so
+  // the catalogue accumulates nightly toward a traded universe whose true size nobody knows. An
+  // operator needs to be able to watch that, which means it cannot be a mystery cron either.
+  "corporate-bonds": [JobTypes.CORPORATE_BONDS_DAILY],
   "peer-group-metrics": [JobTypes.PEER_METRICS_COMPUTE_ALL],
   "shareholding-patterns": [
     JobTypes.SHAREHOLDING_QUARTERLY,

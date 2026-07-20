@@ -10,6 +10,7 @@
 
 import { prisma } from "../../db/prisma.js";
 import { Prisma } from "../../generated/prisma/client.js";
+import { PRICE_BACKFILL_MAX_DAYS } from "../../schema/schema.js";
 import type { EodPrice } from "./providers/provider.js";
 import { fetchWithFallback } from "./registry.js";
 import { computeMarketCap } from "./market-cap.js";
@@ -712,7 +713,7 @@ export type PriceBackfillProgressFn = (
 ) => Promise<boolean>;
 
 export async function runPriceBackfill(
-  daysBack = 365,
+  daysBack = PRICE_BACKFILL_MAX_DAYS,
   onDayComplete?: PriceBackfillProgressFn,
 ): Promise<void> {
   const today = new Date();

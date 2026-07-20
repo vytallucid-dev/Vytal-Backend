@@ -5,6 +5,77 @@ Routine implementation choices are not logged. Newest first.
 
 ---
 
+## `broker-exited-position-read` · Broker mirror · An exited position is not a holding — and the rule needs ONE home, on the READ
+
+**The symptom.** A Zerodha demat that held 3 instruments, sold all of them, and reconnected showed the 3
+instruments at **qty 0 / ₹0 invested / ₹0 current / 0.0% weight** instead of showing nothing.
+
+**Recon killed the obvious hypothesis.** The suspicion was an accumulating upsert leaving stale rows. It
+is not: `syncHoldings` is the **only** production writer of `broker_holdings`, and it is already
+delete-then-insert per connection inside one `$transaction` (fetch/normalize/resolve all complete *before*
+the transaction opens, so a broker failure aborts with the prior snapshot whole — no half-mirror). A
+vanished instrument was always correctly disappearing. **The write path needed no fix.**
+
+**What the broker actually sends — observed, not reasoned.** A read-only probe against the live sold-out
+demat: Kite returned **all 3 rows, every ownership pool at 0** (`quantity`/`t1_quantity`/
+`collateral_quantity` ⇒ `heldQuantity` 0), with `opening_quantity` 3/1/2 intact. Kite keeps a sold
+instrument in `GET /portfolio/holdings` for the settlement day. **The mirror stored faithfully what the
+broker said, and faithful is correct for a mirror.**
+
+**★ SO THE DEFECT WAS A READ ASYMMETRY, AND THAT IS THE ACTUAL LESSON.** `listUnifiedPositions` filtered
+the manual branch `quantity: { gt: 0 }` and the broker branch **not at all**. The same fact — *an exited
+position is not a holding* — was expressed on one engine and forgotten on the other, so which answer a
+user got depended on **which engine happened to hold the row**: sell manually and the position vanishes,
+sell at the broker and it ghosts on at zero. A rule with two homes is a rule that will disagree with
+itself; this one had one home and a blank space where the second should have been.
+
+**THE FILTER BELONGS AT THE UNION READ because that is the chokepoint** — display, the account-card count,
+and PHS assemble all reach positions through that one function. Fixing it at the controller would have
+left the score counting ghosts.
+
+**⚠️ IT IS VALUE-NEUTRAL BUT NOT COUNT-NEUTRAL, and the DIRECTION is the opposite of the intuition.** A
+ghost contributes ₹0 and 0.0% weight, so no ₹ figure moves. But **N is the position count**, and it is a
+scoring input twice: C1's threshold is `max(15, 1.5 × 100/N)`, and C6 charges 0.5/holding above 25.
+
+The first draft of this entry claimed a ghost "lowers the bar and **flatters** Construction". **That is
+backwards, and the constants say so.** Lowering C1's threshold means *more* entities clear it and the
+deduction gets *larger*. C6 runs the same way. So ghosts **understate** Construction — a 3-position book
+carrying 2 ghosts was being judged at the 5-position bar — and removing them can **raise** a score. Note
+also that C1's 15 floor binds for all N ≥ 10, so on a normal-width book the C1 effect is nil; the damage
+is concentrated on **thin books**, which is precisely where a sold-out remnant is most likely to dominate
+what is left. Reasoning from the rule's *shape* ("inflates N, lowers bar") got the sign wrong; only
+reading `C1_FLOOR = 15` / `C6_THRESH = 25` and running the engine settled it.
+
+**Both §13 halves are asserted, and the first one had to be re-specified when it failed.** The obvious
+test — re-assert the historical `73·73·69·65·50` — **failed on three books, and the failure was correct**:
+those values are a 2026-07-16/18 snapshot that has since moved through ordinary EOD rescoring, and two of
+the five books are not manual at all (one carries 4 mock broker rows; one IS the live Zerodha demat with
+the 3 ghosts). Pinning a historical constant would have been the `cv2-s10a-fixture-scale` disease again —
+encoding yesterday's output as the expected one. **The property that actually holds is filter-invariance:**
+a book with no qty-0 broker rows gets a byte-identical broker slice with the filter on or off, so the
+changed line is provably a no-op on it. That is asserted per-book, alongside a timestamp check proving no
+persisted row was rewritten by this change. The second half is asserted by construction: a ghost book and
+a clean book with identical real holdings must produce identical N, identical C1 threshold, and identical
+`construction.net` — **and the pre-fix number is reproduced by feeding the engine the ghosts it used to
+see, so the test witnesses a wrong number becoming right rather than merely asserting the right one.**
+
+**The store-side skip is the belt, and its placement is load-bearing.** Zero-quantity rows are now dropped
+**before `resolveHoldingsToUniverse`**, not inside the write loop. The resolver is the one step in sync
+that mutates *shared* state — it ADMITS unknown-symbol-with-ISIN to the universe. Filtering after it would
+still let a sold-out ghost permanently enlarge the 504-stock universe: a company added to the platform on
+the strength of a position the user no longer owns. Filter first and the ghost reaches nothing.
+
+**⚠️ A KITE FIELD DOES NOT MEAN WHAT ITS NAME SAYS — recorded so the next person does not re-learn it.**
+`realised_quantity` ("sold today") came back **0 on every row of a fully sold-out account**. The sale was
+in `used_quantity`. Nothing is broken — `heldQuantity()` sums only the three ownership pools and reaches 0
+regardless of where the sale landed, so *we are right for a reason that does not depend on this field
+being right*. But anyone deriving "how much was sold" from `realised_quantity` will get 0 on exactly the
+accounts they are asking about. This is the third field in `KiteHolding` to mean something other than its
+name (after `quantity` ≠ owned, `opening_quantity` overlapping the live pools); the type's own docblock
+now carries the warning.
+
+---
+
 ## `cv2-fixture-input-not-output` · Stage 10b · A fixture may shape the INPUT; it must never supply an OUTPUT the production path would generate
 
 **Decision (operator-ruled, from the pre-10b degradation review):**

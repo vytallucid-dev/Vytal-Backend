@@ -552,6 +552,27 @@ export async function syncHoldings(userId: string, connectionId: string): Promis
 
   const std = adapter.normalize(raw);
 
+  // ── A ZERO-QUANTITY ROW IS NOT A HOLDING — drop it BEFORE anything downstream sees it ────────
+  // Kite returns a sold instrument for the whole settlement day with every ownership pool at 0
+  // (quantity/t1/collateral ⇒ heldQuantity 0; the sale is recorded in `used_quantity`). Storing it
+  // is faithful to the WIRE but not to the BOOK: nothing is owned, so there is nothing to mirror.
+  //
+  // The read filter in listUnifiedPositions is what this bug actually turned on, and it would cover
+  // the display on its own. This is the belt to that braces: a ghost should not occupy a mirror row
+  // in the first place, waiting for the one future read path that forgets to filter. Cheap, because
+  // delete-then-insert means "not written" IS "removed" — the sold row is gone from broker_holdings
+  // on the very next sync, with no deletion logic of its own.
+  //
+  // ⚠️ IT MUST HAPPEN BEFORE resolveHoldingsToUniverse, NOT INSIDE THE WRITE LOOP BELOW. The
+  // resolver is the one step here that MUTATES shared state: given an unknown symbol with an ISIN
+  // it ADMITS a new bare stock to the 504-stock universe. Filtering after it would still let a
+  // sold-out ghost enlarge the universe permanently — a company added to the platform on the
+  // strength of a position the user no longer owns. Filter first and the ghost reaches nothing.
+  //
+  // SKIPPED, NOT ZEROED: `> 0` also drops the nonsensical negative a broker could hand us. This is
+  // a filter on OWNERSHIP; the rows that survive it keep the broker's numbers exactly as given.
+  const held = std.filter((h) => h.quantity > 0);
+
   // ── RESOLVE → the universe (Step 7: ADD-TO-UNIVERSE) ────────────────────────────────────────
   // Was: a read-only symbol lookup, with an unknown symbol left at stock_id NULL forever. Now the
   // resolver may ADMIT an unknown symbol as a bare stock — but ONLY when the broker gave us an
@@ -561,13 +582,13 @@ export async function syncHoldings(userId: string, connectionId: string): Promis
   //
   // The resolver also catches SYMBOL DRIFT for free: an unknown symbol whose ISIN we already hold
   // (LTIM→LTM) resolves to the EXISTING stock rather than creating a duplicate.
-  const resolution = await resolveHoldingsToUniverse(std);
+  const resolution = await resolveHoldingsToUniverse(held);
 
   const now = new Date();
   // Key by symbol (broker /holdings is one row per symbol; this is defensive against a
   // duplicate, NOT aggregation — snapshot-mirror stores what the broker gives).
   const bySymbol = new Map<string, Prisma.BrokerHoldingCreateManyInput>();
-  for (const h of std) {
+  for (const h of held) {
     const hit = resolution.bySymbol.get(h.symbol);
     bySymbol.set(h.symbol, {
       userId,

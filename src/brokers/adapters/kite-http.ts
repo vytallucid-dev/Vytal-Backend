@@ -45,7 +45,23 @@ export interface KiteHolding {
    *  LIQUIDITY fact, not an OWNERSHIP one. COUNTED as held: we are portfolio analytics, not a
    *  trading terminal, and a book that quietly shrank when the user pledged would understate them. */
   collateral_quantity?: number;
-  /** SOLD today, out of the holding. Not owned → never counted. */
+  /** SOLD today, out of the holding. Not owned → never counted.
+   *
+   *  ⚠️ DO NOT TRUST THIS FIELD TO CARRY THE SALE — OBSERVED, on a live sold-out demat. An account
+   *  that sold its entire book (3 GOLDBEES, 1 NIFTYBEES, 2 ONGC) came back with all three rows
+   *  still present and `realised_quantity: 0` on every one. The sale was recorded in
+   *  `used_quantity` (3 / 1 / 2) with `opening_quantity` matching, while `quantity`, `t1_quantity`
+   *  and `collateral_quantity` were all 0. So the name promises something Kite does not deliver.
+   *
+   *  NOTHING IS BROKEN BY THIS, and that is worth stating plainly: heldQuantity() sums only the
+   *  three OWNERSHIP pools, so it reaches 0 for a sold-out row no matter which field the sale
+   *  landed in. We are right for a reason that does not depend on this field being right.
+   *
+   *  The warning is for the next person: if you ever need "how much was sold today", deriving it
+   *  from `realised_quantity` will silently give you 0 on exactly the accounts you are asking
+   *  about. Reach for `used_quantity`/`opening_quantity`, and verify against a live payload before
+   *  trusting either — this whole type's history is fields that meant something other than their
+   *  name. */
   realised_quantity?: number;
   /** Start-of-day snapshot, not a live pool — it OVERLAPS the pools above (in the live payload:
    *  3, equal to t1_quantity, while quantity is 0), so adding it would double-count. Never counted. */

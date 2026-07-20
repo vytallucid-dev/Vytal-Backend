@@ -122,7 +122,36 @@ export async function listUnifiedPositions(
     prisma.brokerHolding.findMany({
       // NO `enabled` FILTER (Step 4 — this is the BUG-A fix). Every broker holding the user has
       // is read, severed or not. A severed connection's rows are FROZEN, not gone.
-      where: { userId },
+      //
+      // ── qty > 0: THE SAME RULE THE MANUAL BRANCH APPLIES, FINALLY APPLIED HERE TOO ──────────
+      // "An exited position is not a holding" lived on the manual side alone (the `gt: 0` above)
+      // and was simply forgotten here. So a position sold MANUALLY vanished, while the same
+      // position sold AT THE BROKER ghosted on at qty 0 / ₹0 / 0.0% weight. One fact, two answers,
+      // decided by which engine happened to hold the row — the tell that the rule had no single home.
+      //
+      // IT IS NOT A DEFENSIVE GUARD; the broker really does send these. Kite keeps a sold
+      // instrument in GET /portfolio/holdings for the settlement day, every pool zeroed
+      // (quantity/t1/collateral all 0 ⇒ heldQuantity 0) with the sale recorded in `used_quantity`.
+      // Observed on a live sold-out demat: 3 rows back, 3 rows at zero. The mirror stored them
+      // faithfully — faithful is right for a mirror, but a settled-out row is not a POSITION, and
+      // this read is what decides what counts as one.
+      //
+      // THIS IS THE CHOKEPOINT, which is why the filter belongs here: display, the account-card
+      // count, and PHS assemble all read positions through this one function. Anywhere else would
+      // fix one of the three and leave the other two counting ghosts — and PHS is the one that
+      // matters most, because N (position count) is a SCORING INPUT twice over:
+      //   • C1's threshold is max(15, 1.5 × 100/N). The 15 floor binds for N ≥ 10, so on a normal
+      //     book a ghost changes nothing — but on a THIN book (N < 10) it lowers the bar, which
+      //     means MORE entities clear it and a LARGER deduction. A ghost PENALISES; it does not
+      //     flatter. A 3-position book carrying 2 ghosts was judged at the 5-position bar.
+      //   • C6 charges 0.5/holding above 25. A ghost pushes a wide book further over.
+      // Both run the same direction: ghosts understate Construction, so removing them can RAISE a
+      // score. That is a correction, not a regression — but it IS a score change, and §13 requires
+      // it be asserted rather than assumed (see verify-broker-exited.ts, sections D and E).
+      //
+      // Honours `includeExited` on the SAME terms as the manual branch — one option, one meaning,
+      // both engines.
+      where: { userId, ...(opts.includeExited ? {} : { quantity: { gt: 0 } }) },
       select: {
         instrumentId: true, // null ⇒ symbol outside our universe (held-not-scored)
         stockId: true,

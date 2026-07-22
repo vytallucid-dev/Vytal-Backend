@@ -2,6 +2,9 @@
 
 import { prisma } from "../../../db/prisma.js";
 import { Prisma } from "../../../generated/prisma/client.js";
+import type { IngestOutcome } from "./dispatch.js";
+import { scoreRelevantSelect } from "../../../scoring/inputs/score-input-columns.js";
+import { diffScoreRelevant } from "../../../scoring/inputs/score-relevant-diff.js";
 import type { ParsedBankingQuarterly } from "../xbrl/parser-banking.js";
 import {
   safeNumber,
@@ -19,7 +22,7 @@ import { deriveBankingQuarterly } from "../derive/derive-financial-quarterly.js"
 export async function ingestBankingQuarterly(
   input: { stockId: string; parsed: ParsedBankingQuarterly; source: string },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
+): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
   const runRef = resultsRunRef(`${p.quarter}-${p.fiscalYear}`);
@@ -33,7 +36,10 @@ export async function ingestBankingQuarterly(
       coreLabel: "interestEarned or netProfit",
     })
   ) {
-    return { status: "rejected", rowId: "" };
+    // REJECTED = the upsert never ran, so nothing was written and nothing could have
+    // changed. This is the one honest `false` in this file. The caller maps "rejected"
+    // to "skipped" anyway, so it never reached changedSymbols before this change either.
+    return { status: "rejected", rowId: "", scoreRelevantChanged: false };
   }
 
   // ── Prior-quarter (QoQ) + year-ago-quarter (YoY) rows ──
@@ -135,21 +141,38 @@ export async function ingestBankingQuarterly(
     ...derived.columns,
   };
 
-  const row = await prisma.bankingQuarterlyResult.upsert({
-    where: {
-      stockId_quarter_fiscalYear_resultType: {
-        stockId,
-        quarter: p.quarter,
-        fiscalYear: p.fiscalYear,
-        resultType: p.resultType,
-      },
+  // ── SCORE-RELEVANT DIFF (before/after) — see score-relevant-diff.ts. ──
+  // ⚠️ This loader has NO `stored:{}` block: pcr / nii / costToIncomeRatio / netMargin are written
+  // here but never read by loadBankingQuarterlyStandalone — the OPPOSITE of banking_fundamentals.
+  const key = {
+    stockId_quarter_fiscalYear_resultType: {
+      stockId,
+      quarter: p.quarter,
+      fiscalYear: p.fiscalYear,
+      resultType: p.resultType,
     },
+  };
+  const before = await prisma.bankingQuarterlyResult.findUnique({
+    where: key,
+    select: scoreRelevantSelect("banking_quarterly_results") as never,
+  });
+
+  const row = await prisma.bankingQuarterlyResult.upsert({
+    where: key,
     create: data,
     update: data,
   });
 
+  const diff = diffScoreRelevant(
+    "banking_quarterly_results",
+    before as Record<string, unknown> | null,
+    row as unknown as Record<string, unknown>,
+  );
+
   return {
     status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
+    scoreRelevantChanged: diff.changed,
+    changedColumns: diff.changedColumns,
   };
 }

@@ -72,6 +72,7 @@ model Stock {
   insiderTrades            InsiderTrade[]
   news                     StockNews[]
   aiSummaries              AiSummary[]
+  aiExplanations           AiExplanation[]
   peerGroups               StockPeerGroup[]
   resultFetchLogs          ResultFetchLog[]
   bankingFundamentals      BankingFundamental[]
@@ -1046,6 +1047,96 @@ model AiSummary {
   @@index([generatedAt(sort: Desc)])
   @@index([stockId, summaryType])
   @@map("ai_summaries")
+}
+
+// ─────────────────────────────────────────────
+// AI USAGE COUNTER
+// Durable per-window spend gate for the src/ai/ layer. ONE row per (scope, window).
+// windowKey is the Pacific calendar date (e.g. "2026-07-22") so the counter rolls over at
+// Google's midnight-Pacific quota reset with NO separate reset job — the boundary lives in
+// the key, the way the scheduler encodes IST offsets inside UTC crons.
+// Records BOTH a call count (the v1 gate — the free tier limits requests/day) AND a token
+// sum (captured now so the free→paid flip to spend-based limits is config, not a migration).
+// Consumed atomically via a guarded updateMany (budget check in the WHERE) — see src/ai/quota.ts.
+// ─────────────────────────────────────────────
+model AiUsageCounter {
+  scope       String   @default("global") // v1 "global"; room for "user:<id>" later
+  windowKey   String   @map("window_key") // Pacific calendar date, e.g. "2026-07-22"
+  callCount   Int      @default(0) @map("call_count")
+  tokenCount  BigInt   @default(0) @map("token_count") // sum of total tokens; BigInt — token sums grow large
+  windowStart DateTime @map("window_start")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@id([scope, windowKey])
+  @@map("ai_usage_counters")
+}
+
+// ─────────────────────────────────────────────
+// AI EXPLANATIONS
+// The lazy write-through cache behind POST /api/v1/me/stocks/:symbol/explanation — one row per
+// (stock, facts state, tone). Generated on the FIRST request for a key and served from here after,
+// which is not an optimisation but the ONLY affordable shape: the free tier is 480 calls/day TOTAL
+// across all users, so an on-demand explanation regenerated per page view would exhaust the global
+// daily budget in a few hundred views. Cached, full coverage of the 95-stock universe costs 95 calls.
+//
+// ⚠ WHY A NEW TABLE AND NOT `AiSummary`. AiSummary is NEWS-shaped: an m2m to StockNews and a
+// summaryType taxonomy about announcements/earnings, neither of which means anything for a snapshot
+// explanation — and it carries no invalidation key and no tone key, which are the two columns this
+// feature is actually built around. Reusing it would create one table with two disjoint nullable
+// halves. It also defaults `isApproved` to TRUE: a guardrail verdict column that FAILS OPEN, so an
+// un-scanned row is served as approved. This table's `approved` defaults FALSE — an explanation is
+// unproven until the guardrail clears it, and an unscanned row is invisible rather than trusted.
+//
+// ★ THE CACHE KEY IS (stockId, factsKey, toneKey) — deliberately NOT the snapshot version.
+// `factsKey` hashes the grounding fact block with its raw parentheticals stripped: it keys on WHAT
+// THE MODEL WAS ALLOWED TO SAY, which after grounding's rounding is the DISPLAY-precision numbers.
+// Keying on ScoreSnapshot.version/inputsFingerprint instead would invalidate the whole cache every
+// time a live rescore nudged a composite 73.51 → 73.54 — a row change that cannot alter one word of
+// an explanation that was only ever permitted to say "74". Never keyed on userId: that would collapse
+// the cache to one row per person and destroy the economics the cache exists for.
+// ─────────────────────────────────────────────
+model AiExplanation {
+  id String @id @default(uuid())
+
+  // ── Cache key ──
+  stockId  String @map("stock_id")
+  factsKey String @map("facts_key") // sha256 of the fact block, raw parentheticals stripped
+  toneKey  String @map("tone_key") // "level:depth:jargon" — the resolved directive, NOT the user
+
+  // ── Content ──
+  content  String // the generated explanation body (the assertive text the guardrail scanned)
+  headline String? // optional one-liner; null until/unless a caller asks for one
+
+  // ── Guardrail verdict (Layer 1). `approved` FAILS CLOSED — see the header. ──
+  approved Boolean @default(false)
+  hardHits Json?   @map("hard_hits") // GuardrailVerdict.hardHits — populated only on a blocked attempt
+  softHits Json?   @map("soft_hits") // GuardrailVerdict.softHits — the corpus for future HARD promotions
+  attempts Int     @default(1) // 1 = clean first pass; 2 = needed the hardened-directive regeneration
+
+  // ── Token accounting — the SAME column shape as AiSummary, which src/ai/types.ts's TokenUsage
+  //    was deliberately built to map onto 1:1, so usage persists verbatim with no translation. ──
+  model        String // the requested model id, e.g. "gemini-3.5-flash-lite" (also the quota scope)
+  modelVersion String  @map("model_version") // what the provider actually answered with
+  promptTokens Int?    @map("prompt_tokens")
+  outputTokens Int?    @map("output_tokens")
+  cachedTokens Int?    @map("cached_tokens")
+  cacheHit     Boolean @default(false) @map("cache_hit") // provider-side context cache, NOT this table
+
+  // ── Provenance: WHICH health state this text described. Stored as the view's own strings so the
+  //    record stays byte-faithful to what grounding reported; this is an audit trail, not a join key
+  //    (the join key is factsKey). Nullable — an unscored stock has no as-of date to claim. ──
+  asOfDate     String? @map("as_of_date")
+  periodKey    String? @map("period_key")
+  snapshotType String? @map("snapshot_type")
+
+  generatedAt DateTime @default(now()) @map("generated_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, factsKey, toneKey]) // THE cache key — one row per (stock, facts state, tone)
+  @@index([stockId])
+  @@index([generatedAt(sort: Desc)]) // the offline Layer-4 judge sweeps newest-first
+  @@map("ai_explanations")
 }
 
 // ─────────────────────────────────────────────

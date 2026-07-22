@@ -64,6 +64,15 @@ export interface ScanSymbolResult {
   skipped: number;
   failed: number;
   errors: { qeDate: string; filingType: string; error: string }[];
+  /**
+   * Did this symbol's scan change a value the SCORER actually reads?
+   *
+   * DELIBERATELY SEPARATE FROM ingested/refreshed. Those say what we did to the ROW
+   * ("refreshed" = we rewrote it, decided on filingDate alone). This says whether any
+   * score-relevant COLUMN moved — the only thing that can move a Health Score. The rescore
+   * trigger keys off THIS; the run logs keep reporting the other two unchanged.
+   */
+  scoreRelevantChanged: boolean;
 }
 
 /**
@@ -97,6 +106,7 @@ export async function scanSymbol(
     skipped: 0,
     failed: 0,
     errors: [],
+    scoreRelevantChanged: false,
   };
 
   // ── Step 1: Discovery ──
@@ -178,6 +188,8 @@ export async function scanSymbol(
       result.ingested += outcome.ingested;
       result.refreshed += outcome.refreshed;
       result.skipped += outcome.skipped;
+      // OR across groups: one real change anywhere in the symbol warrants the rescore.
+      if (outcome.scoreRelevantChanged) result.scoreRelevantChanged = true;
       // result.upgraded is retained for API/UI back-compat but is always 0 now —
       // the "upgrade-and-discard" path no longer exists (both bases are stored).
     } catch (err) {
@@ -203,6 +215,8 @@ interface ProcessGroupOutcome {
   ingested: number; // basis rows newly inserted
   refreshed: number; // basis rows replaced by a newer-dated revision
   skipped: number; // basis already present, industry mismatch, or no pick
+  /** A score-relevant column actually moved on at least one basis in this group. */
+  scoreRelevantChanged: boolean;
 }
 
 type BasisOutcome = "ingested" | "refreshed" | "skipped";
@@ -212,6 +226,8 @@ interface BasisIngestResult {
   quarter: string; // "Q1".."Q4" for quarterly; "Y" for annual fundamentals
   resultType: string; // basis actually parsed/written
   rowId?: string;
+  /** Did a score-relevant column move? Absent ⇒ nothing was written (skip/reject). */
+  scoreRelevantChanged?: boolean;
 }
 
 /**
@@ -228,10 +244,10 @@ async function processGroup(
 ): Promise<ProcessGroupOutcome> {
   const picks = pickFilingsPerBasis(candidates);
   if (picks.length === 0) {
-    return { ingested: 0, refreshed: 0, skipped: 1 };
+    return { ingested: 0, refreshed: 0, skipped: 1, scoreRelevantChanged: false };
   }
 
-  const tally: ProcessGroupOutcome = { ingested: 0, refreshed: 0, skipped: 0 };
+  const tally: ProcessGroupOutcome = { ingested: 0, refreshed: 0, skipped: 0, scoreRelevantChanged: false };
 
   // One ResultFetchLog row exists per (stock, quarter, fiscalYear) — its unique
   // key has no resultType — so we aggregate both bases into a single status
@@ -243,10 +259,13 @@ async function processGroup(
     b.outcomes.push(outcome);
     logBuckets.set(quarter, b);
   };
-  const bump = (outcome: BasisOutcome) => {
+  const bump = (outcome: BasisOutcome, scoreRelevantChanged?: boolean) => {
     if (outcome === "ingested") tally.ingested++;
     else if (outcome === "refreshed") tally.refreshed++;
     else tally.skipped++;
+    // The flag is ORed in HERE rather than at each call site, so a future basis path
+    // cannot forget it and silently stop triggering rescores.
+    if (scoreRelevantChanged) tally.scoreRelevantChanged = true;
   };
 
   for (const pick of picks) {
@@ -279,7 +298,7 @@ async function processGroup(
 
     if (filingType === "quarterly") {
       const r = await ingestQuarterly(stock, filing, xml, taxonomy, ctx, options);
-      bump(r.outcome);
+      bump(r.outcome, r.scoreRelevantChanged);
       addLog(r.quarter, pick.basis, r.outcome);
       continue;
     }
@@ -287,13 +306,17 @@ async function processGroup(
     // ── Annual: write BOTH fundamentals AND derived Q4 quarterly, per basis ──
     // The same Mar-31 XBRL contains both annual (FourD) and Q4 (OneD) data.
     const annual = await ingestAnnual(stock, filing, xml, taxonomy, ctx, options);
-    bump(annual.outcome);
+    bump(annual.outcome, annual.scoreRelevantChanged);
     addLog("Y", pick.basis, annual.outcome);
 
     // Derive Q4 from the same Mar-31 filing. Log only (don't double-count in the
     // tally) and never fail the whole group if Q4 P&L is absent.
     try {
       const q4 = await ingestQuarterly(stock, filing, xml, taxonomy, ctx, options);
+      // Deliberately not bumped into the tally (it would double-count the group), but a
+      // real Q4 change is still a real change — OR it in, or a Q4-only revision would
+      // silently never rescore.
+      if (q4.scoreRelevantChanged) tally.scoreRelevantChanged = true;
       addLog("Q4", pick.basis, q4.outcome);
     } catch (err) {
       addLog("Q4", pick.basis, "skipped");
@@ -404,6 +427,7 @@ async function ingestQuarterly(
     quarter: parsed.data.quarter,
     resultType: parsed.data.resultType,
     rowId: ingest.rowId,
+    scoreRelevantChanged: ingest.scoreRelevantChanged,
   };
 }
 
@@ -452,6 +476,7 @@ async function ingestAnnual(
     quarter: "Y",
     resultType: parsed.data.resultType,
     rowId: ingest.rowId,
+    scoreRelevantChanged: ingest.scoreRelevantChanged,
   };
 }
 
@@ -621,8 +646,24 @@ export async function scanUniverse(
       result.totalRefreshed += r.refreshed;
       result.totalSkipped += r.skipped;
       result.totalFailed += r.failed;
-      // "Changed" = this symbol actually had rows written (not merely scanned/skipped).
-      if (r.ingested + r.upgraded + r.refreshed > 0) result.changedSymbols.push(symbol);
+      // ── WHAT "CHANGED" MEANS, AND WHY IT IS NO LONGER "WE WROTE A ROW". ──
+      //
+      // This used to be `r.ingested + r.upgraded + r.refreshed > 0`, i.e. "an upsert ran".
+      // But decideIngest decides to rewrite on filingDate ALONE and the ingesters
+      // blind-overwrite (`create: data, update: data`), so a re-filing carrying identical
+      // numbers counted as "changed" and fanned a full rescore out to every PG the symbol
+      // sits in. Measured: rows rewritten ~19x each, and 158 of 168 resulting rescores
+      // (94%) moved no score at all — the fingerprint guard caught them only AFTER paying
+      // the whole read-heavy compute.
+      //
+      // scoreRelevantChanged asks the honest question instead: did a column the SCORER
+      // ACTUALLY READS move? It is computed per row by comparing the stored values before
+      // and after the write (score-relevant-diff.ts), against a per-table manifest derived
+      // from the loaders themselves (score-input-columns.ts).
+      //
+      // ingested/refreshed are UNCHANGED and still reported — they still mean "what we did
+      // to the row", which is what the run logs and result_fetch_logs should keep saying.
+      if (r.scoreRelevantChanged) result.changedSymbols.push(symbol);
 
       if (options.onProgress) {
         await options.onProgress(symbol, r, {

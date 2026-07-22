@@ -2,6 +2,7 @@
 
 import { prisma } from "../../../db/prisma.js";
 import { Prisma } from "../../../generated/prisma/client.js";
+import type { IngestOutcome } from "./dispatch.js";
 import type { ParsedNbfcAnnual } from "../xbrl/parser-nbfc.js";
 import {
   safeNumber,
@@ -18,7 +19,7 @@ import { deriveNbfcAnnual } from "../derive/derive-nbfc-annual.js";
 export async function ingestNbfcAnnual(
   input: { stockId: string; parsed: ParsedNbfcAnnual; source: string },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
+): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
   const runRef = resultsRunRef(`Y-${p.fiscalYear}`);
@@ -32,7 +33,10 @@ export async function ingestNbfcAnnual(
       coreLabel: "revenue or netProfit",
     })
   ) {
-    return { status: "rejected", rowId: "" };
+    // REJECTED = the upsert never ran, so nothing was written and nothing could have
+    // changed. This is the one honest `false` in this file. The caller maps "rejected"
+    // to "skipped" anyway, so it never reached changedSymbols before this change either.
+    return { status: "rejected", rowId: "", scoreRelevantChanged: false };
   }
 
   // ── Prior-year row (avg loans/borrowings/equity denominators + YoY) — one
@@ -227,5 +231,10 @@ export async function ingestNbfcAnnual(
   return {
     status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
+    // CONSERVATIVE: no SCORED peer group reads this taxonomy (PG7 NBFC is gated out of
+    // SCORED_PGS; there is no insurance PG), so pgRefsForSymbols drops these symbols anyway.
+    // Reporting true costs nothing and can never withhold a real change. If this taxonomy is
+    // ever scored, give it a real diff here — do not leave a hardcoded false.
+    scoreRelevantChanged: true,
   };
 }

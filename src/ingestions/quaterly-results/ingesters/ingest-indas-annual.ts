@@ -2,6 +2,9 @@
 
 import { prisma } from "../../../db/prisma.js";
 import { Prisma } from "../../../generated/prisma/client.js";
+import type { IngestOutcome } from "./dispatch.js";
+import { scoreRelevantSelect } from "../../../scoring/inputs/score-input-columns.js";
+import { diffScoreRelevant } from "../../../scoring/inputs/score-relevant-diff.js";
 import type { ParsedIndAsAnnual } from "../xbrl/parser-indas.js";
 import {
   safeNumber,
@@ -37,7 +40,7 @@ export interface IngestIndAsAnnualInput {
 export async function ingestIndAsAnnual(
   input: IngestIndAsAnnualInput,
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
+): Promise<IngestOutcome> {
   const { stockId, parsed, source } = input;
   const p = parsed;
   const tag = `${p.fiscalYear}/${p.resultType} stock=${stockId.slice(0, 8)}`;
@@ -62,7 +65,10 @@ export async function ingestIndAsAnnual(
         "Annual P&L tags did not resolve (likely an XBRL tag rename) — rejecting the upsert to preserve any existing row.",
       runRef,
     });
-    return { status: "rejected", rowId: "" };
+    // REJECTED = the upsert never ran, so nothing was written and nothing could have
+    // changed. This is the one honest `false` in this file. The caller maps "rejected"
+    // to "skipped" anyway, so it never reached changedSymbols before this change either.
+    return { status: "rejected", rowId: "", scoreRelevantChanged: false };
   }
   // Sanitised face value — corrupt source (e.g. 44539 where the real value is 10)
   // would otherwise compute a nonsensical bookValuePerShare and reject the row.
@@ -326,20 +332,37 @@ export async function ingestIndAsAnnual(
     ...derived.columns,
   };
 
-  const row = await prisma.fundamental.upsert({
-    where: {
-      stockId_fiscalYear_resultType: {
-        stockId,
-        fiscalYear: p.fiscalYear,
-        resultType: p.resultType,
-      },
+  // ── SCORE-RELEVANT DIFF (before/after) — see score-relevant-diff.ts. ──
+  // NOTE this table's `stored:{}` ratios (roce/roe/operatingMargin/…) ARE score-relevant, unlike
+  // the same-named columns on quarterly_results. The manifest encodes that; the build gate holds it.
+  const key = {
+    stockId_fiscalYear_resultType: {
+      stockId,
+      fiscalYear: p.fiscalYear,
+      resultType: p.resultType,
     },
+  };
+  const before = await prisma.fundamental.findUnique({
+    where: key,
+    select: scoreRelevantSelect("fundamentals") as never,
+  });
+
+  const row = await prisma.fundamental.upsert({
+    where: key,
     create: data,
     update: data,
   });
 
+  const diff = diffScoreRelevant(
+    "fundamentals",
+    before as Record<string, unknown> | null,
+    row as unknown as Record<string, unknown>,
+  );
+
   return {
     status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
+    scoreRelevantChanged: diff.changed,
+    changedColumns: diff.changedColumns,
   };
 }

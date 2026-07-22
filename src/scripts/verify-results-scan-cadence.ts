@@ -1,7 +1,7 @@
 // verify-results-scan-cadence.ts
 // ─────────────────────────────────────────────────────────────
-// Proves the results-scan cadence change: DAILY year-round, with the in-season
-// 4h cadence preserved. Exercises the REAL exported gate (resultsScanShouldEnqueue)
+// Proves the results-scan cadence contract: DAILY year-round off-season, TWICE a day
+// in-season. Exercises the REAL exported gate (resultsScanShouldEnqueue)
 // at the cron's REAL firing hours — no hand-copied rule, so it can't drift from
 // scheduler.ts.
 //
@@ -11,6 +11,8 @@
 import {
   isResultsSeasonNow,
   resultsScanShouldEnqueue,
+  IN_SEASON_TICKS_UTC,
+  OFF_SEASON_TICK_UTC,
 } from "../lib/scheduler.js";
 
 const HOUR = 3600_000;
@@ -63,17 +65,23 @@ function main(): void {
     if (inSeason) {
       inSeasonDays++;
       inSeasonEnqueues += firedHours.length;
-      // (B) IN-SEASON CADENCE PRESERVED: all 6 ticks (4h spacing) enqueue.
-      if (firedHours.length !== 6) {
+      // (B) IN-SEASON CADENCE: exactly the exported tick set (2/day, 12h apart).
+      // Asserted against IN_SEASON_TICKS_UTC rather than a hand-copied literal, so this
+      // gate cannot drift from the scheduler the way a hardcoded "6" did.
+      const expected = [...IN_SEASON_TICKS_UTC].sort((a, b) => a - b);
+      if (
+        firedHours.length !== expected.length ||
+        firedHours.some((h, i) => h !== expected[i])
+      ) {
         fail(
-          `${dayLabel} (in-season): expected 6 enqueues (4h cadence), got ${firedHours.length} [${firedHours}]`,
+          `${dayLabel} (in-season): expected [${expected}], got [${firedHours}]`,
         );
       }
     } else {
       offSeasonDays++;
       offSeasonEnqueues += firedHours.length;
       // (C) OFF-SEASON: exactly one enqueue/day, at 16:00 UTC.
-      if (firedHours.length !== 1 || firedHours[0] !== 16) {
+      if (firedHours.length !== 1 || firedHours[0] !== OFF_SEASON_TICK_UTC) {
         fail(
           `${dayLabel} (off-season): expected exactly [16], got [${firedHours}]`,
         );
@@ -97,16 +105,30 @@ function main(): void {
     fail(`max enqueue gap ${maxGapH.toFixed(1)}h exceeds the 24h daily ceiling`);
   }
 
+  // (E) SUPERSET INVARIANT: every off-season tick must also fire in-season, so crossing
+  // the season boundary can only ADD runs, never silently move or drop one.
+  if (!IN_SEASON_TICKS_UTC.includes(OFF_SEASON_TICK_UTC)) {
+    fail(
+      `in-season ticks [${IN_SEASON_TICKS_UTC}] do not include the off-season tick ` +
+        `${OFF_SEASON_TICK_UTC} — the season boundary would drop a run`,
+    );
+  }
+
   // ── Report ──
   console.log("── results-scan cadence (year = 2025, cron '0 */4 * * *') ──");
-  console.log(`  in-season days      : ${inSeasonDays}  → ${inSeasonEnqueues} enqueues (expect ${inSeasonDays * 6}, all 6/day @ 4h)`);
-  console.log(`  off-season days     : ${offSeasonDays}  → ${offSeasonEnqueues} enqueues (expect ${offSeasonDays}, 1/day @ 16:00 UTC)`);
+  console.log(`  in-season days      : ${inSeasonDays}  → ${inSeasonEnqueues} enqueues (expect ${inSeasonDays * IN_SEASON_TICKS_UTC.length}, ${IN_SEASON_TICKS_UTC.length}/day @ ${IN_SEASON_TICKS_UTC.join("/")} UTC)`);
+  console.log(`  off-season days     : ${offSeasonDays}  → ${offSeasonEnqueues} enqueues (expect ${offSeasonDays}, 1/day @ ${OFF_SEASON_TICK_UTC}:00 UTC)`);
   console.log(`  total enqueues/year : ${enqueueTs.length}`);
   console.log(`  days with 0 enqueue : ${deadGapDays}  (dead gaps — must be 0)`);
   console.log(`  max enqueue gap     : ${maxGapH.toFixed(1)}h (after ${maxGapAfter}) — ceiling 24h`);
 
   if (failures === 0) {
-    console.log("\n✅ ALL ASSERTIONS PASS — scan enqueues every day year-round; in-season 4h cadence intact; max latency ≤24h.");
+    console.log(
+      `
+✅ ALL ASSERTIONS PASS — scan enqueues every day year-round; in-season ` +
+        `${IN_SEASON_TICKS_UTC.length}/day @ ${IN_SEASON_TICKS_UTC.join("/")} UTC; ` +
+        `off-season 1/day @ ${OFF_SEASON_TICK_UTC}:00 UTC; max latency ≤24h.`,
+    );
     process.exit(0);
   } else {
     console.error(`\n❌ ${failures} FAILURE(S).`);

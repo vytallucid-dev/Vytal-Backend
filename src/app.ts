@@ -53,6 +53,7 @@ import { universeHealthRouter } from "./routes/universe-health-route.js";
 import { compareRouter } from "./routes/compare-route.js";
 import { meRouter } from "./routes/me-routes.js";
 import { mePortfolioRouter } from "./routes/me-portfolio-routes.js";
+import { meAiRouter } from "./routes/me-ai-routes.js";
 import { meWatchlistRouter } from "./routes/me-watchlist-routes.js";
 import { meAlertsRouter } from "./routes/me-alerts-routes.js";
 import { meRemindersRouter } from "./routes/me-reminders-routes.js";
@@ -169,6 +170,12 @@ export const createApp = () => {
   //    (IDOR-proof). A sixth router on the same base path — the five above are untouched.
   //    The broker-agnostic lifecycle lives in src/brokers; adapters never place orders. ──
   app.use("/api/v1/me", requireAuth, meBrokerRouter);
+
+  // ── Authenticated user's OWN AI surfaces (requireAuth). A SEVENTH router on the same base
+  //    path — the six above are untouched. Deliberately me-scoped rather than public: the
+  //    output is written in the READER'S registered tone (needs an identity) and every cache
+  //    miss spends a unit of a small shared daily budget (needs an owner). ──
+  app.use("/api/v1/me", requireAuth, meAiRouter);
 
   return app;
 };

@@ -14,12 +14,37 @@ import { ingestGeneralInsuranceAnnual } from "./ingest-gi-annual.js";
 
 export type IngestStatus = "success" | "refreshed" | "rejected";
 
+/**
+ * What every ingester returns.
+ *
+ * `status` still means WHAT WE DID TO THE ROW ("refreshed" = we rewrote it) — deliberately
+ * unchanged, so run logs and result_fetch_logs keep saying the same thing they always did.
+ *
+ * `scoreRelevantChanged` is the SEPARATE, NEW fact: did a column the SCORER ACTUALLY READS move?
+ * These two are not the same question, and conflating them is the bug this field exists to fix —
+ * the ingest rewrites a row whenever the filing date advances, which was firing a full 13-PG
+ * rescore fan-out for re-filings whose numbers were identical (measured: 94% of them).
+ *
+ * ⚠️  CONSERVATIVE FOR UNSCORED TAXONOMIES. nbfc / li / gi report `true` unconditionally: no
+ *     scored peer group reads those tables (PG7 NBFC is gated out of SCORED_PGS, and there is no
+ *     insurance PG), so their symbols are dropped by pgRefsForSymbols anyway and a `true` costs
+ *     nothing. If one of them is ever scored, it gets a real diff — never a stale `false`.
+ */
+export interface IngestOutcome {
+  status: IngestStatus;
+  rowId: string;
+  /** True ⇒ a rescore MUST be triggered. See score-relevant-diff.ts. */
+  scoreRelevantChanged: boolean;
+  /** Which score-relevant columns moved (empty on a first-seen row) — for the run log. */
+  changedColumns?: string[];
+}
+
 export async function dispatchQuarterlyIngest(
   stockId: string,
   parsed: ParsedQuarterly,
   source: string,
   decision: "ingest" | "refresh",
-): Promise<{ status: IngestStatus; rowId: string; taxonomy: string }> {
+): Promise<IngestOutcome & { taxonomy: string }> {
   switch (parsed.taxonomy) {
     case "indas":
       return {
@@ -69,7 +94,7 @@ export async function dispatchAnnualIngest(
   parsed: ParsedAnnual,
   source: string,
   decision: "ingest" | "refresh",
-): Promise<{ status: IngestStatus; rowId: string; taxonomy: string }> {
+): Promise<IngestOutcome & { taxonomy: string }> {
   switch (parsed.taxonomy) {
     case "indas":
       return {

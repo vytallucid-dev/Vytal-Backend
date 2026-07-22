@@ -40,8 +40,12 @@ export async function handleResultsScan(
       totalRefreshed: r.refreshed,
       totalSkipped: r.skipped,
       totalFailed: r.failed,
-      // wrote-something → trigger a rescore of this symbol's PG(s).
-      changedSymbols: r.ingested + r.upgraded + r.refreshed > 0 ? [symbol] : [],
+      // A SCORE INPUT actually moved → trigger a rescore of this symbol's PG(s).
+      // NOT "we wrote a row": the ingest rewrites on filingDate alone and blind-overwrites,
+      // so a re-filing with identical numbers used to fan a full rescore out for nothing.
+      // See scan.ts / score-relevant-diff.ts.
+      totalScoreRelevantChanged: r.scoreRelevantChanged ? 1 : 0,
+      changedSymbols: r.scoreRelevantChanged ? [symbol] : [],
     };
   }
 

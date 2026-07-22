@@ -2,6 +2,9 @@
 
 import { prisma } from "../../../db/prisma.js";
 import { Prisma } from "../../../generated/prisma/client.js";
+import type { IngestOutcome } from "./dispatch.js";
+import { scoreRelevantSelect } from "../../../scoring/inputs/score-input-columns.js";
+import { diffScoreRelevant } from "../../../scoring/inputs/score-relevant-diff.js";
 import type { ParsedBankingAnnual } from "../xbrl/parser-banking.js";
 import {
   safeNumber,
@@ -19,7 +22,7 @@ import { deriveBankingAnnual } from "../derive/derive-banking-annual.js";
 export async function ingestBankingAnnual(
   input: { stockId: string; parsed: ParsedBankingAnnual; source: string },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
+): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
   const runRef = resultsRunRef(`Y-${p.fiscalYear}`);
@@ -33,7 +36,10 @@ export async function ingestBankingAnnual(
       coreLabel: "interestEarned or netProfit",
     })
   ) {
-    return { status: "rejected", rowId: "" };
+    // REJECTED = the upsert never ran, so nothing was written and nothing could have
+    // changed. This is the one honest `false` in this file. The caller maps "rejected"
+    // to "skipped" anyway, so it never reached changedSymbols before this change either.
+    return { status: "rejected", rowId: "", scoreRelevantChanged: false };
   }
 
   // ── Prior-year row (averaging denominators + YoY) — ONE fetch. The former
@@ -184,20 +190,37 @@ export async function ingestBankingAnnual(
     ...derived.columns,
   };
 
-  const row = await prisma.bankingFundamental.upsert({
-    where: {
-      stockId_fiscalYear_resultType: {
-        stockId,
-        fiscalYear: p.fiscalYear,
-        resultType: p.resultType,
-      },
+  // ── SCORE-RELEVANT DIFF (before/after) — see score-relevant-diff.ts. ──
+  // This table DOES have a `stored:{}` block (pcr / costToIncomeRatio / netInterestMargin / nii),
+  // so those four are score-relevant HERE even though they are cosmetic on the quarterly sibling.
+  const key = {
+    stockId_fiscalYear_resultType: {
+      stockId,
+      fiscalYear: p.fiscalYear,
+      resultType: p.resultType,
     },
+  };
+  const before = await prisma.bankingFundamental.findUnique({
+    where: key,
+    select: scoreRelevantSelect("banking_fundamentals") as never,
+  });
+
+  const row = await prisma.bankingFundamental.upsert({
+    where: key,
     create: data,
     update: data,
   });
 
+  const diff = diffScoreRelevant(
+    "banking_fundamentals",
+    before as Record<string, unknown> | null,
+    row as unknown as Record<string, unknown>,
+  );
+
   return {
     status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
+    scoreRelevantChanged: diff.changed,
+    changedColumns: diff.changedColumns,
   };
 }

@@ -13,6 +13,8 @@
 // ─────────────────────────────────────────────────────────────
 
 import { prisma } from "../../db/prisma.js";
+import { scoreRelevantSelect } from "../../scoring/inputs/score-input-columns.js";
+import { diffScoreRelevant } from "../../scoring/inputs/score-relevant-diff.js";
 import { Prisma } from "../../generated/prisma/browser.js";
 import { dateToQuarterFY, parseAsOnDate } from "./shareholding-dates.js";
 import { fetchShareholdingIndex, fetchXbrlXml } from "./shareholding-fetch.js";
@@ -68,7 +70,17 @@ export interface IngestShareholdingResult {
   symbol: string;
   stockId: string | null;
   quartersProcessed: number;
+  /** Upserts that RAN. Unchanged meaning — the name predates the rescore narrowing and is a
+   *  misnomer (it counts insert OR update), but run logs have always reported it this way. */
   quartersInserted: number;
+  /**
+   * Quarters where a column computeOwnership ACTUALLY READS moved.
+   *
+   * The rescore trigger keys off this, not off quartersInserted. The ingest upserts with
+   * `update: recordData` (a blind overwrite) on every pass, so "an upsert ran" says nothing
+   * about whether promoter/pledge/FII/DII/retail actually moved. See score-relevant-diff.ts.
+   */
+  quartersScoreRelevantChanged: number;
   quartersSkipped: number;
   durationMs: number;
   errors: string[];
@@ -101,6 +113,7 @@ export async function ingestShareholdingForStock(
   const start = Date.now();
   const errors: string[] = [];
   let quartersInserted = 0;
+  let quartersScoreRelevantChanged = 0;
   let quartersSkipped = 0;
 
   // Find stock in DB
@@ -116,6 +129,7 @@ export async function ingestShareholdingForStock(
       stockId: null,
       quartersProcessed: 0,
       quartersInserted: 0,
+      quartersScoreRelevantChanged: 0,
       quartersSkipped: 0,
       durationMs: Date.now() - start,
       errors: [`Stock ${symbol} not found in universe`],
@@ -147,6 +161,7 @@ export async function ingestShareholdingForStock(
       stockId: stock.id,
       quartersProcessed: 0,
       quartersInserted: 0,
+      quartersScoreRelevantChanged: 0,
       quartersSkipped: 0,
       durationMs: Date.now() - start,
       errors: [msg],
@@ -162,6 +177,7 @@ export async function ingestShareholdingForStock(
       stockId: stock.id,
       quartersProcessed: 0,
       quartersInserted: 0,
+      quartersScoreRelevantChanged: 0,
       quartersSkipped: 0,
       durationMs: Date.now() - start,
       errors: ["No XBRL filings found for this stock"],
@@ -405,11 +421,25 @@ export async function ingestShareholdingForStock(
       sourceDate: parseAsOnDate(filing.submissionDate) ?? asOnDate,
     };
     try {
+      // ── SCORE-RELEVANT DIFF (before/after) — see score-relevant-diff.ts. ──
+      // promoterPledgedPct / promoterPledgedSharesPct are COSMETIC here: computeOwnership
+      // derives pledge from the raw pledgedShares/promoterShares BigInts.
+      const shKey = { stockId_asOnDate: { stockId: stock.id, asOnDate } };
+      const before = await prisma.shareholdingPattern.findUnique({
+        where: shKey,
+        select: scoreRelevantSelect("shareholding_patterns") as never,
+      });
       const result = await prisma.shareholdingPattern.upsert({
-        where: { stockId_asOnDate: { stockId: stock.id, asOnDate } },
+        where: shKey,
         create: { stockId: stock.id, asOnDate, ...recordData },
         update: recordData,
       });
+      const shDiff = diffScoreRelevant(
+        "shareholding_patterns",
+        before as Record<string, unknown> | null,
+        result as unknown as Record<string, unknown>,
+      );
+      if (shDiff.changed) quartersScoreRelevantChanged++;
       quartersInserted++;
       console.log(
         `[Shareholding] ${symbol} ${quarter} ${fiscalYear}: upserted`,
@@ -444,6 +474,7 @@ export async function ingestShareholdingForStock(
     stockId: stock.id,
     quartersProcessed: sorted.length,
     quartersInserted,
+    quartersScoreRelevantChanged,
     quartersSkipped,
     durationMs,
     errors,
@@ -519,8 +550,11 @@ async function runInBatches(
         totalSkipped += r.quartersSkipped;
         if (r.zeroFilings) zeroFilingStocks++;
         if (r.newQuarter) newQuarters.push(r.newQuarter);
-        // wrote-something → this symbol's PG(s) should rescore.
-        if (r.quartersInserted > 0) changedSymbols.push(symbol);
+        // A SCORE INPUT actually moved → this symbol's PG(s) should rescore.
+        // NOT `quartersInserted > 0`: that counts upserts, and the upsert blind-overwrites
+        // on every pass (1,632 in-place updates measured), so it fired for rewrites whose
+        // ownership numbers were identical. See score-relevant-diff.ts.
+        if (r.quartersScoreRelevantChanged > 0) changedSymbols.push(symbol);
         if (r.errors.length > 0) {
           errors.push({ symbol, error: r.errors.join("; ") });
           failedStocks++;

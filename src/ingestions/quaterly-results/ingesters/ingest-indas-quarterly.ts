@@ -2,6 +2,8 @@
 
 import { prisma } from "../../../db/prisma.js";
 import { Prisma } from "../../../generated/prisma/client.js";
+import { scoreRelevantSelect } from "../../../scoring/inputs/score-input-columns.js";
+import { diffScoreRelevant } from "../../../scoring/inputs/score-relevant-diff.js";
 import type { ParsedIndAsQuarterly } from "../xbrl/parser-indas.js";
 import { safeNumber, getPriorQuarter } from "../ingester-utils.js";
 import { deriveIndAsQuarterly } from "../derive/derive-indas-quarterly.js";
@@ -27,6 +29,9 @@ export interface IngestIndAsQuarterlyInput {
 export interface IngestIndAsQuarterlyResult {
   status: "success" | "refreshed" | "rejected";
   rowId: string;
+  /** Did a column the SCORER reads actually move? Keys the rescore trigger — see IngestOutcome. */
+  scoreRelevantChanged: boolean;
+  changedColumns?: string[];
 }
 
 /**
@@ -60,7 +65,10 @@ export async function ingestIndAsQuarterly(
         "Quarterly P&L tags did not resolve (likely an XBRL tag rename) — rejecting the upsert to preserve any existing row.",
       runRef,
     });
-    return { status: "rejected", rowId: "" };
+    // REJECTED = the upsert never ran, so nothing was written and nothing could have
+    // changed. This is the one honest `false` in this file. The caller maps "rejected"
+    // to "skipped" anyway, so it never reached changedSymbols before this change either.
+    return { status: "rejected", rowId: "", scoreRelevantChanged: false };
   }
 
   // ── Prior-period rows (QoQ = prior quarter; YoY = year-ago quarter) ──
@@ -204,22 +212,40 @@ export async function ingestIndAsQuarterly(
     ...derived.columns,
   };
 
-  const row = await prisma.quarterlyResult.upsert({
-    where: {
-      stockId_quarter_fiscalYear_resultType: {
-        stockId,
-        quarter: parsed.quarter,
-        fiscalYear: parsed.fiscalYear,
-        resultType: parsed.resultType,
-      },
+  // ── SCORE-RELEVANT DIFF (before/after) ──
+  // Read the prior row's scored columns BEFORE overwriting it, then compare against what the
+  // upsert actually persisted. Both sides are Postgres round-trips, so fixed-scale numerics
+  // compare exactly and no float quantization is involved — see score-relevant-diff.ts.
+  const key = {
+    stockId_quarter_fiscalYear_resultType: {
+      stockId,
+      quarter: parsed.quarter,
+      fiscalYear: parsed.fiscalYear,
+      resultType: parsed.resultType,
     },
+  };
+  const before = await prisma.quarterlyResult.findUnique({
+    where: key,
+    select: scoreRelevantSelect("quarterly_results") as never,
+  });
+
+  const row = await prisma.quarterlyResult.upsert({
+    where: key,
     create: data,
     update: data,
   });
 
+  const diff = diffScoreRelevant(
+    "quarterly_results",
+    before as Record<string, unknown> | null,
+    row as unknown as Record<string, unknown>,
+  );
+
   return {
     status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
+    scoreRelevantChanged: diff.changed,
+    changedColumns: diff.changedColumns,
   };
 }
 

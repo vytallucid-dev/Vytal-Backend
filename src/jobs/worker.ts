@@ -100,9 +100,25 @@ class JobWorker {
    * `SELECT ... FOR UPDATE SKIP LOCKED` query.
    */
   private async claimNextJob() {
+    // ── SELECT ONLY `id`. THIS IS AN EGRESS FIX, NOT A TIDY-UP. ──
+    //
+    // This query runs every pollIntervalMs forever and MISSES almost every time: measured
+    // 1,181,360 calls returning 978 rows in total across 40 days. What it costs is therefore
+    // not rows — it is the RowDescription Postgres sends back to describe the shape of the
+    // (empty) result. Unprojected, that describes all 18 columns of background_jobs and is
+    // ~513 bytes; projected to `id` alone it is ~28. And because DATABASE_URL carries
+    // `?pgbouncer=true`, Prisma cannot cache the prepared statement, so the full description
+    // is re-sent on EVERY poll rather than once per connection. ~485 B × ~29.5 k polls/day is
+    // ~430 MB/month of egress spent describing a row we did not get.
+    //
+    // WHY THIS IS SAFE: `id` is the only field the claim step below reads (`where: { id }`).
+    // Everything runJob() needs — type, payload, attempts, maxAttempts — comes from the
+    // UPDATE's return value, which is a full row and is deliberately left unprojected.
+    // orderBy does not require its columns to be selected.
     const job = await prisma.backgroundJob.findFirst({
       where: { status: JobStatus.PENDING },
       orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
+      select: { id: true },
     });
     if (!job) return null;
 

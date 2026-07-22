@@ -257,7 +257,7 @@ rule("5 · ★ PD1 IS MANDATORY AND STRUCTURALLY OUTSIDE TRIAGE — the sort nev
     okReads.constructionRead.findings.some((f) => f.id === "PC1"));
 
   // And the real path: PD never enters that function at all.
-  const src = readFileSync("src/controllers/me/portfolio-snapshot-controller.ts", "utf8");
+  const src = readFileSync("src/portfolio/phs/portfolio-health-view.ts", "utf8");
   const passesPdToReshape = /reshapeSnapshot\([^)]*disclosureFindings/s.test(src);
   ok("★ the controller NEVER passes PD to reshapeSnapshot — the sort never sees PD1", !passesPdToReshape);
   ok("★ PD is served beside the snapshot, not inside it", /referenceFindings:\s*disclosureFindings/.test(src));
@@ -509,7 +509,7 @@ rule("11 · ★ THE ROUTER IS EXHAUSTIVE — every family the ENGINE can emit is
   // family and forgetting the router fails the BUILD, not a user's portfolio read.
   const src = readFileSync("src/portfolio/phs/patterns.ts", "utf8");
   const emitted = [...new Set([...src.matchAll(/family:\s*"(P[A-Z])"/g)].map((m) => m[1]!))].sort();
-  const ctrl = readFileSync("src/controllers/me/portfolio-snapshot-controller.ts", "utf8");
+  const ctrl = readFileSync("src/portfolio/phs/portfolio-health-view.ts", "utf8");
   const declBlock = ctrl.match(/const FINDING_HOME[^=]*=\s*\{([\s\S]*?)\n\};/)?.[1] ?? "";
   const declared = [...new Set([...declBlock.matchAll(/^\s{2}(P[A-Z]):\s*"(construction|health)"/gm)].map((m) => m[1]!))].sort();
   console.log(`       patterns.ts emits: ${emitted.join(", ")}`);

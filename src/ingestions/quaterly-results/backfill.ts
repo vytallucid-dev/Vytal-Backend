@@ -127,7 +127,9 @@ export async function backfillSymbols(
       result.totalRefreshed += r.refreshed;
       result.totalSkipped += r.skipped;
       result.totalFailed += r.failed;
-      if (r.ingested + r.upgraded + r.refreshed > 0) result.changedSymbols.push(symbol);
+      // Same rule as scanUniverse: a rescore is warranted only when a column the SCORER
+      // reads actually moved, not merely because a row was rewritten. See scan.ts.
+      if (r.scoreRelevantChanged) result.changedSymbols.push(symbol);
       console.log(
         `[backfill] ${i + 1}/${symbols.length} ${symbol}: ok (+${r.ingested})`,
       );

@@ -2,6 +2,7 @@
 
 import { prisma } from "../../../db/prisma.js";
 import { Prisma } from "../../../generated/prisma/client.js";
+import type { IngestOutcome } from "./dispatch.js";
 import type { ParsedLifeInsuranceQuarterly } from "../xbrl/parser-li.js";
 import {
   safeNumber,
@@ -23,7 +24,7 @@ export async function ingestLifeInsuranceQuarterly(
     source: string;
   },
   decision: "ingest" | "refresh",
-): Promise<{ status: "success" | "refreshed" | "rejected"; rowId: string }> {
+): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
   const runRef = resultsRunRef(`${p.quarter}-${p.fiscalYear}`);
@@ -37,7 +38,10 @@ export async function ingestLifeInsuranceQuarterly(
       coreLabel: "grossPremiumIncome or netProfit",
     })
   ) {
-    return { status: "rejected", rowId: "" };
+    // REJECTED = the upsert never ran, so nothing was written and nothing could have
+    // changed. This is the one honest `false` in this file. The caller maps "rejected"
+    // to "skipped" anyway, so it never reached changedSymbols before this change either.
+    return { status: "rejected", rowId: "", scoreRelevantChanged: false };
   }
 
   // ── Prior-quarter (QoQ) + year-ago-quarter (YoY) rows ──
@@ -154,5 +158,10 @@ export async function ingestLifeInsuranceQuarterly(
   return {
     status: decision === "refresh" ? "refreshed" : "success",
     rowId: row.id,
+    // CONSERVATIVE: no SCORED peer group reads this taxonomy (PG7 NBFC is gated out of
+    // SCORED_PGS; there is no insurance PG), so pgRefsForSymbols drops these symbols anyway.
+    // Reporting true costs nothing and can never withhold a real change. If this taxonomy is
+    // ever scored, give it a real diff here — do not leave a hardcoded false.
+    scoreRelevantChanged: true,
   };
 }

@@ -36,15 +36,53 @@ export function isResultsSeasonNow(now: Date = new Date()): boolean {
 
 // ── Results-scan enqueue gate ─────────────────────────────────
 // The results-scan cron ticks every 4h (00,04,08,12,16,20 UTC). This predicate
-// decides which of those ticks actually enqueue a scan:
-//   • IN SEASON  — every tick (≤4h discovery latency for on-time filers).
+// decides which of those ticks actually enqueue a scan.
+//
+// ⚠️  THE CRON EXPRESSION IS NOT THE SCHEDULE. It fires 6×/day year-round; THIS
+//     function is the real schedule. Change cadence here, not in the cron string.
+//
 //   • OFF SEASON — ONLY the 16:00 UTC tick → the scan still runs ONCE A DAY,
 //     year-round, so a late / off-calendar filer is caught within ~a day instead
 //     of waiting up to ~7 weeks for the next season window to reopen the gate.
+//     UNCHANGED.
+//   • IN SEASON  — 04:00 and 16:00 UTC (09:30 and 21:30 IST). Was: all 6 ticks.
+//
+// WHY 6 → 2. The 1→6 jump at the season boundary is what produced the 14–15 Jul
+// spike: six universe scans a day, each fanning a rescore out to every scored PG.
+// Six was never a freshness requirement — it was "every tick the cron happens to
+// have". Two at 12h spacing keeps same-day discovery (a filing is picked up within
+// 12h rather than 4h) at a third of the runs.
+//
+// WHY THESE TWO HOURS SPECIFICALLY:
+//   · 16:00 UTC / 21:30 IST — after the trading day AND after evening board
+//     meetings, which is when the bulk of results land. It is also the existing
+//     off-season tick, so IN-SEASON IS A STRICT SUPERSET OF OFF-SEASON: nothing
+//     that fires off-season ever stops firing when the season opens. The season
+//     boundary becomes purely additive, which is the property that makes this
+//     change safe to reason about.
+//   · 04:00 UTC / 09:30 IST — market open, catching anything filed in the ~12h
+//     since the previous tick.
+//
+// NOT tuned to a measured filing-time distribution, and deliberately not claimed
+// to be: `filing_date` is a DATE — 0 of 6,589 rows carry a time — so NSE's actual
+// filing hours are not in our data. (`fetched_at` clusters only show when our own
+// scan ran; using them to place ticks would be circular.) These two hours are a
+// reasoned choice against the Indian results day, not a fitted one. If a 3rd tick
+// is ever wanted, the honest way to justify it is to start recording filing TIMES.
+//
 // Pure + deterministic (a function of `now` alone) so it can be unit-verified —
 // see src/scripts/verify-results-scan-cadence.ts.
+
+/** The single off-season tick. The scan runs once a day, year-round, on this hour. */
+export const OFF_SEASON_TICK_UTC = 16;
+/** The in-season ticks. MUST include OFF_SEASON_TICK_UTC — see the superset note above. */
+export const IN_SEASON_TICKS_UTC: readonly number[] = [4, 16];
+
 export function resultsScanShouldEnqueue(now: Date): boolean {
-  return isResultsSeasonNow(now) || now.getUTCHours() === 16;
+  const hour = now.getUTCHours();
+  return isResultsSeasonNow(now)
+    ? IN_SEASON_TICKS_UTC.includes(hour)
+    : hour === OFF_SEASON_TICK_UTC;
 }
 
 // ── Dedup helper ──────────────────────────────────────────────
@@ -502,8 +540,8 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   // ── Quarterly Results Scan (v3) ────────────────────────────
   // Cadence — the cron ticks every 4h (00,04,08,12,16,20 UTC) year-round; the
   // enqueue gate decides which ticks actually run:
-  //   • IN SEASON  — ALL 6 ticks enqueue (≤4h discovery latency for the flood of
-  //     on-time filers). Unchanged from before this fix.
+  //   • IN SEASON  — the 04:00 and 16:00 UTC ticks enqueue → TWICE A DAY, 12h apart
+  //     (09:30 and 21:30 IST). Was all 6; see resultsScanShouldEnqueue for why.
   //   • OFF SEASON — ONLY the 16:00 UTC (9:30 PM IST) tick enqueues → ONCE A DAY.
   //     Before this fix the off-season gate was a hard `return` on EVERY tick, so
   //     between the four season windows the scan NEVER ran and a late / off-calendar
@@ -523,15 +561,27 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   // UTC); the alerts/reminders crons (15:00–15:25 UTC) are fast and long-settled by then.
   // Re-running an already-ingested period is a no-op (decideIngest→skip; logFetch upserts
   // in place) — zero duplicate rows.
+  //
+  // ⚠️  THE IN-SEASON 04:00 UTC TICK SHARES ITS SLOT, and that is a known, accepted cost.
+  //     daily-shareholding-refresh and daily-google-news are both "0 4 * * 1-5", and
+  //     news-extraction-worker is at 04:30. It is NOT concurrent NSE hammering: there is
+  //     ONE worker and it drains serially, so these queue rather than overlap. But this
+  //     scan carries priority 50 vs their default 100, so on in-season weekdays it goes
+  //     FIRST and pushes them back by up to ~50 min. Both are same-day-tolerant (a news
+  //     fetch and a shareholding smart-refresh), so this is a delay, not a miss.
+  //     The alternative, 08:00 UTC, is an empty slot but leaves a 16h overnight discovery
+  //     gap instead of 12h — worse on the axis that actually matters here.
   {
     name: "results-scan",
-    schedule: "0 */4 * * *", // every 4 hours (UTC): 00,04,08,12,16,20
+    schedule: "0 */4 * * *", // every 4 hours (UTC): 00,04,08,12,16,20 — the GATE picks 1 or 2 of them
     enqueue: async () => {
-      // In-season: every tick enqueues (all 6/day). Off-season: only the 16:00 UTC
-      // tick, so the scan still runs once a day year-round. See resultsScanShouldEnqueue.
+      // In-season: 04:00 + 16:00 UTC (2/day, 12h apart). Off-season: only 16:00 UTC, so
+      // the scan still runs once a day year-round. See resultsScanShouldEnqueue.
       if (!resultsScanShouldEnqueue(new Date())) {
         console.log(
-          "[Scheduler] results-scan: off-season — only the daily 16:00 UTC tick runs, skipping",
+          `[Scheduler] results-scan: tick ${new Date().getUTCHours()}:00 UTC not in the ` +
+            `active set (in-season ${IN_SEASON_TICKS_UTC.join("/")}, off-season ` +
+            `${OFF_SEASON_TICK_UTC} only) — skipping`,
         );
         return;
       }

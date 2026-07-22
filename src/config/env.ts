@@ -28,4 +28,19 @@ export const env = {
   KITE_API_KEY: process.env.KITE_API_KEY,
   KITE_API_SECRET: process.env.KITE_API_SECRET,
   KITE_REDIRECT_URI: process.env.KITE_REDIRECT_URI,
+  // AI provider adapter (src/ai/) — NON-SECRET selection + default model. Listed here
+  // for discoverability; the adapter reads process.env directly (lazily), so these are
+  // informational. AI_PROVIDER defaults to "mock" in the registry when unset (no key,
+  // never bills). GEMINI_API_KEY is intentionally NOT surfaced here: it is a SECRET,
+  // read lazily in adapters/gemini.ts (fail-closed if absent), exactly like RESEND_API_KEY.
+  AI_PROVIDER: process.env.AI_PROVIDER,
+  AI_MODEL: process.env.AI_MODEL,
+  // AI quota guard (src/ai/quota.ts) — NON-SECRET operational levers, listed for
+  // discoverability; quota.ts reads process.env directly (lazily) and applies the defaults
+  // (per-model budgets flash-lite 480 / flash 18 / unlisted 18, America/Los_Angeles, enabled
+  // unless "false"), so these are informational.
+  AI_BUDGET_FLASH_LITE: process.env.AI_BUDGET_FLASH_LITE,
+  AI_BUDGET_FLASH: process.env.AI_BUDGET_FLASH,
+  AI_QUOTA_TIMEZONE: process.env.AI_QUOTA_TIMEZONE,
+  AI_QUOTA_ENABLED: process.env.AI_QUOTA_ENABLED,
 };

@@ -296,6 +296,7 @@ function synthesizeMissingMetric(
   const metricState: MetricState = suppressionReason ? "normalized_out" : bars ? "data_unavailable" : "no_bar";
   return {
     metricKey,
+    label: canonicalMetric(metricKey)?.label ?? metricKey,
     rawValue: null,
     l1Score: null, l2Score: null, l3Score: null, metricScore: null,
     l1Band: null,
@@ -387,6 +388,7 @@ function mapMetric(
 
   return {
     metricKey: ms.metricKey,
+    label: canonicalMetric(ms.metricKey)?.label ?? ms.metricKey,
     rawValue: num(ms.rawValue),
     l1Score: numN(ms.l1Score),
     l2Score: numN(ms.l2Score),

@@ -601,7 +601,12 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   // failures already healed by a later successful rescore. Best-effort (never throws).
   {
     name: "scoring-failed-job-sweep",
-    schedule: "*/30 * * * *", // every 30 minutes (UTC)
+    // ONCE DAILY 18:00 UTC (23:30 IST). Was */30 (48×/day). The detected state only changes when a
+    // rescore WRITES a new snapshot (~1–2×/day: weekday EOD cascade + results-scan), so 47 of 48 daily
+    // runs re-scanned identical state. 18:00 UTC is AFTER both the EOD and the 16:00-UTC results-scan
+    // rescore cascades settle (see A4). Real-time detection is unaffected — the worker hook surfaces a
+    // terminal failure the instant it happens; this sweep is only the boot-time/re-affirm backstop.
+    schedule: "0 18 * * *",
     enqueue: async () => {
       const r = await sweepFailedScoringJobs();
       console.log(
@@ -618,7 +623,11 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   // updatedAt) → display-only sweeps cannot false-flag it. Best-effort (never throws).
   {
     name: "scoring-stale-snapshot-sweep",
-    schedule: "0 * * * *", // hourly (UTC) — staleness is drift, not urgent
+    // ONCE DAILY 18:10 UTC (23:40 IST). Was hourly (24×/day). Staleness is drift, not urgent, and a
+    // snapshot only goes stale when a new score INPUT is inserted — which the same daily rescore cascade
+    // then refreshes. Runs 10 min after the failed-job sweep so the three inline sweeps (they share this
+    // process + the pg Pool, not the job worker) don't fan their full-scan queries out on the same tick.
+    schedule: "10 18 * * *",
     enqueue: async () => {
       const r = await sweepStaleSnapshots();
       console.log(
@@ -659,7 +668,12 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
 
   {
     name: "scoring-degraded-snapshot-sweep",
-    schedule: "15 * * * *", // hourly (UTC), offset 15min from the stale sweep
+    // ONCE DAILY 18:20 UTC (23:50 IST). Was hourly (24×/day) — the heaviest sweep by far (unbounded
+    // findMany over all snapshots + market pillars + the entire score_market_subs table, ~2.6 MB/run).
+    // Degradation is a committed-snapshot STATE, so it can only appear/clear on a new snapshot write;
+    // one daily pass after the cascades settle catches every change. Spaced last (10 min after the stale
+    // sweep) so the largest scan runs alone. Query shape is deliberately untouched here (cadence-only).
+    schedule: "20 18 * * *",
     enqueue: async () => {
       const r = await sweepDegradedSnapshots();
       console.log(

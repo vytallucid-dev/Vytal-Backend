@@ -73,6 +73,7 @@ model Stock {
   news                     StockNews[]
   aiSummaries              AiSummary[]
   aiExplanations           AiExplanation[]
+  aiStockInsights          AiStockInsight[]
   peerGroups               StockPeerGroup[]
   resultFetchLogs          ResultFetchLog[]
   bankingFundamentals      BankingFundamental[]
@@ -1137,6 +1138,155 @@ model AiExplanation {
   @@index([stockId])
   @@index([generatedAt(sort: Desc)]) // the offline Layer-4 judge sweeps newest-first
   @@map("ai_explanations")
+}
+
+// ─────────────────────────────────────────────
+// AI STOCK INSIGHTS — the STRUCTURED-JSON sibling of ai_explanations.
+// The cache behind POST /api/v1/me/stocks/:symbol/insight — one row per (stock, facts state, tone).
+//
+// ⚠ WHY A SEPARATE TABLE AND NOT A `kind` DISCRIMINATOR ON ai_explanations. The subject, the cache key
+// (stock_id, facts_key, tone_key) and the provenance columns (as_of_date/period_key/snapshot_type) are
+// IDENTICAL to the prose row — so neither reason that split ai_portfolio_explanations out applies here.
+// What differs is the CONTENT SHAPE, and that alone is enough:
+//   · Prose stores ONE assertive string in `content` (NOT NULL) — the exact text the guardrail scanned.
+//     A structured insight is a JSON object of many independently-scanned text fields plus passthrough
+//     citations; it has no single `content`. A `kind` column forces `content String?` + `payload Json?`
+//     — the "two disjoint nullable halves" ai_explanations' own header refused when it declined to reuse
+//     ai_summaries. Same doctrine, kept.
+//   · Relaxing the live `@@unique([stock_id, facts_key, tone_key])` to a 4-tuple (adding `kind`) is a
+//     migration on a serving unique constraint plus a backfill on existing prose rows — real risk to a
+//     working cache, bought for nothing. A new table touches nothing that already works.
+//   · Same shared-economics as the prose row (tone_key collapses to 7 triples ⇒ ONE generation serves
+//     every reader of that stock in that tone until the quarterly snapshot moves). The FK + index shape
+//     mirror ai_explanations exactly, on purpose.
+//
+// Only guardrail-CLEAN model payloads land here (`approved` fails closed). The deterministic-JSON
+// fallback is never persisted — it is cheap to reassemble from grounding and must never be one
+// `approved` flag away from the read path, exactly as the prose fallback is never cached.
+// ─────────────────────────────────────────────
+model AiStockInsight {
+  id String @id @default(uuid())
+
+  // ── Cache key — IDENTICAL to ai_explanations (same subject, same facts, same tone dimension). ──
+  stockId  String @map("stock_id")
+  factsKey String @map("facts_key") // sha256 of the fact block, raw parentheticals stripped
+  toneKey  String @map("tone_key") // "level:depth:jargon" — the resolved directive, NOT the user
+
+  // ── Content — the validated StockInsight object (headline/drivers/tension + their citations).
+  //    A JSON column, not a string: the payload is structured by construction and the read path returns
+  //    it verbatim. Every `text` field inside was guardrail-scanned; every citation was echo-asserted
+  //    against the fact block before this row was written. ──
+  payload Json
+
+  // ── Guardrail verdict (Layer 1). `approved` FAILS CLOSED — unproven until the scan clears it. ──
+  approved Boolean @default(false)
+  hardHits Json?   @map("hard_hits") // GuardrailVerdict.hardHits — populated only on a blocked attempt
+  softHits Json?   @map("soft_hits") // GuardrailVerdict.softHits across every text field — the promotion corpus
+  attempts Int     @default(1) // 1 = clean first pass; 2 = needed the hardened-directive regeneration
+
+  // ── Token accounting — the SAME column shape as AiExplanation/AiSummary, so TokenUsage persists
+  //    verbatim with no translation. ──
+  model        String // the requested model id, e.g. "gemini-3.5-flash-lite" (also the quota scope)
+  modelVersion String  @map("model_version") // what the provider actually answered with
+  promptTokens Int?    @map("prompt_tokens")
+  outputTokens Int?    @map("output_tokens")
+  cachedTokens Int?    @map("cached_tokens")
+  cacheHit     Boolean @default(false) @map("cache_hit") // provider-side context cache, NOT this table
+
+  // ── Provenance: WHICH health state this insight described. Same strings as the prose row — the
+  //    subject is a stock, so the quarterly-filing provenance survives the trip unchanged. ──
+  asOfDate     String? @map("as_of_date")
+  periodKey    String? @map("period_key")
+  snapshotType String? @map("snapshot_type")
+
+  generatedAt DateTime @default(now()) @map("generated_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([stockId, factsKey, toneKey]) // THE cache key — one row per (stock, facts state, tone)
+  @@index([stockId])
+  @@index([generatedAt(sort: Desc)]) // the offline Layer-4 judge sweeps newest-first
+  @@map("ai_stock_insights")
+}
+
+// ─────────────────────────────────────────────
+// AI PORTFOLIO EXPLANATIONS
+// The cache behind POST /api/v1/me/portfolio/explanation — one row per (user, facts state, tone).
+//
+// ⚠ WHY A SECOND TABLE AND NOT A NULLABLE stock_id ON ai_explanations. The subject is not a stock,
+// and the difference is structural rather than cosmetic:
+//   · `stock_id` there is NOT NULL with an FK to stocks and it is the FIRST column of the unique
+//     index. Making it nullable to admit portfolios would weaken the stock cache's own key (Postgres
+//     treats NULLs as distinct in a unique index, so the guarantee "one row per stock/facts/tone"
+//     would quietly stop being enforced for exactly the rows that matter most).
+//   · The PROVENANCE columns do not survive the trip. A stock snapshot has a `period_key` and a
+//     `snapshot_type` ("quarterly"); a portfolio has neither — it has a snapshot id, an as-of
+//     instant and a CONSTANT_VERSION. Reusing the columns would mean storing a portfolio's identity
+//     in fields named after a quarterly filing.
+//   · One table with two disjoint nullable halves is exactly the shape ai_explanations' own header
+//     refused when it declined to reuse ai_summaries. Same reasoning, one layer along.
+//
+// ★ THE CACHE KEY IS (user_id, facts_key, tone_key), AND ITS ECONOMICS ARE NOT THE STOCK TABLE'S.
+// A stock row is shared: `tone_key` collapses to 7 triples, so ONE generation serves every user who
+// reads that stock in that tone until the quarterly snapshot moves — amortisation is N-users-to-one.
+// A portfolio's `facts_key` is derived from ONE person's book, so a row can only ever be hit by the
+// user who paid for it. This cache is IDEMPOTENCY (a double-render, a retry, a refresh, a
+// back-navigation cost nothing), not amortisation. Expect roughly one generation per user per
+// meaningful book change, and size the per-user quota sub-cap on that assumption rather than on the
+// stock surface's hit rate.
+//
+// `tone_key` stays in the key even though a row serves one user: it is not a sharing dimension here
+// but a correctness one — a register change must not serve prose written in the reader's old voice.
+// ─────────────────────────────────────────────
+model AiPortfolioExplanation {
+  id String @id @default(uuid())
+
+  // ── Cache key ──
+  userId   String @map("user_id")
+  factsKey String @map("facts_key") // sha256 of the portfolio fact block, normalised to the SPEECH
+  toneKey  String @map("tone_key") // "level:depth:jargon" — the resolved directive, NOT the user
+
+  // ── Content ──
+  content  String // the generated explanation body (the assertive text the guardrail scanned)
+  headline String? // optional one-liner; null until/unless a caller asks for one
+
+  /// WHICH QUESTION WAS ANSWERED — "health" | "construction". Not decoration: a construction-only
+  /// book (nothing scored) is asked a DIFFERENT question, one that must never presuppose a verdict
+  /// the book does not have. Storing the slot beside the text means a cached row can never be
+  /// re-served under the other question after the book crosses into being scored.
+  headlineSlot String? @map("headline_slot")
+
+  // ── Guardrail verdict (Layer 1). `approved` FAILS CLOSED — unproven until the scan clears it. ──
+  approved Boolean @default(false)
+  hardHits Json?   @map("hard_hits") // GuardrailVerdict.hardHits — populated only on a blocked attempt
+  softHits Json?   @map("soft_hits") // GuardrailVerdict.softHits — the corpus for future HARD promotions
+  attempts Int     @default(1) // 1 = clean first pass; 2 = needed the hardened-directive regeneration
+
+  // ── Token accounting — the SAME column shape as AiExplanation/AiSummary, so TokenUsage persists
+  //    verbatim with no translation. ──
+  model        String // the requested model id, e.g. "gemini-3.5-flash-lite" (also the quota scope)
+  modelVersion String  @map("model_version") // what the provider actually answered with
+  promptTokens Int?    @map("prompt_tokens")
+  outputTokens Int?    @map("output_tokens")
+  cachedTokens Int?    @map("cached_tokens")
+  cacheHit     Boolean @default(false) @map("cache_hit") // provider-side context cache, NOT this table
+
+  // ── Provenance: WHICH computed book this text described. An audit trail, not a join key (the join
+  //    key is factsKey). `snapshotId` is the PHS snapshot the grounding read; `asOf` its ISO instant;
+  //    `constantVersion` the scoring constants behind it. All nullable — a book with no snapshot
+  //    never reaches a cache write, but a legacy row should degrade rather than lie. ──
+  snapshotId      String? @map("snapshot_id")
+  asOf            String? @map("as_of")
+  constantVersion String? @map("constant_version")
+
+  generatedAt DateTime @default(now()) @map("generated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, factsKey, toneKey]) // THE cache key — one row per (user, facts state, tone)
+  @@index([userId])
+  @@index([generatedAt(sort: Desc)]) // the offline Layer-4 judge sweeps newest-first
+  @@map("ai_portfolio_explanations")
 }
 
 // ─────────────────────────────────────────────
@@ -3224,6 +3374,9 @@ model User {
   // ── Portfolio score history (one row per day; the PHS-over-time graph; SIBLING of the
   //    snapshot, best-effort, never load-bearing) ──
   portfolioScoreHistory PortfolioScoreHistory[]
+
+  // ── AI portfolio explanations (the per-user explanation cache; idempotency, not amortisation) ──
+  aiPortfolioExplanations AiPortfolioExplanation[]
 
   // ── Watchlist (per-user pinned research surface; display-only, never scored) ──
   watchlist Watchlist[]

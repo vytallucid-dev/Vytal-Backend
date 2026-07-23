@@ -41,33 +41,23 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { createHash } from "node:crypto";
 import { prisma } from "../../db/prisma.js";
-import { groundStockHealth, CLOSED_WORLD_HEADER, type GroundingSources } from "../grounding.js";
-import { resolveToneForUser, type ToneDirective } from "../tone.js";
-import { checkAndConsumeAiCall, recordAiTokens, type QuotaDecision } from "../quota.js";
+import { groundStockHealth, type GroundingSources } from "../grounding.js";
+import { resolveToneForUser } from "../tone.js";
 import { createAiProvider } from "../registry.js";
-import { scanExplanationText, type GuardrailVerdict } from "../guardrail.js";
-import type { AiProvider, TokenUsage } from "../types.js";
 import type { HealthSnapshotView } from "../../scoring/read/health-view.types.js";
-import type { Prisma } from "../../generated/prisma/client.js";
+import {
+  asJson, composePrompt, generateGuarded, onQuotaDenied, servedByMock, spendFor, toneKeyOf,
+  EXPLANATION_MODEL, type ExplanationState,
+} from "./shared.js";
 
-/** Prisma's `InputJsonValue` requires an index signature that a DECLARED interface (HardHit/SoftHit)
- *  does not carry, though the runtime values are plain JSON records. The cast is a type-system
- *  formality, not a claim about the data. Empty ⇒ undefined, so an empty array is never persisted as
- *  a meaningless `[]` where "nothing fired" is better said with NULL. */
-const asJson = <T>(v: readonly T[] | null | undefined): Prisma.InputJsonValue | undefined =>
-  v && v.length ? (v as unknown as Prisma.InputJsonValue) : undefined;
-
-/** The model this surface runs on. Flash-Lite, deliberately: its 500 RPD (budgeted 480) is the only
- *  free-tier allowance large enough to serve a real universe. It is the weaker instruction-follower,
- *  which is precisely why the output guardrail exists rather than trusting the spine alone. */
-export const EXPLANATION_MODEL = "gemini-3.5-flash-lite";
-
-/** Generous on purpose. Gemini 3.x models THINK before answering and thinking tokens are drawn from
- *  the same output budget — a small cap yields an empty `text` with outputTokens 0, which looks like
- *  an adapter bug and is not one. */
-const MAX_TOKENS = 2048;
-/** Low but not zero: this is exposition over a fixed fact set, not creative writing. */
-const TEMPERATURE = 0.3;
+// ── RE-EXPORTED so every existing importer of this module keeps resolving unchanged. The pieces
+//    moved to ./shared.js when the portfolio surface became a second caller; nothing about them
+//    changed, and nothing that imports them from here has to know they travelled. ──
+export {
+  asJson, composePrompt, generateGuarded, onQuotaDenied, mockByConfig, servedByMock, spendFor,
+  toneKeyOf, EXPLANATION_MODEL, MAX_TOKENS, TEMPERATURE, HARDENED_REINFORCEMENT,
+} from "./shared.js";
+export type { GuardedOutcome, Spend, ExplanationState, ExplanationOutcomeFields } from "./shared.js";
 
 /** ── THE ASK ── deliberately three sentences. The tone directive already governs register, jargon,
  *  depth, precision and the non-advisory spine; the closed-world header already governs the facts.
@@ -76,15 +66,6 @@ export const EXPLANATION_ASK =
   "Using only the facts above, explain in plain prose why this stock's health reads the way it does. " +
   "Lead with the overall verdict, then the two or three facts that most account for it. " +
   "Do not list every number — explain what they mean together.";
-
-/** Appended to the system instruction for the ONE retry after a HARD guardrail hit. It names the
- *  failure explicitly, because a repeat of the same instruction that already failed is not a retry. */
-export const HARDENED_REINFORCEMENT =
-  " CRITICAL — YOUR PREVIOUS ANSWER WAS REJECTED FOR CONTAINING ADVICE. Do not tell the reader what " +
-  "to do, what to watch, what to consider, what to keep an eye on, or what might be worth doing. Do " +
-  "not address the reader with instructions or suggestions, however gently phrased. Every sentence " +
-  "must be a statement of fact about this company's measured health — never a suggestion about the " +
-  "reader's actions.";
 
 /** What the user's client gets back. `explanation: null` and the deterministic fallback are
  *  FIRST-CLASS states, not errors — and `state` always says which path served the text, because a
@@ -96,7 +77,7 @@ export interface StockExplanationResult {
   /** "ok" ⇒ model text, cached · "fallback" ⇒ deterministic text served (guardrail/provider) ·
    *  "unavailable" ⇒ budget spent, no text at all · "mock" ⇒ the stub provider answered; the text
    *  is a placeholder, it was NOT cached, and no client should present it as a real explanation. */
-  state: "ok" | "fallback" | "unavailable" | "mock";
+  state: ExplanationState;
   reason: string | null;
   /** Pacific-midnight rollover, present only when the budget is what stopped us. */
   resetAt: string | null;
@@ -104,11 +85,6 @@ export interface StockExplanationResult {
   toneKey: string;
   sources: GroundingSources;
 }
-
-/** The resolved directive's identity — the cache dimension. NOT the user: aiLevel × ledger collapses
- *  to 7 distinct triples, so keying on this shares one generation across everyone who reads alike,
- *  where keying on userId would mint a row per person and destroy the cache's whole economy. */
-export const toneKeyOf = (t: ToneDirective): string => `${t.level}:${t.depth}:${t.jargon}`;
 
 /**
  * ★ THE INVALIDATION KEY. Hash the fact block with its `(raw …)` parentheticals REMOVED — i.e. hash
@@ -124,70 +100,11 @@ export const toneKeyOf = (t: ToneDirective): string => `${t.level}:${t.depth}:${
 export const factsKeyOf = (factBlock: string): string =>
   createHash("sha256").update(factBlock.replace(/\s*\(raw[^)]*\)/g, "")).digest("hex");
 
-/** The single user message. Header first (the rule), facts second (the world), ask last (the task). */
-export const buildPrompt = (factBlock: string): string =>
-  `${CLOSED_WORLD_HEADER}\n\n${factBlock}\n\n${EXPLANATION_ASK}`;
-
-// ── ⚠ MOCK DETECTION — the guard that keeps the SAFE default from being a SILENT-WRONG default ────
-//
-// The registry falls back to the mock adapter when AI_PROVIDER is unset, which is the right boot
-// posture: no key, no network, no bill. But it is only safe for the CALL. Without this guard the
-// cache would happily persist "[mock] The following are the ONLY facts…" as an APPROVED explanation
-// — and from that moment the cache serves it forever, at zero cost, with `state: "ok"`, long after
-// the real provider is configured. A misconfiguration that lasts one minute would poison rows that
-// outlive it, and nothing anywhere would report an error. That is the worst failure shape available:
-// not a crash, not an outage, but a confident wrong answer with a plausible provenance row behind it.
-//
-// TWO SIGNALS, AND — THE POINT — TWO DIFFERENT DECISION POINTS. They are not redundant copies of
-// one check; each is the ONLY signal available where it is used, because they exist at different
-// times relative to the call:
-//
-//   1. CONFIG (pre-call, `mockByConfig`) — the same env the registry reads. Known BEFORE anything is
-//      generated, which is what makes it the only usable signal for THE SPEND DECISION: by the time a
-//      response exists you have already spent. Cost: the duplicated `?? "mock"` default, a second home
-//      for one rule. Accepted deliberately, because the disagreement is one-directional — if the
-//      registry's default ever changed to something real while this stayed "mock", this skips the gate
-//      for a real call (undercounting one unit) and declines to cache something cacheable. Both are
-//      errors in the direction of doing less, never in the direction of poisoning the cache.
-//   2. RESPONSE (post-call, `servedByMock`) — `usage.modelVersion`, documented as "the model that
-//      actually served the call". Guards THE CACHE-WRITE DECISION only, and catches what config cannot
-//      see: a registry mapping bug where AI_PROVIDER=gemini resolves to a stub. Matched by PREFIX
-//      rather than pinned to the adapter's exact `MOCK_MODEL_VERSION` constant, so it is not coupled
-//      to that literal and any future stub named mock-ish is caught too.
-//
-// ⚠ NOT SOLVED BY ASKING THE PROVIDER, and that is on purpose: `AiProvider` exposes no identity
-// because it is dumb transport (types.ts: "ZERO Vytal business logic"). Adding an id to the shared
-// interface so that ONE caller can sniff it would push a caller's concern into the contract every
-// other caller has to carry. The env is already the source of truth for the choice; read that.
-const MOCK_PROVIDER_ID = "mock";
-
-/** PRE-CALL signal — the only one that exists in time to decide whether to spend. */
-const mockByConfig = (): boolean => (process.env.AI_PROVIDER ?? MOCK_PROVIDER_ID) === MOCK_PROVIDER_ID;
-
-/** POST-CALL signal — guards the cache write. Conservative: either signal is enough to refuse. */
-function servedByMock(usage: TokenUsage): boolean {
-  return mockByConfig() || usage.modelVersion.toLowerCase().startsWith(MOCK_PROVIDER_ID);
-}
-
-/**
- * The spend gate for THIS request. Mock calls never leave the process, so metering them would make
- * the counter mean something other than what it claims.
- *
- * ★ THE COUNTER'S MEANING IS THE WHOLE POINT. `ai_usage_counters` is the record of REAL GEMINI CALLS
- * MADE TODAY — it is what the free-tier RPD is checked against, and what a future spend-based limit
- * will be built on. Counting stub calls in it corrupts that meaning twice over: the number stops
- * matching Google's own, AND a developer exercising the flow on mock silently eats the SAME shared
- * 480/day the live feature draws from. A dev-loop that can dark the production feature is not a
- * safe default, however cheap the calls themselves are.
- */
-function spendFor(model: string): Spend {
-  if (!mockByConfig()) return () => checkAndConsumeAiCall(model);
-  // Unmetered: `limit: 0` with `allowed: true` is deliberately self-describing — anything reading
-  // this decision sees at once that no budget applies, rather than a plausible-looking fake one.
-  // `resetAt` is unreachable in practice (the caller reads it only on the denied branch, and this
-  // never denies); the epoch makes it obviously a sentinel if it ever surfaces.
-  return async () => ({ allowed: true, remaining: 0, limit: 0, resetAt: new Date(0), reason: "mock_provider_unmetered" });
-}
+/** The single user message for THIS surface — the shared composer bound to the stock ask. Kept as a
+ *  named export because it is the stock prompt, while the shared `composePrompt` is deliberately
+ *  ask-agnostic (the portfolio's ask varies by state). Output is byte-identical to the string this
+ *  file assembled inline before the extraction. */
+export const buildPrompt = (factBlock: string): string => composePrompt(factBlock, EXPLANATION_ASK);
 
 // ── THE DETERMINISTIC FALLBACK ────────────────────────────────────────────────────────────────────
 /**
@@ -195,10 +112,24 @@ function spendFor(model: string): Spend {
  *
  * The fallback fires exactly when the AI output FAILED the advice guardrail. So the fallback itself
  * must be safe, and "safe because I wrote it carefully" is the weakest possible guarantee at exactly
- * the moment the strongest is needed. These lens `verdict` sentences are composed server-side from
- * LM_CATALOG/LP_CATALOG, and that catalog is asserted advice-free at BUILD TIME by the existing
- * `assertNoForwardLanguage()` gate. The safe path is safe by a proof that already exists and already
- * runs in CI — defence in depth, not a second author's judgment.
+ * the moment the strongest is needed.
+ *
+ * ⚠ CORRECTED — THIS COMMENT USED TO CLAIM A PROOF THAT DOES NOT COVER THESE STRINGS. It said the
+ * lens `verdict` sentences "are composed server-side from LM_CATALOG/LP_CATALOG, and that catalog is
+ * asserted advice-free at BUILD TIME by `assertNoForwardLanguage()`". The first half is false and the
+ * second half is therefore irrelevant: `verdict` is NOT the catalog's `fieldVerdict`. It is composed
+ * by `composeLmVerdict`/`composeLpVerdict` in scoring/lens-patterns/standing-context.ts — whose
+ * `_fieldVerdict` parameter is UNUSED, underscore and all — from sentences authored in THAT file.
+ * `assertNoForwardLanguage()` sweeps LM_CATALOG/LP_CATALOG faces only and has never seen them, and
+ * nothing else scanned standing-context.ts either. The bulk of this function's output was unproven
+ * prose behind a comment asserting it was proven, which is worse than prose known to be unproven.
+ *
+ * ★ THE PROOF NOW EXISTS AND IS THE REAL ONE: verify-ai-portfolio-fallback.ts §4 scans this function's
+ * output across the live universe AND enumerates the standing-context verdict corpus exhaustively
+ * (LP1–6 × band × shares, LM1–8 × band — every reachable branch, not a sample), against the shared
+ * forward vocabulary AND `scanExplanationText` — the SAME runtime guardrail whose failure is what
+ * summons this fallback in the first place. All 28 corpus sentences and all 95 composed fallbacks pass.
+ * Cite that file here, not a gate that sweeps a different module.
  *
  * Everything here is read off `grounding.data`; nothing is recomputed and no number is derived. The
  * scores are rounded with the same Math.round the fact block and the UI use, so the fallback and the
@@ -231,75 +162,6 @@ export function composeDeterministicFallback(view: HealthSnapshotView): string {
   }
 
   return parts.join(" ");
-}
-
-// ── THE GUARDED GENERATION LOOP ───────────────────────────────────────────────────────────────────
-export type GuardedOutcome =
-  | { kind: "clean"; text: string; usage: TokenUsage; attempts: number; verdict: GuardrailVerdict; priorHardHits: GuardrailVerdict["hardHits"] | null }
-  | { kind: "blocked"; attempts: number; hardHits: GuardrailVerdict["hardHits"] }
-  | { kind: "quota_denied"; decision: QuotaDecision; attempts: number }
-  | { kind: "provider_error"; attempts: number; message: string };
-
-/** Consume one unit of budget. Injected so the loop below is testable without a live counter. */
-export type Spend = () => Promise<QuotaDecision>;
-
-/**
- * Generate → guard → (on a HARD hit) ONE hardened retry → guard again. Every attempt spends a unit
- * FIRST, so a retry is honestly billed rather than smuggled in free.
- *
- * ⚠ EXPORTED, and `provider`/`spend` are injected, SO THE FAILURE PATH IS TESTABLE. A guardrail whose
- * blocked branch has never been executed is a branch nobody knows works — and it cannot be exercised
- * through the public seam, because that would mean coaxing a live model into misbehaving on demand.
- * This is the same reasoning as the mailer's injectable seam in alerts/email/mailer.ts.
- */
-export async function generateGuarded(
-  provider: AiProvider,
-  systemDirective: string,
-  factBlock: string,
-  spend: Spend,
-): Promise<GuardedOutcome> {
-  const prompt = buildPrompt(factBlock);
-  let priorHardHits: GuardrailVerdict["hardHits"] | null = null;
-
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const decision = await spend();
-    if (!decision.allowed) return { kind: "quota_denied", decision, attempts: attempt - 1 };
-
-    // The retry names the failure; repeating an instruction that already failed is not a retry.
-    const system = attempt === 1 ? systemDirective : systemDirective + HARDENED_REINFORCEMENT;
-
-    let text: string;
-    let usage: TokenUsage;
-    try {
-      const res = await provider.generate({
-        system,
-        messages: [{ role: "user", content: prompt }],
-        model: EXPLANATION_MODEL,
-        temperature: TEMPERATURE,
-        maxTokens: MAX_TOKENS,
-      });
-      text = res.text;
-      usage = res.usage;
-    } catch (err) {
-      return { kind: "provider_error", attempts: attempt, message: (err as Error).message };
-    }
-
-    // Best-effort, never throws — a token-accounting failure must not break a working answer.
-    await recordAiTokens(EXPLANATION_MODEL, usage.promptTokens + usage.outputTokens);
-
-    const verdict = scanExplanationText(text);
-    if (verdict.clean) return { kind: "clean", text, usage, attempts: attempt, verdict, priorHardHits };
-
-    // SOFT hits never reach here — only a HARD hit is a block. Logged either way (below).
-    console.warn(
-      `[ai/explain] guardrail HARD hit (attempt ${attempt}): ` +
-        verdict.hardHits.map((h) => `${h.term}→"${h.match}"`).join(", "),
-    );
-    priorHardHits = verdict.hardHits;
-    if (attempt === 2) return { kind: "blocked", attempts: 2, hardHits: verdict.hardHits };
-  }
-  /* c8 ignore next */
-  return { kind: "blocked", attempts: 2, hardHits: priorHardHits ?? [] };
 }
 
 /**
@@ -337,20 +199,19 @@ export async function explainStockHealth(userId: string, symbol: string): Promis
   const outcome = await generateGuarded(
     createAiProvider(), // registry-resolved: AI_PROVIDER env → "mock" by default (safe, unbilled)
     tone.systemDirective,
-    grounding.factBlock,
-    spendFor(EXPLANATION_MODEL), // real provider ⇒ the quota gate; mock ⇒ unmetered, see spendFor
+    // The ASSEMBLED prompt — this surface owns its own ask (see buildPrompt). Byte-identical to
+    // what the loop used to build for itself before the ask became per-surface.
+    buildPrompt(grounding.factBlock),
+    // real provider ⇒ the quota gate, against BOTH this user's daily sub-cap and the shared
+    // per-model budget; mock ⇒ unmetered, see spendFor. The actor is declared, never inferred.
+    spendFor(EXPLANATION_MODEL, { kind: "user", userId }),
   );
 
   const fallback = () => composeDeterministicFallback(grounding.data);
 
-  if (outcome.kind === "quota_denied") {
-    // Honest-empty, never a 500. The client keeps its deterministic diagnosis and learns when to retry.
-    return {
-      ...base, explanation: null, headline: null, state: "unavailable",
-      reason: outcome.decision.reason ?? "quota_denied",
-      resetAt: outcome.decision.resetAt.toISOString(), cached: false,
-    };
-  }
+  // Never a 500 — a spent budget is a state. `attempts` decides between the deterministic fallback
+  // and honest-empty; see onQuotaDenied for why a mid-request denial must not cost the user prose.
+  if (outcome.kind === "quota_denied") return onQuotaDenied(base, outcome, fallback);
 
   if (outcome.kind === "provider_error") {
     console.error(`[ai/explain] provider failed for ${base.symbol}: ${outcome.message}`);
@@ -410,5 +271,10 @@ export async function explainStockHealth(userId: string, symbol: string): Promis
   // DOUBLE the per-request cost (480 → 240 explanations/day), whereas an async sweep over a cache of
   // a few hundred rows bounds the spend by CORPUS size rather than by traffic. Clearing `approved`
   // is sufficient to retire a row: the read path above requires it.
+  //
+  // ⚠ IT SPENDS AS A SYSTEM ACTOR: `checkAndConsumeAiCall(model, { kind: "system", job: "offline_judge" })`.
+  // It is metered against the shared per-model budget like everything else, but it takes NO per-user
+  // sub-cap — there is no user behind it, and `Actor` makes that something the sweep has to SAY rather
+  // than something it gets by leaving an argument off (src/ai/quota.ts, `Actor`).
   return { ...base, explanation: text, headline: null, state: "ok", reason: attempts > 1 ? "regenerated" : null, resetAt: null, cached: false };
 }

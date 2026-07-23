@@ -260,6 +260,10 @@ export interface BarProvenance {
 
 export interface MetricView {
   metricKey: string;
+  /** Canonical human label from CANONICAL_METRICS (F7 → "Asset Turnover"); the engine key itself
+   *  when unknown (honest, never fabricated). Server-side name so every read surface — the AI fact
+   *  block included — can speak the metric instead of its internal code. */
+  label: string;
   /** null only for an honest-empty (non-scored) metric row — no value was available. */
   rawValue: number | null;
   l1Score: number | null;

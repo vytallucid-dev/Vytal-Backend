@@ -153,7 +153,36 @@ export function createAuthGuards(config: AuthGuardConfig) {
     }
   };
 
-  return { requireAuth, requireAdmin };
+  // ── optionalAuth — the third guard: verify the token IF present, otherwise continue anonymous. ──
+  // A surface like the relational Overview card must serve BOTH an authenticated reader and an
+  // anonymous one from the SAME service (anonymous is a valid caller — M9 Stranger, orientation-only,
+  // not an error path). This guard reuses the EXACT verify+resolve path above (`authenticate` — same
+  // JWKS, issuer, audience, ES256 lock) so there is never a second verifier. It NEVER 401s, NEVER
+  // redirects: a missing, malformed, invalid, expired, or unprovisioned token all resolve to
+  // req.authUser = null and next(). A NON-AuthError (e.g. DB down during the user lookup) is logged and
+  // ALSO degrades to anonymous rather than blocking the public card — the card is guaranteed-resolve.
+  const optionalAuth = async (
+    req: Request,
+    _res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    if (!req.headers.authorization) {
+      req.authUser = undefined; // no token → anonymous, no work
+      next();
+      return;
+    }
+    try {
+      req.authUser = await authenticate(req);
+    } catch (e) {
+      req.authUser = undefined; // token present but unusable → anonymous, never blocked
+      if (!(e instanceof AuthError)) {
+        console.warn(`[auth/optional] unexpected verify error — degrading to anonymous: ${(e as Error).message}`);
+      }
+    }
+    next();
+  };
+
+  return { requireAuth, requireAdmin, optionalAuth };
 }
 
 // ── Production instance, bound to the Supabase project's JWKS ──
@@ -162,7 +191,7 @@ const remoteJwks = createRemoteJWKSet(
   new URL(`${issuer}/.well-known/jwks.json`),
 );
 
-export const { requireAuth, requireAdmin } = createAuthGuards({
+export const { requireAuth, requireAdmin, optionalAuth } = createAuthGuards({
   keyResolver: remoteJwks,
   issuer,
   // Supabase user access tokens carry aud: "authenticated".

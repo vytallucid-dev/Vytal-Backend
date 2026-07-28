@@ -89,6 +89,13 @@ export const EXEMPTIONS: Record<string, Exemption> = {
     spares: "pending/running jobs (never mid-flight)",
     deleteClause: `AND "status" NOT IN ('pending', 'running')`,
   },
+  // A PROMOTED chat session is permanent chat-page history — the user followed up past the opening
+  // exchange, so it survives even after the sidebar's 24h resume window closes. The chat_sessions
+  // prune (time / last_message_at / 1d) targets only ABANDONED openings; this spares the promoted ones.
+  unpromoted_only: {
+    spares: "promoted chat sessions (permanent chat-page history — survive the 24h sidebar prune)",
+    deleteClause: `AND "promoted" = false`,
+  },
 };
 
 // ── IDENTIFIER VALIDATION ───────────────────────────────────────

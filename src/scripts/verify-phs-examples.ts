@@ -35,7 +35,7 @@
 //   • Change 5 — lensProfile is findings-character; null when no lens patterns fired.
 //   npx tsx src/scripts/verify-phs-examples.ts
 // ─────────────────────────────────────────────────────────────────────────────
-import { computePhs, type PhsHolding, type PillarSubtotals } from "../portfolio/phs/engine.js";
+import { computePhs, type PhsHolding, type PillarSubtotals, type FindingKind, type HoldingFinding } from "../portfolio/phs/engine.js";
 import type { LensNature } from "../portfolio/phs/constants.js";
 
 let failures = 0;
@@ -62,10 +62,11 @@ const isinFor = (symbol: string) => {
   if (!v) { v = `INE${(seq.size + 1).toString(36).toUpperCase().padStart(4, "0")}00000`; seq.set(symbol, v); }
   return v;
 };
+const findingsOf = (kinds: FindingKind[] = []): HoldingFinding[] => kinds.map((kind) => ({ kind, flagKey: null, title: null, read: null }));
 const H = (
   symbol: string, marketValue: number, tier: PhsHolding["tier"], sector: string | null, health: number | null,
-  findings: PhsHolding["findings"] = [], pillars: PillarSubtotals | null = null, lensNatures: LensNature[] = [],
-): PhsHolding => ({ symbol, marketValue, tier, sector, health, findings, pillars, lensNatures, isin: isinFor(symbol), assetClass: "stock", category: null });
+  findings: FindingKind[] = [], pillars: PillarSubtotals | null = null, lensNatures: LensNature[] = [],
+): PhsHolding => ({ symbol, marketValue, tier, sector, health, findings: findingsOf(findings), pillars, lensNatures, isin: isinFor(symbol), assetClass: "stock", category: null });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCEPTANCE 1 — the decoupled pair. A single health-80 stock: Health passes straight

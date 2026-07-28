@@ -11,7 +11,8 @@
 import { randomUUID } from "crypto";
 import { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../db/prisma.js";
-import { computePhs, type PhsHolding } from "../portfolio/phs/engine.js";
+import { createThrowawayUser } from "./lib/throwaway-user.js";
+import { computePhs, type PhsHolding, type FindingKind, type HoldingFinding } from "../portfolio/phs/engine.js";
 import { firePortfolioFindings, NOT_EVALUABLE_UNDECLARED } from "../portfolio/phs/patterns.js";
 import { computeAndPersistPhs } from "../portfolio/phs/persist.js";
 import { assemblePortfolio } from "../portfolio/phs/assemble.js";
@@ -40,8 +41,9 @@ const isinFor = (symbol: string) => {
   return v;
 };
 /** A STOCK — name-risk, its own sector, an mcap tier, a health. Mirrors assemble.ts:448. */
-const H = (symbol: string, mv: number, tier: PhsHolding["tier"], sector: string | null, health: number | null, findings: PhsHolding["findings"] = []): PhsHolding =>
-  ({ symbol, marketValue: mv, tier, sector, health, findings, isin: isinFor(symbol), assetClass: "stock", category: null });
+const findingsOf = (kinds: FindingKind[] = []): HoldingFinding[] => kinds.map((kind) => ({ kind, flagKey: null, title: null, read: null }));
+const H = (symbol: string, mv: number, tier: PhsHolding["tier"], sector: string | null, health: number | null, findings: FindingKind[] = []): PhsHolding =>
+  ({ symbol, marketValue: mv, tier, sector, health, findings: findingsOf(findings), isin: isinFor(symbol), assetClass: "stock", category: null });
 /** A FUND / ETF — a BASKET: no mcap tier, no health, no sector (§14-interim not_applicable), and a
  *  fund house (C5's only subject). Mirrors assemble.ts:509, which sets `tier: "unknown"` + `health: null`
  *  for EVERY non-stock — which is why a `tier: "large"` holding with `health: 74` is a stock BY
@@ -530,9 +532,9 @@ async function main() {
   console.log("\n═══ Real seeded book (live prices/tiers/scores/patterns) ═══");
   const scored = await prisma.stock.findMany({ where: { symbol: { in: ["RELIANCE", "TCS", "HDFCBANK"] }, scoreSnapshots: { some: {} } }, select: { id: true } });
   if (scored.length < 2) { console.log("  ⚠ skipping (need scored stocks)"); return finish(); }
-  const authId = randomUUID();
-  await prisma.$executeRawUnsafe(`INSERT INTO auth.users (id, email) VALUES ($1::uuid, $2)`, authId, `phsb-${authId}@test.local`);
-  const user = (await prisma.user.findUnique({ where: { authUserId: authId }, select: { id: true } }))!;
+  // Shared helper: sweeps leftovers from previous interrupted runs on first call (scripts/lib/throwaway-user.ts).
+  const { authId, userId } = await createThrowawayUser("phsb");
+  const user = { id: userId };
   const stocks = await prisma.stock.findMany({ where: { symbol: { in: ["RELIANCE", "TCS", "HDFCBANK", "LENSKART", "SWIGGY"] } }, select: { id: true, symbol: true } });
   try {
     const account = await prisma.portfolioAccount.create({ data: { userId: user.id, name: "My Holdings", broker: "zerodha", state: "manual" }, select: { id: true } });

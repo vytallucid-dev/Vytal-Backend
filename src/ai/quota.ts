@@ -65,8 +65,16 @@ const DEFAULT_QUOTA_TIMEZONE = "America/Los_Angeles";
 // looked up by model id — never a single global number. An unlisted model is gated at the
 // CONSERVATIVE fallback (never a high default — fail toward caution).
 const UNKNOWN_MODEL_BUDGET = 18;
+// ⚠ CHAT-ERA CEILING RAISE (Stage 2). flash-lite is the CHAT model, and chat has NO shared cache
+// (unlike the removed card surfaces), so the old 480 global / 20 per-user pair — sized for a public
+// good — would throttle dogfooding for no reason. The ceilings are RAISED, not removed: the whole
+// spend/meter path still runs live, and lowering these two numbers (or setting the env vars) re-enables
+// throttling with no code change. On the FREE tier Google's own ~500 RPD is the real ceiling regardless,
+// so a high global here just makes OUR guard deliberately non-binding for now; it becomes real budget on
+// the paid tier. flash (18) is untouched — nothing routes to it.
+const CHAT_ERA_UNCAPPED = 100_000;
 const MODEL_BUDGETS: Record<string, () => number> = {
-  "gemini-3.5-flash-lite": () => envInt("AI_BUDGET_FLASH_LITE", 480), // free-tier RPD 500
+  "gemini-3.5-flash-lite": () => envInt("AI_BUDGET_FLASH_LITE", CHAT_ERA_UNCAPPED), // raised (was 480); provider RPD is the real free-tier ceiling
   "gemini-3.5-flash": () => envInt("AI_BUDGET_FLASH", 18), //            free-tier RPD only 20
 };
 
@@ -100,7 +108,9 @@ function budgetForModel(model: string): number {
 // lands well under it; a render-loop bug hits it in seconds and stops there, at 4% of the day.
 const UNKNOWN_USER_BUDGET = 5;
 const USER_MODEL_BUDGETS: Record<string, () => number> = {
-  "gemini-3.5-flash-lite": () => envInt("AI_USER_BUDGET_FLASH_LITE", 20), // global 480 ⇒ ~4%/user
+  // Raised alongside the global (was 20): the per-user sub-cap is the one that would actually bite a
+  // single dogfooding user, so it is lifted to the same non-binding level. Lower to re-enable the cap.
+  "gemini-3.5-flash-lite": () => envInt("AI_USER_BUDGET_FLASH_LITE", CHAT_ERA_UNCAPPED),
   "gemini-3.5-flash": () => envInt("AI_USER_BUDGET_FLASH", 5), //            global  18 ⇒ ~28%/user
 };
 
@@ -375,6 +385,75 @@ export async function checkAndConsumeAiCall(model: string, actor: Actor): Promis
     // was denied on its merits, so naming a ceiling here would be a claim we cannot support.
     console.warn(`[ai/quota] check failed, denying (fail-closed): ${(err as Error).message}`);
     return { allowed: false, remaining: 0, limit: globalLimit, resetAt, scopeDenied: null, reason: "quota_check_failed" };
+  }
+}
+
+/**
+ * ── THE READ-ONLY PEEK ───────────────────────────────────────────────────────────────────────────
+ * "Could a call be spent right now?" — the same decision checkAndConsumeAiCall makes, WITHOUT making it.
+ *
+ * ★ WHY THIS IS A SEPARATE FUNCTION AND NOT A `{ consume: false }` FLAG ON THE GATE. The gate is
+ *   race-safe precisely BECAUSE it checks by incrementing: the budget test lives in the WHERE of the
+ *   UPDATE, so the check and the spend are one atomic act with no read-then-write gap (see the header).
+ *   A non-consuming mode would have to lift that predicate out into a plain SELECT, and the moment those
+ *   two code paths share anything load-bearing, the gate's atomicity becomes a property of a branch
+ *   rather than of a statement. They are kept apart on purpose. This function must NEVER be used to
+ *   authorise a call — only to describe one.
+ *
+ * ★ AND IT FAILS OPEN, WHICH IS THE EXACT OPPOSITE OF THE GATE. The gate fails CLOSED because it guards
+ *   money: a DB blip must never open the spend. This guards a text input. A DB blip here must never lock
+ *   a reader out of a product that would in fact have served them — the worst case of allowing is one
+ *   send that gets an honest denial back, which is the state this whole feature already handles well.
+ *
+ * ★ USER CEILING FIRST, matching the gate's own order, so `scopeDenied` names the ceiling that WOULD
+ *   have denied — a reader stopped by the shared budget is never told they used up their own allowance.
+ *
+ * A window with no counter row yet is a window nobody has spent in: 0 used, not exhausted. (The gate's
+ * own post-hoc `headroom` reads a missing row as exhausted — correct there, where the row must exist by
+ * then; wrong here, where the first reader of the day arrives before any row is created.)
+ */
+export async function peekAiCallQuota(model: string, actor: Actor): Promise<QuotaDecision> {
+  const globalScope = model;
+  const { windowKey, resetAt } = currentWindow();
+  const globalLimit = budgetForModel(model);
+  const userScope = actor.kind === "user" ? userScopeOf(actor.userId, model) : null;
+  const userLimit = userScope === null ? null : userBudgetForModel(model);
+
+  // Same kill switch, same answer as the gate's: metering off ⇒ nothing to report but "yes".
+  if (!quotaEnabled()) {
+    return { allowed: true, remaining: globalLimit, limit: globalLimit, resetAt, scopeDenied: null, reason: "quota_disabled" };
+  }
+
+  const scopes = userScope === null ? [globalScope] : [userScope, globalScope];
+  try {
+    // ONE keyed read of a tiny table: the PK is (scope, window_key), so this is at most two index
+    // lookups. No createMany — a peek must not write, not even a row nobody has spent against.
+    const rows = await prisma.aiUsageCounter.findMany({
+      where: { windowKey, scope: { in: scopes } },
+      select: { scope: true, callCount: true },
+    });
+    const used = (scope: string): number => rows.find((r) => r.scope === scope)?.callCount ?? 0;
+    const globalLeft = Math.max(0, globalLimit - used(globalScope));
+    const userLeft = userScope === null || userLimit === null ? null : Math.max(0, userLimit - used(userScope));
+
+    if (userLeft !== null && userLeft <= 0) {
+      return { allowed: false, remaining: 0, limit: userLimit!, resetAt, scopeDenied: "user", reason: "user_daily_limit_reached" };
+    }
+    if (globalLeft <= 0) {
+      return { allowed: false, remaining: 0, limit: globalLimit, resetAt, scopeDenied: "global", reason: "daily_call_budget_exhausted" };
+    }
+    const userBinds = userLeft !== null && userLeft < globalLeft;
+    return {
+      allowed: true,
+      remaining: userBinds ? userLeft : globalLeft,
+      limit: userBinds ? userLimit! : globalLimit,
+      resetAt,
+      scopeDenied: null,
+    };
+  } catch (err) {
+    // FAIL OPEN — see the header of this function. A monitoring read that cannot read reports no denial.
+    console.warn(`[ai/quota] peek failed, allowing (fail-open): ${(err as Error).message}`);
+    return { allowed: true, remaining: globalLimit, limit: globalLimit, resetAt, scopeDenied: null, reason: "quota_peek_failed" };
   }
 }
 

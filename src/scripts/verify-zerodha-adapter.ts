@@ -10,6 +10,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import crypto, { randomUUID, randomBytes } from "crypto";
 import { prisma } from "../db/prisma.js";
+import { createThrowawayUser } from "./lib/throwaway-user.js";
 import {
   beginIntegration,
   completeIntegration,
@@ -110,11 +111,9 @@ const mockReq = (userId: string, opts: { body?: any; params?: any } = {}) =>
   ({ authUser: { userId }, body: opts.body ?? {}, params: opts.params ?? {}, query: {} }) as any;
 
 async function seedUser(tag: string): Promise<{ authId: string; userId: string }> {
-  const authId = randomUUID();
-  await prisma.$executeRawUnsafe(`INSERT INTO auth.users (id, email) VALUES ($1::uuid, $2)`, authId, `zeroda-${tag}-${authId}@test.local`);
-  const u = await prisma.user.findUnique({ where: { authUserId: authId }, select: { id: true } });
-  if (!u) throw new Error("signup trigger did not create public.users");
-  return { authId, userId: u.id };
+  // Shared helper: sweeps leftovers from previous interrupted runs on first call (scripts/lib/throwaway-user.ts).
+  const { authId, userId } = await createThrowawayUser(`zeroda-${tag}`);
+  return { authId, userId };
 }
 const cleanupUser = (authId: string) => prisma.$executeRawUnsafe(`DELETE FROM auth.users WHERE id = $1::uuid`, authId);
 

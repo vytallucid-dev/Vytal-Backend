@@ -7,6 +7,7 @@ import {
 } from "../../ingestions/corporate-events/ingest-events.js";
 import { enqueueJob } from "../../jobs/enqueue.js";
 import { JobTypes } from "../../jobs/types.js";
+import { buildCorporateEventsView } from "../../scoring/read/corporate-events.service.js";
 
 export const getAllCalendarEvents = async (req: Request, res: Response) => {
   try {
@@ -91,6 +92,9 @@ export const getAllCalendarEvents = async (req: Request, res: Response) => {
   }
 };
 
+// The read itself lives in buildCorporateEventsView (scoring/read/corporate-events.service.ts) — moved
+// there verbatim so the chat tool and this endpoint share ONE query. This handler now only parses the
+// query string and shapes the envelope.
 export const getEventsBySymbol = async (req: Request, res: Response) => {
   try {
     const symbol = (req.params.symbol as string).toUpperCase();
@@ -98,54 +102,18 @@ export const getEventsBySymbol = async (req: Request, res: Response) => {
       string,
       string
     >;
-    const isUpcoming = upcoming === "true";
-    const windowDays = Math.min(parseInt(days) || 365, 730);
 
-    const stock = await prisma.stock.findUnique({
-      where: { symbol },
-      select: { id: true, symbol: true, name: true },
+    const view = await buildCorporateEventsView(symbol, {
+      upcoming: upcoming === "true",
+      days: parseInt(days) || 365,
     });
-    if (!stock) {
+    if (!view) {
       return res
         .status(404)
         .json({ success: false, error: `${symbol} not in universe` });
     }
 
-    const now = new Date();
-    now.setUTCHours(0, 0, 0, 0);
-
-    const dateFilter = isUpcoming
-      ? { gte: now, lte: new Date(now.getTime() + windowDays * 86400_000) }
-      : { lte: now, gte: new Date(now.getTime() - windowDays * 86400_000) };
-
-    const events = await prisma.corporateEvent.findMany({
-      where: { stockId: stock.id, eventDate: dateFilter },
-      orderBy: { eventDate: isUpcoming ? "asc" : "desc" },
-    });
-
-    return res.json({
-      success: true,
-      data: {
-        symbol: stock.symbol,
-        name: stock.name,
-        events: events.map((e) => ({
-          id: e.id,
-          eventType: e.eventType,
-          eventDate: e.eventDate.toISOString().split("T")[0],
-          exDate: e.exDate?.toISOString().split("T")[0] ?? null,
-          recordDate: e.recordDate?.toISOString().split("T")[0] ?? null,
-          impactLevel: e.impactLevel,
-          isConfirmed: e.isConfirmed,
-          dividendAmount: e.dividendAmount
-            ? parseFloat(e.dividendAmount.toString())
-            : null,
-          dividendType: e.dividendType,
-          bonusRatio: e.bonusRatio,
-          splitRatio: e.splitRatio,
-          description: e.description,
-        })),
-      },
-    });
+    return res.json({ success: true, data: view });
   } catch (err) {
     console.error("[events/symbol]", err);
     return res

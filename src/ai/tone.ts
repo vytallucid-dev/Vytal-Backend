@@ -10,12 +10,20 @@
 // AND the bounds; the ledger facts (finance depth / term comfort) can only refine WITHIN what
 // the chosen level permits — they can never flip the tone to something the user didn't ask for.
 //
-// TWO INVARIANT CLAUSES are baked into EVERY directive via shared constants, so neither can be
+// THREE INVARIANT CLAUSES are baked into EVERY directive via shared constants, so none can be
 // dropped or varied per user:
 //   • THE NON-ADVISORY SPINE — Vytal describes what IS; it never advises what to do next.
 //   • CONVERSATIONAL PRECISION — figures are spoken the way a person says them, at every level.
-// They are independent: the precision clause never softens the spine, and the spine never governs
-// phrasing of numbers. Both are appended after the level/jargon/depth axes have had their say.
+//   • THE LANGUAGE MIRROR — the reply comes back in the language and script the reader wrote in.
+// They are independent: the precision clause never softens the spine, the spine never governs
+// phrasing of numbers, and the language mirror governs neither — it only says which language every
+// OTHER rule is obeyed in. All three are appended after the level/jargon/depth axes have had their say.
+//
+// ⚠ THE LANGUAGE MIRROR IS AN AXIS-FREE INVARIANT ON PURPOSE. It is NOT keyed to aiLevel, and there is
+// no per-user "preferred language" column: the signal is the reader's own most recent message, which the
+// model already has in the transcript. A stored preference would be a second, staler home for a fact the
+// conversation states afresh every turn — and it would be wrong the first time a bilingual reader
+// switched mid-session, which is exactly what bilingual readers do.
 // ═══════════════════════════════════════════════════════════════════════
 import { prisma } from "../db/prisma.js";
 import type { UserLedger, UserRegister } from "../generated/prisma/client.js";
@@ -64,6 +72,55 @@ export const CONVERSATIONAL_PRECISION =
   'half"). Where a figure is given to you in both a rounded and a raw form, always speak the rounded ' +
   "one; the raw value is provenance, not something to recite. Never add precision that was not given " +
   "to you, and never compute a new number of your own.";
+
+// ── The language mirror — the THIRD invariant, in every directive, never varied ──────────────
+//
+// ★ WHY THIS IS A CLAUSE AND NOT A FEATURE. The model can already do this: asked in Hinglish it
+// produces fluent Hinglish with the numbers intact and glosses finance terms natively ("share girvi
+// (pledging)"). It simply was never told to. Measured in the live corpus: 3 Hinglish questions, 3
+// English answers. So the fix is an instruction to MIRROR, not machinery to translate.
+//
+// ⚠ THE RISK THIS CLAUSE EXISTS TO CLOSE, stated because it is the whole reason the wording is this
+// emphatic: a model can treat a language switch as a CONTEXT switch and quietly drop the rules it was
+// obeying in English — inventing a number because the fact block is in English, or sliding into advice
+// because the descriptive framing felt like an English-language convention. It is not. Every rule holds
+// identically in every language, and the clause says so in as many words.
+//
+// ★★★ MEASURED FAILURE — WHY THIS CLAUSE LEADS WITH "ENGLISH IS THE DEFAULT". ★★★
+// The first draft opened with the Hinglish/Devanagari examples and contained the sentence "Do not
+// translate the reader into English." Live result: "What does HDFC Bank's Market pillar tell me?" — asked
+// in plain English — came back in DEVANAGARI. On a weak instruction-follower a clause is read partly as
+// salience, not only as logic: a rule that names Hindi three times and says "do not … English" reads as
+// "prefer Hindi". The clause now states the mirror rule first, names English as the default AND the
+// fallback BEFORE any other language, and carries no "do not use English" phrasing anywhere. Pinned by
+// LIVE 2 in verify-hinglish-live-chat.ts, which is the check that caught it.
+// ⚠ Do not reorder these sentences to put the Hindi cases first — that is the exact edit that regressed.
+//
+// ⚠ VYTAL'S OWN VOCABULARY IS NOT TRANSLATED. "Pristine", "Foundation", "Provisional" are product
+// terms — the words on the reader's screen. Translating them would leave the reader unable to match the
+// answer to the UI. The EXPLANATION around them adapts; the term stays. This mirrors the vocabulary lock
+// in context-layer.ts ("use Vytal's exact words") rather than restating it.
+export const LANGUAGE_MIRROR =
+  "LANGUAGE — MIRROR THE READER. Write in the same language and script the reader's own most recent " +
+  "message used, and never switch them into a language they have not used themselves. " +
+  "ENGLISH IS THE DEFAULT AND THE FALLBACK: if the reader writes in English, answer in English. If a " +
+  "message mixes languages, follow whichever one dominates it; if it is genuinely ambiguous, answer in " +
+  "English. If the reader writes Hindi in Latin letters, answer the same way; if they write in " +
+  "Devanagari, answer in Devanagari. Judge this ONLY from what the reader actually wrote — never from " +
+  "the language these instructions happen to be written in, and never from a preference of your own. " +
+  "Do not announce, explain, or apologise for the language you are using; simply use it, as naturally " +
+  "as a person would. " +
+  "VYTAL'S OWN VOCABULARY STAYS EXACTLY AS IT IS, in every language: the pillar names (Foundation, " +
+  "Momentum, Market, Ownership), the band names (Fragile, Below Par, Steady, Healthy, Pristine), the " +
+  "finding tones, and the words Health read, Construction, Coverage and Provisional. Those are the words " +
+  "printed on the reader's screen; a translated band name would leave them unable to match your answer " +
+  "to what they are looking at. Keep the term, adapt the explanation around it. When a finance concept " +
+  "needs explaining, explain it in the reader's own language and give the English term alongside it where " +
+  "that helps them read the rest of the app. " +
+  "★ EVERY OTHER RULE IN THIS INSTRUCTION APPLIES IDENTICALLY IN WHATEVER LANGUAGE YOU ANSWER IN, " +
+  "WITHOUT EXCEPTION — how figures are spoken, using only the numbers you were given, and above all " +
+  "being descriptive and never advisory. A change of language is NOT a change of what you are allowed to " +
+  "say. Advice is advice in every language, and a number you were not given is invented in every language.";
 
 // Plain-level reinforcement: a beginner most easily misreads explanation as advice, so the
 // plain directive doubles down on the descriptive framing (appended before the spine).
@@ -122,6 +179,7 @@ function buildDirective(level: ToneLevel, depth: ToneDepth, jargon: ToneJargon):
   const parts = [LEVEL_INTRO[level], JARGON_CLAUSE[jargon], DEPTH_CLAUSE[depth]];
   if (level === "plain") parts.push(PLAIN_REINFORCE);
   parts.push(CONVERSATIONAL_PRECISION); // ALWAYS present — a phrasing rule, invariant across levels
+  parts.push(LANGUAGE_MIRROR); // ALWAYS present — and it re-asserts, not weakens, the two around it
   parts.push(NON_ADVISORY_SPINE); // ALWAYS last, ALWAYS present — and never weakened by the above
   return parts.join(" ");
 }

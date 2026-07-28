@@ -37,7 +37,7 @@ async function main() {
     console.log(`  ${sym.padEnd(11)} OPM[..6]=${tail}`);
     console.log(`     unguarded: ${un.fires ? `FIRE (N=${un.n}, ${un.run.map((x) => x.toFixed(1)).join("→")})` : "no fire"}` +
       `   | latestDistorted=${distorted}` +
-      `   | GUARDED: ${guarded ? `FIRE → "${(guarded.evidence as any).verbatim}"` : "NO FIRE"}`);
+      `   | GUARDED: ${guarded && "evidence" in guarded ? `FIRE → "${(guarded.evidence as any).verbatim}"` : "NO FIRE"}`);
   }
 
   console.log("\n── Universe census: guarded P11 fires (live, all PGs) ──");

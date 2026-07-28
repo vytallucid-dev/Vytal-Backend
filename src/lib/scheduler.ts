@@ -513,16 +513,24 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
         "cron:daily-google-news",
       ).then(() => {}),
   },
-  {
-    name: "news-extraction-worker",
-    schedule: "30 4 * * 1-5", // 10:00 AM IST Mon–Fri (30 min after fetch jobs)
-    enqueue: () =>
-      enqueueIfNotActive(
-        JobTypes.NEWS_CONTENT_EXTRACTION,
-        { batchSize: 50 },
-        "cron:news-extraction-worker",
-      ).then(() => {}),
-  },
+  // ── ⚠ NEWS CONTENT EXTRACTION — DELIBERATELY NOT SCHEDULED ──────────────────────────────────
+  // `news-extraction-worker` (NEWS_CONTENT_EXTRACTION, batchSize 50, formerly 10:00 AM IST) was
+  // removed from this list on 2026-07-26. Full article text is not wanted at the current ingest
+  // volume: nothing in the app consumes `contentText`, and the publishers worth scraping block
+  // AI crawlers by name in robots.txt anyway, so most attempts could only ever return the RSS
+  // snippet we already store in `summary`.
+  //
+  // THE CODE IS INTACT — the job type, the dispatcher entry, `runContentExtractionWorker`, and
+  // the admin trigger (POST .../news/extract) all still work. Re-enabling is re-adding an entry
+  // here, not a rebuild. It is left registered on purpose so a one-off admin run stays possible.
+  //
+  // ⚠ IF YOU RE-ENABLE IT, KNOW THIS: the worker's queue is `extractionStatus: "pending"`, and the
+  // 6,544 rows that were pending when it was switched off were re-marked "skipped" (an honest
+  // "we chose not to extract" — the value the worker itself writes when it declines) precisely so
+  // nothing reads "pending" and infers work that will never happen. Those rows will NOT be picked
+  // up by a re-enabled worker. That is intended: they are historical, and stock_news retention
+  // prunes at 90 days by published_at regardless.
+  // ────────────────────────────────────────────────────────────────────────────────────────────
 
   // ── Peer Metrics ───────────────────────────────────────────
   {
@@ -681,6 +689,44 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
           `healed=${r.healed} honestSkipped=${r.honestSkipped}`,
       );
     },
+  },
+
+  // ── Behaviour rollup reconcile (Phase 1) ───────────────────
+  // Nightly recompute of behavior_rollup's distributional JSON (tab/section) from raw attention
+  // events, plus a safe stamp self-heal. Runs through the job queue like every other recurring job.
+  // 18:40 UTC (00:10 IST) — after the three scoring sweeps (18:00–18:20) have settled, well clear of
+  // the 21:30 UTC retention prune. Bounded by rollup size, not traffic; a re-run is idempotent.
+  {
+    name: "nightly-behavior-rollup-reconcile",
+    schedule: "40 18 * * *",
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.BEHAVIOR_ROLLUP_RECONCILE,
+        {},
+        "cron:nightly-behavior-rollup-reconcile",
+      ).then(() => {}),
+  },
+
+  // ── Chat reader-profile distillation (Stage 5) ─────────────
+  // Reads every QUIET chat session (last_message_at older than 6h) that has turns the distiller has not
+  // seen, and folds it into that reader's profile. One model call + one quota unit per session, as a
+  // system actor. Idempotent by watermark: a re-run over unchanged sessions selects nothing.
+  //
+  // 19:10 UTC (00:40 IST) — AFTER the behaviour reconcile (18:40) so the two nightly reader-context jobs
+  // don't overlap, and well BEFORE the retention prune (21:30) which is the only other job that touches
+  // chat_sessions. Nothing races it, and by that hour the day's conversations have long gone quiet.
+  //
+  // ⚠ The 6h quiescence is deliberately NOT the 24h sidebar resume window — see chat/profile.ts.
+  // A conversation still in progress is simply picked up tomorrow, at no extra cost.
+  {
+    name: "nightly-chat-profile-distill",
+    schedule: "10 19 * * *",
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.CHAT_PROFILE_DISTILL,
+        {},
+        "cron:nightly-chat-profile-distill",
+      ).then(() => {}),
   },
 ];
 

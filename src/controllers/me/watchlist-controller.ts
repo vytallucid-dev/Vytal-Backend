@@ -14,100 +14,36 @@
 // no-op that returns the existing row (baseline preserved). Signals/change-detection are a
 // later fast-follow; this phase only serves the baseline + the live read-join.
 //
+// ★ THE WRITES LIVE IN src/watchlist/service.ts (Stage 3, Phase A). This file is TRANSPORT
+// for them: read the owner off req.authUser, hand the raw body down, turn the result into a
+// response and a ServiceError into its status. The chat write tools call the same service
+// functions directly, so the rules have exactly one home.
+//
 // Envelope: { success, data } / { success:false, error, … } — matches /me/portfolio.
 // ═══════════════════════════════════════════════════════════════════════
 import type { Request, Response } from "express";
 import { z } from "zod";
-import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../../db/prisma.js";
 import { enrichWatchlist } from "./watchlist-enrich.js";
-
-const AddBody = z.object({
-  stockId: z.string().trim().min(1),
-});
+import {
+  addToWatchlist as addToWatchlistSvc,
+  removeFromWatchlist as removeFromWatchlistSvc,
+} from "../../watchlist/service.js";
+import { ServiceError, sendServiceError } from "../../lib/service-error.js";
 
 const FavoriteBody = z.object({
   favorite: z.boolean(),
 });
 
-/** The minimal add-response shape (the pinned baseline just written / already present). */
-function serializePin(w: {
-  stockId: string;
-  addedAt: Date;
-  pinnedHealth: number | null;
-  pinnedBand: string | null;
-  pinnedPrice: Prisma.Decimal | null;
-}) {
-  return {
-    stockId: w.stockId,
-    addedAt: w.addedAt.toISOString(),
-    pinnedHealth: w.pinnedHealth,
-    pinnedBand: w.pinnedBand,
-    pinnedPrice: w.pinnedPrice != null ? w.pinnedPrice.toString() : null,
-  };
-}
-
 // ── POST /watchlist — add (idempotent) ─────────────────────────────────
 export const addToWatchlist = async (req: Request, res: Response) => {
   const userId = req.authUser!.userId;
-  const parsed = AddBody.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ success: false, error: "validation_error", details: parsed.error.flatten().fieldErrors });
-  }
-  const { stockId } = parsed.data;
-
   try {
-    // Universe gate: the stockId must resolve to a real stock (the 505-stock universe).
-    const stock = await prisma.stock.findUnique({ where: { id: stockId }, select: { id: true } });
-    if (!stock) {
-      return res.status(400).json({ success: false, error: "stock_not_found", message: "Not a stock in the universe" });
-    }
-
-    // Idempotent: an existing pin is returned as-is — the baseline is NEVER overwritten.
-    const existing = await prisma.watchlist.findUnique({
-      where: { userId_stockId: { userId, stockId } },
-      select: { stockId: true, addedAt: true, pinnedHealth: true, pinnedBand: true, pinnedPrice: true },
-    });
-    if (existing) {
-      return res.json({ success: true, data: { watchlist: serializePin(existing), created: false } });
-    }
-
-    // Capture the pin-time baseline from the CURRENT latest snapshot + latest price.
-    const [snap, price] = await Promise.all([
-      prisma.scoreSnapshot.findFirst({
-        where: { stockId },
-        orderBy: [{ asOfDate: "desc" }, { version: "desc" }],
-        select: { composite: true, labelBand: true },
-      }),
-      prisma.stockPrice.findUnique({ where: { stockId }, select: { price: true } }),
-    ]);
-
-    const data = {
-      userId,
-      stockId,
-      pinnedHealth: snap ? Math.round(Number(snap.composite)) : null,
-      pinnedBand: snap ? snap.labelBand : null,
-      pinnedPrice: price ? price.price : null,
-    };
-
-    try {
-      const created = await prisma.watchlist.create({
-        data,
-        select: { stockId: true, addedAt: true, pinnedHealth: true, pinnedBand: true, pinnedPrice: true },
-      });
-      return res.status(201).json({ success: true, data: { watchlist: serializePin(created), created: true } });
-    } catch (e) {
-      // Lost an add race for the same (user, stock) → the other insert won; honor idempotency.
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
-        const row = await prisma.watchlist.findUnique({
-          where: { userId_stockId: { userId, stockId } },
-          select: { stockId: true, addedAt: true, pinnedHealth: true, pinnedBand: true, pinnedPrice: true },
-        });
-        if (row) return res.json({ success: true, data: { watchlist: serializePin(row), created: false } });
-      }
-      throw e;
-    }
+    const data = await addToWatchlistSvc(req.body, userId);
+    // 201 on a true create, 200 on the idempotent re-add — the status the route has always used.
+    return res.status(data.created ? 201 : 200).json({ success: true, data });
   } catch (e) {
+    if (e instanceof ServiceError) return sendServiceError(res, e);
     console.error("[POST /me/watchlist]", e);
     return res.status(500).json({ success: false, error: "server_error", message: "Failed to add to watchlist" });
   }
@@ -116,16 +52,11 @@ export const addToWatchlist = async (req: Request, res: Response) => {
 // ── DELETE /watchlist/:stockId — remove (owner-scoped) ──────────────────
 export const removeFromWatchlist = async (req: Request, res: Response) => {
   const userId = req.authUser!.userId;
-  const stockId = String(req.params.stockId ?? "");
-
   try {
-    // Scoped to the owner: a non-owner (or an unpinned stock) deletes 0 rows → 404.
-    const result = await prisma.watchlist.deleteMany({ where: { userId, stockId } });
-    if (result.count === 0) {
-      return res.status(404).json({ success: false, error: "not_found", message: "Not in your watchlist" });
-    }
-    return res.json({ success: true, data: { removed: true, stockId } });
+    const data = await removeFromWatchlistSvc({ stockId: String(req.params.stockId ?? "") }, userId);
+    return res.json({ success: true, data });
   } catch (e) {
+    if (e instanceof ServiceError) return sendServiceError(res, e);
     console.error("[DELETE /me/watchlist/:stockId]", e);
     return res.status(500).json({ success: false, error: "server_error", message: "Failed to remove from watchlist" });
   }

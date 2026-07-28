@@ -50,11 +50,20 @@
 // scanned rather than allow-listed around. Today an explanation is a single assertive body, so the
 // doctrine is satisfied trivially. THE DAY a "what this doesn't mean" section is added to the output,
 // it must be excluded here, exactly as `doesntMean` is excluded from the portfolio copy scan.
+//
+// ── ⚠ THIS FILE IS ENGLISH-ONLY BY DESIGN; THE OTHER LANGUAGES LIVE NEXT DOOR ──────────────────────
+// `AI_HARD_LIST` / `AI_SOFT_EXTRA` below are the ENGLISH vocabulary and are deliberately left exactly
+// as they were. Hinglish + Devanagari vocabulary is guardrail-hinglish.ts, merged into the scan at
+// `AI_HARD_ALL` / `AI_SOFT_ALL`. Two reasons for the split rather than more entries here: that file
+// needs a script-boundary discipline this one does not (`\b` is DEAD on Devanagari — measured, see its
+// FINDING #1), and keeping the English arrays untouched is what makes "the English tier is unaffected"
+// provable by inspection rather than by re-reading a merged list.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import {
   FORWARD_DENY_LIST,
   scanStringsForForwardLanguage,
 } from "../scoring/lens-patterns/no-forward-guard.js";
+import { AI_HARD_LIST_HI, AI_SOFT_EXTRA_HI } from "./guardrail-hinglish.js";
 
 /** A vocabulary entry — the same shape `scanStringsForForwardLanguage` takes as `extraTerms`. */
 interface Term {
@@ -213,6 +222,169 @@ export const AI_HARD_LIST: Term[] = [
   },
 ];
 
+// ══ HARD-CONDITIONAL — PRICE TARGETS AND FORECAST NUMBERS. Blocks UNLESS the sentence attributes it. ══
+//
+// ★ WHY A THIRD TIER EXISTS AT ALL. The two tiers above split on "who is speaking": the model advising
+// (HARD) vs a word that description legitimately needs (SOFT). A price target does not fit either, because
+// the SAME NUMBER is fine or fatal depending on one thing — whether the sentence says whose number it is:
+//
+//   "the brokerage set a target of ₹635"   → description of someone else's call   → must PASS
+//   "the target is ₹635"                   → Vytal relaying a forecast as fact    → must BLOCK
+//
+// The construction is identical; only the attributed subject differs. So the tier is CONDITIONAL: the
+// pattern below fires on the CONSTRUCTION, and a second test on the sentence that contains it decides
+// whether it blocks. A hit that IS attributed is demoted to a soft hit (logged, never blocking).
+//
+// ⚠ WHY THIS SHIPS NOW, WITH THE WEB-NEWS TOOL AND NOT AFTER IT. `AI_HARD_LIST` above catches the model
+// ADVISING; it has no pattern for the model FORECASTING, because until now nothing in the context window
+// contained a forecast. getStockNews changes that: the very first live Serper run surfaced the headline
+// "Hold Cyient DLM; target of Rs 635: Prabhudas Lilladher." The moment external headlines reach the model,
+// a price target is one paraphrase away from being stated in Vytal's own voice.
+//
+// ── LIMITS, STATED (regex cannot parse "who said it"; this approximates it) ────────────────────────────
+//   · The attribution test is LEXICAL: a named source, an attributing verb/preposition, or a possessive.
+//     A sentence that attributes by pronoun alone ("they see ₹700") reads as unattributed and BLOCKS —
+//     deliberately, since a pronoun is exactly how an attribution gets lost in a paraphrase.
+//   · Attribution is checked across the WHOLE sentence, not just before the number, so a trailing
+//     headline-style attribution ("target of Rs 635: Prabhudas Lilladher") passes.
+//   · A first-word proper noun cannot be distinguished from a capitalised sentence opener, so common
+//     openers are stop-listed.
+//   · ★ "has" IS NOT AN ATTRIBUTING VERB, and that ruling costs something. "Prabhudas Lilladher has a
+//     target of Rs 635" reads as unattributed and BLOCKS, because "Cyient DLM has a target of Rs 635" —
+//     the live headline with its source paraphrased away — is the same shape, and nothing in the sentence
+//     distinguishes a brokerage from a company. The tier keeps the block and the model keeps every other
+//     attributed construction ("X set a target", "according to X", "per X's note").
+//   · The same ruling applies to the possessive: "X's call/note/estimate/view/rating" attributes, but
+//     "X's target" does NOT — a company has targets too, so that shape stays blocked.
+//   · A BUSINESS target is never fired on at all: a magnitude unit after the amount (crore/lakh/bn/mn)
+//     means revenue or capex, not a share price. That carve-out is checked on the text AFTER the match
+//     rather than as a lookahead, because a lookahead lets the engine backtrack the number to dodge it
+//     (measured: /₹[\d,]+(?!\s*crore)/ happily matches "₹5,00" of "₹5,000 crore").
+//   · Sentence splitting is on . ! ? and newlines; a semicolon deliberately does NOT split, because that
+//     is where headline attributions live.
+export const AI_TARGET_LIST: Term[] = [
+  {
+    term: "target-price-phrase",
+    re: /\b(target\s+price|price\s+target)\b/i,
+    why: "a price target — a forecast of what the share should be worth",
+  },
+  {
+    // "target of ₹635" / "target at Rs 635" / "the target is ₹635"
+    term: "target-of-amount",
+    re: /\btargets?\s+(?:of|at|is|was|to|stands\s+at|sits\s+at|remains)\s*(?:₹|rs\.?|inr)\s*[\d,]+(?:\.\d+)?/i,
+    why: "a rupee price target",
+  },
+  {
+    term: "sees-amount",
+    re: /\b(sees?|expects?|projects?|pegs?|values?)\s+(?:the\s+)?(?:stock|share|shares|it|this)?\s*(?:at\s+|reaching\s+|hitting\s+)?(?:₹|rs\.?|inr)\s*[\d,]+(?:\.\d+)?/i,
+    why: "a forecast price for the share",
+  },
+  {
+    term: "upside-downside-of",
+    re: /\b(upside|downside)\s+(?:of|to)\s+(?:about\s+|around\s+|nearly\s+|over\s+)?(?:₹|rs\.?|inr)?\s*[\d,]+(?:\.\d+)?\s*%?/i,
+    why: "a quantified move-from-here — a forecast, not a fact",
+  },
+  {
+    term: "target-move",
+    re: /\b(raised|cut|lowered|slashed|hiked|maintained|reiterated|retained)\s+(?:its|their|the)?\s*(?:price\s+)?target\b/i,
+    why: "a change to a price target",
+  },
+  {
+    term: "target-move-passive",
+    re: /\btargets?\s+(?:price\s+)?(?:was|were|has\s+been|have\s+been|been)\s+(raised|cut|lowered|slashed|hiked|revised|upgraded|downgraded)\b/i,
+    why: "a change to a price target, in the passive",
+  },
+];
+
+/** Terms whose amount could be a BUSINESS figure. A magnitude unit right after the match means revenue or
+ *  capex, not a share price — checked on the following text, never as a lookahead (see the header). */
+const UNIT_SENSITIVE = new Set(["target-of-amount", "sees-amount", "upside-downside-of"]);
+const MAGNITUDE_TAIL = /^\s*(?:crore|cr\b|lakh|lakhs|billion|bn\b|million|mn\b|trillion|tn\b)/i;
+
+/**
+ * The attribution vocabulary — what makes a forecast someone ELSE'S. Any one match in the sentence is
+ * enough; the test is deliberately generous, because the asymmetry here runs the same way as the file's
+ * (a false block replaces the truth with nothing, and the news tool's own header already orders the model
+ * to attribute every external claim).
+ */
+const ATTRIBUTION_STOP_OPENERS =
+  "The|This|That|These|Those|It|Its|A|An|And|But|Our|Their|They|We|I|You|Your|There|Here|Vytal|If|When|While|As|At|In|On|For";
+
+const ATTRIBUTION_RES: RegExp[] = [
+  // explicit attributing prepositions / reporting frames
+  /\b(according to|as reported by|as per|per|via|citing|cited by|quoted (?:by|in)|in a (?:note|report|research note)|in its (?:note|report)|flagged by)\b/i,
+  // an attributing noun — brokerage / analyst / house / a named desk
+  /\b(brokerage|brokerages|broker|brokers|analyst|analysts|research (?:house|firm|note|report)|fund house|strategist|the note|the report)\b/i,
+  // a named source + a REPORTING or VALUATION verb: "Motilal Oswal sees", "Jefferies has set".
+  // ⚠ "has"/"have" are deliberately absent as verbs in their own right — see the header ruling.
+  new RegExp(
+    `\\b(?!(?:${ATTRIBUTION_STOP_OPENERS})\\b)[A-Z][A-Za-z&.'’-]+(?:\\s+(?:[A-Z][A-Za-z&.'’-]+|of|and|&)){0,3}\\s+` +
+      `(?:has\\s+|have\\s+|had\\s+)?(?:set|sets|raised|cut|lowered|kept|keeps|maintained|maintains|reiterated|` +
+      `reiterates|issued|assigned|placed|put|recommends?|recommended|rates?|rated|values?|valued|sees|expects|` +
+      `projects|forecasts|estimates|pegs|said|says|noted|wrote|reported)\\b`,
+  ),
+  // a named source's possessive — "Jefferies' note", "Kotak's rating". ⚠ NOT "X's target": a company has
+  // targets too, so that shape attributes nothing (header ruling).
+  new RegExp(
+    `\\b(?!(?:${ATTRIBUTION_STOP_OPENERS})\\b)[A-Z][A-Za-z&.'’-]+(?:\\s+[A-Z][A-Za-z&.'’-]+){0,3}['’]s?\\s+` +
+      `(?:call|note|estimate|view|rating|report|coverage)\\b`,
+  ),
+  // headline-style trailing attribution: "…; target of Rs 635: Prabhudas Lilladher"
+  new RegExp(
+    `[:—–-]\\s*(?!(?:${ATTRIBUTION_STOP_OPENERS})\\b)[A-Z][A-Za-z&.'’-]+(?:\\s+[A-Z][A-Za-z&.'’-]+){0,3}\\s*$`,
+  ),
+];
+
+/** Does this sentence say WHOSE forecast it is? Exported for the proof harness. */
+export function isAttributed(sentence: string): boolean {
+  return ATTRIBUTION_RES.some((re) => re.test(sentence));
+}
+
+/** Sentences, with their offsets. Splits on . ! ? । and newlines — NOT on ";" (headline attributions
+ *  live across a semicolon, and splitting there would strip the attribution off its own claim).
+ *
+ *  ⚠ `।` (U+0964 DANDA) is the Devanagari full stop and is included for the same reason "." is: without
+ *  it a Devanagari reply is ONE sentence, so the price-target tier would scope its attribution test
+ *  across the whole answer and launder an unattributed forecast off an attribution three sentences
+ *  away. English text contains no danda, so every English verdict is byte-identical. */
+function sentencesOf(text: string): { text: string; start: number; end: number }[] {
+  const out: { text: string; start: number; end: number }[] = [];
+  const re = /[^.!?।\n]+[.!?।]*\n*/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (!m[0].trim()) continue;
+    out.push({ text: m[0], start: m.index, end: m.index + m[0].length });
+  }
+  return out.length ? out : [{ text, start: 0, end: text.length }];
+}
+
+/**
+ * The conditional tier. Every OCCURRENCE of a target construction is located, and the sentence containing
+ * it decides: attributed ⇒ soft (logged), unattributed ⇒ hard (blocks). One unattributed occurrence is
+ * enough to block the whole reply — an attributed target elsewhere does not launder it.
+ */
+function scanTargets(text: string): { hard: HardHit[]; soft: SoftHit[] } {
+  const hard: HardHit[] = [];
+  const soft: SoftHit[] = [];
+  const sents = sentencesOf(text);
+  for (const t of AI_TARGET_LIST) {
+    const g = new RegExp(t.re.source, t.re.flags.includes("g") ? t.re.flags : `${t.re.flags}g`);
+    let m: RegExpExecArray | null;
+    while ((m = g.exec(text)) !== null) {
+      if (m[0] === "") { g.lastIndex++; continue; }
+      // A business figure (₹5,000 crore of revenue) is not a price target — never fires at all.
+      if (UNIT_SENSITIVE.has(t.term) && MAGNITUDE_TAIL.test(text.slice(m.index + m[0].length, m.index + m[0].length + 16))) continue;
+      const s = sents.find((x) => m!.index >= x.start && m!.index < x.end) ?? { text, start: 0, end: text.length };
+      if (isAttributed(s.text)) {
+        soft.push({ term: t.term, match: m[0], context: s.text.trim() });
+      } else {
+        hard.push({ term: t.term, match: m[0], why: `${t.why} — stated with no attributed source` });
+      }
+    }
+  }
+  return { hard, soft };
+}
+
 // ── SOFT — legitimate in description. NEVER blocks; logged so the corpus can inform promotions. ──
 //
 // ★ `FORWARD_DENY_LIST` IS REUSED WHOLESALE AS THE SPINE OF THIS TIER, and that is the honest use of
@@ -244,19 +416,38 @@ const AI_SOFT_EXTRA: Term[] = [
   },
 ];
 
+// ── THE SCANNED VOCABULARY = ENGLISH ∪ HINGLISH/DEVANAGARI ────────────────────────────────────────
+// The per-language arrays stay separately authored and separately reviewable; the SCAN sees one list
+// per tier. Everything downstream (tier sets, the collision checks, scanTier) reads these, so adding a
+// language is one import and one spread — never a second scan path that can drift from this one.
+const AI_HARD_ALL = [...AI_HARD_LIST, ...AI_HARD_LIST_HI];
+const AI_SOFT_ALL = [...AI_SOFT_EXTRA, ...AI_SOFT_EXTRA_HI];
+
 /** Tier membership is BY TERM NAME, because the scanner always merges FORWARD_DENY_LIST in. */
-const HARD_TERMS = new Set(AI_HARD_LIST.map((t) => t.term));
+const HARD_TERMS = new Set(AI_HARD_ALL.map((t) => t.term));
 const SOFT_TERMS = new Set(
-  [...FORWARD_DENY_LIST, ...AI_SOFT_EXTRA].map((t) => t.term),
+  [...FORWARD_DENY_LIST, ...AI_SOFT_ALL].map((t) => t.term),
 );
 
 // FAIL AT MODULE LOAD, not in production: a HARD name colliding with a shared-list name would make a
-// soft term block. Cheap, and the failure mode it prevents is invisible.
-for (const t of AI_HARD_LIST) {
+// soft term block. Cheap, and the failure mode it prevents is invisible. Covers the Hinglish entries
+// too — they are in the same by-name tier space, which is exactly why they carry the `hi-` prefix.
+for (const t of AI_HARD_ALL) {
   if (SOFT_TERMS.has(t.term)) {
     throw new Error(
       `ai/guardrail: HARD term "${t.term}" collides with a SOFT/shared term name. Tier assignment is ` +
         `by name — rename the HARD entry, or a soft word will start blocking output.`,
+    );
+  }
+}
+// The conditional tier does NOT go through the shared scanner, but its names still surface in hardHits/
+// softHits, so a duplicate name would make a verdict unreadable. Same failure, same load-time check.
+const HARD_NAMES = new Set(AI_HARD_ALL.map((t) => t.term));
+for (const t of AI_TARGET_LIST) {
+  if (SOFT_TERMS.has(t.term) || HARD_NAMES.has(t.term)) {
+    throw new Error(
+      `ai/guardrail: TARGET term "${t.term}" collides with an existing HARD/SOFT term name. Rename it — ` +
+        `a verdict must name exactly one rule.`,
     );
   }
 }
@@ -323,7 +514,7 @@ function scanTier(
 export function scanExplanationText(text: string): GuardrailVerdict {
   if (!text || !text.trim()) return { clean: true, hardHits: [], softHits: [] };
 
-  const hardHits: HardHit[] = scanTier(text, AI_HARD_LIST, HARD_TERMS).map(
+  const hardHits: HardHit[] = scanTier(text, AI_HARD_ALL, HARD_TERMS).map(
     (h) => ({
       term: h.term,
       match: matchOf(h.re, text),
@@ -331,12 +522,20 @@ export function scanExplanationText(text: string): GuardrailVerdict {
     }),
   );
 
-  const softHits: SoftHit[] = scanTier(text, AI_SOFT_EXTRA, SOFT_TERMS).map(
+  const softHits: SoftHit[] = scanTier(text, AI_SOFT_ALL, SOFT_TERMS).map(
     (h) => {
       const match = matchOf(h.re, text);
       return { term: h.term, match, context: contextOf(text, match) };
     },
   );
 
-  return { clean: hardHits.length === 0, hardHits, softHits };
+  // The conditional tier — price targets and forecast numbers, each one tiered by whether its own
+  // sentence attributes it. Merged in AFTER the two flat tiers so a verdict reads in one list.
+  const targets = scanTargets(text);
+
+  return {
+    clean: hardHits.length === 0 && targets.hard.length === 0,
+    hardHits: [...hardHits, ...targets.hard],
+    softHits: [...softHits, ...targets.soft],
+  };
 }

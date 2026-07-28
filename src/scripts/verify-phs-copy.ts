@@ -16,7 +16,7 @@
 //   npx tsx src/scripts/verify-phs-copy.ts
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { readFileSync } from "fs";
-import { computePhs, type PhsHolding } from "../portfolio/phs/engine.js";
+import { computePhs, type PhsHolding, type FindingKind, type HoldingFinding } from "../portfolio/phs/engine.js";
 import {
   firePortfolioFindings,
   NOT_EVALUABLE_UNDECLARED,
@@ -51,20 +51,21 @@ const isinFor = (s: string) => {
   }
   return v;
 };
+const findingsOf = (kinds: FindingKind[] = []): HoldingFinding[] => kinds.map((kind) => ({ kind, flagKey: null, title: null, read: null }));
 const H = (
   symbol: string,
   mv: number,
   tier: PhsHolding["tier"],
   sector: string | null,
   health: number | null,
-  findings: PhsHolding["findings"] = [],
+  findings: FindingKind[] = [],
 ): PhsHolding => ({
   symbol,
   marketValue: mv,
   tier,
   sector,
   health,
-  findings,
+  findings: findingsOf(findings),
   isin: isinFor(symbol),
   assetClass: "stock",
   category: null,

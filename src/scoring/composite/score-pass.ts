@@ -167,6 +167,12 @@ export interface ComputeOpts {
    *  byte-identical until the full rule set is validated + the live path opts in. The
    *  PERSIST of findings is separately gated (persistMember opts.writeFindings). */
   withFindings?: boolean;
+  /** Optional rule-set OVERRIDE for the findings hook (default: the full ALL_RULES registry).
+   *  Purely a verification seam — lets a proof run the SAME live pass with and without a rule
+   *  family on byte-identical data (e.g. the Family-N no-score-moved A/B). Default undefined →
+   *  runFindings uses ALL_RULES, so every existing caller is byte-identical. Never set in the
+   *  live path. */
+  findingsRules?: import("../findings/types.js").FireRule[];
 }
 
 export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promise<PgComputed> {
@@ -371,7 +377,7 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
         sectorClass: sectorClassByStock.get(m.stockId) ?? null, // seeded sector→class (§2 Line 2 / F1)
         bandTypicalProfiles,
       };
-      m.findings = runFindings(fctx);
+      m.findings = runFindings(fctx, opts.findingsRules); // default undefined → ALL_RULES (byte-identical)
 
       // ── §5 THREE-LENS escalation (members of THIS fired set, pre-dampen) ──────────
       // The LOUD lens-patterns (LM3/LM7 metric, LP2/LP5 pillar — databank §5.2) join

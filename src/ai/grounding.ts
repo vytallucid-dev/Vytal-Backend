@@ -73,13 +73,13 @@ export interface PortfolioGrounding {
 export type PortfolioFactMode = "full" | "explain";
 
 // ── Render helpers ───────────────────────────────────────────────────────────────────────────
-const NA = "not available";
+export const NA = "not available";
 /** A value → its string, or the explicit "not available" for null/undefined. NEVER omit. */
 const val = (x: unknown): string => (x == null ? NA : String(x));
 /** A JSON-ish value (evidence / triggeringValues) → compact JSON, or "not available". */
 const jsonOr = (x: unknown): string => (x == null ? NA : JSON.stringify(x));
 /** `label: value` (or `label: not available`). */
-const kv = (label: string, value: unknown, unit = ""): string =>
+export const kv = (label: string, value: unknown, unit = ""): string =>
   value == null ? `${label}: ${NA}` : `${label}: ${value}${unit}`;
 
 /** A scalar renders as itself; an OBJECT renders as compact JSON. Never "[object Object]" — an
@@ -108,11 +108,11 @@ const scalarOrJson = (x: unknown): string =>
 /** Float-noise-free decimal string: 0.30000000000000004 → "0.3", 83.61741 → "83.61741". */
 const trim = (x: number): string => String(Number(x.toFixed(6)));
 
-const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
+export const isNum = (x: unknown): x is number => typeof x === "number" && Number.isFinite(x);
 
 /** A SCORE (0–100 scale): the citable value is the INTEGER, exactly as the page shows it. The raw
  *  appears only when it genuinely differs — 84.0000001 is a float artifact, not a second fact. */
-const scoreStr = (x: number): string => {
+export const scoreStr = (x: number): string => {
   const r = Math.round(x);
   return Math.abs(x - r) < 0.005 ? String(r) : `${r} (raw ${trim(x)})`;
 };
@@ -130,15 +130,17 @@ const scoreKv = (label: string, x: unknown): string => `${label}: ${isNum(x) ? s
  *  floor keeps the sentence sayable AND true. A genuine zero still says "0%": the distinction
  *  between "too small to round" and "absent" is exactly the one worth preserving. Raw is retained
  *  either way, so nothing is lost. */
-const pctStr = (f: number): string => {
+export const pctStr = (f: number): string => {
   const pct = Math.round(f * 100);
   const shown = pct === 0 && f > 0 ? "<1%" : `~${pct}%`;
   return `${shown} (raw fraction ${trim(f)})`;
 };
 const pctKv = (label: string, f: unknown): string => `${label}: ${isNum(f) ? pctStr(f) : NA}`;
 
-/** An ALREADY-0–100 scalar (e.g. a percentile) — same speech rule, no ×100. */
-const pctPointStr = (x: number): string => {
+/** An ALREADY-0–100 scalar (e.g. a percentile) — same speech rule, no ×100.
+ *  ★ EXPORTED so the chat tools speak an already-percent figure the SAME way this block does — one
+ *  convention, so a tool result and the page can never state one number two ways. */
+export const pctPointStr = (x: number): string => {
   const r = Math.round(x);
   return Math.abs(x - r) < 0.005 ? `~${r}%` : `~${r}% (raw ${trim(x)})`;
 };
@@ -170,7 +172,9 @@ const inrSayable = (v: number): string => {
   if (abs >= 1e3) return `₹${(v / 1e3).toFixed(1)}K`;
   return new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(v);
 };
-const moneyStr = (v: number): string => (v === 0 ? "₹0" : `${inrSayable(v)} (raw ${trim(v)})`);
+/** ★ EXPORTED for the same reason as pctPointStr: the chat tools must speak money in the app's own
+ *  lakh/crore convention, never invent a second one. */
+export const moneyStr = (v: number): string => (v === 0 ? "₹0" : `${inrSayable(v)} (raw ${trim(v)})`);
 /** `label: <money>` — null-safe, honest-empty. */
 const moneyKv = (label: string, v: unknown): string => `${label}: ${isNum(v) ? moneyStr(v) : NA}`;
 
@@ -266,7 +270,12 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
   } else {
     L.push(scoreKv("Composite health score", vd.composite));
     L.push(kv("Band", `${vd.label.band} (${vd.label.label})`));
-    L.push(kv("Band cut range", vd.label.range ? `[${val(vd.label.range[0])}, ${val(vd.label.range[1])}]` : null));
+    // ★ THE NUMERIC BAND CUT RANGE IS WITHHELD FROM THE BLOCK (same lock as the pillar/metric weights and
+    // the Ownership internals). The BAND NAME is a fact — it is what the user sees on screen — but the
+    // numeric [lower, upper] cut is CONSTRUCTION: the band boundary table, identical for every stock and
+    // harvestable across a few fact blocks (each stock's own range reveals one boundary, and enough of them
+    // reconstruct the whole tier table). So the block states the band, never its cut. `vd.label.range`
+    // remains on the read view / API — this is a render-layer withholding, not a data change.
     L.push(kv("Trajectory marker", vd.trajectoryMarker));
     L.push(scoreKv("Trajectory delta (score points)", vd.trajectoryDelta));
     L.push(kv("Divergence flag", vd.divergence.flag));
@@ -284,22 +293,46 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
   L.push("");
 
   // PILLARS
-  L.push("[PILLARS] (nominal weights 0.35/0.25/0.20/0.20; appliedWeight is post-redistribution)");
+  // ★ THE PILLAR WEIGHTS ARE DELIBERATELY WITHHELD FROM THE BLOCK. Every other number here is THIS
+  // stock's own on-screen value; the four pillar weights are the one exception — they are the fixed,
+  // generalizable ARCHITECTURE of the score, identical for every stock, and the single most
+  // reconstructable piece of the scoring recipe. So the block no longer states them in any form:
+  //   · not the base set (this line used to render `nominalWeight=~35% (raw fraction 0.35)`), and
+  //   · not `appliedWeight` — which EQUALS the base set whenever nothing redistributes, so on the vast
+  //     majority of stocks it leaked the same four numbers with only a different label.
+  // What the model still needs is preserved: `state` already discriminates a `scored` pillar from one
+  // that is `unavailable_redistributed` this period, so the redistribution FACT (a pillar dropped out,
+  // its influence moved to the others) is fully explainable. Only the MAGNITUDE of that shift is gone —
+  // and that magnitude is derivable ONLY from the withheld weights, so withholding it is the same lock,
+  // not a new loss. The weighting POSTURE (which pillar carries more) lives as a qualitative ordering in
+  // the assistant context layer (src/ai/context-layer.ts), never as numbers here.
+  L.push(
+    "[PILLARS] (each pillar's own 0–100 subtotal. The four combine into the composite using Vytal's " +
+      "fixed internal weights, which are NOT disclosed in these facts — do not state, guess, or reconstruct " +
+      "them. state=unavailable_redistributed means the pillar could not be scored this period and its " +
+      "weight was spread across the pillars that could; describe that qualitatively, never with a number.)",
+  );
   for (const p of view.pillars) {
+    // nativeZone MARKS WITHHELD — the numeric [lower,upper] are per-PG pillar-zone thresholds (constant per
+    // peer group, harvestable across stocks). The model explains from the categorical POSITION ("above its
+    // native zone"), never the marks, so only `position` is rendered.
     L.push(
       `- ${p.pillar.toUpperCase()}: subtotal=${isNum(p.subtotal) ? scoreStr(p.subtotal) : NA}, state=${val(p.state)}, ` +
-        `nominalWeight=${isNum(p.nominalWeight) ? pctStr(p.nominalWeight) : NA}, ` +
-        `appliedWeight=${isNum(p.appliedWeight) ? pctStr(p.appliedWeight) : NA}, ` +
-        `nativeZone=[${val(p.nativeZone.lowerMark)},${val(p.nativeZone.upperMark)}]`,
+        `nativeZonePosition=${val(p.nativeZone.position)}`,
     );
     if (p.metrics) {
       for (const m of p.metrics) {
         // Name-first: the canonical human label leads; the engine key stays as a bracketed
         // provenance tail (citation `label` matching and traceability preserved).
         const mHead = m.label && m.label !== m.metricKey ? `${m.label} [${m.metricKey}]` : m.metricKey;
+        // ★ PER-METRIC WEIGHTS WITHHELD — the same lock as the pillar weights, one level down, and the
+        // richer leak: per-PG metric weights ARE the scoring architecture. The block used to print
+        // contribution + nominalWeight + effectiveWeight; all three are gone. contribution had to go too,
+        // because `contribution = effectiveWeight/100 × score` (pillars/assemble.ts), so printing it beside
+        // metricScore re-derived the weight by division. rawValue, metricScore, l1Band and the three lens
+        // scores stay — this stock's own on-screen values, enough to explain the metric, never how it is weighted.
         L.push(
           `    · metric ${mHead}: rawValue=${val(m.rawValue)}, metricScore=${val(m.metricScore)}, l1Band=${val(m.l1Band)}, ` +
-            `contribution=${val(m.contribution)}, nominalWeight=${val(m.nominalWeight)}, effectiveWeight=${val(m.effectiveWeight)}, ` +
             `lensL1=${val(m.l1Score)}, lensL2=${val(m.l2Score)}, lensL3=${val(m.l3Score)}, metricState=${val(m.metricState)}` +
             (m.suppressionReason ? `, suppressionReason=${m.suppressionReason}` : ""),
         );
@@ -326,15 +359,33 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
     }
     if (p.ownership) {
       const o = p.ownership;
+      // ★ OWNERSHIP FORMULA SHAPE WITHHELD. The block used to render the whole construction — baseline,
+      // pledgingAdjustment, penalties, primarySubtotal, flowAdjustment raw/clamped, and per-flow
+      // rawSubScore/cappedSubScore — i.e. the baseline+pledging+flows→clamp recipe, with the clamp floor
+      // inferable across stocks. Every one is arithmetic on the way to finalOwnership, and the model explains
+      // rather than recomputes, so they are gone. What stays: finalOwnership (the pillar score, on screen) and
+      // the CATEGORICAL facts a reader needs. For pledging we surface the FLAG plus the real pledge ratio (the
+      // figure the user sees) but NEVER the firing thresholds — r1TriggeringValues also carries thresholdPct=50
+      // / thresholdQoqRisePp=10 and breach strings that embed them, so we read ONLY pledgeRatioQ off it. Per
+      // flow we surface state / trend / band-landed label / whether an unusually large move was capped (the
+      // FACT, from capApplied≠0, not the numeric cap). netFlowValue is dropped: paired with the band it would
+      // bracket the UNIVERSAL flow-band cuts, and state+trend+band already carry the meaning ("institutions
+      // accumulating — three quarters up — a strong inflow").
+      const tv =
+        o.r1Fired && o.r1TriggeringValues && typeof o.r1TriggeringValues === "object"
+          ? (o.r1TriggeringValues as { pledgeRatioQ?: unknown })
+          : null;
+      const pledge = tv && isNum(tv.pledgeRatioQ) ? ` (pledge ratio ${pctPointStr(tv.pledgeRatioQ)} of promoter holding)` : "";
       L.push(
-        `    · ownership detail: baseline=${val(o.baseline)}, pledgingAdjustment=${val(o.pledgingAdjustment)}, primarySubtotal=${val(o.primarySubtotal)}, ` +
-          `flowAdjustment raw/clamped=${val(o.flowAdjustmentRaw)}/${val(o.flowAdjustmentClamped)}, finalOwnership=${val(o.finalOwnership)}`,
+        `    · ownership: finalOwnership=${isNum(o.finalOwnership) ? scoreStr(o.finalOwnership) : NA}, ` +
+          `promoterPledgeFlag=${o.r1Fired ? "fired" : "not fired"}${pledge}`,
       );
       for (const fc of o.flowCategories) {
         const flowName = FLOW_CATEGORY_LABELS[fc.category] ?? fc.category;
+        const moveCapped = isNum(fc.capApplied) && Math.abs(fc.capApplied) > 0.005;
         L.push(
-          `        - flow ${flowName} [${fc.category}]: rawSubScore=${val(fc.rawSubScore)}, cappedSubScore=${val(fc.cappedSubScore)}, ` +
-            `netFlowValue=${val(fc.netFlowValue)}`,
+          `        - flow ${flowName} [${fc.category}]: state=${val(fc.categoryState)}, trend=${val(fc.trendState)}, ` +
+            `band=${val(fc.bandLanded)}, moveCapped=${moveCapped ? "yes (an unusually large move was limited)" : "no"}`,
         );
       }
     }

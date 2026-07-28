@@ -14,7 +14,7 @@
 // the §10 examples are correct as written — and re-baselining the expectations would bake a fixture bug
 // into the spec's own worked examples, permanently.
 //   npx tsx src/scripts/probe-s9-fixture-nature-gap.ts
-import { computePhs, type PhsHolding } from "../portfolio/phs/engine.js";
+import { computePhs, type PhsHolding, type FindingKind, type HoldingFinding } from "../portfolio/phs/engine.js";
 import { firePortfolioFindings } from "../portfolio/phs/patterns.js";
 
 // Distinct 12-char ISIN per symbol, allocated by first-seen order. Deterministic, and collision-free
@@ -34,11 +34,14 @@ const isinFor = (symbol: string) => {
 };
 
 // TODAY's fixture — verbatim from verify-phs-patterns.ts:21.
-const H = (symbol: string, mv: number, tier: PhsHolding["tier"], sector: string | null, health: number | null, findings: PhsHolding["findings"] = []): PhsHolding =>
-  ({ symbol, marketValue: mv, tier, sector, health, findings });
+// Fixture findings carry only a severity `kind`; the engine reads nothing else. flagKey/title/read
+// are display identity (null here) — synthetic books don't assert on them.
+const findingsOf = (kinds: FindingKind[] = []): HoldingFinding[] => kinds.map((kind) => ({ kind, flagKey: null, title: null, read: null }));
+const H = (symbol: string, mv: number, tier: PhsHolding["tier"], sector: string | null, health: number | null, findings: FindingKind[] = []): PhsHolding =>
+  ({ symbol, marketValue: mv, tier, sector, health, findings: findingsOf(findings) });
 // WITH the position facts the real path always sets (assemble.ts:448 — a stock, its own ISIN).
-const HS = (symbol: string, mv: number, tier: PhsHolding["tier"], sector: string | null, health: number | null, findings: PhsHolding["findings"] = []): PhsHolding =>
-  ({ symbol, marketValue: mv, tier, sector, health, findings, isin: isinFor(symbol), assetClass: "stock", category: null });
+const HS = (symbol: string, mv: number, tier: PhsHolding["tier"], sector: string | null, health: number | null, findings: FindingKind[] = []): PhsHolding =>
+  ({ symbol, marketValue: mv, tier, sector, health, findings: findingsOf(findings), isin: isinFor(symbol), assetClass: "stock", category: null });
 
 type Mk = typeof H;
 const ex1 = (h: Mk) => [

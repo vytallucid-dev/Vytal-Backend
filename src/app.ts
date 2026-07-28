@@ -1,7 +1,7 @@
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
-import { requireAdmin, requireAuth } from "./middleware/auth.js";
+import { requireAdmin, requireAuth, optionalAuth } from "./middleware/auth.js";
 import {
   adminDealsRouter,
   dealsRouter,
@@ -53,11 +53,13 @@ import { universeHealthRouter } from "./routes/universe-health-route.js";
 import { compareRouter } from "./routes/compare-route.js";
 import { meRouter } from "./routes/me-routes.js";
 import { mePortfolioRouter } from "./routes/me-portfolio-routes.js";
-import { meAiRouter } from "./routes/me-ai-routes.js";
+import { meActivityRouter } from "./routes/me-activity-routes.js";
 import { meWatchlistRouter } from "./routes/me-watchlist-routes.js";
 import { meAlertsRouter } from "./routes/me-alerts-routes.js";
 import { meRemindersRouter } from "./routes/me-reminders-routes.js";
 import { meBrokerRouter } from "./routes/me-broker-routes.js";
+import { meChatRouter } from "./routes/me-chat-routes.js";
+import { relationalRouter } from "./routes/relational-routes.js";
 
 export const createApp = () => {
   const app = express();
@@ -171,11 +173,23 @@ export const createApp = () => {
   //    The broker-agnostic lifecycle lives in src/brokers; adapters never place orders. ──
   app.use("/api/v1/me", requireAuth, meBrokerRouter);
 
-  // ── Authenticated user's OWN AI surfaces (requireAuth). A SEVENTH router on the same base
-  //    path — the six above are untouched. Deliberately me-scoped rather than public: the
-  //    output is written in the READER'S registered tone (needs an identity) and every cache
-  //    miss spends a unit of a small shared daily budget (needs an owner). ──
-  app.use("/api/v1/me", requireAuth, meAiRouter);
+  // ── Behaviour tracking (Phase 1): the client-originated attention ingest (a beacon) + the
+  //    clear-my-activity control. A SEVENTH router on the same base path; the others are untouched.
+  //    Relationship events ride the existing mutations server-side, not this router. ──
+  app.use("/api/v1/me", requireAuth, meActivityRouter);
+
+  // ── Authenticated user's OWN chat (requireAuth). Stage 2 conversation engine: discuss-sidebar +
+  //    chat-page sessions with server-composed, grounded openings; owner always req.authUser.userId
+  //    (IDOR-proof). An EIGHTH router on the same base path — the seven above are untouched. Grounding,
+  //    tone, the output guardrail and metering are reused from src/ai; nothing here sends email. ──
+  app.use("/api/v1/me", requireAuth, meChatRouter);
+
+  // ── Relational L4 — the reader-relative Overview card (standalone service; the card + the AI layer are
+  //    both consumers). Behind `optionalAuth`: an ANONYMOUS reader is a valid caller (M9 Stranger, UO only,
+  //    UG8), never a 401. Its OWN top-level mount — deliberately NOT under /api/v1/me/* (anonymous is
+  //    valid) and NOT under /api/stocks/* (public + cacheable by symbol; this response is per-reader and
+  //    must never be cached stock-side). ──
+  app.use("/api/v1/relational", optionalAuth, relationalRouter);
 
   return app;
 };

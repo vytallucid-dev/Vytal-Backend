@@ -39,8 +39,8 @@ import {
   composeDeterministicPortfolioFallbackDetailed,
   AUTHORED_FALLBACK_STRINGS,
   type PortfolioFallbackLayer,
-} from "../ai/explain/portfolio-health.js";
-import { composeDeterministicFallback } from "../ai/explain/stock-health.js";
+} from "../insight/deterministic/portfolio-reading.js";
+import { composeDeterministicFallback, composeDeterministicStockInsight } from "../insight/deterministic/stock-reading.js";
 import { buildPortfolioHealthView, reshapeSnapshot, type SnapshotReadInput, type PortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
 import { buildHealthSnapshotView } from "../scoring/read/health-view.service.js";
 import { composeLmVerdict, composeLpVerdict, type StandingBand } from "../scoring/lens-patterns/standing-context.js";
@@ -79,7 +79,7 @@ async function main() {
   // ═════════════════════════════════════════════════════════════════════════════════════════════════
   {
     // Exhaustiveness FIRST: a sentence that never reached the array would sail past every scan below.
-    const src = readFileSync("src/ai/explain/portfolio-health.ts", "utf8");
+    const src = readFileSync("src/insight/deterministic/portfolio-reading.ts", "utf8");
     const declared = [...src.matchAll(/^const [A-Z_]+ =\s*\n?\s*"((?:[^"\\]|\\.)*)";/gm)].map((m) => m[1]!);
     ok("★ every authored const in the module is IN the proof set (exhaustive by construction)",
       declared.length > 0 && declared.every((d) => AUTHORED_FALLBACK_STRINGS.includes(d)),
@@ -272,6 +272,7 @@ async function main() {
 
     let scanned = 0;
     const offenders: string[] = [];
+    const structOffenders: string[] = [];
     for (const s of stocks) {
       const view = await buildHealthSnapshotView(s.symbol);
       if (!view) continue;
@@ -279,9 +280,22 @@ async function main() {
       const r = bothGates(s.symbol, prose, "shared"); // ⚠ SHARED vocabulary — see the header
       scanned++;
       if (!r.clean) offenders.push(`${s.symbol}: ${r.detail}`);
+
+      // ── The STRUCTURED seed reading — scan every model-free text field it emits (headline · drivers ·
+      //    tension) through the same runtime guardrail. Added when the three composers were rescued as
+      //    pattern-library seed, so all three are proven guardrail-clean, not just the two prose ones. ──
+      const reading = composeDeterministicStockInsight(view);
+      const texts = [reading.headline?.text, ...reading.drivers.map((d) => d.text), reading.tension?.text]
+        .filter((t): t is string => !!t);
+      for (const t of texts) {
+        const rr = bothGates(`${s.symbol}#struct`, t, "shared");
+        if (!rr.clean) structOffenders.push(`${s.symbol}: ${rr.detail}`);
+      }
     }
     ok(`★★ ${scanned} LIVE stock fallbacks clean on BOTH gates (shared advice vocab + runtime guardrail)`,
       offenders.length === 0, offenders.slice(0, 6).join(" | ") || `${scanned} scanned`);
+    ok(`★★ the STRUCTURED stock reading is clean on BOTH gates across all ${scanned} stocks`,
+      structOffenders.length === 0, structOffenders.slice(0, 6).join(" | ") || `${scanned} scanned`);
 
     // ── 4b · ★★ THE VERDICT CORPUS, EXHAUSTIVELY ──
     //

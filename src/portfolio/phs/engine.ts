@@ -32,6 +32,21 @@ export type Bucket = "scored" | "recognized_unscored" | "small_unscored";
 /** The fired findings Signals consumes (already deduplicated by the findings store). */
 export type FindingKind = "distress" | "critical" | "high" | "medium" | "lp5" | "lp6";
 
+/** ONE fired Signals-relevant finding on a holding. `kind` is the severity band that drives the
+ *  deduction math (the ONLY thing the engine's winner-selection reads); the identity fields ride
+ *  alongside so the ledger entry can name WHAT fired, not only how loud it is.
+ *   • flagKey — the finding's identity code (score_red_flags.flag_key / a pattern's key). `null` ONLY
+ *     for the band-derived `distress` headline, which is not a catalog finding.
+ *   • title / read — the finding's display name + written short read, pulled from the same evidence
+ *     JSON the stock-health page renders. `title` falls back to the flagKey when the JSON carries no
+ *     name; `read` is null when it carries no verdict. Never fabricated. */
+export interface HoldingFinding {
+  kind: FindingKind;
+  flagKey: string | null;
+  title: string | null;
+  read: string | null;
+}
+
 /** The four pillar subtotals of a scored holding (0..100 each) — from its ScoreSnapshot. */
 export interface PillarSubtotals {
   foundation: number;
@@ -57,7 +72,7 @@ export interface PhsHolding {
   tier: McapTier;
   sector: string | null; // null ⇒ unknown-sector
   health: number | null; // scored ⇒ 0..100; unscored ⇒ null
-  findings: FindingKind[]; // fired findings for this holding (empty if none/unscored)
+  findings: HoldingFinding[]; // fired findings for this holding — severity band + identity (empty if none/unscored)
   pillars?: PillarSubtotals | null; // (1.2 Change 4) scored ⇒ its 4 pillar subtotals; else null
   lensNatures?: LensNature[]; // (1.2 Change 5) natures of this holding's fired lens patterns
   // (Construction v2 Stage 1) POSITION FACTS for the entity model — nature + entity key are derived
@@ -77,8 +92,14 @@ export interface PhsHolding {
 export interface SignalsDeduction {
   symbol: string;
   weight: number;
-  source: FindingKind; // the winning (largest, headline-first) finding
+  source: FindingKind; // the winning (largest, headline-first) finding's SEVERITY band
   points: number; // positive magnitude subtracted (= base × weight, clamped)
+  // ── identity of the winning finding (additive — the score/points/winner are UNCHANGED) ──
+  // Lets the ledger row name WHAT fired, not only how loud. Populated from the same winner the
+  // severity math already selects; null-safe for the band-derived `distress` headline (no catalog id).
+  flagKey: string | null; // e.g. "ownership_R6_distribution"; null for a band-derived distress headline
+  title: string | null; // e.g. "Distribution Pattern" (flagKey fallback); null when unknown
+  read: string | null; // the written short read / verdict; null when the source carries none
 }
 
 export interface PhsResult {
@@ -203,23 +224,36 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
   let signalsDed = 0;
   holdings.forEach((h, i) => {
     if (h.findings.length === 0) return;
-    const hasHeadline = h.findings.some((f) => f in HEADLINE);
-    // candidates (base magnitudes); if any headline fires, breadth candidates are suppressed
-    const candidates: { source: FindingKind; base: number }[] = [];
+    const hasHeadline = h.findings.some((f) => f.kind in HEADLINE);
+    // candidates (base magnitudes); if any headline fires, breadth candidates are suppressed. Each
+    // candidate carries the WHOLE fired finding so the winner's identity (flagKey/title/read) rides
+    // onto the ledger entry beside its severity — the selection math reads ONLY `.kind`.
+    const candidates: { fired: HoldingFinding; base: number }[] = [];
     for (const f of h.findings) {
-      if (f in HEADLINE) candidates.push({ source: f, base: HEADLINE[f]! });
-      else if (!hasHeadline && f in BREADTH) candidates.push({ source: f, base: BREADTH[f]! });
+      if (f.kind in HEADLINE) candidates.push({ fired: f, base: HEADLINE[f.kind]! });
+      else if (!hasHeadline && f.kind in BREADTH) candidates.push({ fired: f, base: BREADTH[f.kind]! });
       // field-verdicts / LM patterns are simply not in either map → never deduct
     }
     if (candidates.length === 0) return;
-    // single largest (do NOT sum two lenses on one troubled name)
+    // single largest (do NOT sum two lenses on one troubled name). Ties keep the FIRST candidate —
+    // i.e. the first fired finding in h.findings order — so which finding wins is UNCHANGED; the
+    // entry now merely names it.
     const winner = candidates.reduce((a, b) => (b.base > a.base ? b : a));
     // scored-renormalized weight (see the block header). Findings fire ONLY on scored holdings, so
     // this holding is always inside ΣwScored and wSig is well-defined (never a divide-by-zero).
     const wSig = sumWScored > 0 ? w[i] / sumWScored : 0;
     const points = Math.min(winner.base * wSig, K.SIG_HOLDING_CAP * wSig); // clamp per-holding
     signalsDed += points;
-    signalsLedger.push({ symbol: h.symbol, weight: wSig, source: winner.source, points });
+    signalsLedger.push({
+      symbol: h.symbol,
+      weight: wSig,
+      source: winner.fired.kind, // severity band — unchanged
+      points,
+      // identity of the winning finding (additive; no number moved) — what fired, not only how loud.
+      flagKey: winner.fired.flagKey,
+      title: winner.fired.title,
+      read: winner.fired.read,
+    });
   });
   const signals = Math.max(0, 100 - signalsDed);
 

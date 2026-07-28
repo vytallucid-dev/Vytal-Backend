@@ -72,8 +72,9 @@ model Stock {
   insiderTrades            InsiderTrade[]
   news                     StockNews[]
   aiSummaries              AiSummary[]
-  aiExplanations           AiExplanation[]
-  aiStockInsights          AiStockInsight[]
+  attentionEvents          AttentionEvent[]
+  relationshipEvents       RelationshipEvent[]
+  behaviorRollups          BehaviorRollup[]
   peerGroups               StockPeerGroup[]
   resultFetchLogs          ResultFetchLog[]
   bankingFundamentals      BankingFundamental[]
@@ -1070,223 +1071,6 @@ model AiUsageCounter {
 
   @@id([scope, windowKey])
   @@map("ai_usage_counters")
-}
-
-// ─────────────────────────────────────────────
-// AI EXPLANATIONS
-// The lazy write-through cache behind POST /api/v1/me/stocks/:symbol/explanation — one row per
-// (stock, facts state, tone). Generated on the FIRST request for a key and served from here after,
-// which is not an optimisation but the ONLY affordable shape: the free tier is 480 calls/day TOTAL
-// across all users, so an on-demand explanation regenerated per page view would exhaust the global
-// daily budget in a few hundred views. Cached, full coverage of the 95-stock universe costs 95 calls.
-//
-// ⚠ WHY A NEW TABLE AND NOT `AiSummary`. AiSummary is NEWS-shaped: an m2m to StockNews and a
-// summaryType taxonomy about announcements/earnings, neither of which means anything for a snapshot
-// explanation — and it carries no invalidation key and no tone key, which are the two columns this
-// feature is actually built around. Reusing it would create one table with two disjoint nullable
-// halves. It also defaults `isApproved` to TRUE: a guardrail verdict column that FAILS OPEN, so an
-// un-scanned row is served as approved. This table's `approved` defaults FALSE — an explanation is
-// unproven until the guardrail clears it, and an unscanned row is invisible rather than trusted.
-//
-// ★ THE CACHE KEY IS (stockId, factsKey, toneKey) — deliberately NOT the snapshot version.
-// `factsKey` hashes the grounding fact block with its raw parentheticals stripped: it keys on WHAT
-// THE MODEL WAS ALLOWED TO SAY, which after grounding's rounding is the DISPLAY-precision numbers.
-// Keying on ScoreSnapshot.version/inputsFingerprint instead would invalidate the whole cache every
-// time a live rescore nudged a composite 73.51 → 73.54 — a row change that cannot alter one word of
-// an explanation that was only ever permitted to say "74". Never keyed on userId: that would collapse
-// the cache to one row per person and destroy the economics the cache exists for.
-// ─────────────────────────────────────────────
-model AiExplanation {
-  id String @id @default(uuid())
-
-  // ── Cache key ──
-  stockId  String @map("stock_id")
-  factsKey String @map("facts_key") // sha256 of the fact block, raw parentheticals stripped
-  toneKey  String @map("tone_key") // "level:depth:jargon" — the resolved directive, NOT the user
-
-  // ── Content ──
-  content  String // the generated explanation body (the assertive text the guardrail scanned)
-  headline String? // optional one-liner; null until/unless a caller asks for one
-
-  // ── Guardrail verdict (Layer 1). `approved` FAILS CLOSED — see the header. ──
-  approved Boolean @default(false)
-  hardHits Json?   @map("hard_hits") // GuardrailVerdict.hardHits — populated only on a blocked attempt
-  softHits Json?   @map("soft_hits") // GuardrailVerdict.softHits — the corpus for future HARD promotions
-  attempts Int     @default(1) // 1 = clean first pass; 2 = needed the hardened-directive regeneration
-
-  // ── Token accounting — the SAME column shape as AiSummary, which src/ai/types.ts's TokenUsage
-  //    was deliberately built to map onto 1:1, so usage persists verbatim with no translation. ──
-  model        String // the requested model id, e.g. "gemini-3.5-flash-lite" (also the quota scope)
-  modelVersion String  @map("model_version") // what the provider actually answered with
-  promptTokens Int?    @map("prompt_tokens")
-  outputTokens Int?    @map("output_tokens")
-  cachedTokens Int?    @map("cached_tokens")
-  cacheHit     Boolean @default(false) @map("cache_hit") // provider-side context cache, NOT this table
-
-  // ── Provenance: WHICH health state this text described. Stored as the view's own strings so the
-  //    record stays byte-faithful to what grounding reported; this is an audit trail, not a join key
-  //    (the join key is factsKey). Nullable — an unscored stock has no as-of date to claim. ──
-  asOfDate     String? @map("as_of_date")
-  periodKey    String? @map("period_key")
-  snapshotType String? @map("snapshot_type")
-
-  generatedAt DateTime @default(now()) @map("generated_at")
-
-  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
-
-  @@unique([stockId, factsKey, toneKey]) // THE cache key — one row per (stock, facts state, tone)
-  @@index([stockId])
-  @@index([generatedAt(sort: Desc)]) // the offline Layer-4 judge sweeps newest-first
-  @@map("ai_explanations")
-}
-
-// ─────────────────────────────────────────────
-// AI STOCK INSIGHTS — the STRUCTURED-JSON sibling of ai_explanations.
-// The cache behind POST /api/v1/me/stocks/:symbol/insight — one row per (stock, facts state, tone).
-//
-// ⚠ WHY A SEPARATE TABLE AND NOT A `kind` DISCRIMINATOR ON ai_explanations. The subject, the cache key
-// (stock_id, facts_key, tone_key) and the provenance columns (as_of_date/period_key/snapshot_type) are
-// IDENTICAL to the prose row — so neither reason that split ai_portfolio_explanations out applies here.
-// What differs is the CONTENT SHAPE, and that alone is enough:
-//   · Prose stores ONE assertive string in `content` (NOT NULL) — the exact text the guardrail scanned.
-//     A structured insight is a JSON object of many independently-scanned text fields plus passthrough
-//     citations; it has no single `content`. A `kind` column forces `content String?` + `payload Json?`
-//     — the "two disjoint nullable halves" ai_explanations' own header refused when it declined to reuse
-//     ai_summaries. Same doctrine, kept.
-//   · Relaxing the live `@@unique([stock_id, facts_key, tone_key])` to a 4-tuple (adding `kind`) is a
-//     migration on a serving unique constraint plus a backfill on existing prose rows — real risk to a
-//     working cache, bought for nothing. A new table touches nothing that already works.
-//   · Same shared-economics as the prose row (tone_key collapses to 7 triples ⇒ ONE generation serves
-//     every reader of that stock in that tone until the quarterly snapshot moves). The FK + index shape
-//     mirror ai_explanations exactly, on purpose.
-//
-// Only guardrail-CLEAN model payloads land here (`approved` fails closed). The deterministic-JSON
-// fallback is never persisted — it is cheap to reassemble from grounding and must never be one
-// `approved` flag away from the read path, exactly as the prose fallback is never cached.
-// ─────────────────────────────────────────────
-model AiStockInsight {
-  id String @id @default(uuid())
-
-  // ── Cache key — IDENTICAL to ai_explanations (same subject, same facts, same tone dimension). ──
-  stockId  String @map("stock_id")
-  factsKey String @map("facts_key") // sha256 of the fact block, raw parentheticals stripped
-  toneKey  String @map("tone_key") // "level:depth:jargon" — the resolved directive, NOT the user
-
-  // ── Content — the validated StockInsight object (headline/drivers/tension + their citations).
-  //    A JSON column, not a string: the payload is structured by construction and the read path returns
-  //    it verbatim. Every `text` field inside was guardrail-scanned; every citation was echo-asserted
-  //    against the fact block before this row was written. ──
-  payload Json
-
-  // ── Guardrail verdict (Layer 1). `approved` FAILS CLOSED — unproven until the scan clears it. ──
-  approved Boolean @default(false)
-  hardHits Json?   @map("hard_hits") // GuardrailVerdict.hardHits — populated only on a blocked attempt
-  softHits Json?   @map("soft_hits") // GuardrailVerdict.softHits across every text field — the promotion corpus
-  attempts Int     @default(1) // 1 = clean first pass; 2 = needed the hardened-directive regeneration
-
-  // ── Token accounting — the SAME column shape as AiExplanation/AiSummary, so TokenUsage persists
-  //    verbatim with no translation. ──
-  model        String // the requested model id, e.g. "gemini-3.5-flash-lite" (also the quota scope)
-  modelVersion String  @map("model_version") // what the provider actually answered with
-  promptTokens Int?    @map("prompt_tokens")
-  outputTokens Int?    @map("output_tokens")
-  cachedTokens Int?    @map("cached_tokens")
-  cacheHit     Boolean @default(false) @map("cache_hit") // provider-side context cache, NOT this table
-
-  // ── Provenance: WHICH health state this insight described. Same strings as the prose row — the
-  //    subject is a stock, so the quarterly-filing provenance survives the trip unchanged. ──
-  asOfDate     String? @map("as_of_date")
-  periodKey    String? @map("period_key")
-  snapshotType String? @map("snapshot_type")
-
-  generatedAt DateTime @default(now()) @map("generated_at")
-
-  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
-
-  @@unique([stockId, factsKey, toneKey]) // THE cache key — one row per (stock, facts state, tone)
-  @@index([stockId])
-  @@index([generatedAt(sort: Desc)]) // the offline Layer-4 judge sweeps newest-first
-  @@map("ai_stock_insights")
-}
-
-// ─────────────────────────────────────────────
-// AI PORTFOLIO EXPLANATIONS
-// The cache behind POST /api/v1/me/portfolio/explanation — one row per (user, facts state, tone).
-//
-// ⚠ WHY A SECOND TABLE AND NOT A NULLABLE stock_id ON ai_explanations. The subject is not a stock,
-// and the difference is structural rather than cosmetic:
-//   · `stock_id` there is NOT NULL with an FK to stocks and it is the FIRST column of the unique
-//     index. Making it nullable to admit portfolios would weaken the stock cache's own key (Postgres
-//     treats NULLs as distinct in a unique index, so the guarantee "one row per stock/facts/tone"
-//     would quietly stop being enforced for exactly the rows that matter most).
-//   · The PROVENANCE columns do not survive the trip. A stock snapshot has a `period_key` and a
-//     `snapshot_type` ("quarterly"); a portfolio has neither — it has a snapshot id, an as-of
-//     instant and a CONSTANT_VERSION. Reusing the columns would mean storing a portfolio's identity
-//     in fields named after a quarterly filing.
-//   · One table with two disjoint nullable halves is exactly the shape ai_explanations' own header
-//     refused when it declined to reuse ai_summaries. Same reasoning, one layer along.
-//
-// ★ THE CACHE KEY IS (user_id, facts_key, tone_key), AND ITS ECONOMICS ARE NOT THE STOCK TABLE'S.
-// A stock row is shared: `tone_key` collapses to 7 triples, so ONE generation serves every user who
-// reads that stock in that tone until the quarterly snapshot moves — amortisation is N-users-to-one.
-// A portfolio's `facts_key` is derived from ONE person's book, so a row can only ever be hit by the
-// user who paid for it. This cache is IDEMPOTENCY (a double-render, a retry, a refresh, a
-// back-navigation cost nothing), not amortisation. Expect roughly one generation per user per
-// meaningful book change, and size the per-user quota sub-cap on that assumption rather than on the
-// stock surface's hit rate.
-//
-// `tone_key` stays in the key even though a row serves one user: it is not a sharing dimension here
-// but a correctness one — a register change must not serve prose written in the reader's old voice.
-// ─────────────────────────────────────────────
-model AiPortfolioExplanation {
-  id String @id @default(uuid())
-
-  // ── Cache key ──
-  userId   String @map("user_id")
-  factsKey String @map("facts_key") // sha256 of the portfolio fact block, normalised to the SPEECH
-  toneKey  String @map("tone_key") // "level:depth:jargon" — the resolved directive, NOT the user
-
-  // ── Content ──
-  content  String // the generated explanation body (the assertive text the guardrail scanned)
-  headline String? // optional one-liner; null until/unless a caller asks for one
-
-  /// WHICH QUESTION WAS ANSWERED — "health" | "construction". Not decoration: a construction-only
-  /// book (nothing scored) is asked a DIFFERENT question, one that must never presuppose a verdict
-  /// the book does not have. Storing the slot beside the text means a cached row can never be
-  /// re-served under the other question after the book crosses into being scored.
-  headlineSlot String? @map("headline_slot")
-
-  // ── Guardrail verdict (Layer 1). `approved` FAILS CLOSED — unproven until the scan clears it. ──
-  approved Boolean @default(false)
-  hardHits Json?   @map("hard_hits") // GuardrailVerdict.hardHits — populated only on a blocked attempt
-  softHits Json?   @map("soft_hits") // GuardrailVerdict.softHits — the corpus for future HARD promotions
-  attempts Int     @default(1) // 1 = clean first pass; 2 = needed the hardened-directive regeneration
-
-  // ── Token accounting — the SAME column shape as AiExplanation/AiSummary, so TokenUsage persists
-  //    verbatim with no translation. ──
-  model        String // the requested model id, e.g. "gemini-3.5-flash-lite" (also the quota scope)
-  modelVersion String  @map("model_version") // what the provider actually answered with
-  promptTokens Int?    @map("prompt_tokens")
-  outputTokens Int?    @map("output_tokens")
-  cachedTokens Int?    @map("cached_tokens")
-  cacheHit     Boolean @default(false) @map("cache_hit") // provider-side context cache, NOT this table
-
-  // ── Provenance: WHICH computed book this text described. An audit trail, not a join key (the join
-  //    key is factsKey). `snapshotId` is the PHS snapshot the grounding read; `asOf` its ISO instant;
-  //    `constantVersion` the scoring constants behind it. All nullable — a book with no snapshot
-  //    never reaches a cache write, but a legacy row should degrade rather than lie. ──
-  snapshotId      String? @map("snapshot_id")
-  asOf            String? @map("as_of")
-  constantVersion String? @map("constant_version")
-
-  generatedAt DateTime @default(now()) @map("generated_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, factsKey, toneKey]) // THE cache key — one row per (user, facts state, tone)
-  @@index([userId])
-  @@index([generatedAt(sort: Desc)]) // the offline Layer-4 judge sweeps newest-first
-  @@map("ai_portfolio_explanations")
 }
 
 // ─────────────────────────────────────────────
@@ -3375,9 +3159,6 @@ model User {
   //    snapshot, best-effort, never load-bearing) ──
   portfolioScoreHistory PortfolioScoreHistory[]
 
-  // ── AI portfolio explanations (the per-user explanation cache; idempotency, not amortisation) ──
-  aiPortfolioExplanations AiPortfolioExplanation[]
-
   // ── Watchlist (per-user pinned research surface; display-only, never scored) ──
   watchlist Watchlist[]
 
@@ -3389,7 +3170,16 @@ model User {
   eventReminders      EventReminder[]
   eventReminderEvents EventReminderEvent[]
 
+  // ── Behaviour tracking (Phase 1): raw attention/relationship events + the durable rollup ──
+  attentionEvents    AttentionEvent[]
+  relationshipEvents RelationshipEvent[]
+  behaviorRollups    BehaviorRollup[]
+
+  // ── Chat (Stage 2): the user's own conversations (discuss sidebar + chat page) ──
+  chatSessions ChatSession[]
+
   @@map("users")
+  chatReaderProfile ChatReaderProfile?
 }
 
 /// Durable onboarding FACTS. One row per user; columns nullable so
@@ -3526,9 +3316,9 @@ enum PortfolioAccountState {
 /// on the first manual transaction for new ones — same find-or-create mechanism). `broker` /
 /// `broker_connection_id` are null for a pure-manual account (linking is Step 2).
 model PortfolioAccount {
-  id     String @id @default(uuid())
-  userId String @map("user_id")
-  name   String
+  id                 String                @id @default(uuid())
+  userId             String                @map("user_id")
+  name               String
   /// THE ACCOUNT'S BROKER — its identity, set at CREATION and NOT NULL (Step 5.5). Every account
   /// belongs to a broker: a manual account is "my Zerodha book, hand-tracked"; linking is the act
   /// of connecting that already-tagged book to the real feed. So `link` CHECKS this against the
@@ -3558,12 +3348,12 @@ model PortfolioAccount {
 /// SOURCE OF TRUTH — append-only, user-authored. Never mutated except a
 /// correction (PATCH/DELETE), which triggers a full FIFO replay.
 model Transaction {
-  id        String          @id @default(uuid())
-  userId    String          @map("user_id")
-  accountId String          @map("account_id") // the portfolio account this txn belongs to (FIFO grouping)
+  id           String          @id @default(uuid())
+  userId       String          @map("user_id")
+  accountId    String          @map("account_id") // the portfolio account this txn belongs to (FIFO grouping)
   /// THE SPINE (Step 20). A transaction is OF an instrument — a stock, an ETF, a fund, a REIT, a
   /// bond. NOT NULL: every catalogue row has one, and the FIFO queue is keyed on it.
-  instrumentId String       @map("instrument_id")
+  instrumentId String          @map("instrument_id")
   /// THE DENORMALISED CONVENIENCE, and NOTHING MORE. NULL for every non-stock instrument — a bond
   /// has no row in `stocks`. It was the spine until Step 20; it is now a shortcut for the 504 equity
   /// rows and is dropped in a later cleanup.
@@ -3572,15 +3362,15 @@ model Transaction {
   ///     a unique constraint over a nullable stock_id would enforce nothing for non-stocks and let
   ///     every re-entry insert a duplicate. (Step 19 learned this the expensive way on
   ///     instrument_corporate_events.) The FIFO key stays on instrument_id, which is NOT NULL.
-  stockId   String?         @map("stock_id")
-  type      TransactionType
-  quantity  Decimal?        @db.Decimal(18, 4) // buy/sell shares; null for split/bonus/dividend
-  price     Decimal?        @db.Decimal(18, 6) // buy/sell ₹/share; dividend ₹/share; null for split/bonus
-  fees      Decimal?        @default(0) @db.Decimal(18, 6) // ₹ total charges (brokerage+STT+…); folds into cost basis (buy) / proceeds (sell); null = 0
-  tradeDate DateTime        @map("trade_date") @db.Date
-  ratio     String? // "a:b" for split/bonus (a additional per b held → factor (a+b)/b); null otherwise
-  notes     String?
-  createdAt DateTime        @default(now()) @map("created_at")
+  stockId      String?         @map("stock_id")
+  type         TransactionType
+  quantity     Decimal?        @db.Decimal(18, 4) // buy/sell shares; null for split/bonus/dividend
+  price        Decimal?        @db.Decimal(18, 6) // buy/sell ₹/share; dividend ₹/share; null for split/bonus
+  fees         Decimal?        @default(0) @db.Decimal(18, 6) // ₹ total charges (brokerage+STT+…); folds into cost basis (buy) / proceeds (sell); null = 0
+  tradeDate    DateTime        @map("trade_date") @db.Date
+  ratio        String? // "a:b" for split/bonus (a additional per b held → factor (a+b)/b); null otherwise
+  notes        String?
+  createdAt    DateTime        @default(now()) @map("created_at")
 
   user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   account    PortfolioAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
@@ -3871,20 +3661,20 @@ model MfAnalytics {
   seriesSchemeCode String? @map("series_scheme_code")
 
   // ── Provenance / freshness ──
-  asOfDate   DateTime @map("as_of_date") @db.Date // newest NAV date folded into this row
-  computedAt DateTime @default(now()) @map("computed_at")
+  asOfDate   DateTime  @map("as_of_date") @db.Date // newest NAV date folded into this row
+  computedAt DateTime  @default(now()) @map("computed_at")
   /// NAV observations folded. The EVIDENCE behind every honest-empty decision.
-  navPoints  Int      @default(0) @map("nav_points")
+  navPoints  Int       @default(0) @map("nav_points")
   windowFrom DateTime? @map("window_from") @db.Date
   windowTo   DateTime? @map("window_to") @db.Date
 
   // ── RETURNS — fractions, NOT percents (0.152345 = +15.2345%) ──
-  ret1m      Decimal? @map("ret_1m") @db.Decimal(12, 6)
-  ret3m      Decimal? @map("ret_3m") @db.Decimal(12, 6)
-  ret6m      Decimal? @map("ret_6m") @db.Decimal(12, 6)
-  ret1y      Decimal? @map("ret_1y") @db.Decimal(12, 6)
-  ret3yCagr  Decimal? @map("ret_3y_cagr") @db.Decimal(12, 6)
-  ret5yCagr  Decimal? @map("ret_5y_cagr") @db.Decimal(12, 6)
+  ret1m     Decimal? @map("ret_1m") @db.Decimal(12, 6)
+  ret3m     Decimal? @map("ret_3m") @db.Decimal(12, 6)
+  ret6m     Decimal? @map("ret_6m") @db.Decimal(12, 6)
+  ret1y     Decimal? @map("ret_1y") @db.Decimal(12, 6)
+  ret3yCagr Decimal? @map("ret_3y_cagr") @db.Decimal(12, 6)
+  ret5yCagr Decimal? @map("ret_5y_cagr") @db.Decimal(12, 6)
 
   // ── REMOVED: retSinceEarliestCagr, earliestNav, earliestNavDate ──
   //
@@ -3905,27 +3695,27 @@ model MfAnalytics {
   // with it.
 
   // ── RISK — annualised fractions ──
-  vol1y Decimal? @map("vol_1y") @db.Decimal(10, 6)
-  vol3y Decimal? @map("vol_3y") @db.Decimal(10, 6)
+  vol1y         Decimal? @map("vol_1y") @db.Decimal(10, 6)
+  vol3y         Decimal? @map("vol_3y") @db.Decimal(10, 6)
   /// Sharpe/Sortino gate on TWO independent honest-empty conditions: the fund's own NAV
   /// depth AND the risk-free series covering that horizon. index_prices holds only ~1 y of
   /// the G-Sec / 1D-Rate index today, so 3Y/5Y stay NULL until INDEX_PRICES_BACKFILL is
   /// re-run at days=1825.
-  sharpe1y  Decimal? @map("sharpe_1y") @db.Decimal(10, 6)
-  sharpe3y  Decimal? @map("sharpe_3y") @db.Decimal(10, 6)
-  sharpe5y  Decimal? @map("sharpe_5y") @db.Decimal(10, 6)
-  sortino1y Decimal? @map("sortino_1y") @db.Decimal(10, 6)
-  sortino3y Decimal? @map("sortino_3y") @db.Decimal(10, 6)
+  sharpe1y      Decimal? @map("sharpe_1y") @db.Decimal(10, 6)
+  sharpe3y      Decimal? @map("sharpe_3y") @db.Decimal(10, 6)
+  sharpe5y      Decimal? @map("sharpe_5y") @db.Decimal(10, 6)
+  sortino1y     Decimal? @map("sortino_1y") @db.Decimal(10, 6)
+  sortino3y     Decimal? @map("sortino_3y") @db.Decimal(10, 6)
   /// NEGATIVE fractions (-0.4231 = a 42.31% peak-to-trough fall).
   maxDrawdown1y Decimal? @map("max_drawdown_1y") @db.Decimal(10, 6)
   maxDrawdown3y Decimal? @map("max_drawdown_3y") @db.Decimal(10, 6)
   maxDrawdown5y Decimal? @map("max_drawdown_5y") @db.Decimal(10, 6)
 
   // ── ROLLING 1-YEAR RETURNS (folded from the 260-slot ring) ──
-  roll1yN          Int?     @map("roll_1y_n")
-  roll1yMin        Decimal? @map("roll_1y_min") @db.Decimal(12, 6)
-  roll1yMax        Decimal? @map("roll_1y_max") @db.Decimal(12, 6)
-  roll1yAvg        Decimal? @map("roll_1y_avg") @db.Decimal(12, 6)
+  roll1yN           Int?     @map("roll_1y_n")
+  roll1yMin         Decimal? @map("roll_1y_min") @db.Decimal(12, 6)
+  roll1yMax         Decimal? @map("roll_1y_max") @db.Decimal(12, 6)
+  roll1yAvg         Decimal? @map("roll_1y_avg") @db.Decimal(12, 6)
   roll1yPctPositive Decimal? @map("roll_1y_pct_positive") @db.Decimal(5, 2)
 
   // ── CATEGORY RANK ──
@@ -3933,22 +3723,22 @@ model MfAnalytics {
   /// NULL = deliberately unranked: close-ended/FMP, dormant, NULL plan_type (880 funds —
   /// Step 9 refused to guess a plan, so we refuse to guess a bucket), or a bucket with
   /// <5 funds (a rank in a 4-fund pool is noise, not information).
-  rankBucket     String? @map("rank_bucket")
+  rankBucket     String?  @map("rank_bucket")
   /// How many funds are in the CATEGORY at all (the whole bucket). "only N comparable funds."
-  rankBucketSize Int?    @map("rank_bucket_size")
-  rank1y Int? @map("rank_1y") // 1 = best in bucket
-  rank3y Int? @map("rank_3y")
-  rank5y Int? @map("rank_5y")
+  rankBucketSize Int?     @map("rank_bucket_size")
+  rank1y         Int?     @map("rank_1y") // 1 = best in bucket
+  rank3y         Int?     @map("rank_3y")
+  rank5y         Int?     @map("rank_5y")
   /// THE RANK DENOMINATOR — how many funds a rank was actually measured AGAINST (the pool with a
   /// non-null return for that horizon). Paired 1:1 with the rank: null ⇔ that rank is null. Distinct
   /// from rankBucketSize (the whole category) — "rank1y of rankPool1y", never "rank1y of bucketSize",
   /// which would mix "12th among funds we could measure" with "41 funds that exist".
-  rankPool1y Int? @map("rank_pool_1y")
-  rankPool3y Int? @map("rank_pool_3y")
-  rankPool5y Int? @map("rank_pool_5y")
-  pct1y  Decimal? @map("pct_1y") @db.Decimal(5, 2) // percentile within bucket (100 = best)
-  pct3y  Decimal? @map("pct_3y") @db.Decimal(5, 2)
-  pct5y  Decimal? @map("pct_5y") @db.Decimal(5, 2)
+  rankPool1y     Int?     @map("rank_pool_1y")
+  rankPool3y     Int?     @map("rank_pool_3y")
+  rankPool5y     Int?     @map("rank_pool_5y")
+  pct1y          Decimal? @map("pct_1y") @db.Decimal(5, 2) // percentile within bucket (100 = best)
+  pct3y          Decimal? @map("pct_3y") @db.Decimal(5, 2)
+  pct5y          Decimal? @map("pct_5y") @db.Decimal(5, 2)
 
   // ── GROUP-3: BENCHMARK-RELATIVE ANALYTICS (Step 18) ──
   //
@@ -4030,28 +3820,28 @@ model MfFamily {
   /// The normalized key the grouping is BY — the scheme name with every KNOWN plan/option token
   /// tail-stripped ("hdfc large cap fund"). Lowercased, punctuation-collapsed: it is a KEY, not a
   /// label. Read `canonicalName` to show a human.
-  familyKey String @map("family_key")
+  familyKey       String     @map("family_key")
   /// The AMC — and the family key is SCOPED BY IT. Two houses both publish a "Large Cap Fund";
   /// the house is the one hard, non-derived discriminator we already trust (it comes from AMFI's
   /// own header, Step 9). Scoping by it makes a cross-AMC merge structurally impossible.
-  fundHouse String @map("fund_house")
+  fundHouse       String     @map("fund_house")
   /// The display name, in the AMC's own casing ("HDFC Large Cap Fund"), carried over from the raw
   /// `scheme_name` rather than title-cased back out of the key.
-  canonicalName String @map("canonical_name")
+  canonicalName   String     @map("canonical_name")
   /// mutual_fund | etf. A family NEVER mixes the two — asserted in verification, not assumed.
   /// ETFs have no Direct/Regular plans, so 331 of 337 are singletons — but 3 liquid-rate ETFs
   /// genuinely DO publish Growth and IDCW variants, so they are grouped. Measured, not presumed.
-  assetClass AssetClass @map("asset_class")
+  assetClass      AssetClass @map("asset_class")
   /// Denormalized fan-out, so the page never needs a COUNT() to say "4 variants".
-  schemeCount Int @map("scheme_count")
+  schemeCount     Int        @map("scheme_count")
   /// TRUE when the family holds exactly one scheme. Two different things land here and
   /// `ungroupedReason` tells them apart: a fund that genuinely has one variant (reason NULL), and
   /// one we REFUSED to group (reason set). Both are honest; only the second is a normalizer gap.
-  isSingleton Boolean @map("is_singleton")
+  isSingleton     Boolean    @map("is_singleton")
   /// HONEST-EMPTY, AS A COLUMN. NULL = grouped confidently. Non-null = we declined, and this is
   /// the reason ("unclaimed-amount scheme — not a plan variant"). It is the triage signal for
   /// normalizer gaps. Never fabricate a family just to leave this NULL.
-  ungroupedReason String? @map("ungrouped_reason")
+  ungroupedReason String?    @map("ungrouped_reason")
 
   derivedAt DateTime         @default(now()) @map("derived_at")
   members   MfFamilyMember[]
@@ -4079,7 +3869,7 @@ model MfFamilyMember {
 
   /// PROVENANCE — the raw AMFI name this membership was derived FROM, verbatim. When a grouping
   /// looks wrong, this is the evidence. Without it the derivation would be unfalsifiable.
-  schemeName String @map("scheme_name")
+  schemeName String  @map("scheme_name")
   /// The plan/option tokens the normalizer STRIPPED to reach the key ("direct plan + growth");
   /// NULL when nothing was stripped. It is the variant label the fund page renders — AND the
   /// column that makes over-merge DETECTABLE: a real fund has exactly one "Direct + Growth", so
@@ -4254,9 +4044,9 @@ enum BrokerSessionState {
 /// enabled = active(true)/inactive(false); session_state = token live/dead. clear (only when
 /// inactive) DELETEs the row → cascades holdings → the encrypted token is forgotten.
 model BrokerConnection {
-  id     String   @id @default(uuid())
-  userId String   @map("user_id")
-  broker BrokerId
+  id                   String             @id @default(uuid())
+  userId               String             @map("user_id")
+  broker               BrokerId
   /// The BROKER's own per-account identifier (Kite `user_id` / client code; `clientcode` on
   /// Angel — every Indian broker issues one per demat). This is the second key dimension that
   /// makes TWO demats at ONE broker representable. NOT NULL by design: Postgres UNIQUE treats
@@ -4438,15 +4228,15 @@ model PortfolioHealthSnapshot {
 model PortfolioScoreHistory {
   // The retention engine's depth_per_key handler REQUIRES an `id` column (it deletes by id);
   // client-generated uuid like every other append table here.
-  id     String @id @default(uuid())
-  userId String @map("user_id")
+  id     String   @id @default(uuid())
+  userId String   @map("user_id")
   // The calendar day this value is FOR (IST market close). @db.Date — no time component;
   // the (user_id, date) unique is what makes same-day computes collapse to one row.
   date   DateTime @db.Date
 
-  phs      Int //   the composite Health (= snapshot.phs) — the graph's primary line
-  quality  Int? //  sub-scores, so the graph can add lines later. null when not evaluable
-  signals  Int?
+  phs       Int //   the composite Health (= snapshot.phs) — the graph's primary line
+  quality   Int? //  sub-scores, so the graph can add lines later. null when not evaluable
+  signals   Int?
   // Construction Net (= snapshot.structure, the SAME column constructionRead.value reads —
   // see portfolio-snapshot-controller.ts's `structure: num(s.structure)`), rounded to match
   // phs/quality/signals. FORWARD-ONLY: added after this table already existed, so every row
@@ -4454,7 +4244,7 @@ model PortfolioScoreHistory {
   // (that table is event-keyed and noisy, not a calendar series; fabricating a daily
   // Construction history from it would assert days that were never actually computed).
   structure Int?
-  coverage Float? // % of book covered (0..1), the snapshot's `coverage` (c); null when unknown
+  coverage  Float? // % of book covered (0..1), the snapshot's `coverage` (c); null when unknown
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at") // bumped on same-day overwrite (audit)
@@ -4679,8 +4469,8 @@ model EventReminderEvent {
 // the grounded seed.
 // ═══════════════════════════════════════════════════════════════
 model RetentionPolicy {
-  id       String @id @default(uuid())
-  table    String @unique @map("table_name") // physical target table
+  id       String   @id @default(uuid())
+  table    String   @unique @map("table_name") // physical target table
   mode     String // depth_per_key | time | supersede_chain (CHECK-constrained in SQL)
   keyCols  String[] @default([]) @map("key_cols") // depth: grouping columns (the real unique key, minus the period)
   orderCol String?  @map("order_col") // depth: the "newest N" sort column (report_date/date/as_on_date)
@@ -4727,4 +4517,274 @@ model RetentionPolicyAudit {
   @@index([changedAt(sort: Desc)])
   @@index([policyTable, changedAt(sort: Desc)])
   @@map("retention_policy_audit")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// BEHAVIOUR TRACKING (Phase 1) — the first subsystem that records what a user DOES.
+//
+// Two raw event classes + one durable rollup. The rollup is the ONLY thing the AI reads;
+// the raw events are disposable material it is folded from, pruned by the existing retention
+// engine (attention 60d, relationship 730d — see the two retention_policy rows seeded in the
+// migration, shipped enabled but armed=false so they COUNT but never DELETE until reviewed).
+// ═══════════════════════════════════════════════════════════════
+
+/// ATTENTION EVENTS — high volume, pruned at 60 days. Views / tab preference / section
+/// expansions / comparison runs / tool use. Ingested batched via POST /me/activity and folded
+/// into behavior_rollup per flush (never one rollup write per event). event_type is
+/// CHECK-constrained in SQL to {view, tab, section_expand, comparison, tool}.
+model AttentionEvent {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  stockId   String   @map("stock_id")
+  eventType String   @map("event_type") // view | tab | section_expand | comparison | tool (CHECK in SQL)
+  detail    String? // small text: the tab/section key (e.g. "health", "raw_floor"); null for a bare view
+  dwellMs   Int?     @map("dwell_ms") // optional dwell in ms (bounded on ingest)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@index([userId, stockId]) // the nightly reconcile reads per (user, stock)
+  @@index([createdAt]) // the retention pruner deletes WHERE created_at < cutoff
+  @@map("attention_events")
+}
+
+/// RELATIONSHIP EVENTS — low volume, kept 730 days. Emitted SERVER-SIDE from the existing
+/// mutations (watchlist / alert / position), best-effort after commit. event_type is
+/// CHECK-constrained in SQL to the six values below.
+model RelationshipEvent {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  stockId   String   @map("stock_id")
+  eventType String   @map("event_type") // watchlist_added|watchlist_removed|position_opened|position_closed|alert_set|alert_removed (CHECK in SQL)
+  detail    String? // optional small context (unused in Phase 1; reserved)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@index([userId, stockId])
+  @@index([createdAt])
+  @@map("relationship_events")
+}
+
+/// BEHAVIOUR ROLLUP — the durable, indefinite, per-(user, stock) read model. NOT registered
+/// with retention (kept forever, small, bounded). THE ONLY THING THE AI READS.
+///   · scalar counters/stamps — written ON-WRITE (relationship synchronously in the mutation;
+///     attention folded per ingest flush).
+///   · distributional JSON (tab / section) — recomputed NIGHTLY from raw events by the reconcile
+///     job, which also self-heals the scalar counters. Bounded by rollup size, not traffic.
+model BehaviorRollup {
+  id      String @id @default(uuid())
+  userId  String @map("user_id")
+  stockId String @map("stock_id")
+
+  // ── scalar counters + stamps (on-write) ──
+  viewCount          Int       @default(0) @map("view_count")
+  firstViewedAt      DateTime? @map("first_viewed_at")
+  lastViewedAt       DateTime? @map("last_viewed_at")
+  watchlistAddedAt   DateTime? @map("watchlist_added_at")
+  watchlistRemovedAt DateTime? @map("watchlist_removed_at")
+  positionOpenedAt   DateTime? @map("position_opened_at")
+  positionClosedAt   DateTime? @map("position_closed_at")
+  alertCount         Int       @default(0) @map("alert_count") // net alerts currently set on this stock (≥0)
+
+  // ── distributional JSON (nightly reconcile) ──
+  tabCounts           Json? @map("tab_counts") // { "health": 3, "ownership": 5, … }
+  sectionExpandCounts Json? @map("section_expand_counts") // { "raw_floor": 2, … }
+
+  // ── the snapshot generation in force when this stock was last viewed (Relational L4 · UD9). The
+  //    delta family reads "snapshot.generation != lastViewedSnapshotGeneration" to decide "new since
+  //    you last looked". Stamped on the SAME attention fold that advances lastViewedAt (the beacon
+  //    owns view tracking; the relational READ never writes here). Nullable: null ⇔ the stock was
+  //    unscored at view time (no in-force snapshot) — honest, never fabricated. UD9 is out of the
+  //    first relational slice; the column ships now so the write path is complete when UD lands. ──
+  lastViewedSnapshotGeneration String? @map("last_viewed_snapshot_generation")
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, stockId]) // THE read key — the AI's single indexed point lookup
+  @@index([userId]) // the clear-data path deletes by user; reconcile groups by user
+  @@map("behavior_rollup")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CHAT (Stage 2) — the conversation engine. Two tables: the session and its messages.
+//
+// origin drives a ONE-WAY visibility: a "discuss" session (opened from a card's sidebar) is
+// resumable for 24h by (user, surface, subject) and only becomes chat-page history once `promoted`
+// (flips true on the user's first NON-opening message). A "chat_page" session is always visible,
+// never expires, has no promotion concept. subject_* are DENORMALIZED strings (no FK to stocks) so a
+// session is honest history even if the stock is later renamed/removed. asOfSnapshot records the
+// fact-block provenance at session start (the grounding itself is carried in the opening message).
+// ═══════════════════════════════════════════════════════════════
+model ChatSession {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  origin        String // "discuss" | "chat_page" (CHECK-constrained in SQL)
+  surface       String? // the DiscussContext.surface (e.g. "stock_health"); null for chat_page
+  subjectKind   String? @map("subject_kind") // "stock" | "portfolio" | "comparison" | "finding" | null
+  subjectSymbol String? @map("subject_symbol") // denormalized for list display + re-grounding
+  subjectName   String? @map("subject_name") // denormalized human name for the list
+
+  title        String // ALWAYS populated (derived immediately, then optionally model-written)
+  titleSource  String  @default("derived") @map("title_source") // "derived" | "model" | "user"
+  // Flips true on the user's first non-opening message. Once promoted, the session is permanent
+  // chat-page history and MUST survive the retention prune (the unpromoted_only exemption enforces it).
+  promoted     Boolean @default(false)
+  asOfSnapshot String? @map("as_of_snapshot") // fact-block provenance at session start (honest replay)
+
+  // ── THE PENDING PROPOSAL (Stage 3) — at most ONE, ever. A write tool proposes instead of
+  //    executing; the confirmed write then reads its values FROM HERE, never from what the model
+  //    echoes back, so a number cannot drift between proposing and executing. ONE NULLABLE COLUMN
+  //    is the mechanism, not a convenience: it cannot physically hold two proposals, so "yes" has
+  //    exactly one referent. Proposing again overwrites; executing or cancelling sets NULL.
+  pendingProposal Json? @map("pending_proposal")
+
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  lastMessageAt DateTime @default(now()) @map("last_message_at") // the 24h resume window measures from HERE
+
+  // ── THE DISTILLATION HIGH-WATER MARK (Stage 5) ──────────────────────────────────────────────────
+  // How far into this session's turns the profile distiller has read. A WATERMARK, not a done-flag: a
+  // distilled session can receive more messages later, and the distiller must then read only what is
+  // new. That is what makes the nightly job idempotent — a re-run over unchanged sessions writes
+  // nothing and spends no quota. NULL ⇔ never distilled.
+  distilledUpToMessageAt DateTime? @map("distilled_up_to_message_at")
+
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, lastMessageAt(sort: Desc)]) // the chat-page list + the sidebar resume probe
+  @@index([lastMessageAt]) // backs the retention pruner (last_message_at < cutoff AND promoted = false)
+  @@map("chat_sessions")
+}
+
+// One row per turn. isOpening marks the server-composed first prompt AND its reply, so promotion
+// logic can tell the opening exchange from a real follow-up. Per-message metering columns map 1:1
+// onto TokenUsage (src/ai/types.ts). guardrailBlocked/regenerated are observability.
+model ChatMessage {
+  id        String @id @default(uuid())
+  sessionId String @map("session_id")
+
+  role      String // "user" | "assistant" (CHECK-constrained in SQL)
+  content   String
+  isOpening Boolean @default(false) @map("is_opening")
+
+  // ── The DISPLAY twin of `content` (nullable). Set ONLY on a discuss session's opening USER row.
+  //    `content` is the full grounded ask the model receives (fact block + orientation + style example);
+  //    `display_content` is the one short line the READER sees themselves say. The model never sees this
+  //    column — loadHistoryForModel reads `content` — and the client never sees `content` for that row,
+  //    because serializeMessage substitutes this when it is present. Same split modelFacingUserTurn makes
+  //    on a follow-up, persisted instead of per-request so every read path agrees.
+  //    NULL ⇒ the row has no reader-facing twin and stays hidden (chat_page openings, tool turns).
+  displayContent String? @map("display_content")
+
+  // ── Tool calling (Stage 0). `kind` discriminates a normal turn from an internal tool turn;
+  //    tool turns are HIDDEN from the client transcript but replayed into the model's history.
+  //    A tool_call rides on role "assistant" (the model's request), a tool_result on role "user"
+  //    (the neutral carrier of a function-response — Gemini has no "tool" role). `toolPayload`
+  //    carries the AiToolCall[] (tool_call) or the AiToolResult (tool_result); null on text turns.
+  kind        String @default("text") // "text" | "tool_call" | "tool_result" (CHECK-constrained in SQL)
+  toolPayload Json?  @map("tool_payload")
+
+  promptTokens Int?    @map("prompt_tokens")
+  outputTokens Int?    @map("output_tokens")
+  cachedTokens Int?    @map("cached_tokens")
+  modelVersion String? @map("model_version")
+
+  guardrailBlocked Boolean @default(false) @map("guardrail_blocked")
+  regenerated      Boolean @default(false)
+
+  // ── THE DENIED TURN. A user message the spend gate refused before any model call: persisted so the
+  //    reader's own words survive a refresh, flagged so nothing ever mistakes it for a delivered one.
+  //    ★ loadHistoryForModel EXCLUDES undelivered rows — the model never saw this message and must not
+  //    later believe it did. Only a USER row can be undelivered (CHECK-constrained in SQL).
+  //    `deniedResetAt` is the INSTANT the denying ceiling clears, not a sentence: the wording is composed
+  //    at read time, so a denial read the next day renders in the past tense with no stale time in it.
+  undelivered   Boolean   @default(false)
+  deniedReason  String?   @map("denied_reason") // the gate's reason code (observability)
+  deniedScope   String?   @map("denied_scope") // "user" | "global" | null — WHICH ceiling refused
+  deniedResetAt DateTime? @map("denied_reset_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("chat_messages")
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CHAT READER PROFILE (Stage 5) — the distilled "how to explain to this reader" record.
+//
+// ONE ROW PER USER, written ONLY by the nightly CHAT_PROFILE_DISTILL job, which replaces the whole
+// profile each time (a distillation, not an accumulation — the only shape in which "the beginner is no
+// longer a beginner" can happen). Sibling to BehaviorRollup, not an extension of it: that is keyed
+// per-(user, stock) and is pure arithmetic recomputable from raw events, where this is a model's
+// fallible inference from prose. They converge only at the READING layer (chat/compose.ts).
+//
+// ★ NO FREE-TEXT FIELD, DELIBERATELY. Every column is an enum, a bounded int, a bounded array over a
+// fixed code-side allowlist, or a name the reader stated outright — so the schema itself is what makes
+// personal circumstance (income, employment, family, health, goals) unstorable. See the migration
+// header. Nothing about the reader's BOOK lives here either: holdings and weights are computed live and
+// injected per session, so a stored copy would be a stale copy of a live financial number.
+// ═══════════════════════════════════════════════════════════════
+model ChatReaderProfile {
+  id     String @id @default(dbgenerated("gen_random_uuid()::text"))
+  userId String @map("user_id")
+
+  /// "en" | "hi-latin" | "devanagari" | "mixed" (CHECK-constrained in SQL). null ⇔ not yet established.
+  preferredRegister String? @map("preferred_register")
+  /// -1 simpler / 0 neutral / +1 denser. Feeds tone.ts's EXISTING axes, clamped by aiLevel's bounds —
+  /// it can only refine within what the reader's stated level permits, exactly like the ledger facts.
+  depthNudge   Int      @default(0) @map("depth_nudge")
+  /// Vytal-vocabulary keys the reader has shown they don't know. Max 8, CHECK-enforced; the values come
+  /// from a fixed allowlist in code, bounded because Vytal's own vocabulary is closed.
+  glossaryGaps String[] @default([]) @map("glossary_gaps")
+  /// ONLY if explicitly stated ("call me Arman"). NEVER inferred. Max 40 chars, CHECK-enforced.
+  /// ★ KEEP. This was pencilled in for removal as an unread column; it is now the ONE profile field with a
+  /// live reader. Two writers (the nightly distiller, and the reader asking outright through rememberThis),
+  /// one reader (chat/compose.ts §readOrientation), and it is deliberately OUTSIDE AI_PROFILE_INJECT
+  /// because a form of address the reader typed is an instruction, not an inference.
+  statedName   String?  @map("stated_name")
+
+  /// ★ USER-DIRECTED MEMORY — what the reader ASKED to be remembered, as
+  /// `[{ id, text, source: "stated", createdAt }]`. Max 30 items, each ≤200 chars, both CHECK-enforced.
+  /// ⚠ THE 30 MUST EQUAL `MEMORY_MAX` in src/chat/memory.ts — only the LOWER of the two ever fires, and
+  /// the SQL one fires as a 500 rather than a sentence. verifyMemoryCapMatchesDatabase() asserts it.
+  /// Distinct from every field above, which the distiller INFERRED: the read model unifies the two into
+  /// one list carrying a `source`, so "what do you remember about me?" can be answered honestly and a
+  /// reader can tell an inference from something they actually said.
+  statedMemories Json @default("[]") @map("stated_memories")
+
+  // ── Provenance. No stamps ⇒ no decay, and no way to answer "why does it think that". ──
+  registerFirstSeenAt DateTime? @map("register_first_seen_at")
+  registerLastSeenAt  DateTime? @map("register_last_seen_at")
+  registerSessionCount Int      @default(0) @map("register_session_count")
+  depthFirstSeenAt    DateTime? @map("depth_first_seen_at")
+  depthLastSeenAt     DateTime? @map("depth_last_seen_at")
+  depthSessionCount   Int       @default(0) @map("depth_session_count")
+  /// { "<vocabKey>": { firstSeenAt, lastSeenAt, sessionCount } } — a stamp sidecar for the bounded
+  /// array above. JSON here and nowhere else: the KEYS are allowlisted, so it cannot hold prose.
+  gapStamps           Json?     @map("gap_stamps")
+  nameStatedAt        DateTime? @map("name_stated_at")
+
+  /// Total sessions ever folded into this profile — drives the decay windows.
+  sessionsDistilled Int @default(0) @map("sessions_distilled")
+  /// ★ Set when the reader clears their activity data. The distiller reads ONLY sessions whose
+  /// lastMessageAt is AFTER this, so a cleared profile cannot re-form from surviving transcripts.
+  profileClearedAt  DateTime? @map("profile_cleared_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId]) // THE read key — one row per reader, one indexed point lookup
+  @@map("chat_reader_profile")
 }

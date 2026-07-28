@@ -376,6 +376,9 @@ export async function runDailyGoogleNewsIngest(
   let responsesReceived = 0;
   let nonRssBodies = 0;
   let itemsParsed = 0;
+  /** Items the cutoff filter still had to drop. Expected 0 now that the query carries `when:`;
+   *  a non-zero total means the query window and the cutoff have diverged — see the call site. */
+  let outOfWindowDropped = 0;
 
   try {
     const stocks = await loadUniverse();
@@ -405,10 +408,23 @@ export async function runDailyGoogleNewsIngest(
             stock.name,
             20,
             signal,
+            // ★ SAME `daysBack` DRIVES THE QUERY AND THE CUTOFF BELOW, so the two cannot disagree.
+            //   Without it the feed is relevance-ranked across years and the filter throws away
+            //   nearly everything fetched (measured: 6 usable of 120). See whenClause().
+            daysBack,
           );
           responsesReceived++;
           if (malformed) nonRssBodies++;
           const recent = items.filter((n) => n.publishedAt >= cutoff);
+          // ⚠ BELT-AND-BRACES: with the `when:` operator this filter should now drop NOTHING.
+          //    A non-zero drop means the query window and this cutoff have diverged (or Google
+          //    ignored the operator) — worth seeing rather than silently absorbing.
+          if (recent.length !== items.length) {
+            outOfWindowDropped += items.length - recent.length;
+            console.warn(
+              `[GoogleNews] ${stock.symbol}: ${items.length - recent.length}/${items.length} items fell OUTSIDE the ${daysBack}d window despite when:${daysBack}d`,
+            );
+          }
           itemsParsed += recent.length;
 
           for (const item of recent) {
@@ -509,7 +525,8 @@ export async function runDailyGoogleNewsIngest(
     });
 
     console.log(
-      `[GoogleNews] Done — inserted: ${inserted}, pending scraping: ${pendingExtraction}`,
+      `[GoogleNews] Done — inserted: ${inserted}, pending scraping: ${pendingExtraction}, ` +
+        `items in window: ${itemsParsed}, dropped as out-of-window: ${outOfWindowDropped} (expected 0 with when:${daysBack}d)`,
     );
 
     return {

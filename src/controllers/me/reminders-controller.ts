@@ -15,126 +15,38 @@
 //
 // PATCH is pause/resume ONLY (active) — there is no threshold to edit. Firing (the date
 // match) is the daily eval pass (src/reminders/eval-pass.ts); nothing here sends email.
+//
+// ★ CREATE LIVES IN src/reminders/service.ts (Stage 3, Phase A), with the shared
+// REMINDER_SELECT/serializeReminder shape. This file is TRANSPORT for it and still owns
+// list/patch/delete. The chat setEventReminder tool calls the same service function.
+//
 // Envelope: { success, data } / { success:false, error, … } — matches the other /me/*.
 // ═══════════════════════════════════════════════════════════════════════
 import type { Request, Response } from "express";
 import { z } from "zod";
-import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../../db/prisma.js";
+import { resolveNextEvents, startOfUtcDay, nextEventKey } from "../../reminders/resolve.js";
 import {
-  REMINDER_EVENT_TYPES,
-  resolveNextEvents,
-  startOfUtcDay,
-  nextEventKey,
-  addUtcDays,
-} from "../../reminders/resolve.js";
-
-// ── create body — the only fields at create time (no operator/threshold; it's date-based) ──
-const CreateBody = z.object({
-  stockId: z.string().trim().min(1),
-  eventType: z.enum(REMINDER_EVENT_TYPES),
-  // Lead time; >= 1 (never on the event day). Default 1. Capped at a sane 30.
-  daysBefore: z.coerce.number().int().min(1).max(30).default(1),
-});
+  REMINDER_SELECT,
+  serializeReminder,
+  createReminder as createReminderSvc,
+} from "../../reminders/service.js";
+import { ServiceError, sendServiceError } from "../../lib/service-error.js";
 
 // ── PATCH body — pause/resume ONLY (the whole edit surface). ──
 const PatchBody = z
   .object({ active: z.boolean() })
   .strict();
 
-const REMINDER_SELECT = {
-  id: true,
-  stockId: true,
-  eventType: true,
-  daysBefore: true,
-  active: true,
-  lastFiredAt: true,
-  createdAt: true,
-  updatedAt: true,
-  stock: { select: { symbol: true, name: true } },
-} satisfies Prisma.EventReminderSelect;
-
-type ReminderRow = Prisma.EventReminderGetPayload<{ select: typeof REMINDER_SELECT }>;
-
-/** Serialize a reminder, optionally with its resolved nearest-upcoming event (so the UI can
- *  show "reminds 1 day before · earnings on 5 Aug"). nextEventDate is null when the stock has
- *  no upcoming event of that type. */
-function serializeReminder(
-  r: ReminderRow,
-  next?: { eventDate: Date } | null,
-  today?: Date,
-) {
-  const nextEventDate = next ? next.eventDate.toISOString().slice(0, 10) : null;
-  const nextEventDaysAway =
-    next && today
-      ? Math.round((startOfUtcDay(next.eventDate).getTime() - startOfUtcDay(today).getTime()) / 86_400_000)
-      : null;
-  return {
-    id: r.id,
-    stockId: r.stockId,
-    symbol: r.stock?.symbol ?? null,
-    name: r.stock?.name ?? null,
-    eventType: r.eventType,
-    daysBefore: r.daysBefore,
-    active: r.active,
-    lastFiredAt: r.lastFiredAt ? r.lastFiredAt.toISOString() : null,
-    createdAt: r.createdAt.toISOString(),
-    updatedAt: r.updatedAt.toISOString(),
-    // resolved context (present on create + list)
-    nextEventDate,
-    nextEventDaysAway,
-    // the concrete date we'd remind on, for this occurrence (null when no upcoming event)
-    remindDate:
-      next != null
-        ? addUtcDays(startOfUtcDay(next.eventDate), -r.daysBefore).toISOString().slice(0, 10)
-        : null,
-  };
-}
-
 // ── POST /reminders — create or re-affirm a reminder ────────────────────
 export const createReminder = async (req: Request, res: Response) => {
   const userId = req.authUser!.userId;
-  const parsed = CreateBody.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ success: false, error: "validation_error", details: parsed.error.flatten() });
-  }
-  const v = parsed.data;
-
   try {
-    // Universe gate: the stockId must resolve to a real stock (the tracked universe).
-    const stock = await prisma.stock.findUnique({ where: { id: v.stockId }, select: { id: true } });
-    if (!stock) {
-      return res.status(400).json({ success: false, error: "stock_not_found", message: "Not a stock in the universe" });
-    }
-
-    // Semantic bind is unique per (user, stock, eventType). A repeat POST re-affirms the
-    // reminder (updates daysBefore + re-activates) rather than creating a duplicate.
-    const existing = await prisma.eventReminder.findUnique({
-      where: { event_reminder_unique: { userId, stockId: v.stockId, eventType: v.eventType } },
-      select: { id: true },
-    });
-
-    const reminder = existing
-      ? await prisma.eventReminder.update({
-          where: { id: existing.id },
-          data: { daysBefore: v.daysBefore, active: true },
-          select: REMINDER_SELECT,
-        })
-      : await prisma.eventReminder.create({
-          data: { userId, stockId: v.stockId, eventType: v.eventType, daysBefore: v.daysBefore },
-          select: REMINDER_SELECT,
-        });
-
-    // Resolve the nearest upcoming occurrence for the response.
-    const today = startOfUtcDay(new Date());
-    const nextMap = await resolveNextEvents([{ stockId: v.stockId, eventType: v.eventType }], today);
-    const next = nextMap.get(nextEventKey(v.stockId, v.eventType)) ?? null;
-
-    return res.status(existing ? 200 : 201).json({
-      success: true,
-      data: { reminder: serializeReminder(reminder, next, today), created: !existing },
-    });
+    const data = await createReminderSvc(req.body, userId);
+    // 201 on a true create, 200 on the re-affirm — the status the route has always used.
+    return res.status(data.created ? 201 : 200).json({ success: true, data });
   } catch (e) {
+    if (e instanceof ServiceError) return sendServiceError(res, e);
     console.error("[POST /me/reminders]", e);
     return res.status(500).json({ success: false, error: "server_error", message: "Failed to create reminder" });
   }

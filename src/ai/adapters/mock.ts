@@ -13,10 +13,31 @@ import {
   type AiGenerateResult,
   type AiGenerateStructuredRequest,
   type AiProvider,
+  type AiToolCall,
   type TokenUsage,
 } from "../types.js";
 
 const MOCK_MODEL_VERSION = "mock-ai-1";
+
+// ── SCRIPTED TOOL-CALL MODE — the seam that lets the proof harness drive the TOOL LOOP with no
+// key. The default generate() echoes the last user message; when a script is installed, each
+// generate() call instead consumes the NEXT step (FIFO) — an optional text and/or tool calls —
+// so a harness can say "turn 1: call getStockFacts; turn 2: answer". Exhausted or unset ⇒ the
+// echo behaviour is restored, so nothing that exists today changes. Deterministic, never random.
+export interface MockStep {
+  /** The assistant text for this step. Omit (or "") to model a pure tool-call turn. */
+  text?: string;
+  /** Tool calls the mock "model" requests this step. */
+  toolCalls?: AiToolCall[];
+}
+let scriptedSteps: MockStep[] | null = null;
+let scriptCursor = 0;
+/** Install a FIFO script of generate() responses (or clear it with null). Resets the cursor —
+ *  so a harness can re-script between scenarios. */
+export function __setMockScript(steps: MockStep[] | null): void {
+  scriptedSteps = steps;
+  scriptCursor = 0;
+}
 
 /** Synthetic token count from text length (chars/4 ≈ tokens) so usage varies with
  *  input like a real provider — deterministic, never random. */
@@ -47,6 +68,18 @@ function lastUserContent(req: AiGenerateRequest): string {
 export function createMockAdapter(): AiProvider {
   return {
     async generate(req: AiGenerateRequest): Promise<AiGenerateResult> {
+      // Scripted step (proof harness) takes precedence; falls through to the echo when the
+      // script is unset or exhausted.
+      if (scriptedSteps && scriptCursor < scriptedSteps.length) {
+        const step = scriptedSteps[scriptCursor++];
+        const text = step.text ?? "";
+        const outChars = text.length + (step.toolCalls ? JSON.stringify(step.toolCalls).length : 0);
+        return {
+          text,
+          usage: synthUsage(promptCharCount(req), outChars),
+          ...(step.toolCalls && step.toolCalls.length ? { toolCalls: step.toolCalls } : {}),
+        };
+      }
       const text = `[mock] ${lastUserContent(req)}`.trim();
       return { text, usage: synthUsage(promptCharCount(req), text.length) };
     },

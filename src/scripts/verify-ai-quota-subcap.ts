@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-// THE PER-USER AI QUOTA SUB-CAP — PROVEN, NOT REVIEWED. (src/ai/quota.ts + src/ai/explain/stock-health.ts)
+// THE PER-USER AI QUOTA SUB-CAP — PROVEN, NOT REVIEWED. (src/ai/quota.ts + src/ai/spend.ts)
 //
 // WHAT THIS ASSERTS:
 //   1. ★★ A user at their sub-cap is denied with scopeDenied "user" / reason "user_daily_limit_reached"
@@ -8,8 +8,8 @@
 //      load-bearing assertion: it is the difference between "all-or-nothing" and "leaks a unit per
 //      denied attempt", and it cannot be established by reading the code.
 //   3. A system actor takes the global cap ONLY — and mints no per-user row at all.
-//   4. ★★ THE REGRESSION FIX. A request that GENERATES once and is then quota-denied on the hardened
-//      retry serves the deterministic FALLBACK, not "unavailable"/null.
+//   4. ★★ THE EXTRACTED SPEND SEAM (src/ai/spend.ts): spendFor METERS on a real provider — one unit
+//      against BOTH the user sub-cap and the shared budget — and is UNMETERED on mock (touches no DB).
 //   5. Kill switch allows without touching the DB; a DB fault fails CLOSED.
 //   6. The gate's two guarded WHEREs are SELF-REFERENTIAL — no cross-row predicate crept in.
 //
@@ -24,10 +24,7 @@
 import { readFileSync } from "fs";
 import { prisma } from "../db/prisma.js";
 import { checkAndConsumeAiCall, userScopeOf, type QuotaDecision } from "../ai/quota.js";
-import { generateGuarded, onQuotaDenied, composeDeterministicFallback, type GuardedOutcome } from "../ai/explain/stock-health.js";
-import { scanExplanationText } from "../ai/guardrail.js";
-import { groundStockHealth } from "../ai/grounding.js";
-import type { AiProvider, TokenUsage } from "../ai/types.js";
+import { spendFor } from "../ai/spend.js";
 
 let fail = 0;
 const ok = (n: string, c: boolean, d = "") => {
@@ -129,78 +126,39 @@ async function main() {
   }
 
   // ═════════════════════════════════════════════════════════════════════════════════════════════════
-  rule("4 · ★★ THE REGRESSION FIX — generate-then-denied serves the FALLBACK, not nothing");
+  rule("4 · ★★ THE EXTRACTED SPEND SEAM (src/ai/spend.ts) — metered on a real provider, unmetered on mock");
   // ═════════════════════════════════════════════════════════════════════════════════════════════════
   {
-    // A stub that ADVISES, so attempt 1 takes a HARD guardrail hit and a retry is required. This is
-    // the only way to reach the mid-request denial without coaxing a live model into misbehaving.
-    const usage: TokenUsage = { promptTokens: 10, outputTokens: 10, cachedTokens: 0, cacheHit: false, modelVersion: "stub" };
-    let calls = 0;
-    const advisingStub: AiProvider = {
-      generate: async () => {
-        calls++;
-        return { text: "TCS looks strong. You should buy this stock now.", usage };
-      },
-      // Unused by this path; present because the transport contract requires them.
-      generateStructured: async () => {
-        throw new Error("not used by the explanation path");
-      },
-      ping: async () => true,
-    };
-    ok("control: the stub's text really does trip the guardrail (else this proves nothing)",
-      scanExplanationText("TCS looks strong. You should buy this stock now.").clean === false);
+    // ⚠ spendFor is the seam the removed explanation surfaces used and the chat build will use next. It
+    // decides METERED-vs-UNMETERED off AI_PROVIDER, then (metered) delegates to the SAME
+    // checkAndConsumeAiCall proven above. Proving it here keeps the seam covered after the card surfaces
+    // are gone, and targets the quota primitive directly — no removed generateGuarded in the path.
+    await wipe();
+    const savedProvider = process.env.AI_PROVIDER;
 
-    // Spend: attempt 1 allowed, attempt 2 refused by the USER ceiling — precisely the interleaving
-    // the sub-cap introduced. (Injected, so no counter and no model are involved.)
-    const resetAt = new Date("2026-07-24T07:00:00.000Z");
-    let n = 0;
-    const spend = async (): Promise<QuotaDecision> =>
-      ++n === 1
-        ? { allowed: true, remaining: 0, limit: 5, resetAt, scopeDenied: null }
-        : { allowed: false, remaining: 0, limit: 5, resetAt, scopeDenied: "user", reason: "user_daily_limit_reached" };
+    // ── REAL provider ⇒ the metered gate. Calling it consumes exactly one unit, against BOTH the shared
+    //    model budget and this user's sub-cap. ──
+    process.env.AI_PROVIDER = "gemini";
+    const metered = spendFor(MODEL, asUser(USER_A));
+    const d1 = await metered();
+    ok("★ real provider → spendFor METERS: the call is allowed and the global counter moved to 1",
+      d1.allowed === true && (await countOf(MODEL)) === 1, `allowed=${d1.allowed} global=${await countOf(MODEL)}`);
+    ok("★★ …and it counted against the USER sub-cap too (a per-user row was minted)",
+      (await countOf(userScopeOf(USER_A, MODEL))) === 1, `user=${await countOf(userScopeOf(USER_A, MODEL))}`);
 
-    // ⚠ QUOTA OFF FOR THIS CALL ONLY, AND NOT FOR THE REASON IT LOOKS LIKE. The gate under test here
-    // is the INJECTED `spend` above, which the switch cannot touch. What it stops is `generateGuarded`'s
-    // unconditional `recordAiTokens(EXPLANATION_MODEL, …)` — which would post this STUB's 20 tokens to
-    // the LIVE gemini-3.5-flash-lite token sum. That counter's whole claim is that it records real
-    // Gemini traffic (see spendFor's "THE COUNTER'S MEANING IS THE WHOLE POINT"); a verify script that
-    // quietly seasons it with fake tokens is the same corruption in miniature.
-    process.env.AI_QUOTA_ENABLED = "false";
-    const outcome = await generateGuarded(advisingStub, "be factual", "=== FACTS ===", spend);
-    delete process.env.AI_QUOTA_ENABLED;
-    ok("★ the outcome is quota_denied", outcome.kind === "quota_denied", outcome.kind);
-    ok("★★ …with attempts === 1 — one generation really did happen this request",
-      outcome.kind === "quota_denied" && outcome.attempts === 1, `attempts=${outcome.kind === "quota_denied" ? outcome.attempts : "n/a"}`);
-    ok("the provider was called exactly once (the retry never left the process)", calls === 1, `${calls} calls`);
+    // ── MOCK (no AI_PROVIDER) ⇒ the UNMETERED gate: allowed, limit 0, a self-describing reason, and —
+    //    the whole point — it touches the DB not at all. A stub call must never draw on the real budget. ──
+    delete process.env.AI_PROVIDER;
+    await wipe();
+    const unmetered = spendFor(MODEL, asUser(USER_A));
+    const d2 = await unmetered();
+    ok('★★ mock provider → spendFor is UNMETERED: allowed, limit 0, reason "mock_provider_unmetered"',
+      d2.allowed === true && d2.limit === 0 && d2.reason === "mock_provider_unmetered", `${d2.reason} limit=${d2.limit}`);
+    ok("★★ …and it wrote NOTHING to the counter — the stub never reaches the shared budget",
+      (await prisma.aiUsageCounter.count({ where: { scope: { in: SCOPES } } })) === 0, "0 rows");
 
-    const base = { symbol: "TCS", toneKey: "balanced:standard:plain", sources: { asOfDate: "2026-03-31" } };
-    const denied = outcome as Extract<GuardedOutcome, { kind: "quota_denied" }>;
-
-    const served = onQuotaDenied(base, denied, () => "TCS scores 74 — Steady.");
-    ok('★★ THE FIX: state === "fallback" (was "unavailable" before this change)', served.state === "fallback", served.state);
-    ok("★★ …and real deterministic prose is served, not null", served.explanation === "TCS scores 74 — Steady.", String(served.explanation));
-    ok("★ the quota reason and resetAt still ride along, so the client can explain itself",
-      served.reason === "user_daily_limit_reached" && served.resetAt === resetAt.toISOString(), `${served.reason} @ ${served.resetAt}`);
-
-    // …and the OTHER branch is untouched: a first-attempt denial has nothing to fall back FROM.
-    const nothingGenerated = onQuotaDenied(base, { ...denied, attempts: 0 }, () => "SHOULD NOT BE CALLED");
-    ok('★ attempts === 0 still returns "unavailable" / null — correct, nothing was read or generated',
-      nothingGenerated.state === "unavailable" && nothingGenerated.explanation === null,
-      `${nothingGenerated.state} / ${nothingGenerated.explanation}`);
-
-    // The prose that branch serves is the REAL composer over a REAL snapshot, and it is guard-clean.
-    const scored = await prisma.stock.findFirst({
-      where: { scoreSnapshots: { some: {} } }, select: { symbol: true }, orderBy: { symbol: "asc" },
-    });
-    if (!scored) {
-      ok("SKIPPED — no scored stock in this DB to compose a live fallback from", true);
-    } else {
-      const g = await groundStockHealth(scored.symbol);
-      const prose = g ? composeDeterministicFallback(g.data) : "";
-      ok(`★ the LIVE deterministic fallback for ${scored.symbol} is non-empty`, prose.trim().length > 0, `${prose.length} chars`);
-      ok("★★ …and it is guardrail-CLEAN — the fallback can never be the thing that advises",
-        scanExplanationText(prose).clean === true, `"${prose.slice(0, 90)}…"`);
-    }
+    if (savedProvider === undefined) delete process.env.AI_PROVIDER;
+    else process.env.AI_PROVIDER = savedProvider;
   }
 
   // ═════════════════════════════════════════════════════════════════════════════════════════════════

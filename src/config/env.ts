@@ -35,6 +35,12 @@ export const env = {
   // read lazily in adapters/gemini.ts (fail-closed if absent), exactly like RESEND_API_KEY.
   AI_PROVIDER: process.env.AI_PROVIDER,
   AI_MODEL: process.env.AI_MODEL,
+  // Chat model (src/chat/) — the model the CONVERSATION engine generates against, DISTINCT from the
+  // (now dead) card-era AI_MODEL. Defaults to gemini-3.5-flash-lite (480 RPD — the affordable, weaker
+  // instruction-follower the output guardrail is tuned for). Read lazily via src/chat/config.ts; the
+  // one resolved string is threaded into BOTH the quota scope and the provider call so they can never
+  // diverge. Swap the model with one env change; hardcode nothing about Flash-Lite.
+  AI_CHAT_MODEL: process.env.AI_CHAT_MODEL,
   // AI quota guard (src/ai/quota.ts) — NON-SECRET operational levers, listed for
   // discoverability; quota.ts reads process.env directly (lazily) and applies the defaults
   // (per-model budgets flash-lite 480 / flash 18 / unlisted 18, America/Los_Angeles, enabled

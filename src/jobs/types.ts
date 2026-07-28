@@ -170,6 +170,19 @@ export const JobTypes = {
   // payload carries an explicit `dryRun` and the engine defaults to counting-only.
   // The cron passes dryRun:false ONLY after the first dry-run report is signed off.
   RETENTION_PRUNE: "retention_prune",
+  // ── Behaviour rollup reconcile (Phase 1) ───────────────────────
+  // Nightly: recompute the distributional JSON (tabCounts / sectionExpandCounts) on behavior_rollup
+  // from the raw attention_events, and back-fill/advance the safe stamps. Bounded by rollup size, not
+  // traffic. Cumulative scalar counters (viewCount) stay on-write authoritative — see the handler for
+  // why recompute-from-scratch would undercount once the 60-day attention prune arms.
+  BEHAVIOR_ROLLUP_RECONCILE: "behavior_rollup_reconcile",
+  // ── Chat title generation (Stage 2) ────────────────────────────
+  // ENQUEUED ON DEMAND (not a cron) after a CHAT-PAGE session's first exchange: a tiny model call writes
+  // a 4–6 word title, replacing the provisional (truncated-first-message) title. NEVER overwrites a
+  // titleSource='user' rename (checked before AND race-safely at the write). ⚠ On the free tier this
+  // costs a FULL quota unit (the cap counts calls, not tokens) — acceptable for now.
+  CHAT_TITLE_GENERATE: "chat_title_generate",
+  CHAT_PROFILE_DISTILL: "chat_profile_distill",
 } as const;
 
 export type JobType = (typeof JobTypes)[keyof typeof JobTypes];
@@ -395,6 +408,19 @@ export interface BrokerPollSyncPayload {
 export interface RetentionPrunePayload {
   dryRun: boolean;
 }
+/** Behaviour rollup reconcile — no input; the whole attention_events table IS the worklist. */
+export interface BehaviorRollupReconcilePayload {}
+/** Chat title generation — the ONE session whose title to (re)write from its first exchange. */
+export interface ChatTitleGeneratePayload {
+  sessionId: string;
+}
+/** Stage 5 · the nightly reader-profile distillation. All fields optional: the cron enqueues `{}` and the
+ *  handler selects its own session set. `sessionId` targets one session (a manual retry / proof harness);
+ *  `dryRun` distils and returns the profile WITHOUT writing it or advancing the watermark. */
+export interface ChatProfileDistillPayload {
+  sessionId?: string;
+  dryRun?: boolean;
+}
 export interface RemindersDeliverDailyPayload {}
 export interface DealsDailyIngestPayload {}
 export interface EventsWeeklyIngestPayload {}
@@ -478,6 +504,9 @@ export type JobPayload =
   | { type: typeof JobTypes.REMINDERS_EVAL_DAILY; data: RemindersEvalDailyPayload }
   | { type: typeof JobTypes.BROKER_POLL_SYNC; data: BrokerPollSyncPayload }
   | { type: typeof JobTypes.RETENTION_PRUNE; data: RetentionPrunePayload }
+  | { type: typeof JobTypes.BEHAVIOR_ROLLUP_RECONCILE; data: BehaviorRollupReconcilePayload }
+  | { type: typeof JobTypes.CHAT_TITLE_GENERATE; data: ChatTitleGeneratePayload }
+  | { type: typeof JobTypes.CHAT_PROFILE_DISTILL; data: ChatProfileDistillPayload }
   | { type: typeof JobTypes.REMINDERS_DELIVER_DAILY; data: RemindersDeliverDailyPayload };
 
 // ── Retry policy per job type ────────────────────────────────
@@ -584,6 +613,14 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   // delete is idempotent, re-running is wasteful and muddies the audit. One attempt;
   // a failure is surfaced and re-run deliberately on the next nightly tick.
   [JobTypes.RETENTION_PRUNE]: { maxAttempts: 1 },
+  // Rollup reconcile — a single idempotent recompute (INSERT…SELECT…ON CONFLICT). A retry just
+  // recomputes the same rows from the same events; no benefit to auto-retry. One attempt.
+  [JobTypes.BEHAVIOR_ROLLUP_RECONCILE]: { maxAttempts: 1 },
+  // Chat title — a tiny cosmetic model call. NEVER auto-retry: a retry spends a second quota unit for a
+  // cosmetic title, and a failed title just leaves the provisional (truncated-first-message) one in place.
+  [JobTypes.CHAT_TITLE_GENERATE]: { maxAttempts: 1 },
+  // Idempotent by watermark, so a retry is safe — but a failed night is cheap to skip; the next run resumes.
+  [JobTypes.CHAT_PROFILE_DISTILL]: { maxAttempts: 1 },
 };
 
 // ── Job status constants ────────────────────────────────────

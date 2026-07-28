@@ -61,6 +61,9 @@ import { handleRemindersEvalDaily } from "./handlers/reminders-eval.handler.js";
 import { handleRemindersDeliverDaily } from "./handlers/reminders-deliver.handler.js";
 import { handleBrokerPollSync } from "./handlers/broker-poll-sync.handler.js";
 import { handleRetentionPrune } from "./handlers/retention-prune.handler.js";
+import { handleBehaviorRollupReconcile } from "./handlers/behavior-rollup-reconcile.handler.js";
+import { handleChatTitleGenerate } from "./handlers/chat-title-generate.handler.js";
+import { handleChatProfileDistill } from "./handlers/chat-profile-distill.handler.js";
 import { JobTypes, type JobType } from "./types.js";
 
 export type JobHandler<TPayload = any, TResult = any> = (
@@ -110,6 +113,9 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.REMINDERS_DELIVER_DAILY]: handleRemindersDeliverDaily,
   [JobTypes.BROKER_POLL_SYNC]: handleBrokerPollSync,
   [JobTypes.RETENTION_PRUNE]: handleRetentionPrune,
+  [JobTypes.BEHAVIOR_ROLLUP_RECONCILE]: handleBehaviorRollupReconcile,
+  [JobTypes.CHAT_TITLE_GENERATE]: handleChatTitleGenerate,
+  [JobTypes.CHAT_PROFILE_DISTILL]: handleChatProfileDistill,
 };
 
 export function getHandler(type: string): JobHandler | null {

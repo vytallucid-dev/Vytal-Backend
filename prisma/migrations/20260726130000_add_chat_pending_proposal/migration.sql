@@ -1,0 +1,33 @@
+-- ═══════════════════════════════════════════════════════════════
+-- CHAT PENDING PROPOSAL (Stage 3, Phase A) — the seam that makes "yes" mean something.
+--
+-- A write tool does NOT execute. It validates, parses, and returns a Proposal enumerating every
+-- parsed value; the model restates that proposal and asks. When the user confirms, the write runs
+-- FROM THIS COLUMN — never from anything the model echoes back. That is what closes the hole where
+-- a quantity or a price could drift between "shall I record 40 shares?" and the actual insert.
+--
+-- ── WHY ONE NULLABLE COLUMN, AND NOT A TABLE ───────────────────────────────────────────────────
+-- The whole point of the pending proposal is that "yes" is UNAMBIGUOUS. A one-row-per-proposal
+-- table would reintroduce exactly the ambiguity it exists to remove: two pending rows and the
+-- server has to guess which one a bare "yeah, do it" resolves to — and guessing wrong here files a
+-- trade the user never agreed to. A single column CANNOT hold two proposals. Proposing B while A
+-- is pending overwrites A, so there is only ever one thing "yes" can mean, enforced by the shape of
+-- the storage rather than by a rule someone has to remember.
+--
+-- Nor is it in-memory: a proposal is made in one HTTP request and confirmed in the NEXT one. An
+-- in-process map dies between them (and lies outright behind more than one server process).
+--
+-- NULL ⇒ nothing is pending. That is the resting state, the state after execution, and the state
+-- after cancellation — one value, three meanings that are all "there is nothing to confirm".
+--
+-- JSONB (not TEXT): the payload is a discriminated object { kind, args, labels, createdAt, … } that
+-- Phase B reads back field-by-field, and jsonb gives it structure + validation on write for free.
+-- PURELY ADDITIVE: nullable, no default, no backfill — every existing session simply has nothing
+-- pending, which is true.
+--
+-- Drift-safe apply: BEGIN/COMMIT over DIRECT_URL (apply-migration-direct.ts), then
+-- `prisma migrate resolve --applied 20260726130000_add_chat_pending_proposal`. NEVER `migrate dev`. Dev only.
+-- ═══════════════════════════════════════════════════════════════
+
+ALTER TABLE "chat_sessions"
+  ADD COLUMN "pending_proposal" JSONB;

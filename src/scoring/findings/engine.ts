@@ -5,6 +5,7 @@
 // remaining ~21 rules to STAGE_A_RULES (or a fuller registry) — the runner is unchanged.
 
 import type { FireRule, FiringContext, FiredFinding } from "./types.js";
+import { isNotEvaluable } from "./types.js";
 import { ruleR6 } from "./rules/r6-distribution.js";
 import { ruleP11 } from "./rules/p11-margin-compression.js";
 import { ruleC1 } from "./rules/c1-divergence.js";
@@ -32,6 +33,15 @@ import { ruleP6 } from "./rules/p6-insider-conviction.js";
 import { ruleP10 } from "./rules/p10-promoter-defense.js";
 import { ruleH } from "./rules/h-ownership-events.js";
 import { ruleF1 } from "./rules/f1-composition.js";
+// Family N (Notable) — the constructive twins (Vytal Family N Amendment v1.0). Display-only,
+// severity green, magnitude null; each fires AFTER composite assembly like every finding.
+import { ruleN1 } from "./rules/n1-cash-backed-earnings.js";
+import { ruleN2 } from "./rules/n2-working-capital.js";
+import { ruleN3 } from "./rules/n3-deleveraging.js";
+import { ruleN4 } from "./rules/n4-coverage-strengthening.js";
+import { ruleN5 } from "./rules/n5-dual-institutional-build.js";
+import { ruleN6 } from "./rules/n6-promoter-accumulation.js";
+import { ruleN7 } from "./rules/n7-pledge-release.js";
 
 /** Stage-A proven set: one red flag (R6), one single-snapshot pattern (P11), one
  *  divergence (C1) — one rule per major class, proved the contract end-to-end. */
@@ -59,10 +69,16 @@ export const STAGE_D_RULES: FireRule[] = [ruleB, ruleD, ruleI, ruleG, ruleF2, ru
  *  (section2/risk-shape.ts), not a fired finding. */
 export const STAGE_E_RULES: FireRule[] = [ruleP5, ruleP6, ruleP10, ruleH, ruleF1];
 
+/** Family N (Notable) — the seven CONSTRUCTIVE twins (Amendment v1.0). Each is the positive
+ *  mirror of a negative rule: N1↔P7, N2↔P8, N3↔R4, N4↔R5, N5↔P4, N6↔R2, N7↔R1. Display-only
+ *  (green · magnitude null · polarity positive · temporalClass CONDITION). REGISTRATION IS
+ *  MANDATORY — an unregistered rule never fires (the P2/P3 lesson); all seven go in ALL_RULES. */
+export const FAMILY_N_RULES: FireRule[] = [ruleN1, ruleN2, ruleN3, ruleN4, ruleN5, ruleN6, ruleN7];
+
 /** The full active catalog (ordering here is registry order, NOT File 1's §5 display
  *  ordering — that A→I sort is a read-layer concern). P9 stays UNBUILT (capex unavailable);
  *  P2/P3 are RETIRED (consolidated into R6/R1). */
-export const ALL_RULES: FireRule[] = [...STAGE_A_RULES, ...STAGE_B_RULES, ...STAGE_C_RULES, ...STAGE_D_RULES, ...STAGE_E_RULES];
+export const ALL_RULES: FireRule[] = [...STAGE_A_RULES, ...STAGE_B_RULES, ...STAGE_C_RULES, ...STAGE_D_RULES, ...STAGE_E_RULES, ...FAMILY_N_RULES];
 
 /** Run the rule set against a context; return the fired findings (order = registry
  *  order). A single throwing rule is isolated so it can never abort the others or the
@@ -71,11 +87,41 @@ export function runFindings(ctx: FiringContext, rules: FireRule[] = ALL_RULES): 
   const out: FiredFinding[] = [];
   for (const rule of rules) {
     try {
-      const f = rule(ctx);
-      if (f) out.push(f);
+      const r = rule(ctx);
+      // Three outcomes, one fired set: a FiredFinding is collected; `null` (not_fired) and a
+      // NotEvaluable (could-not-check) are BOTH excluded. not_evaluable is a truthy object, so
+      // the old `if (f)` would have wrongly pushed it — the isNotEvaluable guard keeps it out.
+      // (Behaviour for existing rules is unchanged: they never return NotEvaluable, so this is
+      // exactly `if (r) out.push(r)` for them.) not_evaluable is intentionally NOT surfaced here
+      // — see runFindingsDetailed for the migration-facing accessor.
+      if (r && !isNotEvaluable(r)) out.push(r);
     } catch {
       // swallow — a buggy rule must not break scoring; it simply does not fire.
     }
   }
   return out;
+}
+
+/** Migration-facing variant: returns the fired set AND the not_evaluable set (rule label +
+ *  reason token). The live scoring hook uses {@link runFindings} (fired set only — Family N is
+ *  display-only and not_evaluable is not persisted this build); this accessor exists so the
+ *  eventual read/persistence surface for "we could not check" has a single, tested entry point
+ *  without reshaping the runner's return. Pure, same isolation guarantee. */
+export interface RunFindingsDetailed {
+  fired: FiredFinding[];
+  notEvaluable: { rule: number; reason: string }[];
+}
+export function runFindingsDetailed(ctx: FiringContext, rules: FireRule[] = ALL_RULES): RunFindingsDetailed {
+  const fired: FiredFinding[] = [];
+  const notEval: { rule: number; reason: string }[] = [];
+  rules.forEach((rule, i) => {
+    try {
+      const r = rule(ctx);
+      if (isNotEvaluable(r)) notEval.push({ rule: i, reason: r.reason });
+      else if (r) fired.push(r);
+    } catch {
+      // swallow — a buggy rule must not break scoring.
+    }
+  });
+  return { fired, notEvaluable: notEval };
 }

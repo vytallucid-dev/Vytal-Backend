@@ -13,7 +13,7 @@
 // it belongs on a Performance/behaviour snapshot, not here and not in the score.
 // ─────────────────────────────────────────────────────────────────────────────
 import { prisma } from "../../db/prisma.js";
-import type { PhsHolding, McapTier, FindingKind, PillarSubtotals } from "./engine.js";
+import type { PhsHolding, McapTier, FindingKind, HoldingFinding, PillarSubtotals } from "./engine.js";
 import type { AssetClass } from "./entity.js";
 import { LENS_NATURE, type LensNature, CONSTRUCTION_PROVISIONAL_ABOVE, MATCHER_VERSION_NONE } from "./constants.js";
 import type { PhsProvenance } from "./persist.js";
@@ -31,6 +31,17 @@ function severityToFinding(sev: string | null): FindingKind | null {
     case "medium": return "medium";
     default: return null; // low / null → not a Signals deduction
   }
+}
+
+/** A fired finding's DISPLAY IDENTITY, pulled from the same evidence JSON the stock-health page reads
+ *  (score_red_flags.triggering_values / score_patterns.evidence → `.name` = title, `.verdict` = short
+ *  read; see health-view.service.ts). No fabrication: a missing name falls back to the key itself, and a
+ *  missing verdict stays null — the ledger row then shows the code + severity, never invented prose. */
+function identityOf(key: string, evidence: unknown): { flagKey: string; title: string; read: string | null } {
+  const ev = (evidence ?? null) as { name?: unknown; verdict?: unknown } | null;
+  const name = typeof ev?.name === "string" && ev.name.trim() ? ev.name : null;
+  const verdict = typeof ev?.verdict === "string" && ev.verdict.trim() ? ev.verdict : null;
+  return { flagKey: key, title: name ?? key, read: verdict };
 }
 
 /** A position we hold but CANNOT score or value with our own prices: a broker symbol outside
@@ -415,30 +426,38 @@ export async function assemblePortfolio(userId: string): Promise<{
       ? { foundation: Number(score.foundationSubtotal), momentum: Number(score.momentumSubtotal), market: Number(score.marketSubtotal), ownership: Number(score.ownershipSubtotal) }
       : null;
     const lensNatures: LensNature[] = []; // (1.2 Change 5) natures of this holding's fired lens patterns
-    const findings: FindingKind[] = [];
+    const findings: HoldingFinding[] = [];
     if (score) {
       healthSnapshotIds.push(score.id);
-      const flags = await prisma.redFlag.findMany({ where: { snapshotId: score.id }, select: { id: true, severity: true } });
+      // Widened select (was { id, severity }): flagKey + triggeringValues carry the finding's IDENTITY
+      // (code + name + written verdict) — the thing the ledger has always thrown away here. severity
+      // still drives the Signals band; the identity now rides alongside so the ledger can name WHAT fired.
+      const flags = await prisma.redFlag.findMany({ where: { snapshotId: score.id }, select: { id: true, severity: true, flagKey: true, triggeringValues: true } });
       for (const f of flags) {
         findingIds.push(f.id);
         const k = severityToFinding(f.severity);
-        if (k) findings.push(k);
+        // severityToFinding still GATES which flags become Signals findings (low/null → not a
+        // deduction), unchanged. When it fires, carry the flag's identity beside its severity band.
+        if (k) findings.push({ kind: k, ...identityOf(f.flagKey, f.triggeringValues) });
       }
       // Distress band → distress headline. The stock engine's lowest band ("fragile")
       // is the distress-equivalent. Headline-wins in the engine dedupes it against any
-      // Critical flag on the same name (single-largest), so no double-count.
-      if (score.labelBand === "fragile") findings.push("distress");
+      // Critical flag on the same name (single-largest), so no double-count. It is BAND-DERIVED, not
+      // a catalog finding — there is no flagKey/verdict to name, so identity is null (honest, never faked).
+      if (score.labelBand === "fragile") findings.push({ kind: "distress", flagKey: null, title: null, read: null });
       // LP5/LP6 (breadth patterns) + LM3/LP2 (field-weak verdicts) from the LIVE
       // lens-pattern store (score_patterns.pattern_key). Only genuinely-fired patterns
       // (not pending_data_integration). LP5/LP6 → Signals deductions; LM3/LP2 → PX5
       // context ONLY (field-verdict lock: they NEVER deduct, never a negative finding).
       const patterns = await prisma.scorePattern.findMany({
         where: { snapshotId: score.id, displayState: { not: "pending_data_integration" } },
-        select: { id: true, patternKey: true },
+        select: { id: true, patternKey: true, evidence: true },
       });
       for (const p of patterns) {
-        if (p.patternKey === "LP5") { findings.push("lp5"); findingIds.push(p.id); }
-        else if (p.patternKey === "LP6") { findings.push("lp6"); findingIds.push(p.id); }
+        // LP5/LP6 become Signals breadth findings — carry their identity (patternKey + evidence name/verdict)
+        // the same way red flags do, so a breadth-led row can name itself too.
+        if (p.patternKey === "LP5") { findings.push({ kind: "lp5", ...identityOf(p.patternKey, p.evidence) }); findingIds.push(p.id); }
+        else if (p.patternKey === "LP6") { findings.push({ kind: "lp6", ...identityOf(p.patternKey, p.evidence) }); findingIds.push(p.id); }
         else if (p.patternKey === "LM3" || p.patternKey === "LP2") { fieldWeakSymbols.add(stock.symbol); findingIds.push(p.id); }
         // (1.2 Change 5) EVERY fired three-lens pattern (LM1–8 / LP1–6) contributes its
         // primary nature to lensProfile — a findings-character read, orthogonal to whether

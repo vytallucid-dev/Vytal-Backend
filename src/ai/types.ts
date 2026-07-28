@@ -52,7 +52,67 @@ export type AiRole = "user" | "assistant";
 
 export interface AiMessage {
   role: AiRole;
+  /** Free-form text. ★ MAY BE "" on a pure tool turn — a message that carries ONLY a tool
+   *  call (assistant) or a tool result (user) and no prose. Consumers must tolerate empty. */
   content: string;
+  /** Present on an ASSISTANT turn where the model requested one or more tool calls — the
+   *  neutral carrier of the provider's function-call parts. */
+  toolCalls?: AiToolCall[];
+  /** Present on a tool-RESULT turn: the output of ONE executed tool, fed back to the model.
+   *  Rides on role "user" — the neutral roles are user|assistant, there is NO separate "tool"
+   *  role; the adapter maps this to the provider's function-response part. */
+  toolResult?: AiToolResult;
+}
+
+// ── Tool calling (a.k.a. function calling) ─────────────────────────────────
+// The neutral vocabulary for tools. Like the rest of this module it is DUMB TRANSPORT: a
+// spec carries NO handler (execution is the caller's business), and nothing here validates
+// arguments or results. The adapter maps these three shapes to/from the provider's own
+// function-calling contract; no caller ever learns the provider's shape.
+
+/** A tool DECLARATION handed to the provider so the model can decide whether to call it.
+ *  `description` is WHAT THE MODEL SEES (prompt engineering, not documentation). `parameters`
+ *  is a JSON-Schema object for the arguments, passed through to the provider verbatim. The
+ *  chat layer's richer ChatTool (name/klass/description/parameters/handler) projects DOWN to
+ *  this — the handler and class never cross into transport. */
+export interface AiToolSpec {
+  name: string;
+  description: string;
+  /** JSON Schema (an object schema) for the call arguments. */
+  parameters: Record<string, unknown>;
+}
+
+/** A tool call the model REQUESTED, parsed out of a generation. `id` is the provider's call
+ *  id when it issues one (used to match a result back to its call); absent on providers that
+ *  don't. `args` is the parsed JSON argument object — never a string. */
+export interface AiToolCall {
+  id?: string;
+  name: string;
+  args: Record<string, unknown>;
+  /**
+   * ★ AN OPAQUE PROVIDER TOKEN THAT MUST BE ECHOED BACK VERBATIM on the next generation, when the
+   * provider issues one. We never read it, never parse it, and never generate one — it is carried
+   * through history and handed straight back.
+   *
+   * ⚠ IT IS LOAD-BEARING, NOT DECORATION. A provider that issues these REJECTS the follow-up
+   * generation outright when a tool call is replayed without its token (Gemini 3.x answers
+   * 400 INVALID_ARGUMENT), so a tool loop that drops it can call a tool exactly once and then dies
+   * on the very next request. It must therefore survive PERSISTENCE too, not just the in-memory
+   * turn: a resumed conversation replays its stored tool calls.
+   *
+   * Deliberately named for what it IS to this layer (an opaque signature) rather than for any one
+   * provider's word for it — providers that need no such token simply omit the field.
+   */
+  signature?: string;
+}
+
+/** A tool RESULT fed back to the model on the next generation. `response` is a
+ *  JSON-serialisable object; the caller's convention is `{ output }` on success / `{ error }`
+ *  on failure, but transport does not enforce it. */
+export interface AiToolResult {
+  id?: string;
+  name: string;
+  response: Record<string, unknown>;
 }
 
 // ── Requests / results ───────────────────────────────────────────────────
@@ -66,11 +126,20 @@ export interface AiGenerateRequest {
   system?: string;
   temperature?: number;
   maxTokens?: number;
+  /** Tool declarations the model MAY call this turn. Omitted/empty ⇒ a plain text
+   *  generation, exactly as before — tools are strictly additive, so every existing caller
+   *  is unaffected. */
+  tools?: AiToolSpec[];
 }
 
 export interface AiGenerateResult {
+  /** The generated text. ★ MAY BE "" when the model chose to call tools instead of
+   *  answering — an empty string here is NOT an error, and every consumer must handle it. */
   text: string;
   usage: TokenUsage;
+  /** The tool calls the model requested this turn, if any. Undefined ⇒ a plain text answer.
+   *  When present, the caller executes them and generates again with the results appended. */
+  toolCalls?: AiToolCall[];
 }
 
 /** Structured variant. `jsonSchema` is an optional response-shape hint the adapter
@@ -83,7 +152,9 @@ export interface AiGenerateStructuredRequest extends AiGenerateRequest {
 
 // ── The interface every adapter implements ───────────────────────────────
 export interface AiProvider {
-  /** Free-form text generation. Throws (contextual message) on any provider failure. */
+  /** Free-form text generation. When `req.tools` is supplied the model may answer with tool
+   *  calls instead of (or alongside) prose — the result carries `toolCalls` and `text` may be
+   *  "". Throws (contextual message) on any provider failure. */
   generate(req: AiGenerateRequest): Promise<AiGenerateResult>;
 
   /** JSON generation — returns parsed data + usage. Throws if the provider fails or

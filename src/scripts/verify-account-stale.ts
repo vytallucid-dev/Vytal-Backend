@@ -18,6 +18,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { randomUUID } from "crypto";
 import { prisma } from "../db/prisma.js";
+import { createThrowawayUser } from "./lib/throwaway-user.js";
 import type { BrokerId } from "../brokers/types.js";
 import { integrate, syncHoldings, deactivate, activate, clearData, BrokerLifecycleError } from "../brokers/lifecycle.js";
 import { listUnifiedPositions } from "../brokers/union.js";
@@ -26,6 +27,12 @@ import { computePhs } from "../portfolio/phs/engine.js";
 import { linkAccount, unlinkAccount, deleteAccount, listAccounts, createAccount } from "../controllers/me/accounts-controller.js";
 import { addTransaction } from "../controllers/me/transactions-controller.js";
 import { getPortfolioSnapshot } from "../controllers/me/portfolio-snapshot-controller.js";
+
+// ★ UNMETERED SUITE — force the mock provider before anything runs. Without it the script inherits
+// AI_PROVIDER from .env (`gemini`), so any metered path consumes real units from the shared per-model
+// budget. This file is a top-level script (no main()), so the guard sits directly after the imports.
+process.env.AI_PROVIDER = "mock";
+
 
 let failures = 0;
 const assert = (name: string, cond: boolean, detail: string) => {
@@ -36,10 +43,9 @@ const mockRes = () => { const r: any = { statusCode: 200, body: null }; r.status
 const mockReq = (userId: string, o: any = {}) => ({ authUser: { userId }, body: o.body ?? {}, params: o.params ?? {}, query: {} }) as any;
 
 async function seedUser(tag: string) {
-  const authId = randomUUID();
-  await prisma.$executeRawUnsafe(`INSERT INTO auth.users (id, email) VALUES ($1::uuid, $2)`, authId, `stl-${tag}-${authId}@test.local`);
-  const u = await prisma.user.findUniqueOrThrow({ where: { authUserId: authId }, select: { id: true } });
-  return { authId, userId: u.id };
+  // Shared helper: sweeps leftovers from previous interrupted runs on first call (scripts/lib/throwaway-user.ts).
+  const { authId, userId } = await createThrowawayUser(`stl-${tag}`);
+  return { authId, userId };
 }
 const cleanup = (a: string) => prisma.$executeRawUnsafe(`DELETE FROM auth.users WHERE id = $1::uuid`, a);
 const DISC = { accepted: true, disclaimerVersion: "v1" };

@@ -15,15 +15,13 @@ import { prisma } from "../../db/prisma.js";
 import { enqueueJob } from "../../jobs/enqueue.js";
 import { JobTypes } from "../../jobs/types.js";
 import { fetchFundChart } from "../../ingestions/amfi/mf-chart.js";
-import { parseBucket, normaliseCategory } from "../../ingestions/amfi/mf-category.js";
-import { explainOmissions, OmissionCode } from "../../ingestions/amfi/mf-omissions.js";
+import { normaliseCategory } from "../../ingestions/amfi/mf-category.js";
+import { OmissionCode } from "../../ingestions/amfi/mf-omissions.js";
 import { splitDivisor, dayOf } from "../../ingestions/amfi/mf-split-adjust.js";
 import { loadSplitsForScheme } from "../../ingestions/amfi/mf-splits-source.js";
 import { classifyPlanOption } from "../../ingestions/amfi/mf-distributions.js";
 import { resolveRepresentative } from "../../ingestions/amfi/mf-representative.js";
-
-/** Named in the risk-free omission text so the reader knows WHICH series fell short. */
-const RISK_FREE_INDEX_HINT = "Nifty 1D Rate Index";
+import { buildFundAnalyticsView } from "../../scoring/read/fund-analytics.service.js";
 
 // ── GET /api/v1/mf/:schemeCode/analytics ─────────────────────
 // The computed analytics for one scheme.
@@ -31,6 +29,10 @@ const RISK_FREE_INDEX_HINT = "Nifty 1D Rate Index";
 // EVERY NULL SHIPS WITH ITS REASON. `omissions` is returned verbatim alongside the numbers, so
 // a client can render "—" AND say why ("this fund is 2 years old", "we have no risk-free rate
 // that far back") instead of silently showing a blank cell that looks like a bug.
+// The read itself lives in buildFundAnalyticsView (scoring/read/fund-analytics.service.ts) — moved
+// there verbatim (both lookups, the rank-bucket parse, the projection and the `omissions` expansion)
+// so the chat tool and this endpoint share ONE read. This handler now only validates the scheme code
+// and shapes the envelope.
 export const getFundAnalytics = async (req: Request, res: Response) => {
   try {
     const schemeCode = String(req.params.schemeCode ?? "");
@@ -38,8 +40,8 @@ export const getFundAnalytics = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: "Invalid scheme code" });
     }
 
-    const row = await prisma.mfAnalytics.findUnique({ where: { schemeCode } });
-    if (!row) {
+    const view = await buildFundAnalyticsView(schemeCode);
+    if (!view) {
       return res.status(404).json({
         success: false,
         error: "No analytics for this scheme yet",
@@ -47,100 +49,7 @@ export const getFundAnalytics = async (req: Request, res: Response) => {
       });
     }
 
-    // STEP 13: ETFs are AMFI funds too, and the fold now computes their analytics. Fencing this
-    // lookup to 'mutual_fund' would have served an ETF's metrics with a NULL identity block —
-    // the numbers without the fund they belong to. `assetClass` is returned so a caller can tell
-    // the two apart rather than having to infer it from the category string.
-    const inst = await prisma.instrument.findFirst({
-      where: { amfiSchemeCode: schemeCode, assetClass: { in: ["mutual_fund", "etf"] } },
-      select: { symbol: true, assetClass: true, schemeName: true, fundHouse: true, category: true, planType: true, currentNav: true, navDate: true, isActive: true },
-    });
-
-    const bucket = row.rankBucket ? parseBucket(row.rankBucket) : null;
-
-    return res.json({
-      success: true,
-      data: {
-        schemeCode,
-        scheme: inst
-          ? {
-              name: inst.schemeName,
-              // An ETF trades under an exchange ticker; a mutual fund has none and this is NULL.
-              // The 10 ETFs with no NSE listing (BSE-only / matured) are honestly NULL too.
-              symbol: inst.symbol,
-              assetClass: inst.assetClass,
-              fundHouse: inst.fundHouse,
-              category: inst.category,
-              planType: inst.planType,
-              currentNav: inst.currentNav,
-              // navDate is NOT decoration. A carried-forward NAV keeps its OLD date, and that
-              // date is the only thing distinguishing it from a fresh one. Never render the NAV
-              // without it.
-              navDate: inst.navDate,
-              isActive: inst.isActive,
-            }
-          : null,
-        asOfDate: row.asOfDate,
-        navPoints: row.navPoints,
-        // No `sinceEarliestCagr`, and no earliest-NAV anchor to caveat it with. Both are gone: the
-        // metric was folded from AMFI's raw NAV, which is neither split-adjusted nor total-return,
-        // so the longer the span the more corrupt the number — the opposite of what a client would
-        // assume. We do not serve a figure we cannot compute honestly, so the field does not exist.
-        returns: {
-          m1: row.ret1m, m3: row.ret3m, m6: row.ret6m, y1: row.ret1y,
-          y3Cagr: row.ret3yCagr, y5Cagr: row.ret5yCagr,
-        },
-        risk: {
-          vol1y: row.vol1y, vol3y: row.vol3y,
-          sharpe1y: row.sharpe1y, sharpe3y: row.sharpe3y, sharpe5y: row.sharpe5y,
-          sortino1y: row.sortino1y, sortino3y: row.sortino3y,
-          maxDrawdown1y: row.maxDrawdown1y, maxDrawdown3y: row.maxDrawdown3y, maxDrawdown5y: row.maxDrawdown5y,
-        },
-        rolling1y: {
-          n: row.roll1yN, min: row.roll1yMin, max: row.roll1yMax,
-          avg: row.roll1yAvg, pctPositive: row.roll1yPctPositive,
-        },
-        rank: bucket
-          ? {
-              category: bucket.leaf,
-              planType: bucket.planType,
-              // bucketSize = the whole category; pool* = the denominator each rank was measured
-              // against (funds with a return that horizon). Render "y1 of pool1y", never "of bucketSize".
-              bucketSize: row.rankBucketSize,
-              y1: row.rank1y, y3: row.rank3y, y5: row.rank5y,
-              pool1y: row.rankPool1y, pool3y: row.rankPool3y, pool5y: row.rankPool5y,
-              pct1y: row.pct1y, pct3y: row.pct3y, pct5y: row.pct5y,
-            }
-          : null,
-        // GROUP-3 (Step 18) — computed and stored on every fold, but never returned until now.
-        // `index`/`via` are null together when no benchmark is defensible for this fund's category
-        // (reason lands in `omissions.benchmark`); beta/alpha/trackingError are gated per-horizon
-        // and explained the same way (`omissions.beta_1y` etc), same pattern as every other
-        // NAV-derived metric on this response.
-        benchmark: {
-          index: row.benchmarkIndex,
-          via: row.benchmarkVia,
-          beta1y: row.beta1y, beta3y: row.beta3y, beta5y: row.beta5y,
-          alpha1y: row.alpha1y, alpha3y: row.alpha3y, alpha5y: row.alpha5y,
-          trackingError1y: row.trackingError1y, trackingError3y: row.trackingError3y, trackingError5y: row.trackingError5y,
-        },
-        /**
-         * WHY each null above is null. Never omit this — a blank without a reason reads as a bug.
-         *
-         * Stored as compact CODES; expanded HERE into full sentences using the row's own columns
-         * (nav_points, window_from, as_of_date, rank_bucket_size). The prose is composed at read
-         * time rather than written 13,704 times — same information, none of the duplication.
-         */
-        omissions: explainOmissions(row.omissions, {
-          navPoints: row.navPoints,
-          windowFrom: row.windowFrom,
-          asOfDate: row.asOfDate,
-          rankBucketSize: row.rankBucketSize,
-          riskFreeIndex: RISK_FREE_INDEX_HINT,
-        }),
-        computedAt: row.computedAt,
-      },
-    });
+    return res.json({ success: true, data: view });
   } catch (err) {
     return res.status(500).json({ success: false, error: (err as Error).message });
   }

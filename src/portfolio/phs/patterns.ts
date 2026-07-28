@@ -185,7 +185,7 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
   const W = holdings.map((h) => h.marketValue / total);
   const n = holdings.length;
 
-  const isHeadline = (h: PhsHolding) => h.findings.some((f) => f === "distress" || f === "critical" || f === "high" || f === "medium");
+  const isHeadline = (h: PhsHolding) => h.findings.some((f) => f.kind === "distress" || f.kind === "critical" || f.kind === "high" || f.kind === "medium");
 
   // (1.1 Change 2) Backend-composed, tier-framed PC/PB read. Prepends the tier LEAD clause
   // to the spec's verbatim sentence. Copy only — no number is touched.
@@ -576,23 +576,23 @@ export function firePortfolioFindings(holdings: PhsHolding[], r: PhsResult, ctx:
   });
 
   // ── PS — Signal exposure (capital-weighted fired findings) ──
-  const critHighW = holdings.reduce((s, h, i) => (h.findings.some((f) => f === "critical" || f === "high") ? s + W[i] : s), 0);
+  const critHighW = holdings.reduce((s, h, i) => (h.findings.some((f) => f.kind === "critical" || f.kind === "high") ? s + W[i] : s), 0);
   if (critHighW >= 0.10) {
-    const names = holdings.filter((h) => h.findings.some((f) => f === "critical" || f === "high")).map((h) => h.symbol);
+    const names = holdings.filter((h) => h.findings.some((f) => f.kind === "critical" || f.kind === "high")).map((h) => h.symbol);
     out.push({ id: "PS1", doesntMean: FINDING_COPY["PS1"].doesntMean, family: "PS", label: "Capital under active red flags", tone: "Concern", loud: true,
       bind: { weight: critHighW, symbols: names },
       read: `${pct(critHighW)} of your book by value sits in holdings with active Critical/High red flags (${names.join(", ")}). These are the holdings the model is currently warning on.` });
   }
   holdings.forEach((h, i) => {
-    if (h.findings.includes("distress") && W[i] >= 0.05) {
+    if (h.findings.some((f) => f.kind === "distress") && W[i] >= 0.05) {
       out.push({ id: "PS2", doesntMean: FINDING_COPY["PS2"].doesntMean, family: "PS", label: "Distress exposure", tone: "Concern", loud: true, bind: { symbol: h.symbol, weight: W[i] },
         read: `${h.symbol} is in the Distress band at ${pct(W[i])} of the book.` });
     }
   });
   // PS3 — LP5 exposure, EXCLUDING holdings already headlined (B.7 anti-double-count)
-  const lp5W = holdings.reduce((s, h, i) => (h.findings.includes("lp5") && !isHeadline(h) ? s + W[i] : s), 0);
+  const lp5W = holdings.reduce((s, h, i) => (h.findings.some((f) => f.kind === "lp5") && !isHeadline(h) ? s + W[i] : s), 0);
   if (lp5W >= 0.25) out.push({ id: "PS3", doesntMean: FINDING_COPY["PS3"].doesntMean, family: "PS", label: "Broad-erosion exposure", tone: "Caution", loud: true, bind: { weight: lp5W } });
-  const lp6W = holdings.reduce((s, h, i) => (h.findings.includes("lp6") ? s + W[i] : s), 0);
+  const lp6W = holdings.reduce((s, h, i) => (h.findings.some((f) => f.kind === "lp6") ? s + W[i] : s), 0);
   if (lp6W >= 0.25) out.push({ id: "PS4", doesntMean: FINDING_COPY["PS4"].doesntMean, family: "PS", label: "Fading-strength exposure", tone: "Caution", loud: false, bind: { weight: lp6W } });
   const anyDeducting = holdings.some((h) => h.findings.length > 0);
   if (!anyDeducting) out.push({ id: "PS5", doesntMean: FINDING_COPY["PS5"].doesntMean, family: "PS", label: "No active red flags", tone: "Constructive", loud: false, bind: {} });

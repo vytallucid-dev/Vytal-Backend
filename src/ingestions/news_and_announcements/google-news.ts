@@ -185,18 +185,45 @@ export interface GoogleNewsFetch {
   malformed: boolean;
 }
 
+/**
+ * The `when:` recency operator for the search query.
+ *
+ * ★ WHY THIS EXISTS — THE FETCH BUDGET WAS BEING SPENT ON ARCHIVE MATERIAL.
+ * Google News ranks this query by RELEVANCE, not date, and the unconstrained feed spans years
+ * (measured: up to 9.6 years, median item age ~6 months). The caller takes the first `maxItems`
+ * and then drops anything older than its cutoff — so almost nothing survived. Measured across six
+ * symbols: 6 of 120 fetched items were inside a 7-day window; for two of them, ZERO, meaning a
+ * daily run stored nothing at all for those names. With the operator: 95 of 120.
+ *
+ * The window is DERIVED FROM THE CALLER'S `daysBack`, never hardcoded, so the query and the
+ * caller's `publishedAt >= cutoff` filter cannot disagree about what "recent" means.
+ *
+ * ⚠ `when:0d` IS NOT AN EMPTY WINDOW — it is silently ignored, and the feed comes back
+ * unconstrained (measured: 48 items, oldest 3.5 years). So a non-positive window must omit the
+ * operator rather than emit `when:0d`, which would look like a filter while being none.
+ */
+function whenClause(windowDays?: number): string {
+  if (windowDays === undefined || !Number.isFinite(windowDays)) return "";
+  const d = Math.floor(windowDays);
+  return d >= 1 ? ` when:${d}d` : "";
+}
+
 export async function fetchGoogleNews(
   symbol: string,
   companyName: string,
   maxItems: number = 20,
   signal?: AbortSignal,
+  /** Recency window in days — pass the caller's `daysBack`. Omitted ⇒ unconstrained (legacy). */
+  windowDays?: number,
 ): Promise<GoogleNewsFetch> {
   // Short company name works better for search
   const shortName = companyName
     .replace(/\s+(limited|ltd\.?|private|pvt\.?)$/i, "")
     .trim();
 
-  const query = encodeURIComponent(`"${shortName}" stock NSE India`);
+  const query = encodeURIComponent(
+    `"${shortName}" stock NSE India${whenClause(windowDays)}`,
+  );
   const url = `https://news.google.com/rss/search?q=${query}&hl=en-IN&gl=IN&ceid=IN:en`;
 
   const xml = await httpsGetText(url, signal);

@@ -184,9 +184,10 @@ async function main() {
     reminderId = c._json?.data?.reminder?.id;
 
     // re-affirm (idempotent — same pair) → 200, updates daysBefore, no duplicate row
-    const c2 = await call(createReminder, mkReq(userA, { body: { stockId: stockA!.id, eventType: realEvent.eventType, daysBefore: 5 } }));
+    const c2 = await call(createReminder, mkReq(userA, { body: { stockId: stockA!.id, eventType: realEvent.eventType, daysBefore: 7 } }));
     ok("POST same pair → 200 (re-affirm, not duplicate)", c2._status === 200 && c2._json?.data?.created === false);
-    ok("re-affirm updates daysBefore to 5", c2._json?.data?.reminder?.daysBefore === 5 && c2._json?.data?.reminder?.id === reminderId);
+    // 7 (not 5): daysBefore is now the four options the picker offers — see reminders/service.ts.
+    ok("re-affirm updates daysBefore to 7", c2._json?.data?.reminder?.daysBefore === 7 && c2._json?.data?.reminder?.id === reminderId);
     const count = await prisma.eventReminder.count({ where: { userId: userA } });
     ok("only ONE reminder row for the pair (no duplicate)", count === 1, `rows=${count}`);
 

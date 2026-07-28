@@ -108,6 +108,19 @@ export type FindingKind = "red_flag" | "pattern";
 /** File 1 §5E — the three mandatory pattern display states. */
 export type FindingDisplayState = "active" | "pending_data_integration" | "dampened";
 
+/** A RULE's inherent good/bad classification, published as a rule property (Family N
+ *  Amendment §1). Distinct from a fired instance's {@link FiredFinding.direction}: a
+ *  rule has a polarity even when it does not fire, and a rule may FIRE with a null
+ *  direction yet still be `neutral` polarity (e.g. F2's mix-shift). Family N is
+ *  `positive`. */
+export type Polarity = "positive" | "negative" | "neutral";
+
+/** Amendment §2.4 temporal class. `CONDITION` = a standing fact about the COMPANY that
+ *  does not age out on a clock (all of Family N). `EVENT` = a dated occurrence. This is
+ *  a semantic marker only — it does NOT imply any dependency on `standing_since` (§4);
+ *  a CONDITION rule still counts its own run length from the underlying data at fire time. */
+export type TemporalClass = "CONDITION" | "EVENT";
+
 /**
  * The emit shape every rule returns. ONE finding = one card. `evidence` is the JSON the
  * UI reads to build the verdict sentence (it MUST carry the real breaching stat). The
@@ -130,11 +143,84 @@ export interface FiredFinding {
    *  stores the HALVED value. */
   magnitude?: number | null;
   displayState?: FindingDisplayState; // patterns; defaults "active"
+  /** RULE polarity (positive/negative/neutral) — a rule property published on the fired
+   *  instance (Amendment §1). Set explicitly on Family N (`positive`). Distinct from
+   *  `direction` (the fired instance's good/bad, which can be null). Optional so existing
+   *  rules are untouched; back-filling them is deferred to the evaluability migration. */
+  polarity?: Polarity;
+  /** Amendment §2.4 temporal class. Family N sets `CONDITION` explicitly. Optional →
+   *  existing rules unaffected. Not persisted (no column; reconstructable from the key,
+   *  like the base catalog magnitude) — an in-code legibility marker for this build. */
+  temporalClass?: TemporalClass;
   /** UI-facing evidence JSON — the breaching stat(s) for the verdict sentence. */
   evidence: Record<string, unknown>;
   /** metricKeys / pillars the finding concerns (ScorePattern.metricRefs). */
   metricRefs?: string[];
 }
 
-/** A fire-rule: pure function of the context, returns a finding or null (no fire). */
-export type FireRule = (ctx: FiringContext) => FiredFinding | null;
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE EVALUABILITY CONTRACT (Family N Amendment §1) — three outcomes, not two.
+// ═══════════════════════════════════════════════════════════════════════════════
+// A fire-rule now speaks THREE distinct facts, not two:
+//   • a FiredFinding  → it FIRED (we checked and the pattern is TRUE)
+//   • `null`          → NOT_FIRED (we checked and the pattern is FALSE)
+//   • a NotEvaluable  → NOT_EVALUABLE (we COULD NOT check — missing history / disclosure)
+// not_fired and not_evaluable are DIFFERENT facts. A rule must never return a bare `null`
+// where the honest answer is "we could not evaluate this" — that collapses "false" into
+// "unknown" and downstream surfaces (and the honest-empty law) need them apart.
+//
+// ADDITIVE, NOT A MIGRATION. Existing rules keep returning `FiredFinding | null` (their
+// `null` = not_fired, unchanged) and stay assignable to FireRule below. Family N ships the
+// third arm from day one; the ~20 depth-gated existing rules migrate onto it SEPARATELY,
+// later — this build does not touch them.
+//
+// WHY `null` STAYS not_fired (contract shape, blast radius beyond this build): not_fired
+// carries no payload, so a bare `null` expresses it losslessly and forever — only the
+// not_evaluable arm needed a richer shape (a reason). The eventual engine-wide migration
+// therefore reshapes NOTHING here; it only (a) points more rules' unevaluable branches at
+// `notEvaluable(reason)` and (b) extends the reason union. That is why the union is the one
+// decision with a blast radius beyond this build, and why it is stated at the top of the report.
+
+/** WHY a rule could not be evaluated. STABLE MACHINE TOKENS (never free strings) — a closed
+ *  union so downstream can switch exhaustively. Family N uses the eight below. The later
+ *  engine-wide migration EXTENDS this union (the survey found existing depth-gated rules would
+ *  additionally need e.g. `feed_not_wired` [P5/P6/P10/H insider·block feeds], `no_prior_
+ *  snapshots` [trajectory B/D/G/I/C-over-time/C2/C3/F2], `opm_unavailable` [P11/P12],
+ *  `pillar_unavailable` [C1 inert-0], `band_typical_unavailable` [F1], `missing_line_item`).
+ *  The SHAPE (a single reason token) expresses every one of those — extension is union-only,
+ *  never a reshape. */
+export type NotEvaluableReason =
+  | "insufficient_annual_history"        // fewer annual rows than the rule needs (N1/N2/N3)
+  | "insufficient_quarters"              // fewer quarterly-result windows than the rule needs (N4)
+  | "insufficient_shareholding_history"  // fewer shareholding filings than the rule needs (N5/N6/N7)
+  | "negative_equity"                    // net worth ≤ 0 → the ratio is meaningless, never a pass (N3)
+  | "no_debt"                            // Σinterest ≤ 0 → no coverage to strengthen, never a pass (N4)
+  | "class_not_disclosed"                // an FII/DII bucket is null this quarter, never a pass (N5)
+  | "share_count_unavailable"            // promoter ABSOLUTE share count missing — the buyback firewall (N6)
+  | "pledging_not_disclosed";            // pledge column absent for the peer group (N7)
+
+/** The third rule outcome: "we could not check, and here is the machine-readable why."
+ *  Discriminated from a FiredFinding (which has `kind`, never `status`) and from not_fired
+ *  (`null`) by the `status` literal. */
+export interface NotEvaluable {
+  status: "not_evaluable";
+  reason: NotEvaluableReason;
+}
+
+/** Everything a fire-rule may return: a finding · not_fired (`null`) · not_evaluable. */
+export type RuleResult = FiredFinding | NotEvaluable | null;
+
+/** Constructor for the not_evaluable arm — keeps rule bodies legible and makes the reason
+ *  set the single source of truth (a typo becomes a compile error, not a silent free string). */
+export const notEvaluable = (reason: NotEvaluableReason): NotEvaluable => ({ status: "not_evaluable", reason });
+
+/** Type guard: a not_evaluable return vs a fired finding / not_fired. Used by the runner to
+ *  keep not_evaluable OUT of the fired set (it is not a finding), and by tests to assert it. */
+export function isNotEvaluable(r: RuleResult): r is NotEvaluable {
+  return r !== null && (r as NotEvaluable).status === "not_evaluable";
+}
+
+/** A fire-rule: pure function of the context. Returns a finding, `null` (not_fired), or a
+ *  NotEvaluable (could-not-check). Existing rules that return only `FiredFinding | null`
+ *  remain valid — that shape is a subtype of RuleResult (additive, not a migration). */
+export type FireRule = (ctx: FiringContext) => RuleResult;

@@ -1,0 +1,34 @@
+-- ═══════════════════════════════════════════════════════════════
+-- CHAT DISPLAY CONTENT — give the opening USER message a reader-facing twin.
+--
+-- THE PROBLEM. A discuss conversation's message[0] is the server-composed grounded ask: a fact block, a
+-- closed-world header, the reader's orientation, and a worked style example. It is model-facing
+-- scaffolding, so serializeVisibleMessages drops it — and the reader is left watching Vytal open a
+-- conversation nobody appears to have started. Showing the raw ask instead is not an option: it is 2-4KB
+-- of prompt engineering, not something a person said.
+--
+-- THE FIX, AND WHY IT IS A COLUMN AND NOT A RESPONSE FIELD. One row, two texts:
+--   content          — UNCHANGED. The full grounded ask. loadHistoryForModel reads this and only this,
+--                      so the model keeps receiving exactly what it received before this migration.
+--   display_content  — the one short line the reader sees themselves say ("Explain TCS's health read —
+--                      what's driving it, and where the pillars are strong or weak").
+-- Returning the display line on the open RESPONSE alone would have been cheaper and wrong: GET
+-- /chat/sessions/:id would have nothing to return, so the same conversation would show the reader's
+-- opening in the sidekick panel and not on /chat. Persisting it makes every read path agree for free.
+--
+-- PURELY ADDITIVE. Nullable, no default, no backfill. Every existing row keeps display_content = NULL and
+-- therefore keeps its current visibility exactly:
+--   · discuss openings written before this migration  → NULL → still hidden (historical, no twin exists)
+--   · chat_page openings (orientation, not an ask)    → NULL → still hidden, permanently and by design
+--   · tool turns / ordinary messages                  → NULL → untouched (they are not openings)
+-- Only rows written by createDiscussSessionWithOpening AFTER this migration carry a value, and only they
+-- become visible. Nothing is rewritten, so the change is reversible by dropping the column.
+--
+-- The role/kind CHECKs are unchanged: this is one nullable TEXT column and nothing else.
+--
+-- Drift-safe apply: BEGIN/COMMIT over DIRECT_URL (apply-migration-direct.ts), then
+-- `prisma migrate resolve --applied 20260727160000_add_chat_display_content`. NEVER `migrate dev`. Dev only.
+-- ═══════════════════════════════════════════════════════════════
+
+ALTER TABLE "chat_messages"
+  ADD COLUMN "display_content" TEXT;

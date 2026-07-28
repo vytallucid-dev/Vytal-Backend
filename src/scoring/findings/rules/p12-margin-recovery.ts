@@ -25,13 +25,14 @@
 
 import { isDistortedOpm } from "../guards/exceptional-opm.js";
 import { annualExceptionalLatest } from "../guards/annual-exceptional.js";
-import type { FireRule, QuarterlyOpmPoint } from "../types.js";
+import { notEvaluable, type FireRule, type QuarterlyOpmPoint } from "../types.js";
 
 export const P12_MIN_RISES = 2;
 
 export const ruleP12: FireRule = (ctx) => {
   const series = ctx.quarterlyOpm;
-  if (!series || series.length < P12_MIN_RISES + 1) return null;
+  if (!series) return notEvaluable("opm_unavailable"); // ⚠ Phase 2
+  if (series.length < P12_MIN_RISES + 1) return notEvaluable("insufficient_quarters"); // ⚠ Phase 2
 
   // Trailing strictly-INCREASING run ending at the latest quarter.
   const run: QuarterlyOpmPoint[] = [series[series.length - 1]];

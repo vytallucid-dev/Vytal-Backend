@@ -2445,6 +2445,19 @@ model ScoreSnapshot {
   // Skip-identical fingerprint (ruling 3) — engine-side no-op check for composites
   inputsFingerprint String @map("inputs_fingerprint")
 
+  // ── DECLINED CHECKS (the evaluability contract) ────────────────────────────────────────────────
+  // The rules that COULD NOT RUN on this snapshot, as [{ ruleRef, reason }]. Distinct from a rule that
+  // ran and returned false, which is recorded by the ABSENCE of a row in score_patterns / red flags.
+  //
+  // WHY THIS IS A COLUMN AND NOT A TABLE: the declined set is snapshot-scoped and read whole, exactly
+  // like the fired set — it versions with the snapshot and is never queried across stocks by reason.
+  // A join table would buy nothing and add a write per declined rule per member per rescore.
+  //
+  // Nullable: a snapshot written before this column existed (or by a path that did not collect the
+  // declined set) carries null, which reads as "we don't know what declined", NOT as "nothing declined".
+  // The read layer must keep those apart — honest-empty over a fabricated all-clear.
+  notEvaluable Json? @map("not_evaluable")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   stock              Stock              @relation(fields: [stockId], references: [id], onDelete: Cascade)

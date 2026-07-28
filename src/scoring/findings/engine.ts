@@ -102,26 +102,55 @@ export function runFindings(ctx: FiringContext, rules: FireRule[] = ALL_RULES): 
   return out;
 }
 
-/** Migration-facing variant: returns the fired set AND the not_evaluable set (rule label +
- *  reason token). The live scoring hook uses {@link runFindings} (fired set only — Family N is
- *  display-only and not_evaluable is not persisted this build); this accessor exists so the
- *  eventual read/persistence surface for "we could not check" has a single, tested entry point
- *  without reshaping the runner's return. Pure, same isolation guarantee. */
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// RULE IDENTITY (Phase 2). A declined check must be recorded against a STABLE reference, and rules are
+// bare arrow functions with no intrinsic name. `runFindingsDetailed` previously reported the rule's
+// ARRAY INDEX, which is worthless the moment registry order changes — and useless for persistence.
+//
+// This map gives every registered rule a stable `ruleRef`. It lives beside the registry (the one place
+// that already names each rule at import) rather than being stamped onto 30 rule files, and it is the
+// SINGLE source of the ref that reaches the database and the read surface. A rule missing from the map
+// degrades to "unknown_rule" rather than throwing — a diagnostic gap, never a broken scoring pass.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+export const RULE_REFS: ReadonlyMap<FireRule, string> = new Map<FireRule, string>([
+  [ruleR6, "R6"], [ruleP11, "P11"], [ruleC1, "C1"],
+  [ruleR2, "R2"], [ruleR4, "R4"], [ruleP1, "P1"], [ruleP4, "P4"], [ruleP8, "P8"],
+  [ruleR3, "R3"], [ruleP7, "P7"], [ruleR5, "R5"], [ruleP12, "P12"], [ruleP13, "P13"],
+  [ruleB, "B"], [ruleD, "D"], [ruleI, "I"], [ruleG, "G"], [ruleF2, "F2"],
+  [ruleC2, "C2"], [ruleC3, "C3"], [ruleCOverTime, "C_over_time"],
+  [ruleP5, "P5"], [ruleP6, "P6"], [ruleP10, "P10"], [ruleH, "H"], [ruleF1, "F1"],
+  [ruleN1, "N1"], [ruleN2, "N2"], [ruleN3, "N3"], [ruleN4, "N4"],
+  [ruleN5, "N5"], [ruleN6, "N6"], [ruleN7, "N7"],
+]);
+
+export const ruleRefOf = (rule: FireRule): string => RULE_REFS.get(rule) ?? "unknown_rule";
+
+/** One declined check: WHICH rule could not run, and WHY. The pair the read surface needs to say
+ *  "we can't check earnings quality here yet — it needs four years of accounts and we have two." */
+export interface DeclinedCheck {
+  ruleRef: string;
+  reason: string;
+}
+
+/** Migration-facing variant: returns the fired set AND the declined set. As of Phase 2 this IS the live
+ *  scoring path (score-pass.ts calls it), because a rule that declined for depth and a rule that
+ *  evaluated to false are different facts and the card must be able to tell them apart. Pure, same
+ *  isolation guarantee as {@link runFindings}. */
 export interface RunFindingsDetailed {
   fired: FiredFinding[];
-  notEvaluable: { rule: number; reason: string }[];
+  notEvaluable: DeclinedCheck[];
 }
 export function runFindingsDetailed(ctx: FiringContext, rules: FireRule[] = ALL_RULES): RunFindingsDetailed {
   const fired: FiredFinding[] = [];
-  const notEval: { rule: number; reason: string }[] = [];
-  rules.forEach((rule, i) => {
+  const notEval: DeclinedCheck[] = [];
+  for (const rule of rules) {
     try {
       const r = rule(ctx);
-      if (isNotEvaluable(r)) notEval.push({ rule: i, reason: r.reason });
+      if (isNotEvaluable(r)) notEval.push({ ruleRef: ruleRefOf(rule), reason: r.reason });
       else if (r) fired.push(r);
     } catch {
       // swallow — a buggy rule must not break scoring.
     }
-  });
+  }
   return { fired, notEvaluable: notEval };
 }

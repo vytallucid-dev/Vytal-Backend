@@ -116,6 +116,35 @@ export function computePrimaryOwnership(
 
   const redFlags: DeferredRedFlag[] = [];
   if (pledging.r1Breach) {
+    // ── THE AUTHORED VERDICT (§1.6) ──────────────────────────────────────────────────────────────
+    // Every other red flag ships a reader-facing `verdict` in its triggeringValues; R1 shipped only
+    // `reasons`, which are ENGINEER-facing diagnostic strings ("pledgeRatio 62.30% > 50% of promoter
+    // holding"). Downstream surfaces that render a finding by its own claim therefore had nothing to
+    // render and fell back to a generic line — "A red flag is standing on this stock." was the emptiest
+    // sentence on the live card, and it appeared on every ASHOKLEY render for every reader.
+    //
+    // Composed from the SAME values already in triggeringValues — no new computation, no re-derivation.
+    // Two shapes, because R1 has two independent breach paths and the honest sentence differs:
+    //   · level breach  — the ratio itself is above our declared 50% line
+    //   · velocity breach — the ratio jumped ≥10pp in a single quarter (may still be under 50%)
+    // Both may hold; the level statement leads because it is the standing condition.
+    const ratio = pledging.pledgeRatioQ;
+    const rise = pledging.qoqRisePp;
+    const levelBreach = ratio !== null && ratio > 50;
+    const riseBreach = rise !== null && rise >= 10;
+    const parts: string[] = [];
+    if (levelBreach) {
+      parts.push(`${ratio!.toFixed(1)}% of the promoter holding is pledged — above the 50% level at which we mark pledging as critical`);
+    }
+    if (riseBreach) {
+      parts.push(
+        levelBreach
+          ? `and it rose ${rise!.toFixed(1)}pp in a single quarter`
+          : `promoter pledging rose ${rise!.toFixed(1)}pp in a single quarter — at or above the 10pp single-quarter move at which we mark it as critical`,
+      );
+    }
+    const verdict = `Promoter pledging — ${parts.join(" ")}.`;
+
     redFlags.push({
       flagKey: "ownership_R1_pledge",
       severity: "critical", // File 1 §5A: red flags are severity Critical (kept in sync with the DB-write site in composite/persist.ts)
@@ -126,6 +155,7 @@ export function computePrimaryOwnership(
         qoqRisePp: pledging.qoqRisePp,
         thresholdPct: 50,
         thresholdQoqRisePp: 10,
+        verdict, // the reader-facing claim, in the same key every other finding uses
       },
       reasons: pledging.r1Reasons,
       persistenceDeferred: true,

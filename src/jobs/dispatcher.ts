@@ -62,6 +62,7 @@ import { handleRemindersDeliverDaily } from "./handlers/reminders-deliver.handle
 import { handleBrokerPollSync } from "./handlers/broker-poll-sync.handler.js";
 import { handleRetentionPrune } from "./handlers/retention-prune.handler.js";
 import { handleBehaviorRollupReconcile } from "./handlers/behavior-rollup-reconcile.handler.js";
+import { handleBaseRatesWarm } from "./handlers/base-rates-warm.handler.js";
 import { handleChatTitleGenerate } from "./handlers/chat-title-generate.handler.js";
 import { handleChatProfileDistill } from "./handlers/chat-profile-distill.handler.js";
 import { JobTypes, type JobType } from "./types.js";
@@ -114,6 +115,7 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.BROKER_POLL_SYNC]: handleBrokerPollSync,
   [JobTypes.RETENTION_PRUNE]: handleRetentionPrune,
   [JobTypes.BEHAVIOR_ROLLUP_RECONCILE]: handleBehaviorRollupReconcile,
+  [JobTypes.BASE_RATES_WARM]: handleBaseRatesWarm,
   [JobTypes.CHAT_TITLE_GENERATE]: handleChatTitleGenerate,
   [JobTypes.CHAT_PROFILE_DISTILL]: handleChatProfileDistill,
 };

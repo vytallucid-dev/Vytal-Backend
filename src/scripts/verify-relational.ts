@@ -67,12 +67,16 @@ function scoredObject(findings: ObjectFinding[]): ObjectState {
     stockId: "stk-acme",
     symbol: "ACME",
     displayLabel: "Acme Industries",
+    // §1.5 — the editorial lead path (a stock WITH a stock_overviews row).
+    businessLead: "Makes industrial pumps and compressors for process plants.",
     isScored: true,
-    coverage: { state: "scored", reason: null },
+    coverage: { state: "scored_full", declinedCount: 0, declinedReasons: [], fullyEvaluated: true },
     snapshot: { generation: "snap-acme-1", periodKey: "FY26Q1", composite: 71, band: "steady" },
     sector: { key: "industrials", displayName: "Industrials", sectorClass: "Cyclical" },
     peerGroup: { id: "pg-1", label: "Industrial Machinery", memberCount: 9 },
     findings,
+    // Phase 2 — the collector RAN and everything was evaluable. Full-strength "Nothing flagged."
+    notEvaluable: [],
     pondMask: null,
   };
 }
@@ -82,12 +86,15 @@ function unscoredObject(): ObjectState {
     stockId: "stk-newco",
     symbol: "NEWCO",
     displayLabel: "Newco Ltd",
+    businessLead: null, // §1.5 — the sector+classification FALLBACK path (no editorial row).
     isScored: false,
-    coverage: { state: "covered", reason: "needs four years of accounts and we have two" },
+    coverage: { state: "covered_unscored", declinedCount: null, declinedReasons: [], fullyEvaluated: false },
     snapshot: null,
     sector: { key: "industrials", displayName: "Industrials", sectorClass: "Cyclical" },
     peerGroup: null,
     findings: [],
+    // Unscored ⇒ no rule ever ran ⇒ we know nothing about declined checks (null, never []).
+    notEvaluable: null,
     pondMask: null,
   };
 }
@@ -129,8 +136,25 @@ function heldContext(attention: ReaderContext["attention"], hasFund = true): Rea
       phsComposite: 68,
       phsBand: "Steady",
     },
-    watchlist: { exists: false, count: 0, thisAddedAt: null },
+    watchlist: { exists: false, count: 0, thisAddedAt: null, peersInPeerGroup: [] },
     attention,
+    // §Phase 4 — real pond exposure: ACME plus one other name in the same peer group, 33% of the book.
+    // Above UN_PG_NOTABLE_PCT (25) and below UN_PG_HEAVY_PCT (40), so UN1 + UN2("notable") both fire.
+    // §Phase 6 — 3 of 6 scored holdings carry foundation_C1_divergence: observedShare 0.50, firedInBook 3
+    // ⇒ the SHARE path fires. Universe base rate is supplied by the fixture snapshot in the UE tests.
+    // §Phase 7 — an evaluable delta: MEDIUM_NEG is newly standing since the last look.
+    delta: { evaluable: true, since: daysAgo(10), sinceLabel: "July 2026", lastSeenGeneration: "snap-acme-0", newSnapshotSinceLastLook: true, newlyStandingKeys: ["foundation_C1_divergence"], clearedKeys: [], lastSeenBand: "healthy" },
+    echo: { scoredHoldingsCount: 6, byPatternKey: new Map([["foundation_C1_divergence", ["Acme Industries", "Beta Foods", "Gamma Pharma"]]]) },
+    neighbourhood: {
+      pgWeightPct: 33,
+      pgHeld: [
+        { stockId: "stk-acme", symbol: "ACME", name: "Acme Industries", isThisObject: true },
+        { stockId: "stk-delta", symbol: "DELTA", name: "Delta Cement", isThisObject: false },
+      ],
+      pgSize: 9,
+      sectorWeightPct: 33,
+      sectorHeldCount: 2,
+    },
   };
 }
 
@@ -153,15 +177,22 @@ function strangerContext(): ReaderContext {
       phsComposite: 60,
       phsBand: "Steady",
     },
-    watchlist: { exists: false, count: 0, thisAddedAt: null },
+    watchlist: { exists: false, count: 0, thisAddedAt: null, peersInPeerGroup: [] },
     attention: { hasHistory: false, firstViewedAt: null, lastViewedAt: null, viewCount: 0, viewCountTrailing30d: 0, lastViewedSnapshotGeneration: null },
+    // §Phase 7 — no last look ⇒ NOT EVALUABLE, never "nothing new".
+    delta: { evaluable: false, since: null, sinceLabel: null, lastSeenGeneration: null, newSnapshotSinceLastLook: false, newlyStandingKeys: [], clearedKeys: [], lastSeenBand: null },
+    echo: { scoredHoldingsCount: 4, byPatternKey: new Map() },
+    // The stranger holds NOTHING in this pond and nothing in its sector — so UN1/UN2/UN7 all stay
+    // silent and UO4 ("nothing connects") is the honest resolution. This is the UO4 path's fixture.
+    neighbourhood: { pgWeightPct: 0, pgHeld: [], pgSize: 9, sectorWeightPct: 0, sectorHeldCount: 0 },
   };
 }
 
 const FIRST_ATTN: ReaderContext["attention"] = { hasHistory: false, firstViewedAt: null, lastViewedAt: null, viewCount: 0, viewCountTrailing30d: 0, lastViewedSnapshotGeneration: null };
 const RETURNING_ATTN: ReaderContext["attention"] = { hasHistory: true, firstViewedAt: daysAgo(40), lastViewedAt: daysAgo(10), viewCount: 3, viewCountTrailing30d: 1, lastViewedSnapshotGeneration: "snap-acme-0" };
 
-const claimsOf = (s: ReturnType<typeof composeRelationalState>) => [s.header.claim, ...s.slots.map((x) => x.claim), ...s.overflow.map((x) => x.claim)];
+const claimsOf = (s: ReturnType<typeof composeRelationalState>) => [s.header.claim, ...s.slots.filter((x) => x.entryId !== "UO1").map((x) => x.claim), ...s.overflow.filter((x) => x.entryId !== "UO1").map((x) => x.claim)];
+const businessLeadClaimsOf = (s: ReturnType<typeof composeRelationalState>) => [...s.slots, ...s.overflow].filter((x) => x.entryId === "UO1").map((x) => x.claim);
 const slotIds = (s: ReturnType<typeof composeRelationalState>) => s.slots.map((x) => x.entryId);
 const hasEntry = (s: ReturnType<typeof composeRelationalState>, id: string) => [...s.slots, ...s.overflow].some((x) => x.entryId === id);
 const negFacts = (s: ReturnType<typeof composeRelationalState>) => s.negatives.map((n) => n.fact);
@@ -170,20 +201,47 @@ const negFacts = (s: ReturnType<typeof composeRelationalState>) => s.negatives.m
 console.log("\n══ FIXTURE 1 · M1 — holder, first view, scored, Family N standing strength ══");
 const m1 = composeRelationalState(heldContext(FIRST_ATTN), scoredObject([N1_SIX_YEARS, MEDIUM_NEG]), FROZEN_NOW);
 ok("mode is M1", m1.mode === "M1", m1.mode);
-ok("header is UH6 'first time' framing", m1.header.entryId === "UH6" && /first time you're reading it/i.test(m1.header.claim));
+// ⚠ INVERTED IN THIS BUILD (§1.1). This assertion used to REQUIRE the "first time you're reading it"
+// framing. That claim is unverifiable: M1 is selected by the ABSENCE of a BehaviorRollup row, and the
+// attention beacon drops its whole buffer when no token is present, so a holder who has read the stock
+// ten times could be told it was their first. The assertion now FORBIDS the claim it once demanded.
+ok("header is UH6 and makes NO first-view claim", m1.header.entryId === "UH6" && !/first time|never (read|opened|looked)|haven't (read|opened|looked)/i.test(m1.header.claim));
 ok("floor UH1 present (position)", hasEntry(m1, "UH1"));
 ok("card is non-empty (guaranteed-resolve)", m1.slots.length > 0);
-ok("UH1 leads (floor reserved first)", slotIds(m1)[0] === "UH1");
-ok("UH1 renders market value ₹2.4 lakh + weight", /₹2\.4 lakh/.test(m1.slots[0].claim) && /24% of your book/.test(m1.slots[0].claim));
+// ⚠ §1.3 — the floor guarantees INCLUSION, not position. UH1 is rung 5; a rung-1/3 critical finding
+// legitimately precedes it. The assertion is now inclusion + ladder order, not "floor is first".
+ok("UH1 included (floor guarantee)", slotIds(m1).includes("UH1"));
+// ⚠ RE-DERIVED (§4.2, floor-as-rank). The floor takes the MODE'S floor rank, not its global rung, so
+// a floor entry may legitimately precede a lower-rung entry. The ladder governs the NON-FLOOR TAIL,
+// which is what this now asserts. (The previous version hardcoded a floor id list and would have
+// silently rotted as floors changed per mode — an assertion written against behaviour, not spec.)
+{
+  const floorOf = (s: ReturnType<typeof composeRelationalState>) => {
+    // The floor is the leading run of entries that are NOT in global-rung order relative to the tail;
+    // derive it structurally instead: M1's floor is UH1 (headerAndFloor), so take the declared set.
+    const declared = new Set(["UH1"]);
+    return s.slots.filter((x) => declared.has(x.entryId));
+  };
+  const tail = m1.slots.filter((x) => !floorOf(m1).some((f) => f.entryId === x.entryId));
+  ok("non-floor tail is in ladder order", tail.every((s, i, a) => i === 0 || a[i - 1].weight.ladderRung <= s.weight.ladderRung));
+}
+{
+  // Locate UH1 by id, not by position — ordering is the ladder's, not the floor's (§1.3).
+  const uh1 = [...m1.slots, ...m1.overflow].find((x) => x.entryId === "UH1")!;
+  ok("UH1 renders market value ₹2.4 lakh + weight", /₹2\.4 lakh/.test(uh1.claim) && /24% of your book/.test(uh1.claim));
+}
 ok("UO6 fires with duration from the rule's own evidence", hasEntry(m1, "UO6"));
 const uo6 = [...m1.slots, ...m1.overflow].find((x) => x.entryId === "UO6")!;
 ok("UO6 standingSince from run length (6), source rule_evidence, standing_since absent", uo6?.standingSince?.snapshotCount === 6 && uo6.arithmetic?.source === "rule_evidence");
 ok("negatives include first_visit (held → NOT not_held)", negFacts(m1).includes("first_visit") && !negFacts(m1).includes("not_held"));
 ok("negatives include lookthrough_unavailable (held fund)", negFacts(m1).includes("lookthrough_unavailable"));
 
-console.log("\n══ FIXTURE 2 · M3 — holder, returning, clean-but-strong (anti-scolding) ══");
+console.log("\n══ FIXTURE 2 · M2 — holder, RETURNING with a delta (anti-scolding) ══");
 const m3 = composeRelationalState(heldContext(RETURNING_ATTN), scoredObject([N1_SIX_YEARS]), FROZEN_NOW);
-ok("mode is M3", m3.mode === "M3", m3.mode);
+// ⚠ RE-DERIVED (§2.2 grid + §Phase 7 unfold). HELD × RETURNING is M2, not M3 — M3 is HELD × RECURRING.
+// This assertion previously read M3 only because M2 FOLDED to it; with M2 unfolded the grid's own
+// definition applies. Asserting M3 here would now be asserting the fold, not the spec.
+ok("mode is M2 (HELD × RETURNING, per the grid)", m3.mode === "M2", m3.mode);
 ok("floor UH1 present", hasEntry(m3, "UH1"));
 ok("card non-empty", m3.slots.length > 0);
 ok("UO6 present in M3 (anti-scolding: not a bare 'nothing new')", hasEntry(m3, "UO6"));
@@ -217,7 +275,12 @@ ok("UO3 'Nothing flagged.' carries it instead", [...cleanNoStrength.slots, ...cl
 console.log("\n══ ASSERTION · relevance is magnitude-blind (verify 18) ══");
 // A high-severity finding (magnitude conceptually null) must outrank a medium (magnitude conceptually −8).
 // ObjectFinding does not even carry magnitude, so ordering is severity-only by construction.
-const magBlind = composeRelationalState(heldContext(RETURNING_ATTN), scoredObject([MEDIUM_NEG, HIGH_NEG]), FROZEN_NOW);
+// ⚠ RE-DERIVED. The held fixture now carries an EVALUABLE delta whose newlyStandingKeys includes
+// foundation_C1_divergence, so that finding correctly renders as UD1 (rung 2 — delta before state),
+// not ELEVATED (rung 9). Comparing two ELEVATED ids would be asserting the absence of the UD family.
+// Magnitude-blindness is tested where it is actually at stake: two findings BOTH on the elevated path.
+const magCtx = { ...heldContext(RETURNING_ATTN), delta: { evaluable: false as const, since: null, sinceLabel: null, lastSeenGeneration: null, newSnapshotSinceLastLook: false, newlyStandingKeys: [], clearedKeys: [], lastSeenBand: null } };
+const magBlind = composeRelationalState(magCtx, scoredObject([MEDIUM_NEG, HIGH_NEG]), FROZEN_NOW);
 const all = [...magBlind.slots, ...magBlind.overflow].map((x) => x.entryId);
 const iHigh = all.indexOf("ELEVATED:momentum_B_deterioration");
 const iMed = all.indexOf("ELEVATED:foundation_C1_divergence");
@@ -246,7 +309,10 @@ ok("no UO2 (unscored → no health line)", !hasEntry(heldUnscored, "UO2"));
 
 console.log("\n══ ASSERTION · degradations declared, never fabricated (§6) ══");
 const degs = m1.meta.degradations.map((d) => d.prerequisite);
-for (const p of ["standing_since", "evaluability", "polarity", "universe_base_rates", "fund_look_through", "position_delta", "watchlist_modes"]) {
+// ⚠ `evaluability` was RESOLVED in Phase 2 (the live path collects declined checks and persists them),
+// so it is no longer an absent prerequisite. It is replaced by `evaluability_backfill` — the residual
+// gap for snapshots written before the column existed. `watchlist_modes` was resolved in Phase 1.2.
+for (const p of ["standing_since", "evaluability_backfill", "polarity", "universe_base_rates", "fund_look_through", "position_delta"]) {
   ok(`degradation recorded: ${p}`, degs.includes(p));
 }
 
@@ -258,7 +324,7 @@ console.log("\n══ ASSERTION · a 'healthy'/'pristine' BAND label is not a re
   const healthyObj = { ...scoredObject([N1_SIX_YEARS]), snapshot: { generation: "g", periodKey: "FY26Q1", composite: 88, band: "healthy" } };
   const s = composeRelationalState(strangerContext(), healthyObj, FROZEN_NOW);
   ok("UO2 renders the 'healthy' band label", claimsOf(s).some((c) => /Health is about 88 — healthy/.test(c)));
-  ok("assembled output still register-clean (band label not flagged as celebration)", scanAssembled(claimsOf(s), "balanced").length === 0);
+  ok("assembled output still register-clean (band label not flagged as celebration)", scanAssembled(claimsOf(s), "balanced", businessLeadClaimsOf(s)).length === 0);
 }
 
 console.log("\n══ ASSERTION · no reader P&L / basis / return on any UH (position) claim (§0.8) ══");
@@ -271,7 +337,7 @@ console.log("\n══ ASSERTION · no reader P&L / basis / return on any UH (pos
 console.log("\n══ ASSERTION · assembled output passes the full register guard at all three registers ══");
 for (const level of ["plain", "balanced", "technical"] as const) {
   const s = composeRelationalState({ ...heldContext(FIRST_ATTN), identity: { userId: "u1", isAuthenticated: true, aiLevel: level } }, scoredObject([N1_SIX_YEARS, MEDIUM_NEG]), FROZEN_NOW);
-  const v = scanAssembled(claimsOf(s), level);
+  const v = scanAssembled(claimsOf(s), level, businessLeadClaimsOf(s));
   ok(`register-clean at ${level}`, v.length === 0, v.map((x) => `${x.term}:"${x.text}"`).join(" | "));
 }
 

@@ -67,16 +67,49 @@ export interface Assembled {
 }
 
 /**
- * Slot allocation (§4.2): the mode's FLOOR is reserved (always occupies slots, in declared order, never
- * competed for), then remaining candidates fill by ladder rung, highest first, tie-broken within a rung.
- * Caps are HARD. Everything unfilled goes to overflow, in the same order.
+ * Slot allocation (§4.2, AS AMENDED TWICE).
  *
- * `floorIds` are the entryIds reserved for this mode's floor, in display order. `candidates` is every
- * eligible entry (including the floor entries). Stability (§2.3): with unchanged state, the sort is a pure
- * function of rung + relationalWeight + severity + standingSince — identical inputs ⇒ identical order.
+ * ⚠ THE FLOOR IS A RANK STATEMENT, NOT AN INCLUSION MECHANIC.
+ *
+ * History, because both earlier readings were wrong and the reason matters:
+ *   · v1 (library §4.2 step 2) — "reserved, not competed for": floor entries were placed FIRST,
+ *     unconditionally. Live consequence: UO4, a null orientation statement, outranked a rung-7
+ *     divergence finding. An orientation null above a real finding inverts the ladder.
+ *   · v2 — floor guarantees INCLUSION, not position: a missing floor entry displaced the lowest-ranked
+ *     non-floor entry. Live consequence (U1/ICICIBANK): UO1@14 and UO2@14 displaced ELEVATED@9 and
+ *     UE1@11. Guaranteeing inclusion silently inverted the ladder in a different direction.
+ *
+ * ⚠ THE REAL DEFECT WAS THE PREMISE: rung was written as ONE GLOBAL ORDERING, but relevance is
+ * READER-DEPENDENT. Orientation sits at rung 14 because, for a reader WITH context, identity is the
+ * least useful thing on the card. For a STRANGER — which is exactly what M9 is — identity is the MOST
+ * useful thing. Both statements are true; a single global ladder cannot express both.
+ *
+ * The resolution: a mode's floor entries take THAT MODE'S FLOOR RANK, not their global rung. On M9,
+ * UO1 ranks first and UO2 second because for a reader with no context that IS their real relevance.
+ * Everything else fills the remaining slots by global rung.
+ *
+ * Consequences, all of them good:
+ *   · No displacement mechanic. Nothing is "guaranteed despite ranking last" — it ranks FIRST, and
+ *     correctly so for this reader state.
+ *   · §0.4 (guaranteed-resolve) is satisfied: the floor always ranks into the card.
+ *   · The ladder is never inverted: within the non-floor set, global rung is strictly obeyed.
+ *   · The card reads in the order a stranger needs: what it is → how sound → then what matters.
+ *
+ * Caps are HARD. Everything past the cap overflows, floor-first then global-rung order.
+ *
+ * `floorIds` are the entryIds this mode ranks first, IN THE ORDER GIVEN — the order is the mode's
+ * statement of relevance for that reader state (M9: identity, then health). `candidates` is every
+ * eligible entry, floor included. Stability (§2.3): with unchanged state the result is a pure function
+ * of floor order + rung + relationalWeight + severity + standingSince.
  */
 export function assemble(floorIds: string[], candidates: ResolvedEntry[], cap: number): Assembled {
+  const byRung = (a: ResolvedEntry, b: ResolvedEntry): number =>
+    (a.weight.ladderRung - b.weight.ladderRung) || withinRung(a, b);
+
   const byId = new Map(candidates.map((c) => [c.entryId, c]));
+
+  // The floor, in DECLARED order — that order is the mode's relevance statement, not a rung. A declared
+  // id with no candidate is simply absent (§2.3); it is never a hole.
   const floor: ResolvedEntry[] = [];
   const floorSet = new Set<string>();
   for (const id of floorIds) {
@@ -87,9 +120,8 @@ export function assemble(floorIds: string[], candidates: ResolvedEntry[], cap: n
     }
   }
 
-  const rest = candidates
-    .filter((c) => !floorSet.has(c.entryId))
-    .sort((a, b) => (a.weight.ladderRung - b.weight.ladderRung) || withinRung(a, b));
+  // Everything else, by GLOBAL rung. The ladder governs here and is never overridden.
+  const rest = candidates.filter((c) => !floorSet.has(c.entryId)).sort(byRung);
 
   const ordered = [...floor, ...rest];
   return { slots: ordered.slice(0, cap), overflow: ordered.slice(cap) };

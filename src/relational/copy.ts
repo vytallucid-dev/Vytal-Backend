@@ -68,6 +68,25 @@ export function ordinal(n: number): string {
   return `${n}${s[(v - 20) % 10] ?? s[v] ?? s[0]}`;
 }
 
+// ── Band display labels (§0.9 — never render a raw enum) ─────────────────────────────────────────────
+/** The five LabelBand tokens → their display form. The backend ships the LABEL; the frontend never maps
+ *  an enum. `below_par` rendering as "below_par" on a live card was the defect this closes. An unknown
+ *  token degrades to a de-underscored form rather than leaking the raw token shape. */
+const BAND_LABELS: Record<string, string> = {
+  fragile: "fragile",
+  below_par: "below par",
+  steady: "steady",
+  healthy: "healthy",
+  pristine: "pristine",
+};
+export const bandLabel = (band: string): string => BAND_LABELS[band.toLowerCase()] ?? band.replace(/_/g, " ");
+
+// ── Dates (§0.11 — durations round to the underlying cadence; a membership date is month-grain) ──────
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+/** "March 2026" — the month-grain label for a watchlist add / a dated membership fact. Month grain is
+ *  deliberate: a precise day implies a precision the fact does not carry, and it churns the copy daily. */
+export const monthYear = (d: Date): string => `${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+
 // ── Glosses (§0.11) — one term→gloss map, authored once per term, keyed on aiLevel (three variants,
 //    NOT the seven-way triple). `plain` glosses any non-everyday term; `balanced` only less-common ones;
 //    `technical` suppresses entirely. This slice's UO/UH claims are near-gloss-free (they are facts with
@@ -136,6 +155,26 @@ export const PLAIN_DENY_LIST = [
   { term: "so-it's-fine", re: /\bso it['’]?s fine\b/i, why: "plain-drift verdict" },
 ];
 
+/** BUSINESS-LEAD SCOPE (UO1 only) — ruled: the guard is over-broad against operational description.
+ *  "Selling electricity", "diversified conglomerate" are what a company DOES, not instruction or
+ *  prediction; FORWARD_DENY_LIST's bare "sell"/"buy"/"diversify" false-positives on them. UO1 gets its
+ *  OWN narrow list — second-person instruction and explicit recommendation constructions only — instead
+ *  of FORWARD_DENY_LIST. Not an exemption: "an attractive entry point at these levels" must still be
+ *  caught, so the list still carries the advice-signaling words, just not the bare operational verbs. */
+export const BUSINESS_LEAD_DENY_LIST = [
+  { term: "you-should", re: /\byou should\b/i, why: "advice" },
+  { term: "worth-buying", re: /\bworth buying\b/i, why: "advice" },
+  { term: "attractive", re: /\battractive\b/i, why: "advice ('an attractive entry point')" },
+  { term: "undervalued", re: /\bundervalued\b/i, why: "advice / verdict" },
+  { term: "overvalued", re: /\bovervalued\b/i, why: "advice / verdict" },
+  { term: "recommend", re: /\brecommend(s|ed|ation|ations|ing)?\b/i, why: "advice, by name" },
+  { term: "target-price", re: /\btarget price\b/i, why: "advice" },
+  { term: "time-to-buy", re: /\btime to buy\b/i, why: "advice" },
+  { term: "time-to-sell", re: /\btime to sell\b/i, why: "advice" },
+  { term: "consider-buying", re: /\bconsider buying\b/i, why: "advice" },
+  { term: "consider-selling", re: /\bconsider selling\b/i, why: "advice" },
+];
+
 export interface RegisterViolation {
   term: string;
   why: string;
@@ -151,11 +190,18 @@ export interface RegisterViolation {
  * A word like "healthy"/"strong" is a factual BAND LABEL in UO2 ("Health is about 82 — healthy"), not a
  * verdict; denying it over all output would false-positive on legitimate band copy. Celebration is
  * forbidden only where strength is STATED (UO6), which is exactly what `scanStrength` guards.
+ *
+ * ★ `businessLeadStrings` (UO1 only) IS SCANNED SEPARATELY, against BUSINESS_LEAD_DENY_LIST instead of
+ * FORWARD_DENY_LIST — ruled: operational description ("selling electricity", "diversified conglomerate")
+ * is not instruction or prediction, and FORWARD_DENY_LIST's bare verbs false-positive on it. `strings`
+ * (everything else — findings, entries, boundary lines) keeps the full list: that copy is Vytal's own
+ * voice making claims about a stock, which is exactly where advice drift happens.
  */
-export function scanAssembled(strings: string[], level: ToneLevel): RegisterViolation[] {
+export function scanAssembled(strings: string[], level: ToneLevel, businessLeadStrings: string[] = []): RegisterViolation[] {
   const extra = [...PORTFOLIO_ADVICE_DENY_LIST, ...MODELED_TXN_DENY_LIST, ...(level === "plain" ? PLAIN_DENY_LIST : [])];
   const hits = scanStringsForForwardLanguage("relational", strings, extra);
-  return hits.map((h) => ({ term: h.term, why: h.why, text: h.text }));
+  const leadHits = businessLeadStrings.flatMap((s) => BUSINESS_LEAD_DENY_LIST.filter((d) => d.re.test(s)).map((d) => ({ term: d.term, why: d.why, text: s })));
+  return [...hits.map((h) => ({ term: h.term, why: h.why, text: h.text })), ...leadHits];
 }
 
 /** Scan a STRENGTH claim (UO6 and any future strength entry) for celebration language (§3.1 · Part IX·17).

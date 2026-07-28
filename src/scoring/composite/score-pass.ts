@@ -57,7 +57,7 @@ import { COMPOSITE_SPEC_VERSION, snapshotInputsFingerprint, toScoreSnapshotRow, 
 import type { CompositeResult, Pillar, PillarInput } from "./types.js";
 // §2/§5 findings engine — the fire-and-persist contract. Hook runs AFTER composite
 // assembly (reads the assembled pillars/composite/trajectory), emitting fired findings.
-import { runFindings } from "../findings/engine.js";
+import { runFindingsDetailed, type DeclinedCheck } from "../findings/engine.js";
 import { opmSeriesFromQuarters, pillarMapOf } from "../findings/context.js";
 import { persistFindings } from "../findings/persist.js";
 import { loadTrajectorySeries } from "../findings/trajectory/load-series.js";
@@ -126,6 +126,10 @@ export interface MemberComputed {
    *  demoted to supporting-detail by anti-double-count). Transparency record for the
    *  Stage-3 proof; present only with withFindings. */
   lensAudit?: LensAuditRow[];
+  /** §Phase 2 — the checks that COULD NOT RUN on this member, as [{ ruleRef, reason }]. Present only
+   *  with withFindings. `undefined` means the collector did not run (NOT "nothing declined"); an empty
+   *  array means every registered rule was evaluable. The distinction is persisted, not normalised. */
+  notEvaluable?: DeclinedCheck[];
   /** PG-level pond heat (File 1 §5 mask) — same value for every member of the PG (inherited).
    *  Stamped onto the member's snapshot by persistMember. undefined for legacy callers. */
   pondHeat?: PondHeat;
@@ -377,7 +381,13 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
         sectorClass: sectorClassByStock.get(m.stockId) ?? null, // seeded sector→class (§2 Line 2 / F1)
         bandTypicalProfiles,
       };
-      m.findings = runFindings(fctx, opts.findingsRules); // default undefined → ALL_RULES (byte-identical)
+      // ⚠ PHASE 2 — the live path now uses runFindingsDetailed. The fired set is IDENTICAL to what
+      // runFindings returned (same rules, same order, same isolation); the difference is that the
+      // DECLINED set is now captured instead of discarded. Score-neutral by construction: nothing
+      // below reads `notEvaluable` when computing a score, a magnitude, a band, or a pillar.
+      const ran = runFindingsDetailed(fctx, opts.findingsRules); // default undefined → ALL_RULES
+      m.findings = ran.fired;
+      m.notEvaluable = ran.notEvaluable;
 
       // ── §5 THREE-LENS escalation (members of THIS fired set, pre-dampen) ──────────
       // The LOUD lens-patterns (LM3/LM7 metric, LP2/LP5 pillar — databank §5.2) join
@@ -580,7 +590,7 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   const ownership = await writeOwnershipPillar(db, m.own, m.stockId, m.symbol, { runId: sc.runId, specVersionId: sc.specVersionId, asOfDate: asOf });
 
   const pillarScoreIds: Record<Pillar, string> = { foundation: foundationId, momentum: momentumId, market: marketId, ownership: ownership.id };
-  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null });
+  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null, notEvaluable: m.notEvaluable });
   if (liveSnap) { snapRow.version = liveSnap.version + 1; snapRow.supersedesId = liveSnap.id; } // append-only supersede: chain from the live (highest) version → v1→v2→v3…
 
   const snap = await db.scoreSnapshot.create({ data: snapRow, select: { id: true } });

@@ -176,6 +176,11 @@ export const JobTypes = {
   // traffic. Cumulative scalar counters (viewCount) stay on-write authoritative — see the handler for
   // why recompute-from-scratch would undercount once the 60-day attention prune arms.
   BEHAVIOR_ROLLUP_RECONCILE: "behavior_rollup_reconcile",
+  // ── Relational L4 base rates (§3.5.1) ──────────────────────────
+  // Nightly warm of the in-memory universe base-rate cache (how often each patternKey fires across the
+  // in-force head snapshots). NO TABLE: every number is derived and recoverable by re-running the same
+  // aggregate, so this job only spares the first reader of the day the cost. Safe to skip.
+  BASE_RATES_WARM: "base_rates_warm",
   // ── Chat title generation (Stage 2) ────────────────────────────
   // ENQUEUED ON DEMAND (not a cron) after a CHAT-PAGE session's first exchange: a tiny model call writes
   // a 4–6 word title, replacing the provisional (truncated-first-message) title. NEVER overwrites a
@@ -410,6 +415,8 @@ export interface RetentionPrunePayload {
 }
 /** Behaviour rollup reconcile — no input; the whole attention_events table IS the worklist. */
 export interface BehaviorRollupReconcilePayload {}
+/** Base-rate warm — no input; the whole in-force snapshot set IS the worklist. */
+export interface BaseRatesWarmPayload {}
 /** Chat title generation — the ONE session whose title to (re)write from its first exchange. */
 export interface ChatTitleGeneratePayload {
   sessionId: string;
@@ -505,6 +512,7 @@ export type JobPayload =
   | { type: typeof JobTypes.BROKER_POLL_SYNC; data: BrokerPollSyncPayload }
   | { type: typeof JobTypes.RETENTION_PRUNE; data: RetentionPrunePayload }
   | { type: typeof JobTypes.BEHAVIOR_ROLLUP_RECONCILE; data: BehaviorRollupReconcilePayload }
+  | { type: typeof JobTypes.BASE_RATES_WARM; data: BaseRatesWarmPayload }
   | { type: typeof JobTypes.CHAT_TITLE_GENERATE; data: ChatTitleGeneratePayload }
   | { type: typeof JobTypes.CHAT_PROFILE_DISTILL; data: ChatProfileDistillPayload }
   | { type: typeof JobTypes.REMINDERS_DELIVER_DAILY; data: RemindersDeliverDailyPayload };
@@ -616,6 +624,9 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   // Rollup reconcile — a single idempotent recompute (INSERT…SELECT…ON CONFLICT). A retry just
   // recomputes the same rows from the same events; no benefit to auto-retry. One attempt.
   [JobTypes.BEHAVIOR_ROLLUP_RECONCILE]: { maxAttempts: 1 },
+  // Base-rate warm — one read-only aggregate, no writes. A failure costs nothing (the read path
+  // computes on demand and the previous snapshot keeps serving), so a retry buys nothing either.
+  [JobTypes.BASE_RATES_WARM]: { maxAttempts: 1 },
   // Chat title — a tiny cosmetic model call. NEVER auto-retry: a retry spends a second quota unit for a
   // cosmetic title, and a failed title just leaves the provisional (truncated-first-message) one in place.
   [JobTypes.CHAT_TITLE_GENERATE]: { maxAttempts: 1 },

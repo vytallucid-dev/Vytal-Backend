@@ -1405,3 +1405,294 @@ If it predicts, advises, models an unmade trade, mirrors behaviour, manufactures
 7. The AI payload as a standalone service (or from step 1 if the AI layer is near).
 
 **Named dependency:** read-gating on public stock reads. This card cannot be cached stock-side and is the first element that must know who is asking.
+
+---
+
+# PART XIV — AMENDMENTS (v1.1, from the build)
+
+*Every item below OVERRIDES the section it names. Each was found by rendering real cards against live
+data, not by review — the original text is left intact above so the correction and what it corrects are
+both auditable. Where a live sentence forced the change, that sentence is quoted.*
+
+**The one-line summary: eleven of these corrections exist because a card said something untrue, and
+every one of those was found by looking at output rather than by reading code.**
+
+---
+
+## A · The falsehoods (a claim the data could not support)
+
+### A1 · §3.2 UH6 — no novelty assertion in a header
+
+`M1` is selected by the **absence** of a `BehaviorRollup` row, and the attention beacon is lossy by
+design: it discards its entire buffer when no auth token is present, and its failures are unobservable
+server-side. A holder who has read a stock ten times could therefore be told:
+
+> ~~"You own this — first time you're reading it."~~
+
+**The library's exception for UH6 — "framing what follows, not reporting behaviour" — was wrong.**
+Novelty may be *annotated* per entry where `lastViewedAt` is genuinely known. It may never be *asserted*
+from a missing row. M1 keeps its routing role and loses the claim:
+
+> "You own this — here's what's standing on it."
+
+### A2 · §2.3 — WATCHED and NEITHER modes must not fold to M9
+
+Folding M5–M8 into M9 made a watchlisted stock render "New to you." while `negatives` simultaneously
+carried `watchlisted_not_held` — the system holding the contradicting fact while asserting the opposite.
+Folding M10–M12 did the same to a reader who had opened a stock nine times.
+
+**M9 means STRANGER-AND-FIRST-VISIT and cannot represent any other reader state.** M5–M8 and M10–M12
+now resolve as themselves. M2 and M4 are likewise unfolded so a delta header can render at all.
+
+### A3 · §2.1 — the position axis tests QUANTITY, not value
+
+The library defines HELD as "≥1 holding … value > 0", which conflates two different states:
+
+- **quantity 0** → the reader **EXITED**. Not a position. Resolves `NEITHER`.
+- **quantity > 0, value null** → **HELD but unpriceable**. UH1's honest-empty branch is exactly right.
+
+Testing *value* wrongly drops the second. Live, five fully-exited legacy rows rendered "You own this."
+
+### A4 · §3.4 UD7 — "nothing new" requires a comparison BASIS, not a timestamp
+
+A `lastViewedAt` without a stamped `lastViewedSnapshotGeneration` cannot support a claim about change:
+we do not know **which** snapshot the reader saw. Live, this rendered "Nothing new since July 2026." on
+a stock whose delta had never been computable. UD7 now requires the stamped generation.
+
+### A5 · §3.5 — a percentage must not contradict a named holding
+
+A zero-quantity holding appears in a roster intersection but carries no weight, producing:
+
+> ~~"Large-Cap Oil & Gas is about 0% of your book — 1 company: Reliance Industries Ltd."~~
+
+Where the weight rounds away, state the **membership** (true) and drop the **number** (not).
+
+---
+
+## B · Arbitration
+
+### B1 · §4.2 — the floor is a RANK statement, not an inclusion mechanic
+
+Two readings were tried and both were wrong:
+
+1. *"Reserved, not competed for"* (the library's text) placed the floor first unconditionally — so UO4,
+   a **null** orientation statement, outranked a rung-7 divergence finding.
+2. *"Guarantees inclusion, not position"* let a missing floor entry displace the lowest-ranked
+   non-floor entry — so UO1@14 and UO2@14 displaced ELEVATED@9 and UE1@11.
+
+**The defective premise was that rung is ONE GLOBAL ORDERING.** Relevance is reader-dependent:
+orientation sits at rung 14 because for a reader *with context* identity is the least useful thing on
+the card — and for a **stranger**, which is exactly what M9 is, identity is the *most* useful thing.
+Both are true; one global ladder cannot say both.
+
+**A mode's floor entries take THAT MODE'S floor rank, in declared order. Everything else fills by
+global rung.** No displacement mechanic. §0.4 is satisfied, the ladder is never inverted, and the card
+reads in the order a stranger needs: what it is → how sound → then what matters.
+
+### B2 · §2.3 — UO4 is not floor
+
+A null reader fact ("nothing connects to this name") guaranteed a slot is backwards: its entire purpose
+is to fill space when nothing better exists. Its low rung already produces that behaviour. **M9's floor
+is UO1 + UO2.** Live effect: UO4 fell from 14 slots to 5.
+
+### B3 · §4.1 — every delta entry sets its rung from POSITION
+
+Rung 2 is delta on a **held** object; rung 4 is delta on anything else — *self before other*. UD3
+hardcoded rung 4, so a held delta would have lost to a critical finding on an unpositioned stock at
+rung 3.
+
+---
+
+## C · Echo (§3.5) — three corrections
+
+### C1 · Echo applies to CONDITION and TRANSITION only; **CLOCK_EVENT is excluded**
+
+The library defines the echo gates without ever referencing temporal class, which §0.5 establishes.
+Live:
+
+> ~~"Ownership event — 2 block/bulk deals (₹157 Cr, two-sided) this window. It's showing in 5 of your 10
+> scored holdings — 13 of the 95 stocks we score show it too."~~
+
+Every number true, base rate genuinely low, every gate passed — **and the sentence means nothing**,
+because a 90-day window catches whatever the market did.
+
+- A **CONDITION** co-occurring describes the reader's **book composition**.
+- A **TRANSITION** co-occurring describes a **synchronised move** — real, worth saying.
+- A **CLOCK_EVENT** co-occurring describes a **time window** — not about the book at all.
+
+**No base-rate gate can detect this; only the class can.** This is the horoscope failure mode wearing a
+low base rate.
+
+### C2 · Echo is an ANNOTATION, not a slot
+
+UE can only fire when its own competition is guaranteed present: UE1 requires a pattern firing on *this*
+object that *also* fires across the book — so whenever echo is eligible, an ELEVATED entry for the same
+key is eligible too, at a higher rung. **Echo is structurally dominated by its own precondition.**
+Measured: 25 resolved, 1 slot won.
+
+When the echoing key is rendered by a host entry, the echo's arithmetic **attaches** to it:
+
+> "Sliding from a high base — composite crossed down out of Healthy (74.1 → 63.6). It's showing in 8 of
+> your 10 scored holdings — 38 of the 95 we score as of July 2026."
+
+One slot, two facts, no duplication, no competition. When the key is not on the card, the echo does not
+render — the finding lost its slot, and its echo is strictly less important. **Host precedence:
+UD1 → UO6 → ELEVATED.** (Not a new concept: UN5 is already specified as a modifier rather than a
+slot-consuming entry.)
+
+### C3 · ⚠ POSITIVE ECHO DOES NOT FIRE — a BOUNDARY correction
+
+The library permits positive echo on identical gates, and each half is individually legal. **The merge
+is not:**
+
+> "Clears every bar it's measured against — has for six quarters. It's showing in 5 of your 10 scored
+> holdings — 14 of the 95 we score show it too."
+
+That reads as *your book is full of good ones* — a verdict on the reader's **selection**, prohibited by
+**Part IX·18** and named in §3.5.4 as this family's specific trap. A bare-counts variant does not
+survive either: the adjacency alone carries the implication, and the register guard cannot detect a
+verdict that lives in juxtaposition rather than vocabulary.
+
+Negative and neutral echo are unaffected — exposure is legal to state. Only the constructive direction
+implies a compliment.
+
+---
+
+## D · One claim, one owner
+
+### D1 · §4.5 — UE defers to ELEVATED for the same key
+
+### D2 · §3.4 — UD1 SUPERSEDES ELEVATED for the same key
+
+A newly-standing finding renders **once**: in its UD1 form, with the novelty marker, at UD's rung. The
+ELEVATED candidate for that key is suppressed entirely.
+
+### D3 · §4.5 — UN6 defers to UE for the same key
+
+### D4 · UH10 suppresses UG1; UO1 drops its peer-group clause when UG1 owns that fact
+
+Live, UG1's "it isn't placed in a peer group…" and UO1's "Not yet placed in a peer group." put one fact
+on the card twice in different words.
+
+---
+
+## E · Data-model corrections
+
+### E1 · §1.3 — `coverage` is DERIVED; `StockScoringState` is dead
+
+`resolveCoverage` reads a table with **zero rows and no writer anywhere in the codebase**, returning
+`null` identically for a fully-scored stock and a never-scored one — the one distinction a coverage
+state exists to make. Replaced by a five-state derivation over the in-force snapshot ref, the declined
+set, and peer-group membership: `scored_full` · `scored_partial` · `scored_unknown_depth` ·
+`covered_unscored` · `display_only`.
+
+### E2 · §3.6 UG9 keys on EVALUABILITY, not `displayState`
+
+`displayState: "pending_data_integration"` has **zero producers**; keying on it makes UG9 dead. It keys
+on the persisted declined set, and renders a **capability** ("earnings quality"), never a rule ref — a
+rule with no capability mapping is **dropped**, never rendered by ref (§0.9).
+
+### E3 · §5.1 — `BehaviorRollup` is the store; `user_object_views` was never built
+
+The library's "no per-view event log in v1" was **not honoured**: `AttentionEvent` is exactly such a log
+and is retained under a 60-day prune. `BehaviorRollup` has no `surfacesSeen` field; it carries
+`tabCounts` / `sectionExpandCounts`.
+
+### E4 · §3.4 — the depth window is 60 days
+
+Depth-derived copy says **"recently"**, never "never". Claiming a reader has never opened a tab, on
+60-day evidence, is A1's failure mode in a different entry.
+
+### E5 · §5.3 — base rates are an in-memory cache, not a table
+
+Every number is derived and recoverable by one indexed aggregate, so durable storage is a **performance
+optimisation, not a correctness requirement**. A nightly job warms the cache; a cold start computes on
+demand. Deterministic across instances. Bounded staleness is acceptable **for a denominator rendered
+beside its own as-of date** — it would not be for a score.
+
+### E6 · §3.5 — every echo claim carries its own as-of date
+
+Both counts alone are not self-describing: the universe changes on every rescore.
+
+---
+
+## F · Copy and register
+
+### F1 · A seventh namespace — `UW` (Watchlist)
+
+The position axis has three values but only HELD had body entries, so watchlist membership had no home
+and the watched modes had nothing true to stand on. `UW1` = "On your watchlist since {monthYear}.",
+rung 5, floor of M5–M8. **It is not UH** — UH's boundary language is exposure-based, and watchlisting is
+not exposure. Its boundary names every inference §0.8 forbids:
+
+> *"a watchlist is a record of what you asked us to keep an eye on — not a position, not an intention to
+> buy, not evidence you are considering one, and not a judgement about the stock."*
+
+### F2 · §3.1 UO6 fires on a positive finding WITHOUT a self-dated run
+
+Duration remains the preferred carrier and a dated run always wins selection — but an undated positive
+finding is still the object's strength, and still the correct **host** for an annotation. It renders
+without a duration clause rather than not at all.
+
+### F3 · §0.11 — a second copy field, `plainClaim`
+
+The findings that win card slots carry text written for the **health tab**, in analyst register: "peer
+μ 37.16, N=6", "sustained 2 snapshots", "the regime-robust tell". The card prefers a hand-authored
+`plainClaim` carrying the **same facts and the same figures** in plainer words, and falls back to the
+analyst verdict when none is authored. **No transformation at render time** — that would re-author the
+finding's meaning (§0.10). The health tab is untouched.
+
+### F4 · §3.1 UO3 — "every check we run" over-claims on a scope exclusion
+
+R3/R5/P7/P8 are scope-excluded for banking and return `null` (a genuine not-fired), so they never enter
+the declined set and the sentence implied they had run. Now: *"Nothing flagged — and every check that
+applies to this company was able to run."*
+
+### F5 · §3.6 UG7 names no action
+
+*"You haven't **connected** a portfolio…"* described the state accurately but still named the action,
+one edit from a prompt. Now: *"We don't have a portfolio for you, so this card can only tell you about
+the stock itself."*
+
+### F6 · §0.11 — plain register is where advice vocabulary leaks
+
+A plain claim used *"both **reduced** their stake"*, which trips the shared advice deny-list
+(`\breduc(e|es|ed|ing)\b`). Descriptive in context, but the guard scans vocabulary rather than intent —
+and plain is precisely the register where "reduce" drifts toward instruction. Now "sold down".
+
+---
+
+## G · Entries NOT built, each with a named missing input
+
+*Recorded rather than stubbed: a stub that never fires is indistinguishable from a built entry that
+never fires, which is how dead catalog entries accumulate.*
+
+| Entry | Missing input |
+|---|---|
+| UG2 | no populated `provisional` column (`StockScoringState` is empty) |
+| UG3 | `ObjectState` carries no `priceFreshness` |
+| UG4 | `ReaderBook` carries no unresolved-broker-row detail |
+| UG10 | no published refresh-cadence definition per snapshot type |
+| UN4 | no PG-native findings exist; the PGState fallback would be a re-derivation §0.7 forbids |
+| UN5 | mask heat is a pure computation over cleaned price closes, not a read |
+| UH5 | fund look-through does not exist as a capability |
+| UH7/UH8 | need the **transaction**-delta path, distinct from the snapshot-delta UD1/UD3 use |
+
+---
+
+## H · Verification
+
+The library declares twenty verification assertions and **not one had ever run.** That is precisely how
+A1's false header shipped while the card looked perfect — and two assertions in the original harness
+were written against **observed behaviour** and therefore actively **defended** the falsehood.
+
+> **⚠ An assertion written against what the code does will always pass and is worthless.** Treat every
+> existing assertion as suspect until re-derived from spec text. "It currently passes" is evidence of
+> nothing.
+
+`src/scripts/verify-relational-matrix.ts` — **64 assertions**, each naming the section it enforces.
+Two entries are verifiable **only** synthetically and are among the most important in the build:
+
+- **UD1** — no live reader has a stale stamped generation.
+- **UG9** — the evaluability column is unmigrated, so `notEvaluable` is null everywhere and Standing
+  Rule 7 requires silence.

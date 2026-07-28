@@ -13,7 +13,7 @@
 // The findings hook passes empty annualFundamentals for banks, so this returns null there;
 // the explicit industry guard documents the intent.
 
-import type { FireRule } from "../types.js";
+import { notEvaluable, type FireRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
 
 export const R4_DE_THRESHOLD = 3.0; // 3× (ratio, not percent)
@@ -30,7 +30,7 @@ function deRatio(r: FoundationAnnual): number | null {
 export const ruleR4: FireRule = (ctx) => {
   if (ctx.industry === "banking") return null; // non-financials only (File 1)
   const f = ctx.annualFundamentals;
-  if (f.length < 2) return null; // need history to assert "first time"
+  if (f.length < 2) return notEvaluable("insufficient_annual_history"); // ⚠ Phase 2: need history to assert "first time"
 
   // 5-year window ending at the latest annual row.
   const window = f.slice(-R4_WINDOW_YEARS);

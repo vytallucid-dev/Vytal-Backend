@@ -25,9 +25,26 @@ export const UH_TXN_HORIZON_DAYS = 90; //     UH7/UH8 horizon — out of this sl
 // UO6 minimum unbroken run before strength may be stated with duration. Governs the POINT-IN-TIME path
 // (a finding dated only by `standing_since`), which is absent this slice. A SELF-DATING Family N finding
 // carries its own run length in evidence and clears its own rule-enforced minimum, so it resolves UO6
-// without waiting on this floor (§3.1 duration-source precedence; Amendment §2.4). Declared for the
+// without waiting on this floor (§3.1 duration-source precedence; Family N Amendment §2.4 / §4 —
+// docs/Vytal_Family_N_Amendment_v1.md, written in Phase 10; the citation was previously stale, naming a
+// document that did not exist in the repository). Declared for the
 // degraded path and for the next slice.
 export const UO_STRENGTH_MIN_SNAPSHOTS = 4;
+
+// ── UN — Neighbourhood (§3.3), built in Phase 4. Values are the library's Part XII table verbatim. ──
+export const UN_PG_NOTABLE_PCT = 25; //     UN2 — the level at which we mark a pond NOTABLE in a book
+export const UN_PG_HEAVY_PCT = 40; //       UN2 — the level at which we mark a pond HEAVY
+export const UN_SECTOR_NOTABLE_PCT = 30; // UN7 — sector (a different cut from the pond)
+export const UN_POND_SHARED_MIN = 2; //     UN6 — ≥N of the reader's held names share this finding
+
+// ── UE — Echo (§3.5), built in Phase 6. Library Part XII values verbatim. ────────────────────────────
+export const UE_MIN_BOOK = 4; //                 universal gate — below this neither axis is statable
+export const UE_MIN_LIFT = 2.0; //               lift path
+export const UE_MIN_COUNT = 2; //                lift path minimum book count
+export const UE_HIGH_BOOK_SHARE = 0.5; //        share path
+export const UE_SHARE_MIN_COUNT = 3; //          share path minimum (deliberately > UE_MIN_COUNT:
+//                                               2-of-4 is noise, 3-of-5 is a book trait)
+export const UE_ENVIRONMENTAL_BASE_RATE = 0.3; // the FRAMING switch — UE1 below, UE6 at or above
 
 // ── UG — Gap (§3.6) ──────────────────────────────────────────────────────────────────────────────────
 export const STALE_PRICE_DAYS = 5; // UG3 — out of this slice; declared for completeness

@@ -190,14 +190,23 @@ export interface FiredFinding {
  *  The SHAPE (a single reason token) expresses every one of those — extension is union-only,
  *  never a reshape. */
 export type NotEvaluableReason =
-  | "insufficient_annual_history"        // fewer annual rows than the rule needs (N1/N2/N3)
-  | "insufficient_quarters"              // fewer quarterly-result windows than the rule needs (N4)
+  | "insufficient_annual_history"        // fewer annual rows than the rule needs (N1/N2/N3, R3, P7, P8)
+  | "insufficient_quarters"              // fewer quarterly-result windows than the rule needs (N4, R5, P11/P12/P13)
   | "insufficient_shareholding_history"  // fewer shareholding filings than the rule needs (N5/N6/N7)
   | "negative_equity"                    // net worth ≤ 0 → the ratio is meaningless, never a pass (N3)
   | "no_debt"                            // Σinterest ≤ 0 → no coverage to strengthen, never a pass (N4)
   | "class_not_disclosed"                // an FII/DII bucket is null this quarter, never a pass (N5)
   | "share_count_unavailable"            // promoter ABSOLUTE share count missing — the buyback firewall (N6)
-  | "pledging_not_disclosed";            // pledge column absent for the peer group (N7)
+  | "pledging_not_disclosed"             // pledge column absent for the peer group (N7)
+  // ── EXTENSION (Phase 2, the engine-wide migration this build performs) ──────────────────────────
+  // The Family N amendment anticipated exactly these tokens for the pre-existing depth-gated rules.
+  // The SHAPE is unchanged (one reason token) — this is a union extension, never a reshape.
+  | "no_prior_snapshots"                 // trajectory rules (B/D/G/I/C-over-time/C2/C3/F2) need history
+  | "opm_unavailable"                    // operating-margin series absent (P11/P12)
+  | "pillar_unavailable"                 // a required pillar is unscored/inert (C1)
+  | "band_typical_unavailable"           // band-typical profiles not computed for this pass (F1)
+  | "feed_not_wired"                     // insider/block feed absent for this stock (P5/P6/P10/H)
+  | "missing_line_item";                 // a required financial line item is null in the latest period
 
 /** The third rule outcome: "we could not check, and here is the machine-readable why."
  *  Discriminated from a FiredFinding (which has `kind`, never `status`) and from not_fired

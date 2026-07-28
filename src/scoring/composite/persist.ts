@@ -17,6 +17,7 @@
 
 import { createHash } from "node:crypto";
 import { prisma } from "../../db/prisma.js";
+import { Prisma } from "../../generated/prisma/client.js"; // DbNull sentinel for the nullable Json column
 import { bandMappingJson, BAND_MAPPING_VERSION } from "./label.js";
 import type { CompositeResult, Pillar } from "./types.js";
 
@@ -61,7 +62,15 @@ export function snapshotInputsFingerprint(r: CompositeResult): string {
  *  truth. Requires the four pillar FKs resolved (asserted in real mode). */
 export function toScoreSnapshotRow(
   r: CompositeResult,
-  ctx: { runId: string; specVersionId: string; bandMappingVersionId: string; peerGroupId: string; barPath: string; industryPath: string; pillarScoreIds: Record<Pillar, string>; maskHeat?: string | null; pgTrailingMovePct?: number | null },
+  ctx: {
+    runId: string; specVersionId: string; bandMappingVersionId: string; peerGroupId: string;
+    barPath: string; industryPath: string; pillarScoreIds: Record<Pillar, string>;
+    maskHeat?: string | null; pgTrailingMovePct?: number | null;
+    /** §Phase 2 — the declined checks for this member. `undefined` ⇒ the collector did not run, and the
+     *  column is written NULL ("we don't know what declined"). An empty array ⇒ everything was
+     *  evaluable, written as []. The two are NOT interchangeable and are never normalised together. */
+    notEvaluable?: { ruleRef: string; reason: string }[];
+  },
 ) {
   if (r.state !== "scored" || r.composite === null || r.labelBand === null) throw new Error("toScoreSnapshotRow: composite is unavailable — no snapshot row is written");
   const sub = (p: Pillar) => {
@@ -102,6 +111,10 @@ export function toScoreSnapshotRow(
     maskHeat: ctx.maskHeat ?? null,
     pgTrailingMovePct: ctx.pgTrailingMovePct == null ? null : d4(ctx.pgTrailingMovePct),
     inputsFingerprint: snapshotInputsFingerprint(r),
+    // §Phase 2. Deliberately NOT `?? []` — undefined must persist as SQL NULL (unknown), never as an
+    // empty array (a positive all-clear the collector never asserted). Prisma requires its DbNull
+    // sentinel for a nullable Json column; a bare JS `null` would be rejected by the client types.
+    notEvaluable: ctx.notEvaluable === undefined ? Prisma.DbNull : (ctx.notEvaluable as Prisma.InputJsonValue),
   };
 }
 

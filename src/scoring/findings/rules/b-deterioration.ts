@@ -12,7 +12,7 @@
 import { detectRecentSustainedCross, MIN_SUSTAIN, RECENT_MAX_RUN, type RecentCross } from "../trajectory/cross.js";
 import { seriesWithCurrent, CALIBRATION_NOTE, type SeriesPoint } from "../trajectory/view.js";
 import { NATIVE_ZONES } from "../thresholds.js";
-import type { FireRule } from "../types.js";
+import { notEvaluable, type FireRule } from "../types.js";
 
 const OPTS = { minRun: MIN_SUSTAIN, recentMax: RECENT_MAX_RUN };
 const PILLARS = [
@@ -25,7 +25,7 @@ const bandStr = (series: SeriesPoint[]) => series.map((s) => `${s.periodKey}:${s
 
 export const ruleB: FireRule = (ctx) => {
   const series = seriesWithCurrent(ctx);
-  if (series.length < MIN_SUSTAIN + 1) return null;
+  if (series.length < MIN_SUSTAIN + 1) return notEvaluable("no_prior_snapshots"); // ⚠ Phase 2
   const comps = series.map((s) => s.composite);
   const cur = comps[comps.length - 1];
 

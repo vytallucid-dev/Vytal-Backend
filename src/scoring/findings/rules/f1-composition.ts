@@ -11,7 +11,7 @@
 // SINGLE-SIGNAL vs F2 (Stage D): F1 = atypical vs the BAND-TYPICAL cross-section (a point read);
 // F2 = mix SHIFTED vs the LAST snapshot (a trajectory read). Different references — distinct.
 
-import type { FireRule } from "../types.js";
+import { notEvaluable, type FireRule } from "../types.js";
 import type { Pillar } from "../../composite/types.js";
 
 export const F1_DEVIATION_PP = 25; // a pillar ≥ 25pp off its band-typical ⇒ genuinely atypical. 15pp
@@ -22,7 +22,8 @@ const PILLARS: Pillar[] = ["foundation", "momentum", "market", "ownership"];
 
 export const ruleF1: FireRule = (ctx) => {
   const typical = ctx.bandTypicalProfiles?.[ctx.current.labelBand];
-  if (!typical) return null;
+  // ⚠ Phase 2: no band-typical profile computed for this pass ⇒ the shape could not be judged at all.
+  if (!typical) return notEvaluable("band_typical_unavailable");
 
   const devs = PILLARS.map((k) => {
     const cur = ctx.current.pillars[k];
@@ -30,7 +31,8 @@ export const ruleF1: FireRule = (ctx) => {
     if (cur.state !== "scored" || cur.subtotal === null || t === null || t === undefined) return null;
     return { pillar: k, cur: cur.subtotal, typical: t, dev: cur.subtotal - t };
   }).filter((d): d is { pillar: Pillar; cur: number; typical: number; dev: number } => d !== null);
-  if (devs.length < 3) return null; // need most pillars to judge the shape
+  // ⚠ Phase 2: too few scored pillars to judge the SHAPE — the check could not run, it is not false.
+  if (devs.length < 3) return notEvaluable("pillar_unavailable");
 
   const maxAbs = Math.max(...devs.map((d) => Math.abs(d.dev)));
   if (maxAbs < F1_DEVIATION_PP) return null; // profile is typical for its band

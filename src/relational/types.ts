@@ -13,10 +13,15 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import type { ToneLevel } from "../ai/tone.js";
+import type { RelationalCoverage } from "./coverage.js";
 
 // ── Mode + family ids ────────────────────────────────────────────────────────────────────────────────
 export type ModeId = "M1" | "M2" | "M3" | "M4" | "M5" | "M6" | "M7" | "M8" | "M9" | "M10" | "M11" | "M12";
-export type Family = "UO" | "UH" | "UN" | "UD" | "UE" | "UG" | "ELEVATED";
+/** The entry namespaces. `UW` (Watchlist) is a SEVENTH namespace added by this build — the library's
+ *  position axis has three values (HELD / WATCHED / NEITHER) but only HELD had body entries, so
+ *  watchlist membership had no home and the watched modes had nothing true to stand on. It is NOT part
+ *  of UH: that family's boundary language is exposure-based, and watchlisting is not exposure. */
+export type Family = "UO" | "UH" | "UW" | "UN" | "UD" | "UE" | "UG" | "ELEVATED";
 export type TemporalClass = "CONDITION" | "TRANSITION" | "CLOCK_EVENT";
 
 // ── Position + attention axes (§2.1) ─────────────────────────────────────────────────────────────────
@@ -66,6 +71,64 @@ export interface ReaderWatchlist {
   count: number;
   /** Membership for THIS object only in the slice — addedAt when watchlisted, else null. */
   thisAddedAt: Date | null;
+  /** §Phase 4 (UN3) — watchlist members that share THIS object's peer group, excluding the object
+   *  itself. Display names, never symbols-only. Empty when none or when the object has no PG. */
+  peersInPeerGroup: { stockId: string; symbol: string; name: string }[];
+}
+
+/**
+ * §Phase 7 — what changed on THIS object since the reader last looked (the UD substrate).
+ *
+ * ⚠ ABSENCE PRODUCES SILENCE (Standing Rule 7). `evaluable: false` is the honest state whenever
+ * `lastViewedAt` is unknown — the UD family then renders nothing and the mode falls back to its
+ * no-delta sibling's shape. This is the family most exposed to the M1 failure mode: a delta asserted
+ * from a missing rollup row would be exactly the same class of falsehood as "first time you're
+ * reading it" asserted from a missing row.
+ */
+export interface ReaderDelta {
+  /** false ⇒ no `lastViewedAt`, so no delta is computable. UD is NOT EVALUABLE, never "nothing new". */
+  evaluable: boolean;
+  /** The instant the delta is measured from. null ⇔ not evaluable. */
+  since: Date | null;
+  /** A month-grain label for the header ("since July 2026"). null ⇔ not evaluable. */
+  sinceLabel: string | null;
+  /** Snapshot generation in force when the reader last looked. null ⇔ unknown/never stamped. */
+  lastSeenGeneration: string | null;
+  /** True when the object's in-force snapshot differs from the one the reader last saw (UD9). */
+  newSnapshotSinceLastLook: boolean;
+  /** patternKeys whose fired instance is NEWLY standing since the last look — i.e. present now and
+   *  absent from the snapshot the reader last saw (UD1). Empty when not evaluable. */
+  newlyStandingKeys: string[];
+  /** patternKeys present at the last look and ABSENT now (UD2). Empty when not evaluable. */
+  clearedKeys: string[];
+  /** The band in force when the reader last looked, for UD3. null ⇔ unknown. */
+  lastSeenBand: string | null;
+}
+
+/** §Phase 6 — the reader's book-wide fired-finding census, for the UE (echo) family. ONE indexed query
+ *  over the in-force snapshots of the reader's scored holdings — never per-holding fan-out (§5.7). */
+export interface ReaderEcho {
+  /** Scored holdings folded into this census — the observedShare DENOMINATOR. */
+  scoredHoldingsCount: number;
+  /** patternKey → the reader's holdings (display names) whose in-force snapshot carries that key.
+   *  Names, never symbols or ids, so an echo claim can list them without a lookup (§0.9). */
+  byPatternKey: Map<string, string[]>;
+}
+
+/** §Phase 4 — the reader's exposure to THIS object's neighbourhood (peer group + sector). Resolved
+ *  object-side because both cuts are relative to the object being read. */
+export interface ReaderNeighbourhood {
+  /** Weight of the object's peer group in the reader's whole book, 0–100. null ⇔ no PG / no book. */
+  pgWeightPct: number | null;
+  /** The reader's holdings inside the object's peer group, INCLUDING the object when held. */
+  pgHeld: { stockId: string; symbol: string; name: string; isThisObject: boolean }[];
+  /** Roster size of the object's peer group. null ⇔ no PG. */
+  pgSize: number | null;
+  /** Weight of the object's SECTOR in the reader's whole book, 0–100. A sector may span several peer
+   *  groups, so this is a genuinely different cut — never presented as correcting the PG figure. */
+  sectorWeightPct: number | null;
+  /** The reader's holdings in the object's sector, including the object when held. */
+  sectorHeldCount: number;
 }
 
 /** Attention is a ROUTER, never content (§0.6). These fields select the mode and eligibility; they are
@@ -93,6 +156,16 @@ export interface ReaderContext {
   book: ReaderBook | null; // null ⇔ anonymous or no portfolio connected
   watchlist: ReaderWatchlist | null; // null ⇔ anonymous
   attention: ReaderAttention | null; // null ⇔ anonymous (no attention for a stranger)
+  /** §Phase 4 — exposure to this object's peer group + sector. null ⇔ anonymous or no book. */
+  neighbourhood: ReaderNeighbourhood | null;
+  /** §Phase 6 — the book-wide fired-finding census for echo. null ⇔ anonymous, no book, or the census
+   *  could not be resolved (in which case the UE family is dropped and a degradation is recorded —
+   *  never a partial echo, §5.7). */
+  echo: ReaderEcho | null;
+  /** §Phase 7 — what changed since the reader last looked. null ⇔ anonymous. Carries `evaluable:false`
+   *  (never null) when authenticated but `lastViewedAt` is unknown — the distinction matters: null is
+   *  "no reader", not-evaluable is "a reader we cannot compute a delta for". */
+  delta: ReaderDelta | null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -119,7 +192,15 @@ export interface ObjectState {
   symbol: string;
   displayLabel: string;
   isScored: boolean;
-  coverage: { state: string | null; reason: string | null };
+  /** The hand-authored editorial lead from `stock_overviews.core_business` (the SAME row the Overview
+   *  page's "What it does" renders), compressed to ONE sentence for card use. null when the stock has no
+   *  editorial row — 280 of 504 stocks today — in which case UO1 falls back to sector + classification,
+   *  which is honest and already correct. NEVER read from `Stock.description` (populated on 0 rows). */
+  businessLead: string | null;
+  /** ⚠ §Phase 3 — DERIVED, not read from `StockScoringState` (0 rows, no writer, returns null for a
+   *  scored and an unscored stock alike). Built from the in-force snapshot ref + the Phase 2 declined
+   *  set + peer-group membership. See relational/coverage.ts for the branch table. */
+  coverage: RelationalCoverage;
   snapshot: {
     generation: string; // in-force ScoreSnapshot id
     periodKey: string;
@@ -129,6 +210,17 @@ export interface ObjectState {
   sector: { key: string; displayName: string; sectorClass: string | null } | null;
   peerGroup: { id: string; label: string; memberCount: number } | null;
   findings: ObjectFinding[];
+  /** §1.3 / Phase 2 — the checks that COULD NOT RUN on the in-force snapshot. Distinct from a rule that
+   *  ran and returned false (recorded by the absence of a finding).
+   *
+   *  `null` is NOT the same as `[]` and the distinction is load-bearing:
+   *    · null — the snapshot predates the evaluability column, or was written without collecting the
+   *             set. We do NOT know what declined, so UG9 must not fire and UO3 must not claim
+   *             completeness.
+   *    · []   — the collector ran and every registered rule was evaluable. "Nothing flagged" is a
+   *             FULL-strength claim here.
+   *    · [..] — these named checks could not run; UO3's claim is qualified and UG9 can state the gap. */
+  notEvaluable: { ruleRef: string; reason: string }[] | null;
   pondMask: { heat: "hot" | "warm" | "calm"; isHot: boolean } | null;
 }
 
@@ -170,6 +262,11 @@ export interface RelationalState {
   slots: ResolvedEntry[]; // ordered, capped per mode
   overflow: ResolvedEntry[]; // full standing set, available on expand
   negatives: NegativeFact[]; // for the AI layer (§6.2)
+  /** The ONE slot entry whose `doesntMean` the card shows inline — UO6 (strength) first, then UO2
+   *  (health), then UO3 (flags), else the first slot. THE BACKEND PICKS: the frontend renders whichever
+   *  entryId this names and must not re-derive the priority itself (§4). Always a slots[] entryId (never
+   *  overflow) when slots is non-empty. */
+  boundaryEntryId: string | null;
   meta: {
     resolvedAt: string; // ISO
     snapshotGeneration: string | null;

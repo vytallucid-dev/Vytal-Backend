@@ -17,14 +17,18 @@
 // universe-wide until deeper annual history lands. Implemented faithfully (returns null on
 // insufficient depth) — a needs-data outcome, not a silent gap.
 
-import type { FireRule } from "../types.js";
+import { notEvaluable, type FireRule } from "../types.js";
 
 export const R3_MIN_CONSECUTIVE = 4;
 
 export const ruleR3: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // cash-flow earnings-quality is a non-financial read
+  // NOT a data gap — a SCOPE decision. Cash-flow earnings quality is a non-financial read and is not
+  // defined for a bank, so this is "does not apply", which is not_fired. Stays `null` deliberately.
+  if (ctx.industry === "banking") return null;
   const f = ctx.annualFundamentals;
-  if (f.length < R3_MIN_CONSECUTIVE) return null;
+  // ⚠ MIGRATED (Phase 2): was a bare `null`, which collapsed "we could not check" into "we checked and
+  // it is false". This is the DEPTH GATE — the check never ran — so it is not_evaluable with its reason.
+  if (f.length < R3_MIN_CONSECUTIVE) return notEvaluable("insufficient_annual_history");
   const sorted = [...f].sort((a, b) => a.fyOrdinal - b.fyOrdinal);
 
   // Trailing run of consecutive years with NP > OCF, ending at the latest year.

@@ -1,0 +1,27 @@
+-- ═══════════════════════════════════════════════════════════════════════════════════════════════════
+-- THE EVALUABILITY CONTRACT — record the checks that COULD NOT RUN on a snapshot.
+--
+-- Until now the findings engine collapsed two different facts into the same silence:
+--   · a rule that RAN and returned false        (the pattern is not there)
+--   · a rule that COULD NOT RUN                 (we lacked the history / feed / line item to check)
+-- Both produced "no row in score_patterns", so downstream surfaces could not tell "nothing flagged"
+-- on ten years of history from "nothing flagged" on two. The relational card states both as the same
+-- sentence today, which is the honesty gap this column closes.
+--
+-- SHAPE: [{ "ruleRef": "R3", "reason": "insufficient_annual_history" }, …]
+--   · ruleRef — the stable rule reference from RULE_REFS (src/scoring/findings/engine.ts), never an
+--     array index (registry order changes) and never a rendered string.
+--   · reason  — a token from the closed NotEvaluableReason union (src/scoring/findings/types.ts).
+--
+-- NULL vs [] IS LOAD-BEARING AND MUST NOT BE NORMALISED:
+--   · NULL — this snapshot predates the column, or was written by a path that did not collect the
+--            declined set. It means "we do not know what declined", NOT "nothing declined".
+--   · []   — the collector ran and every registered rule was evaluable.
+-- A read surface that treats NULL as [] would fabricate an all-clear. The column is deliberately
+-- nullable with NO default for exactly this reason.
+--
+-- SCORE-NEUTRAL: this changes no score, magnitude, band, pillar, or fired finding. It only records
+-- what was already true and previously discarded. Existing rows are untouched (nullable, no backfill).
+-- ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE "score_snapshots" ADD COLUMN "not_evaluable" JSONB;

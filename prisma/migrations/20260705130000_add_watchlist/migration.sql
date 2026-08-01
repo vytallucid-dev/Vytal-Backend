@@ -3,7 +3,7 @@
 -- pinned_* = a pin-time baseline captured ONCE at insert (never updated).
 -- ADDITIVE ONLY: no existing table touched beyond FKs to users(id)/stocks(id).
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateTable

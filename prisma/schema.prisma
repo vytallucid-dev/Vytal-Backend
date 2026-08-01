@@ -3136,7 +3136,7 @@ model IngestionError {
 // correction itself is applied IN-PLACE on the target row (those tables are
 // upsert-in-place, not supersede-chained); this table is the citation history
 // (CN-4: every raw edit carries a source attribution). Additive — apply via the
-// drift-safe db-execute + migrate-resolve path (see [[invest-iq-migration-drift]]).
+// drift-safe db-execute + migrate-resolve path (see [[vytal-migration-drift]]).
 // ─────────────────────────────────────────────
 model RawFieldEdit {
   id          String   @id @default(uuid())
@@ -3304,7 +3304,7 @@ model UserOnboardingMeta {
 // tier PHS reads. Live-ranking flickers near the 100/250 cuts (<1% gaps), so the tier
 // is frozen monthly, not computed on read. DISPLAY/PHS only — a null-PG stock is still
 // never scored. Additive; apply via the drift-safe db-execute + migrate-resolve path
-// (see the RawFieldEdit comment / [[invest-iq-migration-drift]]).
+// (see the RawFieldEdit comment / [[vytal-migration-drift]]).
 // ─────────────────────────────────────────────
 model MarketCapTierSnapshot {
   id            String        @id @default(uuid())
@@ -4036,7 +4036,7 @@ model HoldingLot {
 //                        the transaction-derived `holdings` (never merged into it), so the
 //                        FIFO path is untouched; a union read joins them later.
 // Additive; apply via the drift-safe db-execute + migrate-resolve path
-// (see [[invest-iq-migration-drift]]).
+// (see [[vytal-migration-drift]]).
 // ═══════════════════════════════════════════════════════════════
 
 /// THE BROKER CATALOG (Step 5.5) — every broker an ACCOUNT can belong to. This enum is now
@@ -4183,7 +4183,7 @@ model BrokerAuthState {
 // All constants stamped `portfolio-spec 1.1` (declared, not derived). Skip-write when
 // the input fingerprint is unchanged from the user's latest snapshot (fingerprint UNCHANGED
 // by 1.1 — the copy-only tiers are not in it). Additive; apply via the drift-safe path
-// (see [[invest-iq-migration-drift]]).
+// (see [[vytal-migration-drift]]).
 // ═══════════════════════════════════════════════════════════════
 model PortfolioHealthSnapshot {
   id     String @id @default(uuid())
@@ -4273,7 +4273,7 @@ model PortfolioHealthSnapshot {
 // Managed by the retention engine as a NORMAL row from day one: depth_per_key, key
 // user_id, keep 1825 (≈5y), floor 30, ARMED — pruned by the same nightly pass as every
 // other managed table (retention_policy seed in the create migration). Additive; apply
-// via the drift-safe db-execute + migrate-resolve path (see [[invest-iq-migration-drift]]).
+// via the drift-safe db-execute + migrate-resolve path (see [[vytal-migration-drift]]).
 // ═══════════════════════════════════════════════════════════════
 model PortfolioScoreHistory {
   // The retention engine's depth_per_key handler REQUIRES an `id` column (it deletes by id);
@@ -4316,7 +4316,7 @@ model PortfolioScoreHistory {
 // surface shows (current health, findings, three-lens verdicts, live price) is
 // READ-JOINED at query time from existing computed tables — never stored here. DISPLAY
 // only; never scored. Additive; apply via the drift-safe db-execute + migrate-resolve
-// path (see [[invest-iq-migration-drift]]).
+// path (see [[vytal-migration-drift]]).
 // ═══════════════════════════════════════════════════════════════
 model Watchlist {
   id      String @id @default(uuid())
@@ -4349,7 +4349,7 @@ model Watchlist {
 // read-only over already-computed data (price / band / findings) — evaluate, never
 // recompute. Firing is on CROSSING, not STATE (the `armed` re-arm flag is the anti-spam
 // rule; see src/alerts/). Universe-gated (stock in the 505). A user may have many alerts
-// per stock. Additive; applied via the drift-safe path ([[invest-iq-migration-drift]]).
+// per stock. Additive; applied via the drift-safe path ([[vytal-migration-drift]]).
 // ═══════════════════════════════════════════════════════════════
 model Alert {
   id      String @id @default(uuid())

@@ -18,7 +18,7 @@
 --
 -- Drift-safe apply: BEGIN/COMMIT over DIRECT_URL (apply-migration-direct.ts), then
 -- `prisma migrate resolve --applied 20260725140000_add_last_viewed_snapshot_generation`.
--- NEVER `migrate dev` / `migrate deploy`. (See [[invest-iq-migration-drift]].)
+-- NEVER `migrate dev` / `migrate deploy`. (See [[vytal-migration-drift]].)
 -- ═══════════════════════════════════════════════════════════════
 
 ALTER TABLE "behavior_rollup"

@@ -3,7 +3,7 @@
 -- One row per (user=portfolio, compute-event); the single source every surface
 -- reads. ADDITIVE ONLY — no existing table touched beyond the FK to users(id).
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateTable

@@ -6,7 +6,7 @@
 -- Two tables mirror alerts/alert_events: event_reminders (the rules) + event_reminder_events
 -- (the fired log the SAME alerts email drain sends). ADDITIVE ONLY — no existing table is
 -- touched beyond FKs to users(id)/stocks(id).
--- APPLIED via the drift-safe db-execute + migrate-resolve path (see [[invest-iq-migration-drift]]).
+-- APPLIED via the drift-safe db-execute + migrate-resolve path (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateTable: event_reminders (the user's rules)

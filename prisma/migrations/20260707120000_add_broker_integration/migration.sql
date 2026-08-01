@@ -6,7 +6,7 @@
 -- placeholder is a SEPARATE destructive step (see the sibling
 -- 20260707120001_drop_linked_accounts migration) so the drop is reviewed on its own.
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateEnum

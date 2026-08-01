@@ -3,7 +3,7 @@
 -- lot-register replay → materialized holdings + holding_lots. ADDITIVE ONLY:
 -- no existing table is touched beyond FKs to users(id) and stocks(id).
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateEnum

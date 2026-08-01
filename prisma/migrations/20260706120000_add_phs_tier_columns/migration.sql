@@ -6,7 +6,7 @@
 -- HARD LOCK: nothing in the score reads these — the PHS is byte-identical with or without
 -- them. ADDITIVE + NULLABLE: pre-1.1 rows keep NULL, no backfill needed. No existing
 -- column is touched. APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 ALTER TABLE "portfolio_health_snapshot" ADD COLUMN "structure_tier" TEXT;

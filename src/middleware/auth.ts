@@ -186,10 +186,24 @@ export function createAuthGuards(config: AuthGuardConfig) {
 }
 
 // ── Production instance, bound to the Supabase project's JWKS ──
+//
+// ⚠ THE RESOLVER IS BUILT ON FIRST VERIFY, NOT AT MODULE LOAD, AND THAT IS LOAD-BEARING.
+// `new URL()` THROWS on an unset SUPABASE_URL ("undefined/auth/v1/…" is not a URL), and it threw at
+// import time — which made merely IMPORTING app.ts an environment dependency. Every consumer of
+// createApp() inherited it, including verify-catalogue-endpoint.ts, a BUILD gate. A build that cannot
+// construct the app without a runtime secret fails on the deploy box for a reason that has nothing to
+// do with the code being built. Deferring the construction keeps the identical key path, the identical
+// ES256 lock, and the identical fail-closed behaviour (an unusable issuer throws inside jwtVerify and
+// `authenticate` turns it into a 401), while leaving module load env-free.
+//
+// The loud "you forgot SUPABASE_URL" failure did not disappear with it — it moved to where it belongs:
+// server.ts asserts the required environment at boot, before the port is bound.
 const issuer = `${env.SUPABASE_URL}/auth/v1`;
-const remoteJwks = createRemoteJWKSet(
-  new URL(`${issuer}/.well-known/jwks.json`),
-);
+let jwks: JWTVerifyGetKey | undefined;
+const remoteJwks: JWTVerifyGetKey = (protectedHeader, token) => {
+  jwks ??= createRemoteJWKSet(new URL(`${issuer}/.well-known/jwks.json`));
+  return jwks(protectedHeader, token);
+};
 
 export const { requireAuth, requireAdmin, optionalAuth } = createAuthGuards({
   keyResolver: remoteJwks,

@@ -7,7 +7,7 @@
 -- (rebuilding that trap is exactly what broke the old Construction read). ADDITIVE + NULLABLE: pre-2.0
 -- rows + no-holding users keep NULL and the FE degrades to value+band. NOT in fingerprintOf (§12
 -- fingerprint inclusion stays Stage 7). APPLIED via the drift-safe db-execute + migrate-resolve path
--- ([[invest-iq-migration-drift]]).
+-- ([[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 ALTER TABLE "portfolio_health_snapshot" ADD COLUMN "construction_data" JSONB;

@@ -14,7 +14,7 @@ import * as path from "path";
 
 const DEFAULT_JSON = path.resolve(
   process.cwd(),
-  "../invest-iq/docs/stock_overview_static.json",
+  "../vytal/docs/stock_overview_static.json",
 );
 
 interface OverviewEntry {

@@ -10,7 +10,7 @@
 -- creating a trigger on auth.users + a SECURITY DEFINER function
 -- requires ownership that Supabase grants to `postgres`.
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateEnum

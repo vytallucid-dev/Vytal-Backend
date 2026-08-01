@@ -15,7 +15,7 @@
 -- drops the fields, then this DDL runs, then `prisma generate`. Dropping ahead of the readers breaks them.
 --
 -- IF EXISTS: idempotent, so a re-run after a partial apply is a no-op rather than an error.
--- APPLIED via the drift-safe db-execute + migrate-resolve path ([[invest-iq-migration-drift]]) — never
+-- APPLIED via the drift-safe db-execute + migrate-resolve path ([[vytal-migration-drift]]) — never
 -- `migrate dev`, which would diff the whole schema and try to "fix" unrelated drift.
 -- ═══════════════════════════════════════════════════════════════
 

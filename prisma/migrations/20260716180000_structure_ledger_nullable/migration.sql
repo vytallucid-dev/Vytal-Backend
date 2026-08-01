@@ -19,7 +19,7 @@
 -- (honest: "this row was never scored by S-rules"); old rows keep their ledger. A reader can still tell
 -- the two eras apart — which is exactly what an append-only table is for.
 --
--- APPLIED via the drift-safe db-execute + migrate-resolve path ([[invest-iq-migration-drift]]).
+-- APPLIED via the drift-safe db-execute + migrate-resolve path ([[vytal-migration-drift]]).
 -- IF EXISTS is not available for ALTER COLUMN; the statement is idempotent anyway (dropping a NOT NULL
 -- that is already dropped is a no-op in Postgres).
 -- ═══════════════════════════════════════════════════════════════

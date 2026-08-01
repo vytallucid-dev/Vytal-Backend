@@ -5,7 +5,7 @@
 -- replay engine folds a buy fee into cost basis and a sell fee out of proceeds,
 -- so realized P&L + invested become fee-aware; null/absent = 0 (back-compat).
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- AlterTable

@@ -5,7 +5,7 @@
 -- under a new as_of_date; prior sets are never mutated. ADDITIVE ONLY — no
 -- existing table is touched beyond the FK to stocks(id).
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateEnum

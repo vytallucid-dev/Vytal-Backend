@@ -5,7 +5,7 @@
 -- Two CHECKs Prisma can't model enforce type/operator/target coherence at the DB (the
 -- controller validates first → 400; the CHECK is the backstop, never a raw 500).
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- CreateEnum

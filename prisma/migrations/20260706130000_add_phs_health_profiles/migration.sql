@@ -8,7 +8,7 @@
 --                   lens patterns by nature — NEVER score attribution)
 -- ADDITIVE + NULLABLE: pre-1.2 rows keep NULL, no backfill. No existing column is touched
 -- (the 1.2 ceiling retirement reuses the kept phs_raw/ceiling_* columns as NULL/false — no
--- drop). APPLIED via the drift-safe db-execute + migrate-resolve path ([[invest-iq-migration-drift]]).
+-- drop). APPLIED via the drift-safe db-execute + migrate-resolve path ([[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 ALTER TABLE "portfolio_health_snapshot" ADD COLUMN "pillar_profile" JSONB;

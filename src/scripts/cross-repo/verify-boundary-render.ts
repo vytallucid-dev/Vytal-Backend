@@ -1,11 +1,20 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // verify-boundary-render.ts — THE GATE FOR THE `doesntMean` RENDER TRANSFORM.
 //
+// ★★ CROSS-REPO. THIS GATE NEEDS BOTH CHECKOUTS, SO IT IS NOT — AND MUST NEVER BE — IN `build`. ★★
+//
+// It lives in src/scripts/cross-repo/ for exactly that reason. `npm run verify:cross-repo` is its home;
+// verify-build-gate-hygiene.ts FAILS THE BUILD if anything in this directory is ever wired into the
+// build chain, and fails it again if this directory is wired into nothing at all. See the foot of this
+// file for what stops being proved when it does not run, and where the check should end up.
+//
 // The transform lives in the FRONTEND (Vytal-Frontend/lib/findings/boundary.ts) because it is a render
 // concern; the corpus it must be total over lives in the BACKEND (the portfolio copy module and the
 // stock-finding registry). This script is the join. It imports the frontend module directly — the same
 // cross-repo reach gen-frontend-fallback.ts already uses, and possible only because boundary.ts is
-// import-free by construction.
+// import-free by construction. That reach is why it cannot be a build gate: a Railway deploy checks out
+// the backend ALONE, so on the deploy box the frontend path does not exist and the gate fails for a
+// reason that has nothing to do with the copy it is guarding.
 //
 // WHAT IT PROVES
 //   1. Total     — every one of the 41 portfolio strings and every stock/lens boundary parses.
@@ -26,8 +35,8 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { FINDING_COPY } from "../portfolio/phs/copy.js";
-import { STOCK_FINDINGS, FAMILY_DOESNT_MEAN, LENS_DOESNT_MEAN } from "../catalogue/stock-findings.js";
+import { FINDING_COPY } from "../../portfolio/phs/copy.js";
+import { STOCK_FINDINGS, FAMILY_DOESNT_MEAN, LENS_DOESNT_MEAN } from "../../catalogue/stock-findings.js";
 
 const FRONTEND_DIR = process.env.VYTAL_FRONTEND_DIR ?? resolve(process.cwd(), "../Vytal-Frontend");
 const MODULE_PATH = resolve(FRONTEND_DIR, "lib/findings/boundary.ts");
@@ -43,6 +52,9 @@ const ok = (name: string, pass: boolean, detail = "") => {
 if (!existsSync(MODULE_PATH)) {
   console.error(`❌ frontend transform not found at ${MODULE_PATH}`);
   console.error(`   Set VYTAL_FRONTEND_DIR to the checkout path, or place the repos side by side.`);
+  console.error(`   This is a CROSS-REPO gate (npm run verify:cross-repo) and needs both checkouts.`);
+  console.error(`   If you are seeing this inside a deploy, something wired it into \`build\`: that is`);
+  console.error(`   the failure verify-build-gate-hygiene.ts exists to catch — unwire it, do not set the var.`);
   process.exit(1);
 }
 
@@ -161,3 +173,33 @@ console.log(
     : `\n❌ ${failures} FAILURE(S)\n`,
 );
 process.exit(failures === 0 ? 0 : 1);
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ⚠ WHAT GOES UNPROVED BETWEEN RUNS, STATED PLAINLY
+//
+// This gate now runs on `npm run verify:cross-repo` (pre-push / a CI job that checks out both repos)
+// instead of on every deploy. Between those runs, NOTHING enforces:
+//
+//   · that a NEW or EDITED portfolio boundary string still parses. Add a 42nd PHS string in a shape
+//     the transform does not split, and the reader gets the raw "≠" back — the exact defect
+//     boundary.ts exists to remove. The backend build will not notice.
+//   · that an edit to boundary.ts stays LOSSLESS. A dropped clause renders as a shorter, still
+//     plausible sentence; no test in the frontend repo covers it today either.
+//   · that a stock string has not drifted into the portfolio register (or the reverse), which would
+//     put the wrong LABEL on the line — confidently wrong, and worse than the raw glyph.
+//
+// WHERE IT SHOULD END UP — a SPLIT, so each half runs where its inputs live and neither half reaches:
+//
+//   BACKEND half (belongs in verify:copy, needs no frontend): assert the CORPUS still satisfies the
+//     contract the transform is written against — every PHS string starts with the marker and every
+//     marker-delimited clause is non-blank; no stock/family/lens string contains the marker at all.
+//     That is a property of backend bytes, checkable in a backend-only checkout, and it is the half
+//     that actually changes often (copy edits land here).
+//
+//   FRONTEND half (belongs in the frontend's own build): assert the TRANSFORM is total and lossless
+//     over a generated fixture of those strings — the same trick gen-frontend-fallback.ts already
+//     plays for the fallback copy, so the fixture cannot drift silently and the frontend needs no
+//     backend checkout to run its own gate.
+//
+// Until that split exists, this whole file is the join and it runs pre-push, not on deploy.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════

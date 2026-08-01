@@ -3,7 +3,7 @@
 -- FALSE default so every existing pin backfills to "not favorited" (no data touched
 -- otherwise). Toggled via PATCH /me/watchlist/:stockId { favorite }.
 -- APPLIED via the drift-safe db-execute + migrate-resolve path
--- (see [[invest-iq-migration-drift]]).
+-- (see [[vytal-migration-drift]]).
 -- ═══════════════════════════════════════════════════════════════
 
 -- AlterTable

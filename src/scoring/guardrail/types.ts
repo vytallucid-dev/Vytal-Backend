@@ -5,10 +5,13 @@
 // the two-layer pipeline). It detects distortions via SIGNATURES, resolves each to
 // one of the SIX OUTCOMES (§0.6), and emits suppression DIRECTIVES + AUDIT rows.
 //
-// SCOPE OF THIS FILE: the framework SPINE only — the contracts every one of the 10
-// signatures plugs into. The actual signatures live in ./signatures/. Phase-1 wires
-// exactly ONE (A-2 Missing Critical Fields); the other nine are declared in the
-// registry as not-yet-built so the gate is structurally complete.
+// SCOPE OF THIS FILE: the framework SPINE only — the contracts every one of the 11
+// signatures plugs into. The actual signatures live in ./signatures/. ALL ELEVEN ARE
+// BUILT and registered (`built: true`); what each is ALLOWED to do to a score is a
+// separate, narrower contract — GUARDRAIL_BEHAVIOUR in ./signatures/registry.ts.
+// TODAY NOTHING SUPPRESSES: the layer ships as detection + audit trail with zero
+// score impact. A-2/A-3/B-1/B-2/B-3/B-4 annotate; B-5/C-1 detect (pending review,
+// never applied); A-1/A-4/C-2 are not evaluated. Read that map, not `built`.
 //
 // THE LOAD-BEARING SEAM (§0.8, locked): when a signature resolves to O2 the gate
 // writes ONE score_suppressions row carrying BOTH excludeFromOwnScore AND
@@ -30,24 +33,25 @@ export type Outcome = "O1" | "O2" | "O3" | "O4" | "O5" | "O6";
  *  routed to score_guardrail_reviews (§0.7). */
 export type Tier = "auto" | "review";
 
-/** The Phase-1 signature set (§4 signature table). Exactly ONE is built now (A-2);
- *  the rest are declared so the registry/gate are complete and later builds drop in
- *  without reshaping the framework. */
+/** The Phase-1 signature set (§4 signature table). ALL ELEVEN are implemented and
+ *  registered. The per-signature LIVE contract (suppress / annotate / detect /
+ *  disabled) is GUARDRAIL_BEHAVIOUR in ./signatures/registry.ts — adding a key to
+ *  this union without adding it there is a compile error, by design. */
 export type SignatureKey =
-  // Category A — data integrity / status (auto)
-  | "A-1" // stale / non-filed results            → O5 (escalate O6 at 2Q)
-  | "A-2" // missing critical fields              → O2 (escalate O5 if pillar floor breaks)  ◀ BUILT
-  | "A-3" // insufficient history                 → O2 (lens fallback)
-  | "A-4" // inactive / suspended                 → O6 (operator-confirm)
+  // Category A — data integrity / status (auto)          ── behaviour ──
+  | "A-1" // stale / non-filed results            → O5 (escalate O6 at 2Q)      disabled
+  | "A-2" // missing critical fields              → O2 (escalate O5 on floor)   annotate
+  | "A-3" // insufficient history                 → O3 (engine already falls back) annotate
+  | "A-4" // inactive / suspended                 → O6 (operator-confirm)       disabled
   // Category B — accounting distortion (auto, fixed map)
-  | "B-1" // exceptional gain (phantom profit)    → O2 + O3
-  | "B-2" // exceptional loss (phantom loss)      → O2 + O3
-  | "B-3" // tax-driven distortion                → O3 (O2 if band-flip)
-  | "B-4" // other-income inflation               → O3 (O2 if band-flip)
-  | "B-5" // holdco extraction                    → O3 annotate (REVIEW)
+  | "B-1" // exceptional gain (phantom profit)    → O2 + O3                     annotate
+  | "B-2" // exceptional loss (phantom loss)      → O2 + O3                     annotate
+  | "B-3" // tax-driven distortion                → O3 (O2 if band-flip)        annotate
+  | "B-4" // other-income inflation               → O3 (O2 if band-flip)        annotate
+  | "B-5" // holdco extraction                    → O3 annotate (REVIEW)        detect
   // Category C — structural change
-  | "C-1" // revenue/asset step-change            → O4 + O3 (REVIEW)
-  | "C-2"; // share-count discontinuity           → O1 bonus/split | O3 rights
+  | "C-1" // revenue/asset step-change            → O4 + O3 (REVIEW)            detect
+  | "C-2"; // share-count discontinuity           → O1 bonus/split | O3 rights  disabled
 
 export type SignatureCategory = "A" | "B" | "B-Bank" | "C";
 

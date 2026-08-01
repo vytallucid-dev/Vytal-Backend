@@ -9,7 +9,14 @@
 // year, regardless of persistence). A stock can fire one without the other — one big-gap
 // year with no 4-year streak fires P7 not R3; four small-gap years fire R3 not P7. So P7 is
 // NOT "R3 but softer" (it is not retired like P2/P3). Provisional trigger: latest year,
-// NP>0 and OCF < P7_CASH_BACK_MAX × NP (operating cash backs < 70% of profit).
+// NP>0 and OCF < P7_CASH_BACK_MAX × NP (operating cash backs < 50% of profit).
+//
+// ⚠️ THIS LINE SAID "< 70%" UNTIL 2026-08-01, WHILE THE CONSTANT SIX LINES DOWN READ 0.50. The bar
+// was lowered (0.70 fired on 15 names, mostly routine working-capital timing) and the header was
+// not updated with it. It is the ONLY stale threshold comment found in a sweep of all 33 rule
+// files — but it is the reason the copy review was needed at all, because a reviewer working from
+// headers would have confirmed P7's description against a bar the engine had abandoned.
+// If you change P7_CASH_BACK_MAX, change THIS LINE and the catalogue description in the same edit.
 //
 // GUARD-REUSE (the genuine kind): a single-year accruals gap is exactly where a one-off
 // distorts — a non-cash exceptional GAIN inflates NP (b1), an exceptional LOSS deflates it

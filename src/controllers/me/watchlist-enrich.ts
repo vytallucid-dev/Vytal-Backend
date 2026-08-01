@@ -30,6 +30,9 @@ import {
   type FiredHeadline,
 } from "../../scoring/lens-patterns/index.js";
 import { composeLmVerdict, composeLpVerdict } from "../../scoring/lens-patterns/standing-context.js";
+// ONE canonical finding row, shared with the per-stock health read (Stage 3) — see `findings` below.
+import type { FindingsSection, RedFlagView, PatternView } from "../../scoring/read/health-view.types.js";
+import { renderVerdict } from "../../scoring/findings/verdicts.js";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const numN = (v: unknown): number | null => (v == null ? null : Number(v));
@@ -217,18 +220,14 @@ export interface EnrichedWatchlistEntry {
   healthDelta: number | null; // health − pinnedHealth (both present)
   priceChangePct: number | null; // (price − pinnedPrice) / pinnedPrice × 100
   // fired findings (honest-empty arrays when none)
-  findings: {
-    redFlags: { flagKey: string; severity: string | null; tier: string; triggeringValues: unknown }[];
-    patterns: {
-      patternKey: string;
-      direction: string | null;
-      severity: string | null;
-      displayState: string;
-      magnitude: number | null;
-      evidence: unknown;
-      metricRefs: unknown;
-    }[];
-  };
+  //
+  // ★ CONVERGED onto the CANONICAL rows (Stage 3). This was a structural clone of health-view's
+  // RedFlagView/PatternView, re-declared inline — same fields, drifted types (`tier: string` instead
+  // of the "auto" | "review" union, and `guardrailEventId` simply missing). Two declarations of one
+  // wire shape is how a field lands on one surface and not the other, which is exactly what happened:
+  // adding `verdict` here would otherwise have meant adding it twice and hoping both stayed in step.
+  // Now there is one row type, and the watchlist gets every future field for free.
+  findings: FindingsSection;
   // three-lens verdicts (digest; honest-empty when unscored / nothing fired)
   threeLens: ThreeLensDigest;
 }
@@ -295,7 +294,9 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
       : await Promise.all([
           prisma.redFlag.findMany({
             where: { snapshotId: { in: snapIds } },
-            select: { snapshotId: true, flagKey: true, severity: true, tier: true, triggeringValues: true },
+            // guardrailEventId is selected because the canonical RedFlagView carries it — the
+            // watchlist's own clone had silently dropped it. Converging the type surfaced the gap.
+            select: { snapshotId: true, flagKey: true, severity: true, tier: true, triggeringValues: true, guardrailEventId: true },
           }),
           prisma.scorePattern.findMany({
             where: { snapshotId: { in: snapIds } },
@@ -426,17 +427,20 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
         redFlags: rf.map((f) => ({
           flagKey: f.flagKey,
           severity: f.severity,
-          tier: f.tier as string,
+          tier: f.tier as RedFlagView["tier"],
           triggeringValues: f.triggeringValues ?? null,
+          guardrailEventId: f.guardrailEventId ?? null,
+          verdict: renderVerdict(f.flagKey, f.triggeringValues ?? null),
         })),
         patterns: pt.map((p) => ({
           patternKey: p.patternKey,
           direction: p.direction,
           severity: p.severity,
-          displayState: p.displayState ?? "active",
+          displayState: (p.displayState ?? "active") as PatternView["displayState"],
           magnitude: numN(p.magnitude),
           evidence: p.evidence ?? null,
           metricRefs: p.metricRefs ?? null,
+          verdict: renderVerdict(p.patternKey, p.evidence ?? null),
         })),
       },
       threeLens,

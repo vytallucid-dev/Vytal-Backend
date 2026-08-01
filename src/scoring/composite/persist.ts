@@ -70,6 +70,12 @@ export function toScoreSnapshotRow(
      *  column is written NULL ("we don't know what declined"). An empty array ⇒ everything was
      *  evaluable, written as []. The two are NOT interchangeable and are never normalised together. */
     notEvaluable?: { ruleRef: string; reason: string }[];
+    /** Did Layer-1 (the guardrail gate) RUN for this snapshot? `undefined` ⇒ the caller
+     *  did not record the fact and the column is written NULL ("we don't know"), which
+     *  is NOT the same as false ("deliberately not screened"). true with zero guardrail
+     *  events means "screened, nothing fired" — the distinction presence-of-events
+     *  cannot express. Never normalise the three states together. */
+    guardrailScreened?: boolean;
   },
 ) {
   if (r.state !== "scored" || r.composite === null || r.labelBand === null) throw new Error("toScoreSnapshotRow: composite is unavailable — no snapshot row is written");
@@ -115,6 +121,10 @@ export function toScoreSnapshotRow(
     // empty array (a positive all-clear the collector never asserted). Prisma requires its DbNull
     // sentinel for a nullable Json column; a bare JS `null` would be rejected by the client types.
     notEvaluable: ctx.notEvaluable === undefined ? Prisma.DbNull : (ctx.notEvaluable as Prisma.InputJsonValue),
+    // Layer-1 provenance. Same honest-null discipline as notEvaluable above: undefined
+    // persists as SQL NULL ("we don't know whether this was screened"), never as false
+    // ("we know it wasn't"). A nullable Boolean takes a bare null, unlike Json.
+    guardrailScreened: ctx.guardrailScreened === undefined ? null : ctx.guardrailScreened,
   };
 }
 

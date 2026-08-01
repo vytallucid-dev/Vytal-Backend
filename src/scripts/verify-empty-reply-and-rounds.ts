@@ -15,6 +15,20 @@
 //      write-chain tool is called, and only then.
 //   4. A read-only turn does NOT get the raise — the extra rounds cost quota, so they stay unbought.
 //
+// ── ⚠ "DETERMINISTIC" AND "NO MODEL CALL NEEDED" ARE ONLY TRUE BECAUSE main() FORCES MOCK ─────────
+// Those two claims above were written for §1–§5, which inject `spend: allowAll` and are self-contained.
+// §6 is not: it drives meChatRouter over real HTTP, and the controller builds its own spend gate, so
+// with AI_PROVIDER=gemini (what .env sets) it billed one real unit per run — and, once the shared daily
+// budget was gone, FAILED both its assertions with a denial that reads exactly like a persistence
+// regression. A proof whose result depends on how much budget someone else used yesterday is not a
+// deterministic proof. `process.env.AI_PROVIDER = "mock"` in main() is what makes the header honest;
+// it is load-bearing, not housekeeping. Do not remove it.
+//
+// THE QUOTA GATE IS NOT EXERCISED HERE — by design, in both halves now. §1–§5 bypass it with
+// `allowAll`, §6 bypasses it via mock. It is proven in verify-ai-quota-subcap.ts (the spend seam in
+// BOTH directions) and verify-chat-quota-peek.ts (checkAndConsumeAiCall directly). Do not add a quota
+// claim to this header.
+//
 //   npx tsx src/scripts/verify-empty-reply-and-rounds.ts
 // ─────────────────────────────────────────────────────────────────────────────
 import "dotenv/config";
@@ -74,6 +88,33 @@ async function newUser(): Promise<string> {
 }
 
 async function main() {
+  // ★ UNMETERED SUITE — force the mock provider before anything runs.
+  // ⚠ §1–§5 were already safe: they pass `spend: allowAll` into runChatTurn, so `spendFor` is never
+  // constructed and no unit is consumed. §6 IS NOT, and that is the gap this closes. It drives
+  // meChatRouter over real HTTP, and the controller calls runChatTurn with NO deps — so the engine
+  // builds `spendFor(model, actor)` itself and `mockByConfig()` reads AI_PROVIDER from .env (which is
+  // `gemini`), spending a real unit from the shared per-model budget on a call that never leaves the
+  // process.
+  //
+  // MEASURED, not assumed: §6 makes exactly ONE billable generation per run — the chat_page session
+  // OPEN is server-composed orientation and calls no model at all, so only the follow-up message
+  // generates. One unit, every run, forever, for a scripted empty string.
+  //
+  // The worse half is not the unit. §6 FAILED BOTH ITS ASSERTIONS the moment the shared budget was
+  // exhausted, because the controller returned `unavailable` instead of a reply — so a blank-reply
+  // proof reported "the HTTP reply is the fallback → ''" and "NO blank assistant message persisted →
+  // 0 assistant rows". Both read as a persistence regression. Neither was one.
+  //
+  // ⚠ IT ALSO STOPS THE TOKEN FICTION. `servedByMock` matches usage.modelVersion by PREFIX, and this
+  // file's scripted provider reports "scripted-empty-1" — which does not start with "mock". So without
+  // the line below, engine.ts recorded synthetic prompt/output counts into `ai_usage_counters`, the
+  // table that is supposed to mean real Gemini tokens spent. Config-mock is the only signal that
+  // catches that; the response-side one cannot.
+  //
+  // The engine runs on the injected scripted provider either way (resolveChatProvider prefers the test
+  // override, which §6 sets), so this governs metering only — no assertion's subject changes.
+  process.env.AI_PROVIDER = "mock";
+
   const userId = await newUser();
   const actor = { kind: "user", userId } as const;
   const base = { model: "test-model", system: "sys", actor, subjectLabel: "ACC" };

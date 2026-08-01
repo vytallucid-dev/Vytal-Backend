@@ -69,8 +69,13 @@ export interface ScopeAggregate {
 
 const round2 = (x: number): number => Math.round(x * 100) / 100;
 
-/** Linear-interpolated percentile on an arbitrary-order numeric array. */
-function percentile(values: number[], p: number): number {
+/** Linear-interpolated percentile on an arbitrary-order numeric array.
+ *
+ *  ★ EXPORTED for screen.service.ts's spread response. The screen answers "what counts as a good
+ *  health score?" with p25/median/p75, and `slice=overview` already publishes p25/p75 for the same
+ *  composite over the same members — two percentile implementations would let one conversation state
+ *  the middle half two ways. */
+export function percentile(values: number[], p: number): number {
   if (values.length === 0) return 0;
   const s = [...values].sort((a, b) => a - b);
   if (s.length === 1) return s[0];

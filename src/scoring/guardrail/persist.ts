@@ -22,14 +22,22 @@
 // rows. This layer writes the events for ALL of them (audit completeness) and the
 // suppression rows for O2/O4.
 
+import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../../db/prisma.js";
 import type { GuardrailEvalResult, Outcome, Tier } from "./types.js";
 import type { GuardrailReviewRow, RulingApplication } from "./review.js";
 
+type Db = Prisma.TransactionClient;
+
 /** score_guardrail_events create-shape (prisma GuardrailEvent). */
 export interface GuardrailEventCreate {
   stockId: string;
-  snapshotId: string; // ScoreSnapshot FK — resolved post-snapshot
+  /** The PERIOD ("FY27Q1") — the identity column. Always set; independent of any snapshot. */
+  snapshotKey: string;
+  /** Provenance only. Set ONLY when this run created that snapshot; null when the score did not
+   *  change (skipped_identical) or was unavailable. NULL is normal, and is NEVER back-filled to a
+   *  pre-existing snapshot — that snapshot was not screened, and pointing at it would say it was. */
+  snapshotId: string | null;
   signatureKey: string;
   triggeringValues: object;
   outcome: Outcome;
@@ -49,12 +57,21 @@ export interface SuppressionCreate {
 }
 
 export interface GuardrailWriteContext {
-  /** stockId → its ScoreSnapshot id (resolved AFTER Layer-2 produced the snapshot).
-   *  null ⇒ dry-run plan (no snapshot exists yet). A stock with an UNAVAILABLE
-   *  composite has no snapshot id → its events cannot persist (held with the
-   *  composite); noted, not an error. */
+  /** The PERIOD these events belong to. One write call = one period. Required — it is the
+   *  identity column, and it is never inferred from "current" (the universe spans two periods
+   *  at once, so "current" is ambiguous). */
+  snapshotKey: string;
+  /** stockId → the ScoreSnapshot id THIS RUN created for it, where it created one. A stock
+   *  absent from this map (score unchanged, or composite unavailable) still gets its events
+   *  written, with snapshot_id NULL — detection is recorded whether or not a score moved. */
   snapshotIdByStock: Map<string, string> | null;
   dryRun: boolean;
+  /** TX-INJECTION (house rule: the caller owns the transaction). When set, rows are
+   *  written on THIS client and no inner transaction is opened — so a caller that
+   *  wraps the scoring pass in a tx (and may roll it back, as the proof harnesses do)
+   *  gets guardrail rows inside that same atomic unit. When absent, this opens its own
+   *  transaction, preserving the original standalone behaviour for existing callers. */
+  db?: Db;
 }
 
 export interface GuardrailWritePlan {
@@ -88,7 +105,8 @@ export async function writeGuardrailEval(
         _localEventId: e.localEventId,
         _snapshotResolved: sid !== null,
         stockId: e.stockId,
-        snapshotId: sid ?? "(pending snapshot — written post-Layer-2)",
+        snapshotKey: ctx.snapshotKey,
+        snapshotId: sid, // null ⇒ no snapshot written this run; the event is still recorded
         signatureKey: e.signatureKey,
         triggeringValues: e.triggeringValues as object,
         outcome: e.outcome,
@@ -121,17 +139,38 @@ export async function writeGuardrailEval(
     return { action: "would_write_dry_run", eventRows, suppressionRows, stockActions, annotations, notes };
   }
 
-  // ── REAL WRITE — events then suppressions, FK-resolved, one transaction ──
+  // ── REAL WRITE — events then suppressions, FK-resolved ──
+  // IDEMPOTENT (house rule, cf. ensurePeerStats/writeFmPillar): both tables carry a
+  // natural @@unique, so a re-run must get-or-create, never blind-create.
+  //   • GuardrailEvent   @@unique([snapshotId, signatureKey])
+  //   • SuppressionDirective @@unique([stockId, snapshotKey, metricKey]) ← keyed on the
+  //     PERIOD STRING, not the snapshot FK. A supersede writes a NEW snapshot but reuses
+  //     the same snapshotKey, so a second scoring run at the same period WOULD collide
+  //     here. Get-or-create makes re-scoring safe; the row is append-only either way.
   if (!ctx.snapshotIdByStock) throw new Error("writeGuardrailEval: real write requires snapshotIdByStock (snapshots must exist first)");
-  await prisma.$transaction(async (tx) => {
+
+  const writeAll = async (tx: Db) => {
     const dbIdByLocal = new Map<string, string>();
     for (const r of results) {
-      const sid = ctx.snapshotIdByStock!.get(r.stockId);
-      if (!sid) { notes.push(`${r.symbol}: no snapshot id (composite unavailable/held) → events not written`); continue; }
+      // A stock with NO snapshot from this run is no longer skipped. Its detections are
+      // written with snapshot_id NULL — that is the entire point of the decoupling. The old
+      // `if (!sid) continue` here is what silently discarded 79 of 106 detections on the
+      // first live run, including B-1/HINDPETRO and A-2/NESTLEIND.
+      const sid = ctx.snapshotIdByStock?.get(r.stockId) ?? null;
       for (const e of r.events) {
+        // GET-OR-CREATE on the natural identity (stock, period, signature) — NOT on the
+        // snapshot. Re-running a pass finds the existing row and reuses its id, so a rescore
+        // never duplicates. Load-bearing: A-3 fires on 91 of 95 stocks, so a duplicate-per-run
+        // bug would bury the real signal within weeks.
+        const existing = await tx.guardrailEvent.findUnique({
+          where: { stockId_snapshotKey_signatureKey: { stockId: e.stockId, snapshotKey: ctx.snapshotKey, signatureKey: e.signatureKey } },
+          select: { id: true },
+        });
+        if (existing) { dbIdByLocal.set(e.localEventId, existing.id); continue; }
         const created = await tx.guardrailEvent.create({
           data: {
             stockId: e.stockId,
+            snapshotKey: ctx.snapshotKey,
             snapshotId: sid,
             signatureKey: e.signatureKey,
             triggeringValues: e.triggeringValues as object,
@@ -147,6 +186,11 @@ export async function writeGuardrailEval(
       for (const d of r.directives) {
         const srcId = dbIdByLocal.get(d.sourceLocalEventId);
         if (!srcId) { notes.push(`suppression ${d.stockId}/${d.metricKey}: source event not written (held) → skipped`); continue; }
+        const existing = await tx.suppressionDirective.findUnique({
+          where: { stockId_snapshotKey_metricKey: { stockId: d.stockId, snapshotKey: d.snapshotKey, metricKey: d.metricKey } },
+          select: { id: true },
+        });
+        if (existing) continue;
         await tx.suppressionDirective.create({
           data: {
             stockId: d.stockId,
@@ -160,7 +204,12 @@ export async function writeGuardrailEval(
         });
       }
     }
-  });
+  };
+
+  // Caller-owned tx when injected (no nesting); otherwise our own, as before.
+  if (ctx.db) await writeAll(ctx.db);
+  else await prisma.$transaction(writeAll);
+
   notes.push(`wrote ${eventRows.length} event(s) + ${suppressionRows.length} suppression(s)`);
   return { action: "wrote", eventRows, suppressionRows, stockActions, annotations, notes };
 }

@@ -143,7 +143,7 @@ async function main() {
   console.log(`\n  ── DRY-RUN persist plan (A-2 O2 firing) ──`);
   {
     const before = { evt: await prisma.guardrailEvent.count(), sup: await prisma.suppressionDirective.count() };
-    const plan = await writeGuardrailEval([o2Eval], { snapshotIdByStock: null, dryRun: true });
+    const plan = await writeGuardrailEval([o2Eval], { snapshotKey: o2Eval.snapshotKey, snapshotIdByStock: null, dryRun: true });
     const after = { evt: await prisma.guardrailEvent.count(), sup: await prisma.suppressionDirective.count() };
     console.log(`    planned event rows: ${plan.eventRows.length}  ·  planned suppression rows: ${plan.suppressionRows.length}  ·  action=${plan.action}`);
     for (const e of plan.eventRows) console.log(`      EVENT  sig=${e.signatureKey} outcome=${e.outcome} tier=${e.tier} snapshotId=${e.snapshotId}`);

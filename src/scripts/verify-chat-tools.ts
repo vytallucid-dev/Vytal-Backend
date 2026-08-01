@@ -14,7 +14,12 @@
 //   7. Token counts: the lean output size, the full-block size, and the tool-definitions fixed cost.
 //
 // Uses a SCRIPTED provider (no key, deterministic) — the composed opening, grounding, registry dispatch,
-// persistence, quota gate and guardrail are all the REAL code. Throwaway user, cleaned up on exit.
+// persistence and guardrail are all the REAL code. Throwaway user, cleaned up on exit.
+//
+// ⚠ THE QUOTA GATE IS **NOT** EXERCISED HERE, and this line used to claim it was. `main()` forces
+// AI_PROVIDER=mock (see the note there), which makes `spendFor` return the unmetered stub — so the gate
+// is bypassed, not run. It is proven in verify-ai-quota-subcap.ts and verify-chat-quota-peek.ts, which
+// is the correct place for it: those drive the quota functions directly and do not need a chat turn.
 //   npx tsx src/scripts/verify-chat-tools.ts
 // ─────────────────────────────────────────────────────────────────────────────
 import { randomUUID } from "crypto";
@@ -119,6 +124,27 @@ async function api(base: string, method: string, path: string, body?: unknown): 
 }
 
 async function main() {
+  // ★ UNMETERED SUITE — force the mock provider before anything runs.
+  // ⚠ Without this the suite inherits AI_PROVIDER from .env (which is `gemini`), so `mockByConfig()` is
+  // false and EVERY scripted generation consumes a real unit from the shared per-model budget — for calls
+  // that never leave the process. Measured: 16 generations per run of THIS file. The engine runs on the
+  // injected scripted provider either way (resolveChatProvider prefers the test override, and §2–§5 pass
+  // `deps.provider` explicitly), so this only governs metering.
+  //
+  // ⚠ IT ALSO STOPS A SECOND CORRUPTION. `servedByMock` matches usage.modelVersion by PREFIX, and this
+  // file's scripted providers report "scripted-tools-1" — which does not start with "mock". So without
+  // the line below, engine.ts:268 called `recordAiTokens` for every one of those 16 generations, writing
+  // synthetic prompt/output token counts into the same table that is supposed to mean "real Gemini
+  // tokens spent today". Config-mock is the only signal that catches that.
+  //
+  // ⚠ WHAT THIS GIVES UP, STATED PLAINLY: `spendFor` returns the permissive unmetered stub under mock,
+  // so THE QUOTA GATE IS NO LONGER TRAVERSED BY THIS FILE. Nothing here asserted it (there is no quota
+  // assertion in this suite), and it is covered properly elsewhere — verify-ai-quota-subcap.ts proves
+  // the spend seam in BOTH directions (metered on a real provider, unmetered on mock) and
+  // verify-chat-quota-peek.ts drives checkAndConsumeAiCall directly, so neither depends on this file's
+  // env. The header's claim is corrected accordingly: do not re-add "quota gate" to it.
+  process.env.AI_PROVIDER = "mock";
+
   // Pick two REAL scored stocks: one to open the session on (SUBJECT), one for the tool to fetch (TARGET).
   const scored = await buildScoredStocksList();
   if (scored.length < 2) throw new Error("need ≥2 scored stocks in the universe for this proof");
@@ -176,7 +202,20 @@ async function main() {
     const visKinds = visible.json?.data?.messages ?? [];
     const anyToolJsonVisible = visKinds.some((m: any) => typeof m.content === "string" && (m.content.includes("VYTAL HEALTH (lean)") || m.content.includes("functionCall")));
     ok("client transcript HIDES tool turns (no tool JSON in any visible message)", !anyToolJsonVisible, `visible count=${visKinds.length}`);
-    ok("visible transcript = opening + user + final (3 messages)", visKinds.length === 3, `got ${visKinds.length}`);
+    // ★ THIS ASSERTED 3 AND WAS STALE — the same defect as verify-chat-tool-fleet.ts's copy of it.
+    // A discuss session persists FOUR visible text rows: the opening user row (hidden scaffolding
+    // carrying a `displayContent` twin — the line the reader sees themselves say), the opening answer,
+    // the follow-up ask, and the reply. The 3 predates the display-twin split, when the opening user
+    // row was dropped outright. The line above already asserts the property that matters (no tool turn
+    // reaches the transcript); this one now derives the count from the persisted rows instead of
+    // pinning an integer that goes stale silently.
+    const textRows = rows.filter((r) => r.kind === "text");
+    const toolRows = rows.filter((r) => r.kind !== "text");
+    ok(
+      "the transcript is EXACTLY the persisted text turns — derived, never a constant",
+      visKinds.length === textRows.length,
+      `${visKinds.length} visible vs ${textRows.length} text rows (${toolRows.length} tool rows excluded)`,
+    );
 
     const history = await loadHistoryForModel(sessionId);
     const histHasCall = history.some((m) => m.role === "assistant" && !!m.toolCalls?.length);

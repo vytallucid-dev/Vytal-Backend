@@ -26,6 +26,17 @@ export type { PeerGroupMemberView, PathologyCensusItem, PeerGroupMover };
  *  Hub Overview table's sector grouping / filter column. */
 export interface UniverseMemberView extends PeerGroupMemberView {
   sector: { key: string; displayName: string } | null;
+  /** ★ THIS MEMBER'S OWN fiscal period — NOT the view's plurality `periodKey` label.
+   *
+   *  Added for the period contract (universe-projection.service.ts). The universe MIXES
+   *  PERIODS by design: `resolveCrossSection` keeps every live stock at its LATEST in-force
+   *  snapshot regardless of quarter, so today 64 members sit at FY27Q1 and 30 at FY26Q4.
+   *  Before this field there was NO way to count that spread from the payload, and the only
+   *  period on the wire was the plurality LABEL — which reads like a cross-section filter and
+   *  is not one. Any consumer stating "as of <periodKey>, N stocks are X" is stating something
+   *  false about roughly a third of them. This field is what lets a consumer say the true
+   *  thing instead: each company at its own most recent reported quarter. */
+  periodKey: string;
 }
 
 /** Identical field contract to PeerGroupAggregate. */

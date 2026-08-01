@@ -12,7 +12,11 @@
 //   Universe → widespread = N/M ≥ 0.20 (one fifth of 93 stocks — systemic signal)
 
 import { prisma } from "../../db/prisma.js";
+// The ONE severity ordering (File 1 §5, total over all eight tokens). See `worseSeverity` below
+// for why this is imported rather than redeclared locally — the local copy was silently wrong.
+import { severityWeight as severityRank } from "../../catalogue/divergence.js";
 import { computeScopeAggregate, describeScope, type ScopeMember } from "./scope-aggregate.js";
+import { resolveHeadSnapshots, splitByStaleness, pluralityPeriod } from "./head-snapshot.js";
 import type {
   PillarKey,
   LabelBand,
@@ -54,26 +58,33 @@ const DETERIORATION_THRESHOLD = -2.0;
 const RECOVERY_THRESHOLD = 2.0;
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
-// A stock is "live" in the universe if its latest in-force snapshot's asOfDate is within
-// this window of the freshest asOfDate anywhere. Active names are EOD-rescored ~daily, so
-// they all share a recent asOf even when a fiscal quarter behind on fundamentals; only
-// names that have gone dark (delisted / no longer rescored) fall outside it and are held
-// out as `notAtCurrentPeriod`. Comfortably wider than any holiday gap, tighter than a
-// quarter — so a quarter rollover keeps ALL live names instead of collapsing the universe.
-const STALE_ASOF_DAYS = 45;
-
 // Scaled from pond's 0.50: for a universe of 93, N/M ≥ 0.20 = ~19 stocks firing
 // the same flag — systemic, not isolated.
 const UNIVERSE_WIDESPREAD_RATIO = 0.2;
 
-const SEVERITY_ORDER: Record<string, number> = {
-  critical: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-};
-const severityRank = (s: string | null): number =>
-  s == null ? 99 : (SEVERITY_ORDER[s.toLowerCase()] ?? 50);
+// ── SEVERITY ORDERING — ONE HOME (catalogue/divergence.ts `severityWeight`) ────────────────────
+//
+// ★ THIS USED TO BE A LOCAL 4-TOKEN MAP {critical, high, medium, low} AND IT WAS SILENTLY WRONG,
+// because the engine emits EIGHT severity tokens. The §5E pattern tones — red · amber · green ·
+// recovery — were absent from it, so `SEVERITY_ORDER[s] ?? 50` collapsed all four to the same
+// rank. Two consequences, both live and both observed:
+//
+//   1. `worseSeverity` STOPPED BEING "WORSE". With a and b tied at 50 it returns `a` — whichever
+//      member the query happened to reach first. momentum_P13_revenue_inflection fires green on
+//      one company and red on another; its census row was reading GREEN, purely by row order.
+//      A census row that claims to carry the worst severity was carrying an arbitrary one.
+//   2. THE BOARD SORTED WRONG. Everything at rank 50 sorted after `low`, then fell back to member
+//      count — so foundation_P7_accruals (RED, the heaviest §5E magnitude) rendered BELOW
+//      composition_F1_atypical (LOW), and red/amber/green/recovery interleaved by popularity.
+//
+// The correct total ordering already existed one module away, in the catalogue, transcribed from
+// File 1 §5 and covering all eight tokens. `severityRank` is now that import (see the top of the
+// file) — one home, not a third copy. (catalogue/ imports nothing from scoring/read — no cycle.)
+//
+// ⚠ WHAT THIS FIX DOES NOT DO: it makes P13's row report the WORSE of its two severities, which is
+// correct for a census and still incomplete as a reader experience — the row will now say "red"
+// while POWERINDIA's own page shows the same pattern green. Stating the SPREAD is a separate,
+// larger change (payload + board + chat tool) and is written up rather than smuggled in here.
 const worseSeverity = (a: string | null, b: string | null): string | null =>
   severityRank(a) <= severityRank(b) ? a : b;
 
@@ -85,6 +96,14 @@ const BAND_RANK: Record<LabelBand, number> = {
   pristine: 4,
 };
 
+/**
+ * ★ THE CANONICAL READER-FACING DIVERGENCE. Same definition as DivergenceView.gap on the per-stock
+ * view (health-view.types.ts, where the three competing meanings of the word are set out in full):
+ * max − min across SCORED pillar subtotals, unsigned, banded notable ≥15 / wide ≥25.
+ *
+ * NOT `score_snapshots.divergence` — that column is the engine's signed market-vs-blend scalar, it
+ * disagrees with this on every stock in the universe, and it has no reader. Do not "reconcile" them.
+ */
 function divergenceOf(
   subtotals: { pillar: PillarKey; subtotal: number }[],
 ): { flag: DivergenceFlag; gap: number } {
@@ -119,10 +138,14 @@ interface LeanSnap {
   ownershipSubtotal: unknown;
 }
 
-/** Supersede-aware cross-section: per (stock, period) keep MAX(version), per stock keep
- *  the latest period. `current` = every stock's latest in-force snapshot that is still
- *  fresh (asOf within STALE_ASOF_DAYS of the newest); genuinely dark names are `lagging`.
- *  `periodKey` is a display label (the plurality period) — members may span periods. */
+/** Supersede-aware cross-section, now assembled from the SHARED head resolver (head-snapshot.ts)
+ *  rather than re-implementing it here. `current` = every stock's head snapshot that is still fresh;
+ *  genuinely dark names are `lagging`. `periodKey` is a display label (the plurality period) — members
+ *  may span periods, which is the whole reason universe-projection.types.ts refuses to pass it on.
+ *
+ *  ★ THE THREE STEPS MOVED, THE BEHAVIOUR DID NOT. Same MAX-version-per-period, same latest-period,
+ *  same 45-day staleness window, same tie-breaks. The extraction is a MOVE, and the Stage 1 gate
+ *  (94 members, FY27Q1:64 / FY26Q4:30, NESTLEIND held out) is what proves it. */
 function resolveCrossSection(rows: LeanSnap[]): {
   periodKey: string;
   asOfDate: Date;
@@ -131,59 +154,21 @@ function resolveCrossSection(rows: LeanSnap[]): {
 } | null {
   if (rows.length === 0) return null;
 
-  const inForce = new Map<string, LeanSnap>();
-  for (const r of rows) {
-    const k = `${r.stockId}|${r.periodKey}`;
-    const cur = inForce.get(k);
-    if (
-      !cur ||
-      r.version > cur.version ||
-      (r.version === cur.version && r.asOfDate > cur.asOfDate)
-    ) {
-      inForce.set(k, r);
-    }
-  }
+  const head = resolveHeadSnapshots(rows);
+  const { current, stale } = splitByStaleness(head.values());
+  if (current.length === 0) return null;
 
-  const latestPerStock = new Map<string, LeanSnap>();
-  for (const r of inForce.values()) {
-    const cur = latestPerStock.get(r.stockId);
-    if (
-      !cur ||
-      r.asOfDate > cur.asOfDate ||
-      (r.asOfDate.getTime() === cur.asOfDate.getTime() && r.periodKey > cur.periodKey)
-    ) {
-      latestPerStock.set(r.stockId, r);
-    }
-  }
-
-  const all = [...latestPerStock.values()];
-  const maxAsOf = all.reduce((a, b) => (b.asOfDate > a.asOfDate ? b : a)).asOfDate;
-
-  // The universe = every stock at its LATEST in-force snapshot, REGARDLESS of fiscal
-  // period, so a quarter rollover (when only part of the book has the new period yet)
-  // never collapses the cross-section to the handful that rolled first. Only genuinely
-  // STALE names — no longer EOD-rescored, i.e. whose latest snapshot's asOf sits far
-  // behind the freshest one — are held out as lagging. Active names all carry ~the same
-  // recent asOf even a quarter behind on fundamentals, so this cleanly splits live vs dark.
-  const staleCutoff = new Date(maxAsOf.getTime() - STALE_ASOF_DAYS * 24 * 60 * 60 * 1000);
-  const current = all.filter((r) => r.asOfDate >= staleCutoff);
-  const lagging = all
-    .filter((r) => r.asOfDate < staleCutoff)
+  const lagging = stale
     .map((r) => ({ symbol: r.symbol, latestPeriod: r.periodKey }))
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
 
-  // Representative period LABEL (members can now span periods): the one the plurality of
-  // live members sit at, ties → the newer period. Display-only; not a membership gate.
-  const periodCounts = new Map<string, number>();
-  for (const r of current) periodCounts.set(r.periodKey, (periodCounts.get(r.periodKey) ?? 0) + 1);
-  const periodKey =
-    [...periodCounts.entries()].sort((a, b) => b[1] - a[1] || b[0].localeCompare(a[0]))[0]?.[0] ??
-    all[0].periodKey;
+  const periodKey = pluralityPeriod(current) ?? rows[0].periodKey;
   // asOf shown = the freshest rescore date among the live members.
   const asOfDate = current.reduce((a, b) => (b.asOfDate > a.asOfDate ? b : a), current[0]).asOfDate;
 
   return { periodKey, asOfDate, current, lagging };
 }
+
 
 // ── lighter full cross-section load (RT2, no metricScores) ─────────────────
 type FullUniverseSnap = Awaited<ReturnType<typeof loadUniverseCrossSection>>[number];
@@ -507,6 +492,9 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       firedPatterns,
       sector,
       flowCategoryStates,
+      // ★ THIS member's own period, not xs.periodKey (the plurality LABEL). See the field's
+      //   comment in universe-view.types.ts — the mixed cross-section is the whole reason.
+      periodKey: currentLeanByStock.get(s.stockId)?.periodKey ?? xs.periodKey,
     });
 
     scopeMembers.push({

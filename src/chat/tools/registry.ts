@@ -34,6 +34,9 @@ import type { AiToolCall, AiToolResult, AiToolSpec } from "../../ai/types.js";
 import type { AppLink, ChatTool, ToolContext, ToolContextInput, ToolMemo, WebCitation } from "./types.js";
 import type { ChangeDomain } from "../proposals.js";
 import { getStockFactsTool } from "./get-stock-facts.js";
+import { getUniverseScanTool } from "./get-universe-scan.js";
+import { screenStocksTool } from "./screen-stocks.js";
+import { getFindingsForSymbolsTool } from "./get-findings-for-symbols.js";
 import { searchStocksTool } from "./search-stocks.js";
 import { getStockPriceTool } from "./get-stock-price.js";
 import { getStockFundamentalsTool } from "./get-stock-fundamentals.js";
@@ -69,6 +72,20 @@ export const CHAT_TOOLS: ChatTool[] = [
   getStockDealsTool,
   getStockInsiderTradesTool,
   getCorporateEventsTool,
+  // ── the universe (klass:"read"). The ONE tool in the fleet that answers about MANY companies rather
+  //    than one: counts, bands, what is firing, who moved. Everything else here takes a ticker. ──
+  getUniverseScanTool,
+  // ── its per-company other half. The scan answers "how many" and "which"; this answers "and what does
+  //    Vytal SAY about each of them", which a census row structurally cannot — an aggregate over N
+  //    members has no single stock's numbers to bind a verdict to. The boundary is written into BOTH
+  //    descriptions, because a model reaching for the wrong one costs a whole round either way. ──
+  getFindingsForSymbolsTool,
+  // ── the THIRD corner of the many-companies triangle. The scan answers seven FIXED questions;
+  //    getFindingsForSymbols answers "what does Vytal say about these names"; this one answers a
+  //    NUMBER THE READER CHOSE, which neither of the others can take at all. It is a separate tool
+  //    rather than an eighth slice because the trigger phrasings are disjoint and the scan's boundary
+  //    paragraph is measured copy — see the header of screen-stocks.ts for the token comparison. ──
+  screenStocksTool,
   // peer groups
   getPeerGroupTool,
   getPeerGroupMembersTool,

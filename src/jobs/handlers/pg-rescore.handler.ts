@@ -79,7 +79,12 @@ export async function handlePgRescore(
   //    internally; pg.industry drives the persist's industryPath.
   //    withFindings ON (the gate flipped at Stage F/G): the §5 findings catalog fires +
   //    dampens per member, attached to m.findings, ready for persistMember to write.
-  const pg = await computePgScores(ref, { withFindings: true });
+  //    withGuardrail ON (Stage 4b go-live): Layer 1 runs over the PG before peer μ/σ.
+  //    Today NOTHING suppresses (GUARDRAIL_BEHAVIOUR suppress:[]) — every signature is
+  //    annotate/detect/disabled — so this is provably score-neutral and exists to
+  //    produce the audit trail. A point-in-time pass would be refused by the history
+  //    block regardless; this path is always the LIVE/current period.
+  const pg = await computePgScores(ref, { withFindings: true, withGuardrail: true });
 
   // Honour cancellation before the (only) write phase. The compute is already done;
   // aborting here simply means "don't persist".
@@ -175,7 +180,12 @@ export async function handlePgRescore(
             ref.pgId,
             pg.industry,
             pg.peerStats,
-            { writeFindings: true }, // gate flipped (Stage F/G): a created/superseded snapshot persists its findings
+            // writeFindings: gate flipped (Stage F/G) — a created/superseded snapshot persists its findings.
+            // guardrail: carried so every snapshot this LIVE path writes records whether Layer-1 ran.
+            //   While computePgScores runs without withGuardrail (today) this stamps
+            //   guardrail_screened=false — "we ran the pass and did not screen" — rather than NULL.
+            //   writeGuardrail stays OFF until go-live; flipping BOTH is the Stage-4 change.
+            { writeFindings: true, writeGuardrail: true, guardrail: pg.guardrail },
           ),
         );
       }

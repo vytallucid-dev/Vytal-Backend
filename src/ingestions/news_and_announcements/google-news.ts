@@ -86,7 +86,7 @@ function httpsGetText(url: string, signal?: AbortSignal): Promise<string> {
       url,
       {
         headers: {
-          "User-Agent": "Mozilla/5.0 (compatible; InvestIQ/1.0; RSS reader)",
+          "User-Agent": "Mozilla/5.0 (compatible; Vytal/1.0; RSS reader)",
           Accept: "application/rss+xml,application/xml,text/xml,*/*",
         },
         signal,

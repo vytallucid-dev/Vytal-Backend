@@ -22,6 +22,7 @@ import type { AiGenerateResult, AiMessage, AiProvider, AiToolCall, AiToolResult,
 import { spendFor, servedByMock, type Spend } from "../ai/spend.js";
 import { recordAiTokens, type Actor, type QuotaDecision } from "../ai/quota.js";
 import { scanExplanationText } from "../ai/guardrail.js";
+import { scanUngroundedNumbers, buildNumberHaystack } from "../ai/number-grounding.js";
 import { scanUserInput, scanOutputText } from "../ai/moderation.js";
 import { CHAT_MAX_OUTPUT_TOKENS, CHAT_MAX_TOOL_ROUNDS } from "./config.js";
 import {
@@ -161,7 +162,61 @@ export async function runChatTurn(input: ChatTurnInput, deps: ChatTurnDeps = {})
    * loudly enough to measure a rate. Swallowing it silently is how a slow regression hides.
    */
   const deliver = (r: Omit<ChatTurnResult, "status">): ChatTurnResult => {
-    if (!isBlankReply(r.text)) return { status: "ok", ...r };
+    if (!isBlankReply(r.text)) {
+      // ══ THE UNGROUNDED-NUMBER SCAN — LOG-ONLY, NEVER BLOCKING (ai/number-grounding.ts). ══════════
+      // It rides HERE for the same reason the blank-reply catch does: `deliver` is the one chokepoint
+      // every servable answer passes through, so coverage is greppable rather than a promise each
+      // branch has to keep. It never alters `r` — a hit changes nothing about what the reader sees.
+      //
+      // ⚠ THE HAYSTACK IS EVERYTHING THE MODEL WAS GIVEN, not just tool results. Measured: results-only
+      // fired on "0 to 100 health score" and "52-week range" — the product's own vocabulary, which lives
+      // in the system prompt and the tool declarations. See that file's header.
+      //
+      // ⚠ AND A CLEAN LINE IS NOT PROOF THE NUMBERS ARE RIGHT: integers ≤12 are not checked, so an
+      // invented COUNT ("4 block deals" when there were 2) never appears here.
+      try {
+        const g = scanUngroundedNumbers(
+          r.text!,
+          buildNumberHaystack({
+            system: input.system,
+            toolSpecsJson: input.tools ? JSON.stringify(input.tools) : undefined,
+            messages: working,
+          }),
+        );
+        if (!g.clean) {
+          console.warn(
+            `[chat] UNGROUNDED_NUMBER — ${g.hits.length} figure(s) in the delivered reply appear in no tool ` +
+              `result, no prompt and no tool declaration (checked=${g.checked} skipped=${g.skipped} ` +
+              `model=${input.model} toolTurns=${toolTurns.length}): ` +
+              g.hits.map((h) => `"${h.raw}" ${h.context}`).join(" · "),
+          );
+        }
+      } catch (e) {
+        // A detector must never be able to fail a turn that has already been generated and paid for.
+        console.warn(`[chat] ungrounded-number scan failed (non-fatal): ${(e as Error).message}`);
+      }
+
+      // ══ THE EVALUATIVE TIER — LOG-ONLY (ai/guardrail.ts §EVALUATIVE). ═══════════════════════════
+      // It CANNOT block: `scanEvaluative` has no hard channel and `clean` never reads it. This line is
+      // the calibration evidence for the promote-to-blocking decision that ships with the depth
+      // directive — so it is emitted with a distinct, greppable token and the `attributed` flag, which
+      // is what lets a reported verdict ("the brokerage called it impressive") be excluded from the
+      // count rather than inflating the case for blocking.
+      try {
+        const ev = scanExplanationText(r.text!).evaluativeHits;
+        if (ev.length) {
+          const own = ev.filter((h) => !h.attributed);
+          console.warn(
+            `[chat] EVALUATIVE_VERDICT — ${ev.length} hit(s), ${own.length} unattributed (model's own verdict) ` +
+              `(model=${input.model} regenerated=${r.regenerated}): ` +
+              ev.map((h) => `${h.term}${h.attributed ? "[attributed]" : ""}→"${h.match}" · ${h.context}`).join(" | "),
+          );
+        }
+      } catch (e) {
+        console.warn(`[chat] evaluative scan failed (non-fatal): ${(e as Error).message}`);
+      }
+      return { status: "ok", ...r };
+    }
     console.warn(
       `[chat] EMPTY_GENERATION — the model delivered no text; serving the ${cappedOut ? "round-cap" : "empty-reply"} fallback ` +
         `(model=${input.model} toolRounds=${rounds}/${maxRounds} cappedOut=${cappedOut} toolTurns=${toolTurns.length} ` +

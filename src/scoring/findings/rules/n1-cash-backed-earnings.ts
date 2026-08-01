@@ -81,9 +81,15 @@ export const ruleN1: FireRule = (ctx) => {
       // decomposability (CN-6): the per-year cash-backing ratios that constitute the run
       series: run.detail.map((d) => ({ fy: d.fy, ocf: Math.round(d.ocf), netProfit: Math.round(d.np), ocfToNp: r2(d.ratio) })),
       guardClean: guard.fired.length ? `no NP-distorting exceptional (gate: ${guard.fired.join(",")})` : "no exceptional",
+      // ★ REGISTER (amendment §4.2). This sentence read "…earnings converting RELIABLY to cash" —
+      // "reliably" is on the §4.2 prohibited list ("if it would read as a reason to buy when lifted
+      // out of context, rewrite it") and it survived every copy review because it lived HERE, in an
+      // evidence payload, rather than in an authored copy module where the rules were being applied.
+      // The tail is now the authored description's own clause, so this states the same fact in the
+      // register the spec requires. verify-evidence-register.ts scans every rule for the whole list.
       verdict:
         `Cash-backed earnings — operating cash flow has fully covered net profit for ${run.years} ` +
-        `straight years (${first.fy}–${last.fy}); earnings converting reliably to cash.`,
+        `straight years (${first.fy}–${last.fy}); earnings converting to cash rather than accumulating as accruals.`,
     },
     metricRefs: ["cashFromOperating", "netProfit"],
   };

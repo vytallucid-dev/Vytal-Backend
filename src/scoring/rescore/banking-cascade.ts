@@ -115,9 +115,18 @@ export function buildCascadePlan(ref: PgRef, symbol: string, editedPeriod: strin
  *  Reads the CURRENT committed DB state (so a later period sees earlier periods' committed
  *  heads when called in order). Asserts the emerged period matches the requested one. */
 export async function computePgPeriod(ref: PgRef, periodKey: string, mode: "pit" | "live"): Promise<PgComputed> {
+  // withGuardrail is passed on BOTH legs deliberately — the intent is uniform ("screen
+  // whatever is current") and POLICY is enforced structurally, not by the caller:
+  //   • live leg → screens, so a cascade-triggered current-period rescore is treated
+  //     identically to a normal one (no split-brain where the same stock is screened
+  //     or not depending on which job touched it).
+  //   • pit leg  → REFUSED by the history block in computePgScores (a point-in-time
+  //     pass never screens without an explicit screenHistory:true). History therefore
+  //     stays uniformly unscreened even though this asks for screening.
+  // Verified in Stage 2: PIT+withGuardrail ⇒ ran=false, reason "point-in-time pass".
   const computed = mode === "live"
-    ? await computePgScores(ref, { withFindings: true })
-    : await computePgScores(ref, { withFindings: true, pointInTime: { quarterEnd: quarterEnd(periodKey), expectPeriodKey: periodKey } });
+    ? await computePgScores(ref, { withFindings: true, withGuardrail: true })
+    : await computePgScores(ref, { withFindings: true, withGuardrail: true, pointInTime: { quarterEnd: quarterEnd(periodKey), expectPeriodKey: periodKey } });
   if (computed.periodKey !== periodKey) {
     throw new Error(`computePgPeriod: ${ref.pgId} expected periodKey ${periodKey}, computePgScores produced ${computed.periodKey}`);
   }
@@ -130,10 +139,14 @@ export async function persistPgPeriod(db: Db, computed: PgComputed, pgId: string
   const out: MemberWriteResult[] = [];
   for (const m of computed.members) {
     if (m.composite.state !== "scored" || m.composite.composite == null || !m.own || !m.market) {
-      out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", r1Written: false, pillarIds: {} });
+      out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: -1 });
       continue;
     }
-    out.push(await persistMember(db, m, scaffold, computed.asOf, computed.peerGroupId, pgId, computed.industry, computed.peerStats, { writeFindings: true }));
+    // guardrail: carried so the snapshot records WHY it is unscreened. A cascade PIT
+    // leg is history-blocked (computePgScores refuses to screen a point-in-time pass),
+    // so this stamps guardrail_screened=false — a positive "we ran and did not screen",
+    // not NULL "we don't know". Nothing is written to score_guardrail_events (ran=false).
+    out.push(await persistMember(db, m, scaffold, computed.asOf, computed.peerGroupId, pgId, computed.industry, computed.peerStats, { writeFindings: true, writeGuardrail: true, guardrail: computed.guardrail }));
   }
   return out;
 }

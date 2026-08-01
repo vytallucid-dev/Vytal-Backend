@@ -87,14 +87,43 @@ export interface BandColour {
   range: [number | null, number | null] | null;
 }
 
+/**
+ * ── ★ "DIVERGENCE" NAMES THREE DIFFERENT THINGS. `gap` IS THE CANONICAL ONE. ──────────────────────
+ *
+ *   ① score_snapshots.divergence   the ENGINE SCALAR, surfaced below as `storedScalar`.
+ *                                  market − Σ(w_p/Σw_nonMarket)·subtotal_p (composite/composite.ts).
+ *                                  SIGNED. Negative means Market reads BELOW the rest.
+ *   ② `gap` / `flag` (HERE)        the READER GAP. max − min across scored subtotals, UNSIGNED,
+ *                                  banded notable ≥15 / wide ≥25. Every card, chip, filter, screen,
+ *                                  scan and the Divergence research tool show THIS.
+ *   ③ divergence_C1/C2/C3/C_over_time  the FINDING FAMILY — four rules, not a number, consolidated
+ *                                  into one card by §5C (catalogue/divergence.ts).
+ *
+ * ANYTHING READER-FACING USES ②. That is not a new rule, it is what every surface already does; it is
+ * written down here because the three share a word and nothing said which one won.
+ *
+ * ① AND ② ARE NOT THE SAME NUMBER AND NEVER AGREE. Measured over 559 in-force snapshots: 559/559
+ * differ, 287 carry a NEGATIVE ① beside a positive ② (TCS: ① −37.61, ② 47.39). Do not treat ① as ②
+ * with a sign, or as its magnitude.
+ *
+ * scripts/verify-divergence-authority.ts holds all of this shut: the disagreement, the fact that ①
+ * has no reader, and the grounding withholding below.
+ */
 export interface DivergenceView {
   /** Derived from the SCORED pillar subtotals: notable ≥15, wide ≥25. */
   flag: DivergenceFlag;
-  /** max(subtotal) − min(subtotal) across scored pillars. */
+  /** ★ CANONICAL. max(subtotal) − min(subtotal) across scored pillars. Unsigned. */
   gap: number;
   high: { pillar: PillarKey; subtotal: number } | null;
   low: { pillar: PillarKey; subtotal: number } | null;
-  /** The engine's own per-snapshot divergence scalar (denormalised on the row). */
+  /**
+   * ⚠ NOT `gap`, AND NOT FOR DISPLAY. The engine's own per-snapshot scalar (denormalised on the row).
+   * It reaches no render path, and grounding.ts deliberately keeps it out of the model's fact block:
+   * it is a linear function of the WITHHELD pillar weights, so printing it beside the four subtotals
+   * hands over the weight vector. It is also lossy — persist.ts coerces null → 0, so a stored 0 cannot
+   * be told apart from "the Market pillar was unavailable" (live: VEDL, INDUSINDBK).
+   * Kept on the view for parity with the persisted row. If you are reaching for it, you want `gap`.
+   */
   storedScalar: number;
 }
 
@@ -453,12 +482,31 @@ export interface TrajectorySection {
   events: CorporateEventView[];
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE CANONICAL FINDING ROWS. Both carry `verdict` as of Stage 3 of the copy-catalogue migration.
+//
+// ★ WHY THE VERDICT RIDES THE ROW AND NOT THE CATALOGUE ENDPOINT. A verdict interpolates THIS stock's
+// evidence numbers — "promoter −6.30pp and FII −2.10pp both cut while retail absorbed +8.40pp". It is
+// an (evidence) => string function, so it cannot be static JSON, and it is meaningless without the
+// instance it is bound to. It therefore travels with the instance. The static half of the copy — name,
+// description, doesn't-mean — is served ONCE from the catalogue endpoint and never repeated per row.
+//
+// ⚠ WHICH IS ALSO WHY THE CENSUS SHAPES DO NOT GET THIS FIELD. PathologyCensusItem / FiredFlag /
+// FiredPattern carry NO evidence: a census row is an aggregate over N members, and there is no single
+// stock's numbers to bind a sentence to. Adding `verdict` there would force either a fabricated
+// sentence or a permanently-null field that looks like a bug. Those surfaces render `description`,
+// which is exactly the layer that exists for them.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
 export interface RedFlagView {
   flagKey: string;
   severity: string | null;
   tier: "auto" | "review";
   triggeringValues: unknown | null;
   guardrailEventId: string | null;
+  /** The File-1 §5 verdict sentence, bound to this firing's own evidence. Never empty — the
+   *  renderer falls back to the engine's assembled sentence, then to a generic form. */
+  verdict: string;
 }
 
 export interface PatternView {
@@ -472,6 +520,8 @@ export interface PatternView {
   magnitude: number | null;
   evidence: unknown | null;
   metricRefs: unknown | null;
+  /** The File-1 §5 verdict sentence, bound to this firing's own evidence. Never empty. */
+  verdict: string;
 }
 
 export interface FindingsSection {

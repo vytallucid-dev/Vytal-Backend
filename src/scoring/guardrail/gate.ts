@@ -32,13 +32,27 @@ import {
   type StockLevelAction,
   type Annotation,
   type PendingReview,
+  type SignatureKey,
 } from "./types.js";
 import { resolveOutcome } from "./outcomes.js";
 import { proposeReview } from "./review.js";
 import { applicableBuiltSignatures } from "./signatures/registry.js";
 
+/** Options for one gate run. */
+export interface GateRunOpts {
+  /** Restrict WHICH signatures are evaluated at all. A signature the filter rejects
+   *  is SKIPPED before applies()/evaluate() — it cannot fire, cannot emit an event,
+   *  and costs nothing (the `disabled` behaviour, not evaluate-then-discard).
+   *
+   *  DEFAULT (undefined) = evaluate every built+routed signature, i.e. EXACTLY the
+   *  historical behaviour. Existing callers — notably findings/guards/annual-
+   *  exceptional.ts, which reads .events[].signatureKey for B-1/B-2/B-3 — are
+   *  unaffected by construction. The live scoring pass passes `isEvaluable`. */
+  signatureFilter?: (key: SignatureKey) => boolean;
+}
+
 /** Run the gate over ONE stock at ONE snapshot. Pure (no DB). */
-export function runGuardrailGate(input: GuardrailStockInput): GuardrailEvalResult {
+export function runGuardrailGate(input: GuardrailStockInput, opts: GateRunOpts = {}): GuardrailEvalResult {
   const events: GuardrailEventRow[] = [];
   const directives: SuppressionDirectiveRow[] = [];
   const stockActions: StockLevelAction[] = [];
@@ -47,6 +61,10 @@ export function runGuardrailGate(input: GuardrailStockInput): GuardrailEvalResul
   const notes: string[] = [];
 
   for (const desc of applicableBuiltSignatures(input.industryPath)) {
+    if (opts.signatureFilter && !opts.signatureFilter(desc.key)) {
+      notes.push(`${desc.key}: NOT EVALUATED (behaviour=disabled — skipped before applies())`);
+      continue;
+    }
     const sig = desc.signature!;
     if (!sig.applies(input)) {
       notes.push(`${sig.key}: did not evaluate (applies()=false — inputs absent / path mismatch)`);
@@ -105,7 +123,7 @@ export function runGuardrailGate(input: GuardrailStockInput): GuardrailEvalResul
  *  the FLATTENED directive list — the flattened list is what builds the PG-wide
  *  suppression predicate (a peer's μ/σ exclusion depends on OTHER stocks' directives,
  *  so the predicate must see the whole PG's directives at once). */
-export function runGuardrailGateForPG(inputs: GuardrailStockInput[]): {
+export function runGuardrailGateForPG(inputs: GuardrailStockInput[], opts: GateRunOpts = {}): {
   byStock: Map<string, GuardrailEvalResult>;
   allDirectives: SuppressionDirectiveRow[];
   allEvents: GuardrailEventRow[];
@@ -116,7 +134,7 @@ export function runGuardrailGateForPG(inputs: GuardrailStockInput[]): {
   const allEvents: GuardrailEventRow[] = [];
   const allStockActions: StockLevelAction[] = [];
   for (const input of inputs) {
-    const r = runGuardrailGate(input);
+    const r = runGuardrailGate(input, opts);
     byStock.set(input.stockId, r);
     allDirectives.push(...r.directives);
     allEvents.push(...r.events);

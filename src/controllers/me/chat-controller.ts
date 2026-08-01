@@ -316,6 +316,20 @@ export const sendMessage = async (req: Request, res: Response) => {
         // the four kinds should become five.
         console.warn(`[chat] unresolved link placeholders (${linked.unresolved.length}):`, linked.unresolved.join(" · "));
       }
+      if (linked.strippedPaths.length) {
+        // The model typed a link destination instead of writing a marker. The reader is protected —
+        // the destination is gone and the words remain — but this is the vocabulary being ignored,
+        // and it is the signal that a page the model keeps reaching for may need a marker of its own.
+        console.warn(`[chat] typed link destinations stripped (${linked.strippedPaths.length}):`, linked.strippedPaths.join(" · "));
+      }
+      if (linked.malformed.length) {
+        // ★ A SYNTAX failure, not a coverage one — which is why it is logged apart from `unresolved`
+        // rather than folded into it. "The ticker did not exist" is answered by the universe; "the
+        // model wrote one brace" is answered by the vocabulary, and a log that merges the two reports
+        // a number with no cause attached. The reader is protected either way: the marker is gone and
+        // the subject remains as ordinary words.
+        console.warn(`[chat] MALFORMED link markers stripped (${linked.malformed.length}):`, linked.malformed.join(" · "));
+      }
     } catch (e) {
       console.warn("[chat] link resolution failed (non-fatal):", (e as Error).message);
     }

@@ -34,6 +34,9 @@ import { loadBarSet, resolveBarPath } from "../metric-scoring/bars.js";
 import { canonicalMetric, type IndustryType } from "../bars-loader/label-map.js";
 import { scoreMetricCrossSection, type CrossSectionMember } from "../metric-scoring/wire.js";
 import { NO_SUPPRESSION, type WiringConfig, type ScoredMetric } from "../metric-scoring/types.js";
+// ── LAYER 1 (guardrail gate) — runs BEFORE peer statistics; see the call site ──
+import { runScoringGate, gateNotRun, behaviourContractLine, type ScoringGateResult, type GateMemberSource } from "../guardrail/scoring-gate.js";
+import { writeGuardrailEval } from "../guardrail/persist.js";
 import { assemblePillar } from "../pillars/assemble.js";
 import type { PillarScoreResult } from "../pillars/types.js";
 import { toPillarScoreRow } from "../pillars/persist.js";
@@ -148,7 +151,15 @@ export interface PeerStatsCapture {
   sampleN: number;
   anchorLiftFired: boolean; // §5.3.1 collective lift decision
 }
-export interface PgComputed { ref: PgRef; peerGroupId: string; asOf: Date; periodKey: string; industry: IndustryType; members: MemberComputed[]; peerStats: PeerStatsCapture[]; dampenReport?: DampenReport }
+export interface PgComputed {
+  ref: PgRef; peerGroupId: string; asOf: Date; periodKey: string; industry: IndustryType;
+  members: MemberComputed[]; peerStats: PeerStatsCapture[]; dampenReport?: DampenReport;
+  /** LAYER-1 result for this pass. Always present so "was this pass gate-screened?"
+   *  is answerable from the returned object, never inferred: `ran:false` + a `reason`
+   *  when it was skipped (flag off / cascade rescore), `ran:true` with the filtered
+   *  per-stock results when it ran. persistMember writes the events from this. */
+  guardrail: ScoringGateResult;
+}
 
 export interface ComputeOpts {
   /** Non-destructive roster OVERRIDE (symbols) — score this exact member set instead
@@ -177,6 +188,34 @@ export interface ComputeOpts {
    *  runFindings uses ALL_RULES, so every existing caller is byte-identical. Never set in the
    *  live path. */
   findingsRules?: import("../findings/types.js").FireRule[];
+  /** LAYER-1 GUARDRAIL GATE. When true, the gate runs over the PG after metric values
+   *  are resolved and BEFORE peer μ/σ is computed, and its suppress-behaviour
+   *  directives (A-2/B-1/B-2 only — see GUARDRAIL_BEHAVIOUR) feed the cross-section.
+   *
+   *  DEFAULT FALSE so every existing caller is byte-identical — same discipline as
+   *  withFindings. With it off the pass uses NO_SUPPRESSION, exactly as before.
+   *
+   *  PERSISTENCE of the resulting events/suppressions is separately gated on
+   *  persistMember opts.writeGuardrail, so a dry run can exercise the full scoring
+   *  effect while writing nothing. */
+  withGuardrail?: boolean;
+  /** DELIBERATE HISTORICAL RE-SCREEN — the ONLY way to gate-screen a point-in-time
+   *  (historical) period. Default false ⇒ any pass carrying `pointInTime` is blocked
+   *  from screening, whatever withGuardrail says.
+   *
+   *  WHY THE BLOCK EXISTS. applyRawFieldEdit auto-enqueues FILL_CASCADE_RESCORE /
+   *  PG_CASCADE_RESCORE whenever a BACK-DATED raw value is corrected; those cascades
+   *  PIT-rescore every historical period in [edited .. current]. If the gate ran there,
+   *  whichever past periods happened to receive a future data correction would become
+   *  screened while their neighbours stayed unscreened — a patchwork, not a boundary.
+   *  All six trajectory rules read ACROSS periods (trajectory_F2_composition_shift and
+   *  divergence_C_over_time_widening compare only 1-2 periods with NO sustain
+   *  requirement), so a screening seam mid-series reads as real company movement.
+   *  Decided: history stays unscreened. One clean boundary.
+   *
+   *  A future deliberate full rescore opts IN with screenHistory:true — an explicit,
+   *  greppable choice, never a default and not reachable by accident. */
+  screenHistory?: boolean;
 }
 
 export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promise<PgComputed> {
@@ -277,6 +316,54 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   const fSnap = raws[0]?.snapshotFy ?? "FY";
   const mSnap = raws[0]?.snapshotQuarter ?? "FYQ";
 
+  // PERIOD KEY. In a normal (live) run this is the period that emerges from the data
+  // (all members share the latest quarter). In a POINT-IN-TIME backfill it is the
+  // REQUESTED period (the cutoff defines it) — members legitimately differ in depth at
+  // a historical cutoff, so we must NOT derive it from raws[0]. Each member still uses
+  // its own ≤cutoff latest data for its pillars (point-in-time per member).
+  // (Hoisted above the cross-section: it is the guardrail's `snapshotKey`, and the gate
+  //  must run before peer stats. Pure move — depends only on pit/mSnap/fSnap.)
+  const periodKey = pit ? pit.expectPeriodKey : (mSnap || fSnap || "FY26Q4");
+
+  // ── LAYER 1 — THE GUARDRAIL GATE (§0.1 two-layer pipeline) ─────────────────────
+  // POSITION IS LOAD-BEARING. This sits AFTER metric values are resolved (the `raws`
+  // loop above ran dispatchLiveValues, so every member's foundation/momentum
+  // MetricValue[] exists) and BEFORE scoreMetricCrossSection computes peer μ/σ below.
+  // It must: an O2 suppression removes the value from the peer CROSS-SECTION, so the
+  // predicate has to exist before the statistics are taken. Running it after would
+  // suppress the stock's own score while leaving its value in everyone else's μ/σ —
+  // a half-applied exclusion, which is worse than none.
+  //
+  // PG-WIDE, not per-stock: one member's O2 changes the distribution every OTHER
+  // member is scored against, so the predicate is built from the whole PG's directives.
+  //
+  // Only suppress-behaviour signatures (A-2/B-1/B-2) reach `gate.suppression`;
+  // annotate/detect directives are stripped structurally in behaviour.ts, and
+  // disabled signatures were never evaluated. Flag off ⇒ NO_SUPPRESSION ⇒ this pass
+  // is byte-identical to the pre-guardrail engine.
+  // ── THE HISTORY BLOCK (one clean boundary, no patchwork) ──────────────────────
+  // A point-in-time pass is scoring a HISTORICAL period. It is blocked from screening
+  // unless a caller EXPLICITLY opts in with screenHistory. This is structural: it keys
+  // on `pit`, the thing that actually makes a pass historical, so every historical
+  // path — the fill/PG cascades, backfill-history, the PIT batch scripts, anything
+  // added later — is unscreened by construction rather than by each caller
+  // remembering to ask for it. See ComputeOpts.screenHistory for the full rationale.
+  const historyBlocked = !!pit && !opts.screenHistory;
+  const gate: ScoringGateResult = !opts.withGuardrail
+    ? gateNotRun("withGuardrail=false (opt-in flag off)")
+    : historyBlocked
+      ? gateNotRun(`point-in-time pass (${pit!.expectPeriodKey}) — history stays unscreened; pass screenHistory:true to override`)
+      : runScoringGate(
+          raws.map((r): GateMemberSource => ({ stockId: r.stockId, symbol: r.symbol, fRows: r.fRows, own: r.own })),
+          { industryPath: industry === "banking" ? "banking" : "non_financial", snapshotKey: periodKey },
+        );
+  if (gate.ran) {
+    console.log(`  [guardrail] ${ref.pgId} ${periodKey} — ${behaviourContractLine()}`);
+    console.log(`  [guardrail] ${ref.pgId} ${periodKey} — evaluated ${gate.summary.membersEvaluated} member(s): ${gate.summary.firedEvents} event(s), ${gate.summary.appliedDirectives} suppression(s) APPLIED, ${gate.summary.strippedDirectives} directive(s) stripped by behaviour, ${gate.summary.pendingReviews} pending review(s), ${gate.summary.stockActions} stock-action(s) [O5/O6 remain inert no-ops — no orchestrator consumes them]`);
+  } else {
+    console.log(`  [guardrail] ${ref.pgId} ${periodKey} — NOT SCREENED (${gate.reason})`);
+  }
+
   // Cross-section score F/M per key.
   const fMetrics = new Map<string, ScoredMetric[]>(); const mMetrics = new Map<string, ScoredMetric[]>();
   const fBarSetIds = new Map<string, string | null>(); const mBarSetIds = new Map<string, string | null>();
@@ -296,20 +383,15 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
         const mv = arr.find((x) => x.key === key); const avail = !!mv && mv.available && mv.value !== null;
         return { stockId: r.stockId, symbol: r.symbol, rawValue: avail ? mv!.value : null, available: avail, unavailableReason: avail ? null : (mv?.reason ?? "no value"), ownHistoryValues: r.seriesFor(key, pillar) };
       });
-      const xs = scoreMetricCrossSection({ pillar, metricKey: key, label: key, snapshot: snap, direction: bs.direction, bars: bs.bars, barNote: bs.note, sscu: bs.sscu ? { bars: bs.sscu.bars, scope: bs.sscu.scope } : null, members: xsMembers, suppression: NO_SUPPRESSION, config: cfg });
+      // `gate.suppression` is NO_SUPPRESSION when the gate did not run, so this is the
+      // pre-guardrail call verbatim in that case.
+      const xs = scoreMetricCrossSection({ pillar, metricKey: key, label: key, snapshot: snap, direction: bs.direction, bars: bs.bars, barNote: bs.note, sscu: bs.sscu ? { bars: bs.sscu.bars, scope: bs.sscu.scope } : null, members: xsMembers, suppression: gate.suppression, config: cfg });
       for (const s of xs.scored) bucket.get(s.symbol)!.push(s);
       peerStatsCaps.push({ pillar, metricKey: key, barPath, mean: xs.peerStats.mean, stdDev: xs.peerStats.stdDev, sampleN: xs.peerStats.sampleN, anchorLiftFired: xs.lift531.fired });
     }
   };
   await scorePillarKeys(fKeys, "foundation", fMetrics, fBarSetIds, F_CFG, fSnap);
   await scorePillarKeys(mKeys, "momentum", mMetrics, mBarSetIds, M_CFG, mSnap);
-
-  // PERIOD KEY. In a normal (live) run this is the period that emerges from the data
-  // (all members share the latest quarter). In a POINT-IN-TIME backfill it is the
-  // REQUESTED period (the cutoff defines it) — members legitimately differ in depth at
-  // a historical cutoff, so we must NOT derive it from raws[0]. Each member still uses
-  // its own ≤cutoff latest data for its pillars (point-in-time per member).
-  const periodKey = pit ? pit.expectPeriodKey : (mSnap || fSnap || "FY26Q4");
 
   // ── C/D FLOW FEEDS (insider + block) — replaces the NO_FEEDS stub ──────────────
   // Load each member's insider/block feeds + end-of-window market cap, CUTOFF-CORRECT
@@ -417,7 +499,89 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     dampenReport = applyPgDampening(scoredSets);
   }
 
-  return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members, peerStats: peerStatsCaps, dampenReport };
+  return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members, peerStats: peerStatsCaps, dampenReport, guardrail: gate };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ GET-OR-CREATE, COLLISION-SAFE. THE ONE HELPER EVERY IDEMPOTENT WRITE IN THIS FILE GOES THROUGH.
+//
+// ── THE DEFECT ────────────────────────────────────────────────────────────────────────────────────
+// Six writes in this file were find-then-create against a UNIQUE constraint, with nothing between the
+// two statements. Two passes touching the same identity — a concurrent rescore, a retried job, the
+// banking cascade overlapping the daily pass — and the loser's INSERT raises P2002.
+//
+// score_pillars is unique on (stock_id, pillar, inputs_fingerprint), and a pillar's fingerprint is a
+// function of its INPUTS, so two runs that read the same inputs compute the SAME identity. That is the
+// collision. Observed once: a P2002 aborted a peer group's transaction mid-run during a proof pass,
+// leaving a partial result.
+//
+// ── WHY THIS IS NOT `upsert`, AND NOT A PLAIN try/catch ───────────────────────────────────────────
+// `upsert` LOOKS right and is not. Prisma only compiles an upsert down to a single atomic
+// `INSERT … ON CONFLICT` when the create/update carry NO NESTED WRITES. Every pillar create here has
+// them (`metricScores`, `marketSubScores`, `ownershipScore`), so Prisma falls back to exactly the
+// find-then-create this is replacing — the same race, wearing a different word.
+//
+// A plain try/catch is WORSE THAN USELESS HERE, and this is the part worth reading. `db` is always a
+// `Prisma.TransactionClient` — every caller wraps the whole peer group in one interactive transaction.
+// In Postgres, ONE failed statement aborts the ENTIRE transaction: every subsequent statement returns
+// 25P02 "current transaction is aborted, commands ignored until end of transaction block". So catching
+// the P2002 and re-reading would issue that read into a dead transaction and fail again. The catch
+// would appear to work in a unit test against a bare client and do nothing in production.
+//
+// ── SO: A SAVEPOINT ───────────────────────────────────────────────────────────────────────────────
+// A savepoint is the only construct that makes a statement failure recoverable INSIDE a transaction.
+// ROLLBACK TO SAVEPOINT rewinds just the failed INSERT and leaves the transaction usable, so the
+// re-read succeeds and returns the row the other writer committed.
+//
+// ⚠ THE FAST PATH IS UNTOUCHED. `find()` runs first, exactly as before; on a hit nothing else happens.
+// The savepoint is issued only when we are about to insert, and SAVEPOINT / RELEASE write no rows and
+// no WAL of their own — so the PERSISTED RESULT IS IDENTICAL BY CONSTRUCTION. This changes what happens
+// when the insert LOSES a race; it cannot change what gets written when it wins.
+//
+// ⚠ AND IT TOLERATES NOT BEING IN A TRANSACTION. A few scripts pass the bare client. Postgres rejects
+// SAVEPOINT outside a transaction block (25P01), so the helper notes the failure and degrades to plain
+// catch-and-refetch — which is entirely correct when there is no transaction to poison.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** P2002 (Prisma) / 23505 (Postgres) — someone else inserted this identity first. */
+function isUniqueViolation(e: unknown): boolean {
+  const code = (e as { code?: unknown })?.code;
+  return code === "P2002" || code === "23505";
+}
+
+let savepointSeq = 0;
+
+/**
+ * Find, else create; and if the create loses a race on the unique constraint, find again.
+ *
+ * `find` MUST query the same unique identity the create would collide on — otherwise the retry looks
+ * for the wrong row and the P2002 is rethrown, which is the honest outcome but not the useful one.
+ */
+async function getOrCreate<T>(db: Db, what: string, find: () => Promise<T | null>, create: () => Promise<T>): Promise<T> {
+  const found = await find();
+  if (found) return found;
+
+  const sp = `vytal_goc_${++savepointSeq}`;
+  let inTx = true;
+  try {
+    await db.$executeRawUnsafe(`SAVEPOINT ${sp}`);
+  } catch {
+    inTx = false; // bare client — no transaction to protect, and none to poison
+  }
+
+  try {
+    const created = await create();
+    if (inTx) await db.$executeRawUnsafe(`RELEASE SAVEPOINT ${sp}`);
+    return created;
+  } catch (e) {
+    if (inTx) await db.$executeRawUnsafe(`ROLLBACK TO SAVEPOINT ${sp}`).catch(() => {});
+    if (!isUniqueViolation(e)) throw e;
+    const raced = await find();
+    if (raced) return raced;
+    // The constraint fired but the row is not findable by our identity — that means `find` and the
+    // unique index disagree, which is a bug in the caller, not a race. Surface it.
+    throw new Error(`getOrCreate(${what}): unique violation but no row matches the identity we searched`, { cause: e });
+  }
 }
 
 // ── SCAFFOLD (get-or-create spec / run / band-mapping, once per pass) ────────────────
@@ -432,10 +596,14 @@ export interface ScaffoldOpts {
   triggerType?: "scheduled" | "post_ingest" | "manual_api";
 }
 export async function ensureScaffold(db: Db, asOf: Date, opts: ScaffoldOpts = {}): Promise<Scaffold> {
-  const spec = (await db.scoringSpecVersion.findFirst({ where: { version: COMPOSITE_SPEC_VERSION }, select: { id: true } }))
-    ?? (await db.scoringSpecVersion.create({ data: { version: COMPOSITE_SPEC_VERSION, effectiveFrom: asOf, notes: "4-pillar Health Score scoring pass (Foundation+Momentum+universal Market+Ownership)." }, select: { id: true } }));
-  const mapping = (await db.bandMappingVersion.findFirst({ where: { version: BAND_MAPPING_VERSION }, select: { id: true } }))
-    ?? (await db.bandMappingVersion.create({ data: { version: BAND_MAPPING_VERSION, mapping: bandMappingJson(), effectiveFrom: asOf }, select: { id: true } }));
+  // ★ Both are get-or-create on a VERSION STRING that every concurrent pass shares — the highest-
+  //   contention identity in the file, because every pass wants the same two rows.
+  const spec = await getOrCreate(db, "scoringSpecVersion",
+    () => db.scoringSpecVersion.findFirst({ where: { version: COMPOSITE_SPEC_VERSION }, select: { id: true } }),
+    () => db.scoringSpecVersion.create({ data: { version: COMPOSITE_SPEC_VERSION, effectiveFrom: asOf, notes: "4-pillar Health Score scoring pass (Foundation+Momentum+universal Market+Ownership)." }, select: { id: true } }));
+  const mapping = await getOrCreate(db, "bandMappingVersion",
+    () => db.bandMappingVersion.findFirst({ where: { version: BAND_MAPPING_VERSION }, select: { id: true } }),
+    () => db.bandMappingVersion.create({ data: { version: BAND_MAPPING_VERSION, mapping: bandMappingJson(), effectiveFrom: asOf }, select: { id: true } }));
   const run = await db.scoringRun.create({ data: { runType: opts.runType ?? "quarterly", triggerType: opts.triggerType ?? "manual_api", specVersionId: spec.id, asOfDate: asOf, status: "running", startedAt: asOf }, select: { id: true } });
   return { specVersionId: spec.id, runId: run.id, bandMappingVersionId: mapping.id };
 }
@@ -462,6 +630,10 @@ export interface MemberWriteResult {
   marketState: "scored" | "unavailable_redistributed" | "none";
   r1Written: boolean;
   pillarIds: Partial<Record<Pillar, string>>;
+  /** LAYER-1 audit rows written for this member. -1 ⇒ the gate did not run for this
+   *  pass (distinct from 0 = "ran, nothing fired"). Makes "was this snapshot
+   *  gate-screened?" answerable from the write result, never inferred. */
+  guardrailEventsWritten: number;
 }
 
 /** Get-or-create per-(PG,metric,run,asOf) score_peer_stats rows from the captured peer
@@ -472,20 +644,20 @@ export interface MemberWriteResult {
 async function ensurePeerStats(db: Db, caps: PeerStatsCapture[], ctx: { peerGroupId: string; runId: string; asOfDate: Date }): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   for (const c of caps) {
-    const existing = await db.peerStatsSnapshot.findFirst({
-      where: { peerGroupId: ctx.peerGroupId, metricKey: c.metricKey, runId: ctx.runId, asOfDate: ctx.asOfDate },
-      select: { id: true },
-    });
-    if (existing) { map.set(c.metricKey, existing.id); continue; }
-    const created = await db.peerStatsSnapshot.create({
-      data: {
-        peerGroupId: ctx.peerGroupId, barPath: c.barPath, metricKey: c.metricKey, runId: ctx.runId, asOfDate: ctx.asOfDate,
-        mean: c.mean, stdDev: c.stdDev, sampleN: c.sampleN,
-        anchorLiftFired: c.anchorLiftFired, anchorLiftRule: c.anchorLiftFired ? "rule_5_3_1" : null,
-      },
-      select: { id: true },
-    });
-    map.set(c.metricKey, created.id);
+    const row = await getOrCreate(db, `peerStatsSnapshot:${c.metricKey}`,
+      () => db.peerStatsSnapshot.findFirst({
+        where: { peerGroupId: ctx.peerGroupId, metricKey: c.metricKey, runId: ctx.runId, asOfDate: ctx.asOfDate },
+        select: { id: true },
+      }),
+      () => db.peerStatsSnapshot.create({
+        data: {
+          peerGroupId: ctx.peerGroupId, barPath: c.barPath, metricKey: c.metricKey, runId: ctx.runId, asOfDate: ctx.asOfDate,
+          mean: c.mean, stdDev: c.stdDev, sampleN: c.sampleN,
+          anchorLiftFired: c.anchorLiftFired, anchorLiftRule: c.anchorLiftFired ? "rule_5_3_1" : null,
+        },
+        select: { id: true },
+      }));
+    map.set(c.metricKey, row.id);
   }
   return map;
 }
@@ -493,8 +665,6 @@ async function ensurePeerStats(db: Db, caps: PeerStatsCapture[], ctx: { peerGrou
 /** Get-or-create a Foundation/Momentum PillarScore (+ MetricScore children via nested create). */
 async function writeFmPillar(db: Db, r: PillarScoreResult, metrics: ScoredMetric[], barSetIds: Map<string, string | null>, ctx: { runId: string; specVersionId: string; asOfDate: Date; sourcePeriod: string }, peerStatsIdByKey: Map<string, string>): Promise<string> {
   const row = toPillarScoreRow(r, ctx);
-  const existing = await db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId: r.stockId, pillar: r.pillar, inputsFingerprint: row.inputsFingerprint } }, select: { id: true } });
-  if (existing) return existing.id;
   const weights = metricWeightColumnsByKey(r);
   // A MetricScore row requires a non-null rawValue + metricScore (NOT NULL columns).
   // A dropped/missing/suppressed metric (scoreState ≠ scored) has no rawValue → it is
@@ -507,18 +677,20 @@ async function writeFmPillar(db: Db, r: PillarScoreResult, metrics: ScoredMetric
       const { pillarScoreId: _omit, ...child } = full;
       return child;
     }) as Prisma.MetricScoreCreateWithoutPillarScoreInput[];
-  const created = await db.pillarScore.create({ data: { ...row, metricScores: { create: children } }, select: { id: true } });
-  return created.id;
+  const out = await getOrCreate(db, `pillarScore:${r.pillar}`,
+    () => db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId: r.stockId, pillar: r.pillar, inputsFingerprint: row.inputsFingerprint } }, select: { id: true } }),
+    () => db.pillarScore.create({ data: { ...row, metricScores: { create: children } }, select: { id: true } }));
+  return out.id;
 }
 
 /** Get-or-create the Market PillarScore (+ all 7 MarketSubScore children, CN-6). */
 async function writeMarketPillar(db: Db, market: MarketUniversalResult, stockId: string, symbol: string, ctx: { runId: string; specVersionId: string; asOfDate: Date; sourcePeriod: string }): Promise<string> {
   const row = toMarketPillarScoreRow(market, { stockId, symbol, runId: ctx.runId, specVersionId: ctx.specVersionId, asOfDate: ctx.asOfDate, sourcePeriod: ctx.sourcePeriod });
-  const existing = await db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId, pillar: "market", inputsFingerprint: row.inputsFingerprint } }, select: { id: true } });
-  if (existing) return existing.id;
   const subs = marketSubScoreRows(market);
-  const created = await db.pillarScore.create({ data: { ...row, marketSubScores: { create: subs } }, select: { id: true } });
-  return created.id;
+  const out = await getOrCreate(db, "pillarScore:market",
+    () => db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId, pillar: "market", inputsFingerprint: row.inputsFingerprint } }, select: { id: true } }),
+    () => db.pillarScore.create({ data: { ...row, marketSubScores: { create: subs } }, select: { id: true } }));
+  return out.id;
 }
 
 /** Get-or-create the Ownership PillarScore (+ OwnershipScore + 4 flow categories). */
@@ -528,14 +700,18 @@ async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: strin
   const existing = await db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId, pillar: "ownership", inputsFingerprint: fp } }, select: { id: true } });
   if (existing) return { id: existing.id, r1Fired, r1Triggering: r1TriggeringValues };
 
-  // get-or-create the 3 universal flow band sets
+  // get-or-create the 3 universal flow band sets. Version-keyed and shared by every pass, so these
+  // race exactly like the scaffold's spec/mapping rows do.
   const bandSetIds: Record<string, string> = {};
   for (const bt of ["c_net_insider", "d_net_block", "trend_bonus"] as const) {
-    const ex = await db.ownershipFlowBandSet.findUnique({ where: { bandType_version: { bandType: bt, version: FLOW_BAND_VERSION } }, select: { id: true } });
-    bandSetIds[bt] = ex?.id ?? (await db.ownershipFlowBandSet.create({ data: { bandType: bt, version: FLOW_BAND_VERSION, cuts: FLOW_BAND_CUTS[bt] as object, inForceFrom: ctx.asOfDate, specVersionId: ctx.specVersionId }, select: { id: true } })).id;
+    bandSetIds[bt] = (await getOrCreate(db, `ownershipFlowBandSet:${bt}`,
+      () => db.ownershipFlowBandSet.findUnique({ where: { bandType_version: { bandType: bt, version: FLOW_BAND_VERSION } }, select: { id: true } }),
+      () => db.ownershipFlowBandSet.create({ data: { bandType: bt, version: FLOW_BAND_VERSION, cuts: FLOW_BAND_CUTS[bt] as object, inForceFrom: ctx.asOfDate, specVersionId: ctx.specVersionId }, select: { id: true } }))).id;
   }
   const flowRows = buildFlowCategoryRows(own);
-  const created = await db.pillarScore.create({
+  const created = await getOrCreate(db, "pillarScore:ownership",
+    () => db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId, pillar: "ownership", inputsFingerprint: fp } }, select: { id: true } }),
+    () => db.pillarScore.create({
     data: {
       stockId, symbol, pillar: "ownership", subtotal: own.finalOwnership, pillarState: "scored", sourcePeriod: own.snapshot.periodKey, asOfDate: ctx.asOfDate, runId: ctx.runId, specVersionId: ctx.specVersionId, inputsFingerprint: fp,
       ownershipScore: {
@@ -547,15 +723,42 @@ async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: strin
       },
     },
     select: { id: true },
-  });
+  }));
   return { id: created.id, r1Fired, r1Triggering: r1TriggeringValues };
 }
 
-export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string, industryPath: IndustryType = "non_financial", peerStats: PeerStatsCapture[] = [], opts: { writeFindings?: boolean } = {}): Promise<MemberWriteResult> {
+export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string, industryPath: IndustryType = "non_financial", peerStats: PeerStatsCapture[] = [], opts: { writeFindings?: boolean; writeGuardrail?: boolean; guardrail?: ScoringGateResult } = {}): Promise<MemberWriteResult> {
+  // ── LAYER-1 AUDIT, DECOUPLED FROM SCORE MOVEMENT ────────────────────────────────
+  // Writes this member's detections keyed (stockId, snapshotKey, signatureKey), with
+  // snapshotId set ONLY when this run created one. Called on EVERY exit path below —
+  // unavailable, skipped-identical, and created — because a detection is a fact about
+  // the stock in the period, not about whether a snapshot happened to be written.
+  //
+  // Before this, the write lived only on the created path, so a stock whose score did
+  // not change was detected and then discarded: 27 of 106 survived the first live run.
+  // A company inflating profit every quarter with stable scores would never be logged.
+  //
+  // snapshotId is deliberately NOT pointed at the pre-existing live snapshot on the
+  // skip path: that snapshot was not screened by this run, and claiming it was would
+  // corrupt guardrail_screened. NULL is the honest value.
+  const writeGuardrailFor = async (snapshotIdIfCreated: string | null): Promise<number> => {
+    const myGate = opts.guardrail?.ran ? opts.guardrail.results.find((r) => r.stockId === m.stockId) : undefined;
+    if (!opts.writeGuardrail || !myGate) return opts.guardrail?.ran ? 0 : -1;
+    const plan = await writeGuardrailEval([myGate], {
+      snapshotKey: m.composite.periodKey,
+      snapshotIdByStock: snapshotIdIfCreated ? new Map([[m.stockId, snapshotIdIfCreated]]) : new Map(),
+      dryRun: false,
+      db,
+    });
+    return plan.eventRows.length;
+  };
+
   // Unavailable composite → no snapshot (recorded, never fabricated). For these
   // rosters this is not expected (Market may drop, but composite still 3-pillar-scores).
+  // Detections still persist — the gate ran and saw something real.
   if (m.composite.state !== "scored" || m.composite.composite === null) {
-    return { symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: null, band: null, marketState: m.market ? m.market.state : "none", r1Written: false, pillarIds: {} };
+    const ge = await writeGuardrailFor(null);
+    return { symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: null, band: null, marketState: m.market ? m.market.state : "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: ge };
   }
 
   // Skip-identical at the snapshot level (ruling 3), compared against the LIVE snapshot.
@@ -569,7 +772,10 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   const fp = snapshotInputsFingerprint(m.composite);
   const liveSnap = await db.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: m.composite.snapshotType, periodKey: m.composite.periodKey }, orderBy: { version: "desc" }, select: { id: true, inputsFingerprint: true, version: true } });
   if (liveSnap && liveSnap.inputsFingerprint === fp) {
-    return { symbol: m.symbol, action: "skipped_identical", version: liveSnap.version, superseded: false, snapshotId: liveSnap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market ? m.market.state : "none", r1Written: false, pillarIds: {} };
+    // THE FIX: the score did not move, but the detection is still recorded. snapshotId is
+    // NULL here on purpose — liveSnap exists but was NOT screened by this run.
+    const ge = await writeGuardrailFor(null);
+    return { symbol: m.symbol, action: "skipped_identical", version: liveSnap.version, superseded: false, snapshotId: liveSnap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market ? m.market.state : "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: ge };
   }
 
   // PG-level peer μ/σ rows (score_peer_stats) — get-or-created once per (PG, metric, run,
@@ -590,7 +796,12 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   const ownership = await writeOwnershipPillar(db, m.own, m.stockId, m.symbol, { runId: sc.runId, specVersionId: sc.specVersionId, asOfDate: asOf });
 
   const pillarScoreIds: Record<Pillar, string> = { foundation: foundationId, momentum: momentumId, market: marketId, ownership: ownership.id };
-  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null, notEvaluable: m.notEvaluable });
+  // LAYER-1 PROVENANCE. `opts.guardrail` present ⇒ the caller ran the pass through the
+  // gate-aware path and KNOWS the answer, so stamp true/false. Absent ⇒ a legacy/other
+  // caller that never considered the gate, so leave undefined → SQL NULL ("unknown").
+  // false here is a positive fact ("we ran the pass and deliberately did not screen"),
+  // which is why it must not be conflated with the NULL case.
+  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null, notEvaluable: m.notEvaluable, guardrailScreened: opts.guardrail ? opts.guardrail.ran : undefined });
   if (liveSnap) { snapRow.version = liveSnap.version + 1; snapRow.supersedesId = liveSnap.id; } // append-only supersede: chain from the live (highest) version → v1→v2→v3…
 
   const snap = await db.scoreSnapshot.create({ data: snapRow, select: { id: true } });
@@ -608,5 +819,21 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
     await persistFindings(db, snap.id, m.symbol, asOf, m.findings);
   }
 
-  return { symbol: m.symbol, action: "created", version: snapRow.version, superseded: !!liveSnap, snapshotId: snap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market.state, r1Written, pillarIds: pillarScoreIds };
+  // ── LAYER-1 AUDIT PERSIST — post-snapshot (the FK ordering in gate.ts §ordering) ──
+  // score_guardrail_events.snapshot_id is a NOT-NULL FK, so events can only be written
+  // once the snapshot exists — same ordering the R1 red flag above uses. The directives
+  // on `opts.guardrail` are ALREADY behaviour-filtered (behaviour.ts stripped every
+  // annotate/detect row before they reached scoring), so score_suppressions can only
+  // ever receive suppress-behaviour rows. Written on the caller's `db`, so a harness
+  // that rolls its transaction back leaves no guardrail residue either.
+  //
+  // Review-tier firings persist as their EVENT (tier="review") with no suppression —
+  // that IS the pending-review backlog, queryable by
+  //   SELECT * FROM score_guardrail_events WHERE tier='review'.
+  // No score_guardrail_reviews row is written: that requires an operator ruling, and
+  // no workflow exists to produce one (deliberate — see GUARDRAIL_BEHAVIOUR `detect`).
+  // Snapshot WAS created by this run, so snapshotId is set — real provenance.
+  const guardrailEventsWritten = await writeGuardrailFor(snap.id);
+
+  return { symbol: m.symbol, action: "created", version: snapRow.version, superseded: !!liveSnap, snapshotId: snap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market.state, r1Written, pillarIds: pillarScoreIds, guardrailEventsWritten };
 }

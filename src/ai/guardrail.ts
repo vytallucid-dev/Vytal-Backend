@@ -66,7 +66,7 @@ import {
 import { AI_HARD_LIST_HI, AI_SOFT_EXTRA_HI } from "./guardrail-hinglish.js";
 
 /** A vocabulary entry — the same shape `scanStringsForForwardLanguage` takes as `extraTerms`. */
-interface Term {
+export interface Term {
   term: string;
   re: RegExp;
   why: string;
@@ -385,6 +385,225 @@ function scanTargets(text: string): { hard: HardHit[]; soft: SoftHit[] } {
   return { hard, soft };
 }
 
+// ══ EVALUATIVE — A VERDICT ON A FIGURE. LOG-ONLY. NEVER BLOCKS. ═══════════════════════════════════
+//
+// ★★★ THE GAP THIS FILLS, MEASURED. ★★★ The two flat tiers split on WHO IS SPEAKING: the model advising
+// (HARD) vs a word description legitimately needs (SOFT). Neither catches EVALUATION. Run through the
+// shipped scanner, all seven of these PASSED clean:
+//     "That is a generous payout."            "An 80% payout ratio is impressive."
+//     "The dividend yield here is attractive."  "This is a strong dividend record."
+//     "The payout looks sustainable."           "…leaves little room for reinvestment."
+//     "TCS pays out more than its peers."
+// while "worth keeping in mind" and "deserves a closer look" were blocked. The spine bans ACTIONS and
+// PREDICTIONS; nothing banned a VERDICT. This tier exists because "highlight what stands out" — the
+// depth directive shipping next — lands squarely in that hole.
+//
+// ── ⚠⚠ WHY THESE ARE CONSTRUCTIONS AND NOT A WORD LIST. MEASURED, AND IT KILLED THE FIRST DESIGN. ──
+// A bare adjective list was written first and tested against the nearest LEGITIMATE sentence for each
+// term. NINE OF TWELVE FIRED. Three families, all of them ordinary prose:
+//   · ATTRIBUTED     "Management said the quarter was disappointing in its earnings call."
+//   · NEGATED        "Nothing remarkable happened." / "The auditor flagged no worrying items."
+//   · NON-FINANCIAL  "a generous employee stock option pool" · "an impressive number of subsidiaries"
+//                    "leaves little room for interpretation" · "whether a stock is cheap or expensive"
+// So every entry binds the adjective to a FINANCIAL SUBJECT through a copula or a determiner, and the
+// tier is CONDITIONAL on attribution exactly as AI_TARGET_LIST is — reusing `isAttributed` unchanged,
+// because "Motilal Oswal said the payout is impressive" is reporting someone else's verdict, which is
+// description. The nine sentences above are pinned as permanent controls in verify-evaluative-tier.ts;
+// a future widening that re-breaks them fails the build.
+//
+// ── ★ "strong" IS THE HARD CASE AND IT IS WHY THE BINDING EXISTS. ─────────────────────────────────
+// Bare /\bstrong\b/ fires on SEVENTEEN shipped strings — "strong territory", "strong on most metrics",
+// "reading strongly", and the context layer's own "is this a fundamentally strong business?". It is NOT
+// in the adjective set. `eval-quality-verdict` binds it instead: a/an + strong + <financial subject>.
+// Result: "a strong dividend record" fires; "Momentum is the strongest pillar at 92" does not.
+// ⚠ Terms tested and EXCLUDED on shipped-copy evidence, so nobody re-adds them: weak (29 fires), solid
+// (2, incl. "how solid the balance sheet is"), healthy (2 — it is a BAND NAME), comfortable (2, plus
+// "cover interest payments comfortably"), poor (2), excellent (1), outstanding/exceptional (homonyms —
+// "outstanding balances", "an exceptional gain"), conservative/aggressive (a company's stated policy).
+//
+// ── ★★★ IT IS STRUCTURALLY INCAPABLE OF BLOCKING, AND THAT IS A TYPE, NOT AN INTENTION. ───────────
+// `scanEvaluative` returns `EvaluativeHit[]` — there is no hard channel for it to return. `clean` is
+// computed from `hardHits` and the target tier alone and never reads this list. Promoting a term to
+// blocking therefore cannot happen by accident: it requires changing this function's signature and the
+// `clean` expression, which is a deliberate two-line edit a reviewer will see.
+//
+// WHY LOG-ONLY (operator ruling, on evidence): HARD has never blocked a delivered turn — 0 of 81 in the
+// live corpus — so a third BLOCKING tier would be the only thing that ever has, on a vocabulary derived
+// from hand-written sentences rather than observed output. This is the SOFT tier's own doctrine: the
+// logs become the evidence for promotion, rather than the vocabulary growing on hunches. The depth
+// directive's live proof runs WITH this log on, and promotion is decided from that log.
+//
+// ⚠ ATTRIBUTION IS RECORDED, NOT ACTED ON. Every hit carries `attributed`. Nothing branches on it today
+// — it exists so the calibration can EXCLUDE reported verdicts when the promotion decision is made.
+// Counting "the brokerage called it impressive" as evidence that the model editorialises would inflate
+// the case for blocking with sentences that were never the problem.
+const EVAL_ADJ = String.raw`generous|stingy|miserly|impressive|unimpressive|attractive|unattractive|remarkable|superb|stellar|spectacular|phenomenal|disappointing|worrying|worrisome|alarming|troubling|reassuring`;
+/** Quality words that are ALSO shipped vocabulary — usable only when bound to a subject (see header). */
+const EVAL_QUALITY = String.raw`strong|weak|poor|excellent`;
+/** The financial things a verdict can be passed ON. A verdict about anything else is not ours to police. */
+const EVAL_SUBJECT = String.raw`payouts?|dividends?|yields?|ratios?|margins?|returns?|profits?|revenues?|growth|records?|track\s+record|balance\s+sheets?|cash\s+flows?|coverage|scores?|compan(?:y|ies)|business(?:es)?|stocks?|shares?|results?|performance|valuations?`;
+const EVAL_INT = String.raw`(?:very|quite|rather|fairly|pretty|remarkably|particularly|genuinely)\s+`;
+
+export const AI_EVAL_LIST: Term[] = [
+  {
+    // "That is a generous payout." · "An 80% payout ratio is impressive." · "The dividend yield here is attractive."
+    term: "eval-verdict-copula",
+    re: new RegExp(
+      String.raw`\b(?:that|this|it|these|those|(?:a|an|the|its|their)\s+(?:[\w%.,-]+\s+){0,3}?(?:${EVAL_SUBJECT}))\b` +
+        String.raw`[^.!?]{0,40}?\s(?:is|are|was|were|looks?|appears?|seems?|remains?)\s+(?:a|an)?\s*(?:${EVAL_INT})?(?:${EVAL_ADJ})\b`,
+      "i",
+    ),
+    why: "a verdict passed on a figure ('the payout ratio is impressive')",
+  },
+  {
+    // "a generous payout" — the attributive form, still bound to a financial noun.
+    term: "eval-verdict-attributive",
+    re: new RegExp(String.raw`\b(?:a|an)\s+(?:${EVAL_INT})?(?:${EVAL_ADJ})\s+(?:${EVAL_SUBJECT})\b`, "i"),
+    why: "a verdict used attributively ('a generous payout')",
+  },
+  {
+    // ★ The bound form of the shipped-vocabulary words. See the header on `strong`.
+    term: "eval-quality-verdict",
+    re: new RegExp(String.raw`\b(?:a|an)\s+(?:${EVAL_INT})?(?:${EVAL_QUALITY})\s+(?:${EVAL_SUBJECT})\b`, "i"),
+    why: "a quality verdict on a figure ('a strong dividend record')",
+  },
+  {
+    // Forward-looking in substance while dodging the prediction list — the hedge is not the offence,
+    // so this keys on the ADJECTIVE via a copula and catches "is unsustainable" too.
+    term: "eval-sustainable",
+    re: /\b(?:is|are|looks?|appears?|seems?|remains?|stays?)\s+(?:very\s+|quite\s+|clearly\s+|broadly\s+)?(?:un)?sustainable\b/i,
+    why: "a durability verdict ('the payout looks sustainable')",
+  },
+  {
+    // ★ Vytal holds NO valuation data at all (see screen-stocks.ts), so this is doubly out of bounds.
+    term: "eval-valuation",
+    re: /\b(?:that|this|it|the\s+(?:stock|share|company)|its\s+valuation)\s+(?:is|are|was|looks?|appears?|seems?)\s+(?:a\s+)?(?:very\s+|quite\s+)?(?:cheap|expensive|undervalued|overvalued|underpriced|overpriced|fairly\s+priced|good\s+value)\b/i,
+    why: "a valuation verdict — Vytal holds no valuation data of any kind",
+  },
+  {
+    term: "eval-little-room",
+    re: /\bleaves?\s+(?:little|no)\s+room\s+for\s+(?:re-?investment|growth|capex|capital|expansion|debt|the\s+dividend)\b/i,
+    why: "a judgement about consequences ('leaves little room for reinvestment')",
+  },
+  {
+    // ⚠ A DIFFERENT OFFENCE, DELIBERATELY NAMED APART. Not evaluation — UNGROUNDABLE. getPeerGroupMembers
+    // returns identity only and no screenable field carries dividend data, so a peer-relative claim has
+    // nothing behind it. Housed here for the shared log; separately named so it can be promoted on its
+    // own evidence without dragging the verdict patterns along.
+    // ★ The one peer fact Vytal CAN state — getStockFacts' computed "rank 2 of 6, percentile ~80%" — is
+    // untouched by this pattern, and that is asserted in the proof.
+    // (The mention-vs-use test this term used to carry alone is now MENTION_SPAN, applied to every term.)
+    term: "eval-peer-claim",
+    re: /\b(?:more|less|better|worse|higher|lower|bigger|smaller)\s+than\s+(?:its|their|the)?\s*(?:peers|peer\s+group|rivals|competitors)\b/i,
+    why: "a peer-relative claim Vytal cannot ground — no tool carries peer-level comparison data",
+  },
+];
+
+/** A logged evaluative hit. `attributed` is recorded for the calibration, never acted on (see header). */
+export interface EvaluativeHit extends SoftHit {
+  why: string;
+  /** true ⇔ the sentence says whose verdict it is, so it is REPORTING rather than judging. */
+  attributed: boolean;
+}
+
+/**
+ * Scan for verdicts. ★ RETURNS ONLY SOFT HITS — there is no hard channel in this signature, which is
+ * what makes the tier structurally unable to block (header). Sentence-scoped so `attributed` and the
+ * logged context describe the claim rather than the whole reply.
+ */
+/**
+ * ★★★ POSING THE QUESTION IS NOT ANSWERING IT — AND THE FIRST LIVE RUN CAUGHT THIS. ★★★
+ *
+ * Asked "Would you say ITC's dividend yield is attractive?", the model did exactly the right thing and
+ * declined to judge:
+ *     "To understand whether that is attractive, it helps to look at how that return is generated…"
+ *     "Whether a 5% yield is attractive depends on what you are looking for…"
+ * Both fired `eval-verdict-copula`. Both are the OPPOSITE of the offence: the adjective sits inside a
+ * subordinate interrogative, which names the judgement in order to refuse it. Counting those as evidence
+ * that the model editorialises would poison the calibration with the model's best behaviour.
+ *
+ * So a hit is dropped when the clause it sits in is a QUESTION rather than an assertion — either the
+ * sentence is interrogative, or the match is governed by a preceding `whether` / `if`. This is the same
+ * doctrine `no-forward-guard.ts` states as SCOPE, NOT AN ALLOWLIST: only assertive text is judged.
+ * ⚠ `whether`/`if` are tested on the text BEFORE the match only. "This is a generous payout, if you
+ * look at the cash flow" still fires — the conditional there does not govern the claim.
+ */
+const HYPOTHETICAL_FRAME = /\b(?:whether|if)\b/i;
+
+/**
+ * ★★★ NAMING A VERDICT IS NOT PASSING ONE — THE MENTION-VS-USE TEST, AND SHIPPED COPY FORCED IT TWICE.
+ *
+ * ① getPeerGroup's own description reads: …what a 'better than peers' or 'rank 3 of 7' statement is
+ *    measured against. ② COMPANY_ANSWER_SHAPE (ai/tone.ts) teaches the rule by SHOWING the offence:
+ *    ❌ "That is a generous payout." ❌ "This is a strong record."
+ * Both NAME the construction in order to talk about it; neither makes the claim. Quotation marks are
+ * exactly that marker, so a match lying inside a quoted span is skipped.
+ *
+ * ★ IT IS A TIER FIX, NOT A COPY FIX — the standing rule for this tier. A fire on shipped copy is a
+ * defect in the pattern, and the answer is always to narrow the pattern rather than to reword the
+ * product. It began as a lookbehind on `eval-peer-claim` alone; the directive's ❌ examples showed why
+ * that was too narrow — the attributive form ("a generous payout") matches INSIDE the quotes, where no
+ * lookbehind on the match start can see the opening mark. So the span is computed once and shared.
+ *
+ * ⚠ IT CANNOT BE USED TO SNEAK A VERDICT PAST. A model quoting a verdict is either reporting someone
+ * else's (already `attributed`) or quoting itself, which nothing observed does; and this tier is
+ * LOG-ONLY, so a missed hit costs a log line while a false hit poisons the corpus the promotion
+ * decision is read from. The asymmetry runs one way.
+ *
+ * ⚠ THE SINGLE-QUOTE ARM IS BOUNDARY-GUARDED ON PURPOSE. Apostrophes are everywhere in real prose
+ * ("TCS's", "doesn't"), and an unguarded `'…'` would pair possessives at random and silently blank out
+ * whole stretches of the scan. An opening `'` must follow a space or a bracket, and the closing one must
+ * be followed by space or punctuation. Every arm is length-bounded for the same reason: one stray quote
+ * mark must never swallow the rest of the reply.
+ */
+const MENTION_SPAN = /"[^"]{0,240}"|“[^”]{0,240}”|‘[^’]{0,240}’|(?<=^|[\s(\[—–])'[^']{0,240}'(?=$|[\s).,;:!?\]—–])/g;
+
+function mentionSpansOf(text: string): { start: number; end: number }[] {
+  const spans: { start: number; end: number }[] = [];
+  const g = new RegExp(MENTION_SPAN.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = g.exec(text)) !== null) spans.push({ start: m.index, end: m.index + m[0].length });
+  return spans;
+}
+
+/**
+ * ★★★ THE CALIBRATION SEAM — parameterised over the TERM LIST, and that is not a convenience.
+ *
+ * ⚠ A CANDIDATE PATTERN MEASURED AS A BARE REGEX IS NOT THE PATTERN THIS TIER WOULD SHIP, and the last
+ * build got a decision wrong that way. Testing `strong|excellent + <subject>` with `re.test(copy)`
+ * reported a blocking fire on the context layer's "Asks: is this a fundamentally strong business?" and
+ * the widening was written off. That sentence ENDS IN A QUESTION MARK, so the real tier had always
+ * skipped it: the candidate separated cleanly and the report said it did not.
+ *
+ * Every guard below — the mention spans, the interrogative skip, the `whether`/`if` frame, the sentence
+ * scoping — is part of what a term MEANS here. So a probe that wants to know what adding a term would
+ * do must run the term through this function, never through its own regex loop. Exported for exactly
+ * that, and for nothing else: the shipped tier is `scanEvaluative` below, over `AI_EVAL_LIST`.
+ */
+export function scanEvaluativeWith(terms: Term[], text: string): EvaluativeHit[] {
+  const out: EvaluativeHit[] = [];
+  const sents = sentencesOf(text);
+  const mentions = mentionSpansOf(text);
+  for (const t of terms) {
+    const g = new RegExp(t.re.source, t.re.flags.includes("g") ? t.re.flags : `${t.re.flags}g`);
+    let m: RegExpExecArray | null;
+    while ((m = g.exec(text)) !== null) {
+      if (m[0] === "") { g.lastIndex++; continue; }
+      // Quoted ⇒ mentioned, not used. See MENTION_SPAN.
+      if (mentions.some((sp) => m!.index >= sp.start && m!.index < sp.end)) continue;
+      const s = sents.find((x) => m!.index >= x.start && m!.index < x.end) ?? { text, start: 0, end: text.length };
+      // Not an assertion ⇒ not a verdict. See HYPOTHETICAL_FRAME.
+      if (s.text.trim().endsWith("?")) continue;
+      if (HYPOTHETICAL_FRAME.test(s.text.slice(0, Math.max(0, m.index - s.start)))) continue;
+      out.push({ term: t.term, match: m[0], context: s.text.trim(), why: t.why, attributed: isAttributed(s.text) });
+    }
+  }
+  return out;
+}
+
+/** The SHIPPED tier: the same scan, over the shipped list. */
+const scanEvaluative = (text: string): EvaluativeHit[] => scanEvaluativeWith(AI_EVAL_LIST, text);
+
 // ── SOFT — legitimate in description. NEVER blocks; logged so the corpus can inform promotions. ──
 //
 // ★ `FORWARD_DENY_LIST` IS REUSED WHOLESALE AS THE SPINE OF THIS TIER, and that is the honest use of
@@ -451,6 +670,17 @@ for (const t of AI_TARGET_LIST) {
     );
   }
 }
+// The EVALUATIVE tier shares the same by-name space for the same reason: a logged hit must name exactly
+// one rule, or the calibration that decides promotion is reading an ambiguous label.
+const TARGET_NAMES = new Set(AI_TARGET_LIST.map((t) => t.term));
+for (const t of AI_EVAL_LIST) {
+  if (SOFT_TERMS.has(t.term) || HARD_NAMES.has(t.term) || TARGET_NAMES.has(t.term)) {
+    throw new Error(
+      `ai/guardrail: EVALUATIVE term "${t.term}" collides with an existing HARD/SOFT/TARGET term name. ` +
+        `Rename it — a logged verdict must name exactly one rule.`,
+    );
+  }
+}
 
 export interface HardHit {
   term: string;
@@ -463,9 +693,15 @@ export interface SoftHit {
   context: string; // ± a window around the match — this is the corpus for future HARD promotions
 }
 export interface GuardrailVerdict {
-  clean: boolean; // false ⇔ at least one HARD hit. SOFT hits NEVER make it false.
+  clean: boolean; // false ⇔ at least one HARD hit. SOFT and EVALUATIVE hits NEVER make it false.
   hardHits: HardHit[];
   softHits: SoftHit[];
+  /**
+   * ★ EVALUATIVE hits — verdicts on figures. ITS OWN FIELD, not merged into `softHits`, for two reasons:
+   * the calibration that decides promotion has to be able to count these separately from `\bwill\b`
+   * noise, and keeping the channel distinct is half of what makes the tier unable to reach `clean`.
+   */
+  evaluativeHits: EvaluativeHit[];
 }
 
 /** The matched substring. `ForwardViolation` carries the whole scanned string, not the match, so the
@@ -512,7 +748,7 @@ function scanTier(
  * ⚠ Pass the ASSERTIVE body only — see the header's scope note. Empty/blank input is trivially clean.
  */
 export function scanExplanationText(text: string): GuardrailVerdict {
-  if (!text || !text.trim()) return { clean: true, hardHits: [], softHits: [] };
+  if (!text || !text.trim()) return { clean: true, hardHits: [], softHits: [], evaluativeHits: [] };
 
   const hardHits: HardHit[] = scanTier(text, AI_HARD_ALL, HARD_TERMS).map(
     (h) => ({
@@ -534,8 +770,12 @@ export function scanExplanationText(text: string): GuardrailVerdict {
   const targets = scanTargets(text);
 
   return {
+    // ★ `clean` READS ONLY THE TWO BLOCKING CHANNELS. `scanEvaluative` cannot appear in this expression
+    //   because it has no hard channel to contribute — promoting the tier is a deliberate signature
+    //   change, never a slip. Asserted in verify-evaluative-tier.ts §"structurally unable to block".
     clean: hardHits.length === 0 && targets.hard.length === 0,
     hardHits: [...hardHits, ...targets.hard],
     softHits: [...softHits, ...targets.soft],
+    evaluativeHits: scanEvaluative(text),
   };
 }

@@ -172,7 +172,55 @@ async function main() {
 
     const visible = await api(base, "GET", `/chat/sessions/${sessionId}`);
     const vis = visible.json?.data?.messages ?? [];
-    ok("tool turns stay hidden from the transcript", vis.length === 3 && !vis.some((m: any) => String(m.content).includes("=== VYTAL")));
+
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    // ★ THIS ASSERTED `vis.length === 3` AND FAILED. THE NUMBER WAS WRONG, NOT THE CODE.
+    //
+    // A discuss session persists FOUR visible text rows, not three: the opening user row (hidden
+    // scaffolding, but carrying a `displayContent` twin — the line the reader sees themselves say),
+    // the opening assistant answer, the follow-up ask, and the follow-up reply. The `3` predates the
+    // display-twin split, when the opening user row was dropped outright.
+    //
+    // But "the count is stale" is a claim, and the alternative — tool turns leaking into the
+    // transcript — is a real defect that presents identically at a glance. So the count is no longer
+    // asserted at all. The property is: the visible set is EXACTLY the persisted text rows minus the
+    // twin-less openings, computed from the rows themselves. A leak fails it (a tool turn appears in
+    // `vis` but not in the text set); a dropped message fails it; a fifth legitimate turn does not.
+    // A hand-maintained integer could never tell those three apart, which is why it went stale
+    // silently rather than catching anything.
+    // ══════════════════════════════════════════════════════════════════════════════════════════════
+    const shape = await prisma.chatMessage.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, kind: true, role: true, isOpening: true, displayContent: true },
+    });
+    const textRows = shape.filter((r) => r.kind === "text");
+    const toolRows = shape.filter((r) => r.kind !== "text");
+    const hiddenScaffold = textRows.filter((r) => r.role === "user" && r.isOpening && r.displayContent == null);
+    const expected = textRows.length - hiddenScaffold.length;
+
+    console.log(`\n  ┌─ PERSISTED ROWS (${shape.length}) — what the transcript filter sees:`);
+    for (const r of shape) {
+      const twin = r.kind === "text" && r.role === "user" && r.isOpening ? (r.displayContent == null ? " · no display twin ⇒ HIDDEN" : " · display twin ⇒ shown") : "";
+      console.log(`  │   ${r.kind.padEnd(11)} ${r.role.padEnd(9)}${r.isOpening ? " opening" : "        "}${twin}`);
+    }
+    console.log(`  └─ ${textRows.length} text · ${toolRows.length} tool (${toolRows.map((r) => r.kind).join(", ") || "none"}) · ${hiddenScaffold.length} twin-less opening ⇒ expect ${expected} visible`);
+
+    const visIds = new Set(vis.map((m: any) => m.id));
+    ok(
+      "the transcript is EXACTLY the visible text rows — derived from the rows, never a constant",
+      vis.length === expected && textRows.filter((r) => !hiddenScaffold.includes(r)).every((r) => visIds.has(r.id)),
+      `${vis.length} visible vs ${expected} expected`,
+    );
+    ok(
+      "★ NOT ONE tool turn reached the transcript",
+      toolRows.length > 0 && toolRows.every((r) => !visIds.has(r.id)),
+      `${toolRows.length} tool rows persisted, ${toolRows.filter((r) => visIds.has(r.id)).length} leaked`,
+    );
+    ok(
+      "no grounding scaffolding reached the transcript either",
+      !vis.some((m: any) => String(m.content).includes("=== VYTAL")),
+    );
     console.log(`  → prompt on the final generation ≈ ${prov.lastPromptTokens()} tokens (history + 4 tool results)`);
 
     // ══════════════════════════════════════════════════════════════════════════

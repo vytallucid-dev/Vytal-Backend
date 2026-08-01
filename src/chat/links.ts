@@ -95,6 +95,22 @@ export const portfolioPath = (tab?: PortfolioTab | null): string => `/portfolio$
 
 export const watchlistPath = (): string => "/watchlist";
 
+/**
+ * The Health Hub — the whole scored universe in one place. Route is `/health-score`
+ * (app/(main)/health-score/page.tsx), NOT `/health-hub`: the folder predates the product name.
+ * That mismatch is exactly why the model must never type this one itself.
+ *
+ * ★ NO TAB PARAMETER, AND THAT IS A FINDING, NOT AN OMISSION. The Hub's three tabs — Briefing,
+ * Flags & Patterns, Screen — are `useState<TabId>` in components/health-hub/index.tsx. They are not
+ * routes, not query params, and not anchors: there is NO url that opens the Hub on Flags, and none
+ * that opens it on Screen. The scope switch (universe / holdings / watchlist) is the same — local
+ * state. So a tab argument could only ever produce a path that lands on Briefing while claiming to
+ * land somewhere else, which is the WRONG-PAGE failure this whole part exists to close, rebuilt on
+ * purpose. §POINTING AT A PAGE's standing rule already covers it: a section is described in words
+ * and the PAGE is linked.
+ */
+export const healthHubPath = (): string => "/health-score";
+
 /** ★ The pond page takes a UUID — which is precisely why the model must not be asked for one. It names
  *  a TICKER; the server walks stock → membership → peerGroup.id and builds the path from that. */
 export const peerGroupPath = (peerGroupId: string): string => `/research/peer-groups/${encodeSegment(peerGroupId)}`;
@@ -115,6 +131,34 @@ const PLACEHOLDER = /\{\{link:([^}\n]{0,80})\}\}/g;
  *  has no nested quantifier to backtrack on. Consumes the closing braces when they are there. */
 const DEBRIS = /\{\{\s*link\b[^{}\n]*\}{0,2}/g;
 
+// ── ★ THE SINGLE-BRACE MARKER — MEASURED LIVE, AND IT REACHED A READER VERBATIM. ──────────────────
+//
+//     "Tata Consultancy Services ({link:stock:TCS}) distributes a large slice of its earnings…"
+//
+// ONE brace pair instead of two. Every guard in this module missed it and each for its own reason, so
+// it is worth naming all three: PLACEHOLDER wants `{{`, DEBRIS wants `{{`, and `resolveAppLinks`
+// early-returns on `!text.includes("{{")` — so a reply whose ONLY marker is single-braced skipped the
+// sweep entirely. stripTypedPaths could not have helped either: it matches `[label](dest)`, and this
+// had no markdown around it at all. Three guards, one blind spot, shared.
+//
+// ★ IT IS THE WORST OF THE THREE POSSIBLE OUTCOMES. A dropped link leaves a hole someone reports; a
+// wrong link is worse; but syntax in the prose tells the reader, correctly, that something inside is
+// leaking out. It is also the ONE outcome this module's header already promised could not happen
+// ("a raw placeholder reaching a reader is the one outcome worse than a missing link").
+//
+// ⚠ STRIPPED, NOT RESOLVED — the deliberate choice. Accepting a second syntax would teach the model
+// that sloppy braces work, and the vocabulary drifts from there; it also widens the surface for no
+// gain, since 29 of 30 shipped markers are already well-formed. So this degrades to PROSE on exactly
+// the terms an unresolvable well-formed marker already degrades: the sanitised SUBJECT, no link, and a
+// log line. `Services ({link:stock:TCS})` becomes `Services (TCS)` — the sentence the model was
+// reaching for — while the syntax, and the link, do not survive.
+//
+// ⚠ THE COLON IS REQUIRED, so this can only ever match our own vocabulary being written badly. A bare
+// `{link}` or a JSON-ish `{ "link": … }` in ordinary prose is left completely alone.
+// ⚠ THE LOOKAROUND IS WHAT KEEPS IT OFF THE WELL-FORMED CASE. In `{{link:stock:TCS}}` the only viable
+// start is the inner brace, and `(?<!\{)` refuses it; the outer brace is followed by `{`, not `link`.
+const MALFORMED_SINGLE = /(?<!\{)\{\s*link\s*:\s*([^{}\n]{0,80})\}(?!\})/g;
+
 /** Link TEXT is not a safe place for brackets — they end the label early and break the anchor. */
 const label = (s: string): string => s.replace(/[[\]]/g, "").trim();
 
@@ -130,6 +174,64 @@ const label = (s: string): string => s.replace(/[[\]]/g, "").trim();
  */
 const inert = (s: string): string => s.replace(/[/()[\]<>|\\]/g, "").trim();
 
+// ── ★ THE TYPED-PATH GUARD ─────────────────────────────────────────────────────────────────────────
+//
+// THE WORST SHAPE THIS MODULE HAS SEEN, AND THE ONE IT COULD NOT SEE. Measured across five live runs
+// of the universe-scan build, three to four per run:
+//
+//     [the Health Hub's Flags & Patterns tab](/portfolio)      ← WORKING LINK, WRONG PAGE
+//     [Screen tab of the Health Hub](helithub)                 ← garbage destination
+//     [Market pillar](https://vytal.in)                        ← observed in an earlier build
+//
+// A dropped marker leaves a visible hole and someone reports it. A link that RESOLVES and lands on
+// the wrong page reports nothing: the reader clicks, sees a page, and quietly concludes Vytal's chat
+// does not know where things are. The vocabulary has forbidden typing a path since the clause was
+// written ("★ YOU NEVER WRITE A PATH, A URL OR A '/'"), and the model does it anyway — which is the
+// standing lesson of this whole file: the closed-world property has to be STRUCTURAL, not requested.
+//
+// So: any markdown destination the MODEL authored is removed before resolution, keeping the label as
+// plain prose. Two shapes, one rule.
+//   · root-relative `](/…)`   — the in-app case. Always wrong: the server builds every real in-app
+//                               path, from a validated row, and appends its own footer AFTER this.
+//   · absolute `](http…)`     — the external case. getStockNews forbids the model writing URLs
+//                               precisely because it invented one; citations are server-rendered.
+// A destination that is a placeholder — `[the read]({{link:stock:INFY}})` — is untouched: it is not a
+// path yet, and the wrapped-form substitution below is the sanctioned way to author one.
+//
+// ⚠ IT RUNS ON THE MODEL'S TEXT, BEFORE SUBSTITUTION. Running it after would strip the very paths this
+// module just built. And the two server footers (withAppLinks / withExternalSources) are appended by
+// the controller AFTER resolveAppLinks returns, so they are never in scope here either.
+const TYPED_DESTINATION = /\[([^\]\n]{0,120})\]\(\s*(?:\/[^)\s]*|https?:\/\/[^)\s]*|www\.[^)\s]*)\s*\)/g;
+
+/**
+ * Strip malformed single-brace markers, keeping the informative word. Returns the text and what it
+ * removed, raw, so the caller can log the exact string the model wrote.
+ *
+ * The replacement is the same `inert()` the unresolvable-marker branch uses, so a malformed marker can
+ * no more begin a path than a well-formed one whose ticker did not exist. A subject-less kind
+ * (`{link:health-hub}`) leaves nothing, which is this module's standing policy for an empty marker.
+ */
+export function stripMalformedMarkers(text: string): { text: string; stripped: string[] } {
+  const stripped: string[] = [];
+  const out = text.replace(MALFORMED_SINGLE, (whole, payload: string) => {
+    stripped.push(whole);
+    const [, subject = ""] = (payload ?? "").split(":");
+    return inert(subject);
+  });
+  return { text: out, stripped };
+}
+
+/** Strip model-authored link destinations, keeping the words. Returns the text and what it removed. */
+export function stripTypedPaths(text: string): { text: string; stripped: string[] } {
+  const stripped: string[] = [];
+  const out = text.replace(TYPED_DESTINATION, (whole, lbl: string) => {
+    stripped.push(whole);
+    // The label alone. A label that was empty leaves nothing rather than an empty bracket pair.
+    return (lbl ?? "").trim();
+  });
+  return { text: out, stripped };
+}
+
 export interface ResolvedLink {
   kind: string;
   path: string;
@@ -142,6 +244,14 @@ export interface ResolveResult {
   resolved: ResolvedLink[];
   /** Every placeholder that did not, with the raw payload — the signal that the vocabulary needs work. */
   unresolved: string[];
+  /** Every link destination the MODEL typed and this module removed. Non-empty means the vocabulary
+   *  is being ignored, which is worth a log line even though the reader is now protected from it. */
+  strippedPaths: string[];
+  /** Every MALFORMED marker removed — single-braced, so it never became a link. Its own field rather
+   *  than a second home in `unresolved`, for the same reason `strippedPaths` has one: "the ticker did
+   *  not exist" and "the syntax was wrong" are different failures that want different fixes, and a log
+   *  that merges them tells you a number instead of a cause. */
+  malformed: string[];
 }
 
 /** Per-call memo: one reply mentioning a stock three times costs one read, not three. */
@@ -189,6 +299,12 @@ async function resolveOne(m: Memo, kind: string, subject: string, modifier: stri
     }
     case "watchlist":
       return { kind, path: watchlistPath(), label: "your watchlist" };
+    // The fifth kind. Parameterless like `watchlist`: nothing to validate, nothing to look up, and
+    // no tab (see healthHubPath). A tab or scope the model passes is IGNORED rather than honoured —
+    // silently landing on the Briefing is the correct behaviour when the alternative is a link that
+    // promises Flags and does not deliver it.
+    case "health-hub":
+      return { kind, path: healthHubPath(), label: "the Health Hub" };
     case "peer-group": {
       const row = await resolveStock(m, subject);
       if (!row) return null;
@@ -226,7 +342,21 @@ export async function resolveAppLinks(text: string): Promise<ResolveResult> {
   //   spaced `{{ link : stock : X }}` — well-formed enough for a model to write and NOT matched by
   //   PLACEHOLDER — took the early return and skipped the debris sweep, putting raw braces in front of
   //   a reader. Caught by verify-app-links.ts §8. The cheap test is the safe one.
-  if (!text || !text.includes("{{")) return { text, resolved: [], unresolved: [] };
+  // ★ THE TYPED-PATH GUARD RUNS FIRST AND ALWAYS — before the "{{" early return, because a reply that
+  //   contains a hand-typed `](/portfolio)` and no placeholder at all is exactly the observed defect.
+  const guard = stripTypedPaths(text ?? "");
+  const strippedPaths = guard.stripped;
+  text = guard.text;
+
+  // ★ AND THE MALFORMED SWEEP RUNS BEFORE THE "{{" EARLY RETURN, for the same reason the typed-path
+  //   guard does: the observed defect was a reply whose ONLY marker was single-braced, so it contains
+  //   no "{{" at all and the early return was exactly what let it through. Running it here rather than
+  //   after substitution is safe because MALFORMED_SINGLE cannot match a well-formed `{{link:…}}`.
+  const mal = stripMalformedMarkers(text);
+  const malformed = mal.stripped;
+  text = mal.text;
+
+  if (!text || !text.includes("{{")) return { text, resolved: [], unresolved: [], strippedPaths, malformed };
 
   const m: Memo = new Map();
   const resolved: ResolvedLink[] = [];
@@ -247,7 +377,7 @@ export async function resolveAppLinks(text: string): Promise<ResolveResult> {
       raw,
     });
   }
-  if (!hits.length) return { text: text.replace(DEBRIS, ""), resolved, unresolved };
+  if (!hits.length) return { text: text.replace(DEBRIS, ""), resolved, unresolved, strippedPaths, malformed };
 
   const outcomes = await Promise.all(hits.map((h) => resolveOne(m, h.kind, h.subject, h.modifier).catch(() => null)));
 
@@ -273,5 +403,5 @@ export async function resolveAppLinks(text: string): Promise<ResolveResult> {
   });
   out += text.slice(cursor);
 
-  return { text: out.replace(DEBRIS, ""), resolved, unresolved };
+  return { text: out.replace(DEBRIS, ""), resolved, unresolved, strippedPaths, malformed };
 }

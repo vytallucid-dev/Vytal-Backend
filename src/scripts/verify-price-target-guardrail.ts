@@ -39,7 +39,7 @@ const RELAY: { text: string; note: string }[] = [
   { text: "They see ₹700 for the shares.", note: "★ pronoun-only attribution — deliberately blocks" },
   { text: "Cyient's price target is ₹700.", note: "★ possessive on the COMPANY is not attribution" },
   { text: "Prabhudas Lilladher has a target of Rs 635.", note: "★ THE ACCEPTED COST — 'has' cannot attribute (see the ruling)" },
-  { text: "TCS scores 74 in the Healthy band. The target is ₹4,500.", note: "clean sentence + a relayed target beside it" },
+  { text: "TCS scores 73 in the Healthy band. The target is ₹4,500.", note: "clean sentence + a relayed target beside it" },
 ];
 
 // ── SET 2 — ATTRIBUTED DESCRIPTION AND ORDINARY PROSE. Every one MUST pass clean. ─────────────────
@@ -60,7 +60,7 @@ const INNOCENT: { text: string; note: string }[] = [
   { text: "Results will be reported in October.", note: "the older innocent set must still pass" },
   {
     text:
-      "Cyient's health score is 61, in the Steady band. Separately, Moneycontrol reported that Prabhudas " +
+      "Cyient's health score is 64, in the Steady band. Separately, Moneycontrol reported that Prabhudas " +
       "Lilladher has a Hold rating with a target of Rs 635 — that is the brokerage's view, not Vytal's, " +
       "and it is not reflected in the score.",
     note: "a realistic answer that RELAYS a headline correctly attributed — the shape the tool asks for",

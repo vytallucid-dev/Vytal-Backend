@@ -1532,7 +1532,7 @@ Measured: 25 resolved, 1 slot won.
 
 When the echoing key is rendered by a host entry, the echo's arithmetic **attaches** to it:
 
-> "Sliding from a high base — composite crossed down out of Healthy (74.1 → 63.6). It's showing in 8 of
+> "Sliding from a high base — composite crossed down out of Pristine (74.1 → 63.6). It's showing in 8 of
 > your 10 scored holdings — 38 of the 95 we score as of July 2026."
 
 One slot, two facts, no duplication, no competition. When the key is not on the card, the echo does not

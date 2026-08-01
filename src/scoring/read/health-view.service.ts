@@ -34,6 +34,9 @@ import {
   composeLpVerdict,
   composeLmVerdict,
 } from "../lens-patterns/standing-context.js";
+// File-1 §5 verdict sentences, rendered onto the finding rows (Stage 3 of the copy catalogue).
+// Additive: the field is new, and nothing reads it until the frontend switches at Stage 5.
+import { renderVerdict } from "../findings/verdicts.js";
 import type {
   HealthSnapshotView,
   PillarView,
@@ -899,6 +902,7 @@ export async function buildHealthSnapshotView(
       tier: rf.tier as RedFlagView["tier"],
       triggeringValues: rf.triggeringValues ?? null,
       guardrailEventId: rf.guardrailEventId,
+      verdict: renderVerdict(rf.flagKey, rf.triggeringValues ?? null),
     }))
     .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
   const patterns: PatternView[] = snap.patterns
@@ -910,6 +914,7 @@ export async function buildHealthSnapshotView(
       magnitude: numN(p.magnitude),
       evidence: p.evidence ?? null,
       metricRefs: p.metricRefs ?? null,
+      verdict: renderVerdict(p.patternKey, p.evidence ?? null),
     }))
     .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
   const findings: HealthSnapshotView["findings"] = { redFlags, patterns };

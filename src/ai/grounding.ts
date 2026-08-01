@@ -226,12 +226,36 @@ const FLOW_CATEGORY_LABELS: Record<string, string> = {
   C_insider: "Insider",
   D_block: "Block",
 };
-/** The authored human name a finding carries in its evidence / triggeringValues (`name`), or null
- *  when absent (honest — we never humanize the key ourselves here). */
-const findingName = (x: unknown): string | null => {
-  const n = x && typeof x === "object" ? (x as { name?: unknown }).name : null;
-  return typeof n === "string" && n.trim() ? n : null;
-};
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ P1 · THE MODEL NOW READS THE CATALOGUE. THIS WAS THE ROOT CAUSE.
+//
+// This block used to read `evidence.name` — a name each RULE writes into its own evidence payload.
+// That is a FOURTH vocabulary, and it disagreed with the canonical one on 16 of 34 keys:
+//
+//     composition_F1_atypical      evidence "Composition (atypical-for-band)"  canonical "Atypical Composition"
+//     foundation_N3_deleveraging   evidence "Deleveraging"                     canonical "Sustained deleveraging"
+//     ownership_R1_pledge          evidence (ABSENT) → the RAW KEY went to the model
+//     + 13 title-case / sentence-case splits across the C, B, D, I and N families
+//
+// So the model was told one product vocabulary while the reader looked at another, and for R1 — the
+// single loudest finding in the system — it was handed `ownership_R1_pledge` and left to invent a
+// human name for it. A model asked to describe a product it is being shown inconsistent names for
+// will fill the gap, which is exactly the behaviour this whole build exists to stop.
+//
+// `catalogueFindingName` is the SAME resolver the stock page, the census, the peer-group board and
+// the alert picker use — a module import, no fetch. And the sentence is now the row's
+// SERVER-RENDERED verdict (Stage 3 put it there), not a second assembly from raw evidence.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+import { findingName as catalogueFindingName } from "../catalogue/index.js";
+
+/** The canonical display name for a finding key. Never null, never a raw key: the catalogue resolver
+ *  falls back to its humanize form for a key it does not carry, and the Stage-6 CI gate makes that
+ *  fallback unreachable for anything the engine actually emits. */
+const findingName = (key: string): string => catalogueFindingName(key);
+
+/** The row's server-rendered verdict — the SAME sentence the reader sees on the stock page. */
+const rowVerdict = (v: unknown): string | null =>
+  typeof v === "string" && v.trim() ? v : null;
 
 // ── Stock fact block ───────────────────────────────────────────────────────────────────────
 function renderStockFactBlock(view: HealthSnapshotView): string {
@@ -282,7 +306,27 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
     L.push(scoreKv("Divergence gap (max−min pillar subtotal)", vd.divergence.gap));
     L.push(kv("Divergence highest pillar", vd.divergence.high ? `${vd.divergence.high.pillar}=${scoreStr(vd.divergence.high.subtotal)}` : null));
     L.push(kv("Divergence lowest pillar", vd.divergence.low ? `${vd.divergence.low.pillar}=${scoreStr(vd.divergence.low.subtotal)}` : null));
-    L.push(kv("Divergence stored scalar", vd.divergence.storedScalar));
+    // ★ THE STORED SCALAR IS WITHHELD FROM THE BLOCK — same lock as the pillar weights above it, and for
+    // literally the same arithmetic reason as the `contribution` removal one level down.
+    //
+    // `score_snapshots.divergence` is NOT the gap printed one line up. It is the engine's own scalar,
+    //   stored = market − Σ(w_p / Σw_nonMarket) · subtotal_p        (composite/composite.ts nonMarketBlend)
+    // i.e. a linear function of the WITHHELD pillar weights over the four subtotals this block already
+    // prints. Measured on the live universe: least-squares over the 91 stocks with no redistribution
+    // recovers the non-market weight ratio to a worst residual of 0.0001 points. Printing it beside the
+    // subtotals hands over the weight vector, exactly as printing `contribution` beside `metricScore`
+    // re-derived the metric weights by division.
+    //
+    // It is ALSO a second number called "divergence" with a different definition, a different sign
+    // convention and a different magnitude: 50 of 94 stocks carry a NEGATIVE stored scalar beside a
+    // positive gap (TCS: gap 47.4, stored −37.6). Two contradictory "divergence" numbers three lines
+    // apart is an invitation to state the wrong one — and the gap is the one every product surface shows.
+    //
+    // And it cannot be trusted as a fact anyway: composite/persist.ts writes `null → 0`, so a stock whose
+    // Market pillar is unavailable stores 0, indistinguishable from a genuine zero (live: VEDL).
+    //
+    // `DivergenceView.storedScalar` stays on the read view / API — this is a render-layer withholding,
+    // not a data change, exactly like the band cut range above.
     L.push(
       kv(
         "Pond mask",
@@ -406,18 +450,24 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
     L.push("No red flags or patterns fired.");
   } else {
     for (const rf of f.redFlags) {
-      // Name-first: the authored finding name leads; the raw flagKey stays bracketed for citation
-      // and provenance. The name lives in the finding's evidence (mapped to triggeringValues here).
-      const rfName = findingName(rf.triggeringValues);
-      const rfHead = rfName ? `"${rfName}" [${rf.flagKey}]` : rf.flagKey;
-      L.push(`- RedFlag ${rfHead}: severity=${val(rf.severity)}, tier=${val(rf.tier)}, triggeringValues=${jsonOr(rf.triggeringValues)}`);
+      // Name-first: the CANONICAL finding name leads; the raw flagKey stays bracketed for citation
+      // and provenance. The name comes from the catalogue — never from evidence, never humanized here.
+      const rfHead = `"${findingName(rf.flagKey)}" [${rf.flagKey}]`;
+      const v = rowVerdict(rf.verdict);
+      L.push(
+        `- RedFlag ${rfHead}: severity=${val(rf.severity)}, tier=${val(rf.tier)}` +
+          (v ? `, verdict="${v}"` : "") +
+          `, triggeringValues=${jsonOr(rf.triggeringValues)}`,
+      );
     }
     for (const pt of f.patterns) {
-      const ptName = findingName(pt.evidence);
-      const ptHead = ptName ? `"${ptName}" [${pt.patternKey}]` : pt.patternKey;
+      const ptHead = `"${findingName(pt.patternKey)}" [${pt.patternKey}]`;
+      const v = rowVerdict(pt.verdict);
       L.push(
         `- Pattern ${ptHead}: direction=${val(pt.direction)}, severity=${val(pt.severity)}, ` +
-          `magnitude=${val(pt.magnitude)}, evidence=${jsonOr(pt.evidence)}, metricRefs=${jsonOr(pt.metricRefs)}`,
+          `magnitude=${val(pt.magnitude)}` +
+          (v ? `, verdict="${v}"` : "") +
+          `, evidence=${jsonOr(pt.evidence)}, metricRefs=${jsonOr(pt.metricRefs)}`,
       );
     }
   }

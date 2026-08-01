@@ -33,6 +33,7 @@ import {
 import { formatINR, pctStr, scoreStr, plural, ordinal, glossFor, bandLabel, monthYear } from "./copy.js";
 import { describeDeclined, reasonPhrase } from "./coverage.js";
 import { plainClaimFor } from "./plain-claims.js";
+import { renderVerdict } from "../scoring/findings/verdicts.js";
 import { rateFor, type BaseRateSnapshot } from "./base-rates.js";
 import type {
   ReaderContext,
@@ -1047,7 +1048,7 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
  * THE FIX. When the echoing key is rendered as an ELEVATED slot, the echo's arithmetic ATTACHES to that
  * entry instead of competing with it:
  *
- *     Sliding from a high base — composite crossed down out of Healthy (74.1 → 63.6). It's showing in
+ *     Sliding from a high base — composite crossed down out of Pristine (74.1 → 63.6). It's showing in
  *     8 of your 10 scored holdings — 38 of the 95 we score as of July 2026.
  *
  * One slot, two facts, no duplication, no competition. Echo then delivers EVERY time it fires.
@@ -1146,12 +1147,35 @@ export function attachEchoAnnotations(slots: ResolvedEntry[], overflow: Resolved
  * is authored, or its figures are absent, the analyst verdict is the honest fallback.
  *
  * Never a transformation of the verdict at render time — that would re-author its meaning (§0.10).
+ *
+ * ── ★ THE FALLBACK GOES THROUGH renderVerdict, NOT STRAIGHT AT evidence.verdict ────────────────────
+ * It used to read `f.evidence.verdict` directly. That made this the LAST place in the product where a
+ * finding's sentence was authored outside the catalogue: the engine's own assembled string won here,
+ * while the File-1 authored renderer won on the stock page, the chat, and the grounding block. Same
+ * fired finding, two sentences, and the one this card showed was the one nobody had edited.
+ *
+ * `renderVerdict` is a strict SUPERSET of what this line did — its own precedence is
+ * authored-renderer → evidence.verbatim → evidence.verdict → generic — so nothing that resolved before
+ * stops resolving. It only adds the tier that should always have been in front.
+ *
+ * ⚠ THE PLAIN-CLAIM LAYER ABOVE IS NOT TOUCHED, and must not be. It exists because the File-1 verdicts
+ * read as analyst register on an ORIENTATION card, which is a relational decision (§0.10 / §0.11), not
+ * a copy-freshness one. Repointing the fallback does not make the plain claims redundant; it makes the
+ * sentence they fall back to the same one every other surface shows.
+ *
+ * ⚠ THE lens_* PATH IS UNCHANGED BY CONSTRUCTION. Composed keys (`lens_lm3_<metric>`) have no entry in
+ * the renderer catalog and cannot — the suffix is one key per metric that has ever fired. renderVerdict
+ * therefore falls through to `evidence.verbatim || evidence.verdict` for them, which is exactly the
+ * line this replaced. evidence.verdict remains the only authority for that family.
  */
 export function findingClaim(f: ObjectFinding): string {
   const plain = plainClaimFor(f.key, f.evidence);
   if (plain) return plain;
-  const verdict = typeof f.evidence?.verdict === "string" ? (f.evidence.verdict as string) : null;
-  return verdict ?? (f.kind === "red_flag" ? "A red flag is standing on this stock." : "A finding is standing on this stock.");
+  const rendered = renderVerdict(f.key, f.evidence).trim();
+  if (rendered) return rendered;
+  // Unreachable in practice — renderVerdict has its own generic and never returns empty. Kept so this
+  // function is total on its own terms rather than on another module's promise.
+  return f.kind === "red_flag" ? "A red flag is standing on this stock." : "A finding is standing on this stock.";
 }
 
 /** The echo's lead — the same preferred-claim resolution. */

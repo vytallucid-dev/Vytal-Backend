@@ -1,3 +1,4 @@
+import compression from "compression";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -46,6 +47,7 @@ import { jobsRouter } from "./routes/job-routes.js";
 import { pipelinesRouter } from "./routes/pipelines-route.js";
 import { retentionAdminRouter } from "./routes/admin/retention-route.js";
 import { ingestionErrorsRouter } from "./routes/ingestion/ingestion-errors-route.js";
+import { catalogueRouter } from "./routes/catalogue-route.js";
 import { resultsRouter } from "./routes/results-route.js";
 import { stocksRouter } from "./routes/stock-health-route.js";
 import { peerGroupHealthRouter } from "./routes/peer-group-health-route.js";
@@ -66,6 +68,40 @@ export const createApp = () => {
 
   app.use(cors());
   app.use(helmet());
+
+  // ── RESPONSE COMPRESSION ──────────────────────────────────────────────────────────────────────
+  // Every read route on this server sends JSON, and JSON is the most compressible thing we ship:
+  // the catalogue is 54 KB on the wire and 14.6 KB gzipped. This was the only transport-level cost
+  // nobody was paying attention to, because nothing here ever set a Content-Encoding by hand.
+  //
+  // ORDER — after cors + helmet, before express.json() and before every route mount:
+  //   · AFTER cors()    a preflight OPTIONS is ended by the cors handler with an empty body. It
+  //                     never reaches this layer, so it never pays for the wrapper it cannot use.
+  //   · AFTER helmet()  helmet only sets response headers synchronously; it neither writes a body
+  //                     nor cares whether one is later encoded.
+  //   · BEFORE routes   compression works by wrapping res.write/res.end, so it has to be installed
+  //                     before the handler that calls them. A middleware registered after a route
+  //                     mount is simply never reached for that route.
+  //
+  // ⚠ ETag INTERACTION — the thing to get right, because ETags are the only cache mechanism here.
+  // Express computes its default WEAK ETag inside res.json/res.send, from the body it was handed —
+  // that is, before this layer encodes anything. So the same resource keeps ONE ETag whether it goes
+  // out gzipped or identity, which is exactly what a weak validator is allowed to do (RFC 9110 §8.8.3:
+  // weak comparison is for representations that are semantically, not byte-, equivalent). Conditional
+  // requests keep working unchanged, and a 304 carries no body to compress in the first place.
+  //
+  // The one strong ETag in the codebase is the catalogue's `"${version}"` (catalogue-controller.ts),
+  // which is public + shared-cacheable and now has two encodings behind one validator. That is safe
+  // ONLY because compression sets `Vary: Accept-Encoding` on everything it considers — including
+  // responses it declines to compress — so a shared cache keys the gzip and identity variants apart
+  // instead of handing a gzip body to an identity-only client. The Vary header is the load-bearing
+  // part of adding this, not the byte saving.
+  //
+  // Defaults are kept deliberately: threshold 1024 (below that the gzip header costs more than it
+  // saves) and compression.filter (compressible content-types only, and it stands down on
+  // `Cache-Control: no-transform`). Nothing on this server streams or sets its own Content-Encoding.
+  app.use(compression());
+
   app.use(express.json());
 
   // Register routes.
@@ -119,6 +155,13 @@ export const createApp = () => {
   // Public, no auth; mounted under /api/v1 (envelope style). Reported numbers come from
   // the per-family quarterly_results tables; upcoming from corporate_events earnings.
   app.use("/api/v1/results", resultsRouter);
+
+  // Read API — THE COPY CATALOGUE. Static product vocabulary: every finding's name, description and
+  // interpretive boundary, the three-lens faces, the portfolio library's boundaries, and the guardrail
+  // signatures. Public, no auth, no DB read — the response is assembled from frozen module constants
+  // and changes on deploy only, which is why it is the one route in this file that sets a `public`
+  // Cache-Control (relational's `private, no-store` is the opposite case; see the controller header).
+  app.use("/api/v1/catalogue", catalogueRouter);
 
   // Read API — per-stock Health Score. Mounted at /api/stocks (no v1) to match the
   // frontend hook path. Canonical "health snapshot read" reused by later surfaces.

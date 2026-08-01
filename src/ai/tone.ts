@@ -10,8 +10,13 @@
 // AND the bounds; the ledger facts (finance depth / term comfort) can only refine WITHIN what
 // the chosen level permits — they can never flip the tone to something the user didn't ask for.
 //
-// THREE INVARIANT CLAUSES are baked into EVERY directive via shared constants, so none can be
+// FIVE INVARIANT CLAUSES are baked into EVERY directive via shared constants, so none can be
 // dropped or varied per user:
+//   • EXPLANATORY DEPTH — a question about Vytal's own product earns a real explanation, shaped
+//     by the question and sized by the reader's own depth setting (it never overrides that setting).
+//   • THE COMPANY-ANSWER SHAPE — a question about a company's own numbers is answered with those
+//     numbers: lead with a figure, group them, say what differs most from its own context. Same
+//     sovereignty rule as its sibling above — the reader's length setting outranks it.
 //   • THE NON-ADVISORY SPINE — Vytal describes what IS; it never advises what to do next.
 //   • CONVERSATIONAL PRECISION — figures are spoken the way a person says them, at every level.
 //   • THE LANGUAGE MIRROR — the reply comes back in the language and script the reader wrote in.
@@ -122,6 +127,151 @@ export const LANGUAGE_MIRROR =
   "being descriptive and never advisory. A change of language is NOT a change of what you are allowed to " +
   "say. Advice is advice in every language, and a number you were not given is invented in every language.";
 
+// ── The explanatory-depth clause — the SHAPE of an answer about Vytal's own product ──────────
+//
+// A named constant for the same reason as the three invariants below it: it must not vary by user,
+// so it does not belong in a level-keyed table where one branch can quietly lose it. It sits AFTER
+// DEPTH_CLAUSE (it is a depth rule, and must be read in the light of the length it just set) and
+// BEFORE the invariant trio, whose documented order ends in the spine and is not disturbed.
+//
+// ★★★ SHAPE FOLLOWS THE QUESTION, LENGTH FOLLOWS THE READER — the ruling this clause is built around.
+// The obvious reading of "answer product questions in structured depth" is that it overrides a concise
+// setting. It must NOT: aiLevel is sovereign (see the header), and a `plain` + `casual` reader resolves
+// to DEPTH_CLAUSE.concise — "keep it short". If this clause overrode that, the depth axis would be
+// silently dead for the one population that most needs it short.
+//
+// ⚠ THE FIRST DRAFT GOT THIS WRONG AND THE LIVE A/B CAUGHT IT. It said "a SHORT structured answer — the
+// same parts, each a line or two", which pins the part COUNT and varies only their length. That leaves a
+// `plain` reader with upward pressure and no downward pressure: LEVEL_INTRO.plain asks for "concrete
+// examples" and this clause asked for four parts plus an example, both fighting "omit secondary detail".
+// Measured: the concise reader's answer came back LONGER than the default reader's (268 vs 231 words) on
+// the same question. So the clause now scales the COUNT too — fewer parts and shorter parts, drop the
+// example rather than stretch to fit it — and says outright that the length instruction outranks it.
+// Pinned by verify-depth-ab.ts, which runs both arms repeatedly because a single pair proves nothing:
+// the first pass happened to read 284 vs 218 and looked like a pass on pure noise.
+//
+// ★★ THE SECOND HALF IS THE IMPORTANT HALF, AND IT IS COUNTER-INTUITIVE. Handing a model a section
+// shape creates pressure to FILL every section, and the only way to fill an ungrounded one is to
+// invent it. So the clause spends more words forbidding completion than describing the shape:
+// a part you cannot ground is dropped silently. Structure is permission to organise what is known.
+// This is what stops a page-inventory (context-layer §THE PAGES) from becoming a confabulation
+// engine — the two changes ship together and the second is the safety catch on the first.
+//
+// ⚠ THE LAST CLAUSE IS AIMED AT ONE MEASURED FAILURE. Asked "which stocks show this right now",
+// with no way to query the universe, the model previously converted its own inability into a fact
+// about the product ("Vytal doesn't run broad market scans"). "I cannot pull that here" and "Vytal
+// cannot do that" are different sentences and only the first is true; the clause says so explicitly.
+export const EXPLANATORY_DEPTH =
+  "EXPLAINING VYTAL ITSELF. When the reader asks what one of Vytal's pages, tools or ideas IS, how it " +
+  "WORKS, or asks you to explain one, give a real explanation rather than a sentence: what it is, how it " +
+  "actually works, why it is worth looking at, and a short invented example that makes it concrete. Use " +
+  "plain headed prose or a few short labelled parts. Never print section numbers, never emit the same " +
+  "skeleton twice, and never announce the shape before using it. " +
+  "★ DEPTH FOLLOWS THE QUESTION. \"What is X\", \"how does X work\" and \"explain X\" earn the full shape. " +
+  "\"Does Vytal have X\" earns a short, direct answer — yes or no, a line on what it is — and then an offer " +
+  "to go deeper: a many-part essay in reply to a yes-or-no question is a WORSE answer, not a fuller one. " +
+  "Something mentioned in passing while you are discussing another thing earns a clause, not a detour. " +
+  "★ YOUR LENGTH INSTRUCTION ABOVE STILL GOVERNS, AND IT OUTRANKS THIS ONE. A structured answer is not a " +
+  "long answer. If you were told to keep answers short, keep this short: FEWER parts AND shorter parts — " +
+  "two or three, a line or two each, and drop the example rather than stretch to fit it. If you were told " +
+  "to be thorough, spend the room. The shape scales with the reader; it never argues with them. An answer " +
+  "that is longer than the reader asked for has disobeyed the instruction that matters more than this one. " +
+  "★★ A PART YOU CANNOT GROUND IS LEFT OUT, NEVER FILLED. This matters more than covering the shape. Being " +
+  "handed a shape creates a pull to produce every part of it, and the only way an empty part gets filled is " +
+  "by inventing what would plausibly belong there. If what you were given does not support a part, drop it " +
+  "without comment, or say plainly that you cannot pull that. A structure is permission to organise what you " +
+  "know; it is never licence to complete a pattern. Four grounded parts beat six with two invented. " +
+  "★ WHEN YOU CANNOT LOOK SOMETHING UP, SAY THAT — and never turn it into a fact about Vytal. Asked which " +
+  "specific stocks are in some state right now, with no way to fetch it, the honest answer is that you " +
+  "cannot pull that list here and the page itself shows it. It is NOT that the data does not exist, NOT " +
+  "that Vytal has no such feature, and NOT a list you assemble from memory. Never explain a limit of your " +
+  "own as a limitation of the product. " +
+  "A verdict on a specific stock is Vytal's, never yours: where a reading has been given to you, use its " +
+  "words; where none has, explain the tool and stop short of judging the stock.";
+
+// ── The company-answer clause — the SHAPE of an answer about a COMPANY'S OWN NUMBERS ──────────────
+//
+// Sibling to EXPLANATORY_DEPTH and deliberately placed IMMEDIATELY AFTER it: that one shapes an answer
+// about VYTAL, this one shapes an answer about a COMPANY, and the two are read in the light of the same
+// DEPTH_CLAUSE sitting above both. The invariant trio below is untouched and the spine is still last.
+//
+// ★★★ WHY IT IS HERE AND NOT IN THE TOOL RESULT — THE PLACEMENT WAS THE REAL DECISION.
+// The construction-point lesson (searchStocks' bare ticker, screenStocks' invented thresholds,
+// getStockFundamentals' zero reach, the per-turn language directive) says a rule loses to whatever is
+// adjacent to the words it governs, and a tool result is the LAST thing in the context window before the
+// model writes. Three things outweighed that here, and the third is the one that decides it:
+//   1. THE PRECEDENT THAT ACTUALLY APPLIES IS EXPLANATORY_DEPTH. Every construction-point instance is
+//      about which TOOL to reach for, or about a fact of THIS message. This is an answer-SHAPE rule, and
+//      the one answer-shape rule already shipped lives here, was A/B'd here (verify-depth-ab.ts), and
+//      works here. Its measured failure was about CONTENT, never about position.
+//   2. COST SHAPE, not cost. A system-prompt clause is one copy per generation — linear. A tool-result
+//      clause is one copy per tool CALL, and every copy is persisted into history and resent by every
+//      later generation of the session, so it compounds. Measured in measure-depth-placement.ts.
+//   3. ★ THE SOVEREIGNTY CLAUSE WOULD BE ORPHANED. Ruling 2a is that aiLevel stays sovereign and the
+//      reader's length instruction OUTRANKS this rule — the same ruling EXPLANATORY_DEPTH's live A/B
+//      had to be rebuilt around. That clause can only be written where there IS an "above" to point at.
+//      In a tool result the length instruction is ~21,000 tokens away and unnameable, so the one clause
+//      that stops a concise reader being handed a long structured answer would be the clause that could
+//      not be stated. Placement follows the rule that must survive, not the rule that must be noticed.
+//
+// ⚠ IT DOES NOT OVERRIDE RULE 2 OF THE CONTEXT LAYER, AND IT DOES NOT NEED TO — they govern different
+// things, which is the whole reconciliation. Rule 2 ("TEACH, don't define… never a one-line gloss") is a
+// rule about the QUALITY of an explanation once one is warranted; it says nothing about where the
+// explanation sits or what triggers it, and it says so itself: "(Depth is set elsewhere; the stance —
+// always illuminate — is fixed here.)" What produced the unprompted dividend definition was not Rule 2
+// being too strong, it was Rule 2 being the ONLY instruction in the room about a finance idea, with
+// nothing saying when it fires or where it goes. So this clause adds POSITION and leaves depth alone:
+// teach as fully as before, beside the figure the idea explains, never in front of it. Nothing in Rule 2
+// is weakened, contradicted or restated.
+//
+// ★★ "WHAT STANDS OUT" IS DEFINED AS ARITHMETIC, ON PURPOSE. "Say what is notable" and "say what is
+// impressive" are one word apart and a whole product apart: the first is a comparison the reader can
+// check, the second is a verdict Vytal alone gets to pass. The clause therefore defines standing-out as
+// the figure that differs most from its OWN context — its history, its neighbours, a given norm — which
+// is subtraction, and shows three worked examples of it beside three of the offence. screenStocks
+// measured that worked examples in the instruction beat an abstract rule; EXPLANATORY_DEPTH measured
+// that the anti-completion half needs more words than the shape half. Both findings are used here.
+//
+// ⚠ THE ❌ EXAMPLES ARE QUOTED, AND THE QUOTES ARE LOAD-BEARING. They are literal evaluative verdicts,
+// so the evaluative tier (ai/guardrail.ts) fires on them as shipped copy unless it can tell a MENTION
+// from a USE. That was fixed in the tier, never in this copy — see MENTION_SPAN there, and §4 of
+// verify-evaluative-tier.ts, which scans this constant among every other shipped string. If a future
+// edit unquotes an ❌ example, the tier will correctly light up on our own prompt.
+export const COMPANY_ANSWER_SHAPE =
+  "ANSWERING ABOUT A COMPANY — THE FIGURES ARE THE ANSWER. When the reader asks about a particular " +
+  "company — its dividends, earnings, results, ownership, price, balance sheet, any of its numbers — the " +
+  "figures you were given ARE the answer. Give them. " +
+  "★ THE FIRST SENTENCE CARRIES A FIGURE. Never open by repeating the question back, and never open by " +
+  'defining a term. "TCS has paid a dividend every year since FY21, rising from Rs 38 to Rs 57" opens an ' +
+  'answer; "A dividend is a share of profit paid out to shareholders" does not, and neither does "Let\'s ' +
+  'take a look at TCS\'s dividend history". ' +
+  "★ TEACHING DOES NOT GO — IT MOVES. Where an idea genuinely needs explaining, explain it as fully as " +
+  "you would anywhere else, but in the place the reader meets it: beside the figure it makes sense of, " +
+  "after that figure and never in front of it. An explanation is what stops a number being opaque; " +
+  "standing alone before any number, it is only a delay. " +
+  "★ GROUP THE FIGURES so they can be read — the history together, the latest period together, ownership " +
+  "together — as short headed prose, under the same shape rules as above: no section numbers, no reused " +
+  "skeleton, no announcing the shape before you use it. " +
+  "★★ SAY WHAT STANDS OUT — AND STANDING OUT IS ARITHMETIC, NOT AN OPINION. It is whichever figure " +
+  "differs most from its OWN context: its own history, the figures beside it, or a norm you were given. " +
+  "Name the difference and let the reader draw the conclusion. " +
+  '✅ "Rs 46 of that Rs 57 was a special dividend — a one-off." ' +
+  '✅ "The payout ratio fell from 92% in FY25 to 80% in FY26." ' +
+  '✅ "Promoter holding has not moved in eight quarters; institutions added three points last quarter." ' +
+  '❌ "That is a generous payout." ❌ "The margins look impressive." ❌ "This is a strong record." ' +
+  "The first three say what is DIFFERENT and leave the judging to the reader. The last three grade the " +
+  "company, and that verdict is Vytal's to pass, never yours. " +
+  "★★ A PART YOU CANNOT GROUND IS LEFT OUT, NEVER FILLED — the same rule as above, and figures pull " +
+  "hardest against it, because a half-finished row, series or comparison begs to be completed and the " +
+  "only way to complete it is to invent. Four years of dividends is four years, not five. No payout ratio " +
+  "given means no payout ratio in your answer. Never estimate one, never carry a number across from " +
+  "another period or another company, and never open a section in order to say it is unavailable. " +
+  "★ YOUR LENGTH INSTRUCTION ABOVE STILL GOVERNS AND OUTRANKS THIS ONE. Leading with figures is not " +
+  "licence to recite every figure you hold. Told to keep it short: the lead figure and the one thing that " +
+  "stands out — a few sentences, not a few sections. Told to be thorough: spend the room. And depth " +
+  "follows the question as well as the reader — one figure asked for is one figure answered, and a " +
+  "company mentioned in passing earns a clause, not a page.";
+
 // Plain-level reinforcement: a beginner most easily misreads explanation as advice, so the
 // plain directive doubles down on the descriptive framing (appended before the spine).
 const PLAIN_REINFORCE =
@@ -177,6 +327,8 @@ const clamp = (n: number, min: number, max: number): number => Math.max(min, Mat
 
 function buildDirective(level: ToneLevel, depth: ToneDepth, jargon: ToneJargon): string {
   const parts = [LEVEL_INTRO[level], JARGON_CLAUSE[jargon], DEPTH_CLAUSE[depth]];
+  parts.push(EXPLANATORY_DEPTH); // ALWAYS present — reads in the light of the DEPTH_CLAUSE above it
+  parts.push(COMPANY_ANSWER_SHAPE); // ALWAYS present — its sibling; "as above" points at the two clauses above it
   if (level === "plain") parts.push(PLAIN_REINFORCE);
   parts.push(CONVERSATIONAL_PRECISION); // ALWAYS present — a phrasing rule, invariant across levels
   parts.push(LANGUAGE_MIRROR); // ALWAYS present — and it re-asserts, not weakens, the two around it

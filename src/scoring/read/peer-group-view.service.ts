@@ -12,6 +12,8 @@
 // recomputed here — this is a pure read over already-committed rows.
 
 import { prisma } from "../../db/prisma.js";
+// The ONE severity ordering (File 1 §5, total over all eight tokens) — see `worseSeverity` below.
+import { severityWeight as severityRank } from "../../catalogue/divergence.js";
 import { getSnapshotSeries } from "./scoring-read.service.js";
 import {
   computeScopeAggregate,
@@ -68,9 +70,11 @@ const DIVERGENCE_WIDE = 25;
 const TRAJECTORY_EPS = 1.0;
 const MOVER_CAP = 10; // top-N each side; honestly capped (ponds are ≤10 today)
 
-const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
-const severityRank = (s: string | null): number =>
-  s == null ? 99 : SEVERITY_ORDER[s.toLowerCase()] ?? 50;
+// ── SEVERITY ORDERING — imported, not redeclared. See the long note in
+//    universe-view.service.ts: the local 4-token map that used to live here omitted the four §5E
+//    pattern tones (red · amber · green · recovery), which made `worseSeverity` return whichever
+//    argument came first and sorted red patterns below "low" structural cards. The catalogue's
+//    `severityWeight` is total over all eight tokens.
 const worseSeverity = (a: string | null, b: string | null): string | null =>
   severityRank(a) <= severityRank(b) ? a : b;
 

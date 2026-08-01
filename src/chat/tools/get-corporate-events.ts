@@ -8,6 +8,7 @@
 import { buildCorporateEventsView } from "../../scoring/read/corporate-events.service.js";
 import type { CorporateEventsView } from "../../scoring/read/corporate-events.service.js";
 import { notInUniverse } from "./boundary.js";
+import { parseEventDescription, renderComponents, SUPPRESSED_TAIL_NOTE } from "./event-description.js";
 import { kvLine, numStr, NA, isNum } from "./shared.js";
 import type { ChatTool, ToolResult } from "./types.js";
 
@@ -26,7 +27,15 @@ const DESCRIPTION =
   "coming up for a company, when results are due, or about a dividend or split. Set upcoming=false to look " +
   "BACKWARD at events that already happened. Dates marked unconfirmed are exchange-indicated and can move — " +
   "say so rather than presenting them as fixed. This is calendar data only: it carries no view on the share " +
-  "price. Requires the exact NSE ticker.";
+  "price. " +
+  // ★ THE OTHER HALF OF A DIVIDEND QUESTION. Measured: "what's the dividend history of TCS" called this
+  //   tool alone and answered with four payment dates — no payout ratio, no yield, because neither is
+  //   here and nothing said where they were. This clause is the pointer; getStockFundamentals' own
+  //   description carries the matching half.
+  "★ This tool has the PAYMENTS; it does not have what they are WORTH. For the payout RATIO (what share " +
+  "of profit the dividends consumed) and the dividend YIELD, call getStockFundamentals as well — a " +
+  "question about a company's dividends usually wants both. " +
+  "Requires the exact NSE ticker.";
 
 const PARAMETERS = {
   type: "object",
@@ -55,10 +64,20 @@ function render(v: CorporateEventsView, upcoming: boolean, days: number): string
     if (e.splitRatio) extras.push(`split ratio ${e.splitRatio}`);
     if (e.exDate) extras.push(`ex-date ${e.exDate}`);
     if (e.recordDate) extras.push(`record date ${e.recordDate}`);
+    // ★ THE DESCRIPTION NO LONGER REACHES THE MODEL UNEXAMINED. Three outcomes, and only the first
+    //   passes text through: see event-description.ts for the ₹57 case this exists to close. A tail
+    //   carrying a figure we cannot attribute is DROPPED, never shown — that configuration is the bug.
+    const verdict = parseEventDescription(e.description, e.dividendAmount);
+    const components = renderComponents(verdict, e.dividendAmount);
+    if (components) extras.push(components);
+    const tail =
+      verdict.kind === "clean" && verdict.text ? ` — ${verdict.text}`
+        : verdict.kind === "suppress" ? ` — ${SUPPRESSED_TAIL_NOTE[verdict.reason]}`
+        : "";
     L.push(
       `  ${e.eventDate} · ${e.eventType} · impact ${e.impactLevel ?? NA} · ${e.isConfirmed ? "confirmed" : "NOT confirmed (exchange-indicated, may move)"}` +
         (extras.length ? ` — ${extras.join(", ")}` : "") +
-        (e.description ? ` — ${e.description}` : ""),
+        tail,
     );
   }
   L.push(kvLine("Total events in window", v.events.length));

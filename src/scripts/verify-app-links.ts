@@ -4,7 +4,11 @@
 // No model, no credits — the DB answers everything here. What it pins:
 //   · ★ THE MODEL NEVER COMPOSES A PATH. A marker naming a ticker that is not in the universe produces
 //     NO LINK — not a broken one — and a marker carrying path characters cannot smuggle one out.
-//   · the four kinds resolve: stock (+ tab), portfolio (+ tab), watchlist, peer-group (ticker → UUID).
+//   · the five kinds resolve: stock (+ tab), portfolio (+ tab), watchlist, peer-group (ticker → UUID),
+//     health-hub (parameterless — its tabs are React state, not routes, so there is nothing to link to).
+//   · ★ THE TYPED-PATH GUARD. A link destination the MODEL wrote is deleted before the reader sees it,
+//     keeping the words. Measured 3–4 times per live run: [Flags & Patterns tab](/portfolio) is a
+//     WORKING link to the WRONG page, which reports nothing and teaches the reader we are lost.
 //   · ★ SECTIONS ARE NOT ADDRESSABLE. There is no kind that can produce a "#" or a "?section=" — the
 //     recon found ZERO anchors on the stock Health tab, so a section can only ever be described.
 //   · ★ THE ENCODING. Every live "&" symbol survives BOTH legs: the shipped remark pipeline (which
@@ -38,7 +42,7 @@ async function main() {
   console.log("\n★ chat/links.ts — the navigation map (server-built paths, model-named kinds)");
   const PLAIN = await pickPlainSymbol();
 
-  rule("1 — THE FOUR KINDS RESOLVE");
+  rule("1 — THE FIVE KINDS RESOLVE");
   const r1 = await resolveAppLinks(`See {{link:stock:${PLAIN}}} for the read.`);
   ok("stock, no tab", r1.text.includes(`](/research/stock-screener/${PLAIN})`), r1.text);
   const r2 = await resolveAppLinks(`See {{link:stock:${PLAIN}:health}}.`);
@@ -48,6 +52,16 @@ async function main() {
   ok("portfolio + tab", r3.text.includes("](/portfolio?tab=health)"), r3.text);
   const r4 = await resolveAppLinks("Check {{link:portfolio}} and {{link:watchlist}}.");
   ok("portfolio bare + watchlist", r4.text.includes("](/portfolio)") && r4.text.includes("](/watchlist)"), r4.text);
+  const r4b = await resolveAppLinks("It is all on {{link:health-hub}}.");
+  ok("★ health-hub → /health-score (the ROUTE, which is not the product name)", r4b.text.includes("](/health-score)"), r4b.text);
+  ok("…labelled 'the Health Hub'", r4b.text.includes("[the Health Hub]"), r4b.text);
+  // A tab the model tacks on is IGNORED, not honoured — landing on Briefing while promising Flags is
+  // the wrong-page failure rebuilt. The Hub's tabs are useState, so no path can carry one.
+  for (const t of ["flags", "screen", "briefing", "flags-and-patterns"]) {
+    const rt = await resolveAppLinks(`See {{link:health-hub:${t}}}.`);
+    ok(`health-hub:${t} still resolves to the bare page — no invented tab address`,
+      rt.text.includes("](/health-score)") && !rt.text.includes("?tab=") && !rt.text.includes("#"), rt.text);
+  }
 
   rule("2 — ★ THE PEER GROUP: THE MODEL NAMES A TICKER, THE SERVER PRODUCES A UUID");
   const pgRow = await prisma.stockPeerGroup.findFirst({ select: { stock: { select: { symbol: true } }, peerGroup: { select: { id: true, displayName: true } } } });
@@ -139,7 +153,7 @@ async function main() {
 
   rule("10 — THE VOCABULARY AND THE RESOLVER AGREE");
   const { VYTAL_CONTEXT_LAYER } = await import("../ai/context-layer.js");
-  for (const k of ["stock", "portfolio", "watchlist", "peer-group"]) {
+  for (const k of ["stock", "portfolio", "watchlist", "peer-group", "health-hub"]) {
     ok(`context layer teaches kind "${k}"`, VYTAL_CONTEXT_LAYER.includes(`{{link:${k}`));
   }
   for (const t of Object.keys(STOCK_TABS)) {
@@ -151,7 +165,40 @@ async function main() {
   ok("★ the clause states plainly that sections have no address", /NO ADDRESS/.test(VYTAL_CONTEXT_LAYER));
   ok("the clause forbids writing a path", /NEVER WRITE A PATH/.test(VYTAL_CONTEXT_LAYER));
   ok("no kind the resolver cannot handle is advertised",
-    !/\{\{link:(?!stock|portfolio|watchlist|peer-group)[a-z-]+/.test(VYTAL_CONTEXT_LAYER));
+    !/\{\{link:(?!stock|portfolio|watchlist|peer-group|health-hub)[a-z-]+/.test(VYTAL_CONTEXT_LAYER));
+  ok("★ the clause forbids a typed link DESTINATION, not just a bare URL",
+    /LINK DESTINATION IN YOUR OWN MARKDOWN/.test(VYTAL_CONTEXT_LAYER));
+  // ★ THE TWO HALVES MUST MOVE TOGETHER. Adding the kind while leaving the Hub on the "has NO marker"
+  //   list would teach the model both that it can link the Hub and that it cannot — and the second
+  //   half is the one it obeyed for five live runs.
+  const noMarkerLine = (VYTAL_CONTEXT_LAYER.match(/⚠ FIVE KINDS[^\n]*/) ?? [""])[0];
+  ok("the ⚠ line says FIVE", /FIVE KINDS, AND ONLY FIVE/.test(noMarkerLine));
+  ok("★ the Health Hub is no longer named as having no marker", !/Health Hub/.test(noMarkerLine.split("have NO marker")[0]), noMarkerLine.slice(0, 140));
+
+  rule("10b — ★ THE TYPED-PATH GUARD (the wrong-page shape, measured live 3–4× per run)");
+  const typed = [
+    "Explore it on the [Health Hub's Flags & Patterns tab](/portfolio).",
+    "See the [Screen tab](/health-score) for the table.",
+    "Read more at [Market pillar](https://vytal.in).",
+    "Try [this](www.example.com) instead.",
+    `Look at [ACC](/research/stock-screener/ACC) and [TCS](/research/stock-screener/TCS).`,
+  ];
+  for (const t of typed) {
+    const r = await resolveAppLinks(t);
+    ok(`stripped: ${JSON.stringify(t.slice(0, 46))}…`, !r.text.includes("](") && r.strippedPaths.length > 0, r.text);
+  }
+  const keepsWords = await resolveAppLinks("Explore it on the [Health Hub's Flags & Patterns tab](/portfolio).");
+  ok("★ the WORDS survive — only the destination is removed",
+    keepsWords.text === "Explore it on the Health Hub's Flags & Patterns tab.", keepsWords.text);
+  const bothShapes = await resolveAppLinks(`A [typed](/portfolio) one and a marker {{link:health-hub}}.`);
+  ok("★ a typed destination is stripped while a MARKER in the same reply still resolves",
+    !bothShapes.text.includes("](/portfolio)") && bothShapes.text.includes("](/health-score)"), bothShapes.text);
+  const wrappedMarker = await resolveAppLinks(`Read [the read]({{link:stock:${PLAIN}}}).`);
+  ok("★ a placeholder in a destination slot is NOT mistaken for a typed path",
+    wrappedMarker.text === `Read [the read](/research/stock-screener/${PLAIN}).`, wrappedMarker.text);
+  const nothing = await resolveAppLinks("Plain prose with no links and no markers.");
+  ok("prose with no destinations is untouched and reports nothing stripped",
+    nothing.text === "Plain prose with no links and no markers." && nothing.strippedPaths.length === 0);
 
   rule("11 — THE BUILDERS ARE THE ONLY PATH SOURCE");
   ok("encodeSegment leaves unreserved characters alone", encodeSegment("BAJAJ-AUTO") === "BAJAJ-AUTO");

@@ -2458,6 +2458,17 @@ model ScoreSnapshot {
   // The read layer must keep those apart — honest-empty over a fabricated all-clear.
   notEvaluable Json? @map("not_evaluable")
 
+  // ── WAS THIS SNAPSHOT GATE-SCREENED? (Layer-1 guardrail) ───────────────────────────────────────
+  // Three states, none interchangeable:
+  //   · NULL  — predates the column, or written by a path that did not record it. "We don't know."
+  //   · false — the gate deliberately did NOT run (opt-in flag off, or a historical/PIT rescore,
+  //             which is structurally blocked from screening so history stays uniformly unscreened).
+  //   · true  — the gate RAN. With zero guardrailEvents this reads "screened, nothing fired" — the
+  //             distinction that presence-of-events alone can never express.
+  // Answering "was this screened?" by inferring from guardrailEvents is ambiguous exactly where it
+  // matters (no events = clean, or = never ran). That is why this is a column. Never collapse NULL.
+  guardrailScreened Boolean? @map("guardrail_screened")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   stock              Stock              @relation(fields: [stockId], references: [id], onDelete: Cascade)
@@ -2762,25 +2773,51 @@ model RedFlag {
 // Every guardrail signature that fired: triggering values + outcome (O1–O6) +
 // tier. To find which metrics this event suppressed, query score_suppressions
 // WHERE source_guardrail_event_id = <this id> — that table is the sole authority.
+// ── DETECTION IS RECORDED WHETHER OR NOT A SCORE MOVED ────────────────────────────────────────────
+// snapshotId was NOT NULL until 2026-07-31. That coupled the audit trail to score MOVEMENT:
+// persistMember returns early on skipped_identical (before any snapshot exists), so a stock whose
+// score did not change was detected and then discarded — 27 of 106 detections survived the first
+// live run, and the two most consequential (B-1 exceptional gain, A-2 missing fields) were among the
+// lost. A company inflating profit every quarter with stable scores would never have been logged.
+//
+// FIX: identity moves to (stockId, snapshotKey, signatureKey) — the same shape SuppressionDirective
+// below already uses, and for the same reason: the row must be able to exist when no ScoreSnapshot
+// does. snapshotKey is the PERIOD ("FY27Q1"), explicit and never inferred from "current" — the
+// universe legitimately spans two periods at once.
+//
+// snapshotId is now PROVENANCE ONLY, and is set ONLY when this run actually created that snapshot.
+// It is deliberately NOT back-filled to a pre-existing snapshot: that snapshot was not screened, and
+// pointing at it would imply it was — corrupting guardrail_screened, the only reliable answer to
+// "was this screened?".
 model GuardrailEvent {
   id               String           @id @default(uuid())
   stockId          String           @map("stock_id")
-  snapshotId       String           @map("snapshot_id")
+  /** The PERIOD this detection belongs to ("FY27Q1"). Always known at gate time — no FK, no
+   *  snapshot required. This is the identity column; snapshotId is not. */
+  snapshotKey      String           @map("snapshot_key")
+  /** The snapshot this run created for the stock, when it created one. NULL ⇒ the score did not
+   *  change (skipped_identical) or was unavailable, so no snapshot was written this run. NULL is a
+   *  normal, expected state — NOT a defect, and NOT "unscreened". */
+  snapshotId       String?          @map("snapshot_id")
   signatureKey     String           @map("signature_key")
   triggeringValues Json?            @map("triggering_values")
   outcome          GuardrailOutcome
   tier             GuardrailTier
   createdAt        DateTime         @default(now()) @map("created_at")
 
-  stock    Stock         @relation(fields: [stockId], references: [id], onDelete: Cascade)
-  snapshot ScoreSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  stock    Stock          @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  snapshot ScoreSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: SetNull)
 
   reviews               GuardrailReview[]
   suppressionDirectives SuppressionDirective[]
   redFlags              RedFlag[]
 
-  @@unique([snapshotId, signatureKey]) // a signature fires at most once per snapshot
+  // A signature fires at most once per stock per PERIOD. Re-running a scoring pass is
+  // get-or-create on this key, so a rescore never duplicates (A-3 alone fires on 91 of 95
+  // stocks — a duplicate-per-run bug would bury the signal within weeks).
+  @@unique([stockId, snapshotKey, signatureKey])
   @@index([snapshotId])
+  @@index([snapshotKey, signatureKey]) // "what did we detect this period?"
   @@index([signatureKey, outcome]) // universe guardrail scans
   @@map("score_guardrail_events")
 }

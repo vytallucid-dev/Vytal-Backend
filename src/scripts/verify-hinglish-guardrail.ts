@@ -98,7 +98,7 @@ const INNOCENT: { text: string; note: string }[] = [
   { text: "ब्रोकरेज की सलाह अलग है, वह Vytal का हिस्सा नहीं है।", note: "Devanagari third-party advice reported" },
   {
     text:
-      "TCS ka score 74 hai, jo Healthy band mein aata hai. Momentum sabse strong pillar hai 92 par, " +
+      "TCS ka score 73 hai, jo Healthy band mein aata hai. Momentum sabse strong pillar hai 92 par, " +
       "jabki Market 41 par hai — 51 points ka wide divergence. Promoters ne is quarter kuch shares " +
       "beche hain, aur brokerage ki salah thi ki target ₹4,000 hai; wo view is score mein shaamil nahi hai.",
     note: "★ a realistic multi-sentence Hinglish answer carrying several soft words at once",

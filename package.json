@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && tsc",
+    "build": "prisma generate && npm run verify:copy && tsc",
     "start": "node dist/server.js",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "gen:copy": "tsx src/scripts/gen-frontend-fallback.ts",
+    "verify:copy": "tsx src/scripts/verify-catalogue.ts && tsx src/scripts/verify-verdicts.ts && tsx src/scripts/verify-catalogue-endpoint.ts && tsx src/scripts/verify-grounding-names.ts && tsx src/scripts/verify-evidence-register.ts && tsx src/scripts/verify-phs-copy.ts && tsx src/scripts/verify-boundary-render.ts",
+    "verify:copy-fresh": "tsx src/scripts/gen-frontend-fallback.ts --check",
+    "verify:all": "npm run verify:copy && npm run verify:copy-fresh"
   },
   "keywords": [],
   "author": "",
@@ -20,6 +24,7 @@
     "@react-email/render": "^2.0.10",
     "adm-zip": "^0.5.17",
     "cheerio": "^1.2.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "csv-parse": "^6.2.1",
     "dotenv": "^17.4.2",
@@ -42,6 +47,7 @@
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
     "@types/cheerio": "^0.22.35",
+    "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/json-schema": "^7.0.15",

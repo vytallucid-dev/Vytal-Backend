@@ -64,10 +64,15 @@ const PARAMETERS = {
 const cap = (s: string): string => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 /** Percentile is already 0–100 — a whole-percent, sayable form (no ×100). */
 const pctPoint = (x: number): string => `~${Math.round(x)}%`;
-/** The authored finding name a finding carries in its evidence/triggeringValues (`.name`), or null. */
-function findingName(x: unknown): string | null {
-  const n = x && typeof x === "object" ? (x as { name?: unknown }).name : null;
-  return typeof n === "string" && n.trim() ? n : null;
+// ★ P1 — the CANONICAL name, from the catalogue. This read `evidence.name` (a fourth vocabulary that
+// disagreed with the product on 16 of 34 keys, and was simply ABSENT for ownership_R1_pledge, which
+// therefore reached the model as a raw key). Same resolver the stock page uses; a module import, no
+// fetch. See the block comment in ai/grounding.ts for the full account.
+import { findingName as catalogueFindingName } from "../../catalogue/index.js";
+
+/** Canonical display name for a finding key. Never null, never a raw key. */
+function findingName(key: string): string {
+  return catalogueFindingName(key);
 }
 
 /** Project the full health view down to the lean, closed-world summary. */
@@ -98,8 +103,8 @@ function renderLean(v: HealthSnapshotView): string {
     L.push("Findings: none fired.");
   } else {
     const items: string[] = [];
-    for (const r of rf) items.push(`"${findingName(r.triggeringValues) ?? r.flagKey}" (RedFlag${r.severity ? `, ${r.severity}` : ""})`);
-    for (const p of pt) items.push(`"${findingName(p.evidence) ?? p.patternKey}" (Pattern${p.direction ? `, ${p.direction}` : ""}${p.severity ? `, ${p.severity}` : ""})`);
+    for (const r of rf) items.push(`"${findingName(r.flagKey)}" (RedFlag${r.severity ? `, ${r.severity}` : ""})`);
+    for (const p of pt) items.push(`"${findingName(p.patternKey)}" (Pattern${p.direction ? `, ${p.direction}` : ""}${p.severity ? `, ${p.severity}` : ""})`);
     L.push(`Findings: ${items.length} fired — ${items.join("; ")}.`);
   }
 

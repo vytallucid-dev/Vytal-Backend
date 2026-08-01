@@ -74,7 +74,7 @@ const INNOCENT: { text: string; note: string }[] = [
   { text: "The stock is unlikely to re-enter the peer group this quarter.", note: "'unlikely' — FORWARD list would block" },
   {
     text:
-      "TCS scores 74, which lands in the Healthy band. Momentum is the strongest pillar at 92 while " +
+      "TCS scores 73, which lands in the Healthy band. Momentum is the strongest pillar at 92 while " +
       "Market sits at 41 — a wide divergence of 51 points. Results will be reported in October, and " +
       "the brokerage recommends a target of ₹4,000; that view is not reflected in this score.",
     note: "a realistic multi-sentence explanation carrying several soft words",

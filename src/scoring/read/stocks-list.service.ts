@@ -5,13 +5,23 @@
 // Reuse, not reinvention: the in-force row per (stock, period) is resolved with the
 // SAME supersede-aware MAX(version) rule the shared resolver enforces, and the
 // trajectory marker reuses the SAME eps=1.0 threshold as health-view / peer-group.
-// Two queries total regardless of universe size (all stocks + all quarterly
-// snapshots, lean), reduced in-memory — the same shape buildPeerGroupList() uses.
+//
+// ── THE READ MOVED OUT, AND IT IS CACHED ──────────────────────────────────────────────────────────
+// The two-query load (all stocks + the in-force quarterly snapshots) now lives in
+// universe-rows.cache.ts behind a 5-minute stale-while-revalidate slot, because all five builders
+// below open with the identical read and nothing about it is per-request or per-reader. That module
+// also carries the `distinct` that stopped this read shipping 3,110 superseded rows it then threw
+// away. Everything below is unchanged: the same rows arrive, and the same in-memory reduction
+// (inForceNewestFirst) remains the authority on which snapshot is in force.
+//
+// ⚠ THE ROWS ARE SHARED, NOT COPIED. Never sort or splice `stocks`, or a `byStock` array, in place —
+// every other endpoint is holding the same objects. Reduce into a new array, as all five already do.
 //
 //   buildScoredStocksList() → one row per SCORED stock (composite + band + identity)
 //   buildToolScan(tool)     → scored stocks ranked by "most-interesting journey"
 
 import { prisma } from "../../db/prisma.js";
+import { getUniverseRows, type LeanSnap } from "./universe-rows.cache.js";
 import type {
   LabelBand,
   TrajectoryMarker,
@@ -59,24 +69,6 @@ const ALL_PILLARS: PillarKey[] = ["foundation", "momentum", "market", "ownership
  *  divergence scan needs no join. A pillar with applied weight 0 was
  *  `unavailable_redistributed` — its subtotal is meaningless and must be excluded
  *  from the spread, else a phantom gap dominates the ranking. */
-interface LeanSnap {
-  id: string;
-  stockId: string;
-  periodKey: string;
-  version: number;
-  asOfDate: Date;
-  composite: number;
-  labelBand: LabelBand;
-  foundation: number;
-  momentum: number;
-  market: number;
-  ownership: number;
-  wFoundation: number;
-  wMomentum: number;
-  wMarket: number;
-  wOwnership: number;
-}
-
 /** Reduce a stock's raw snapshots to its in-force series, NEWEST→OLDEST:
  *  MAX(version) within each periodKey, then ordered by asOfDate desc. */
 function inForceNewestFirst(rows: LeanSnap[]): LeanSnap[] {
@@ -98,66 +90,6 @@ function inForceNewestFirst(rows: LeanSnap[]): LeanSnap[] {
   );
 }
 
-/** Fetch all stocks + all quarterly snapshots, bucketed by stock. The shared
- *  source for both the list and the scan (so one shape, one reduction rule). */
-async function loadUniverse() {
-  const [stocks, snaps] = await Promise.all([
-    prisma.stock.findMany({
-      select: {
-        id: true,
-        symbol: true,
-        name: true,
-        sector: { select: { name: true, displayName: true } },
-      },
-    }),
-    prisma.scoreSnapshot.findMany({
-      where: { snapshotType: "quarterly" },
-      select: {
-        id: true,
-        stockId: true,
-        periodKey: true,
-        version: true,
-        asOfDate: true,
-        composite: true,
-        labelBand: true,
-        foundationSubtotal: true,
-        momentumSubtotal: true,
-        marketSubtotal: true,
-        ownershipSubtotal: true,
-        wFoundation: true,
-        wMomentum: true,
-        wMarket: true,
-        wOwnership: true,
-      },
-    }),
-  ]);
-
-  const byStock = new Map<string, LeanSnap[]>();
-  for (const s of snaps) {
-    const arr = byStock.get(s.stockId) ?? [];
-    arr.push({
-      id: s.id,
-      stockId: s.stockId,
-      periodKey: s.periodKey,
-      version: s.version,
-      asOfDate: s.asOfDate,
-      composite: num(s.composite),
-      labelBand: s.labelBand as LabelBand,
-      foundation: num(s.foundationSubtotal),
-      momentum: num(s.momentumSubtotal),
-      market: num(s.marketSubtotal),
-      ownership: num(s.ownershipSubtotal),
-      wFoundation: num(s.wFoundation),
-      wMomentum: num(s.wMomentum),
-      wMarket: num(s.wMarket),
-      wOwnership: num(s.wOwnership),
-    });
-    byStock.set(s.stockId, arr);
-  }
-
-  return { stocks, byStock };
-}
-
 const sectorRef = (
   sector: { name: string; displayName: string } | null,
 ): SectorRef | null => (sector ? { key: sector.name, displayName: sector.displayName } : null);
@@ -168,7 +100,7 @@ const sectorRef = (
  * Sorted by symbol for a stable typeahead order.
  */
 export async function buildScoredStocksList(): Promise<ScoredStockListItem[]> {
-  const { stocks, byStock } = await loadUniverse();
+  const { stocks, byStock } = await getUniverseRows();
 
   return stocks
     .flatMap((st): ScoredStockListItem[] => {
@@ -196,7 +128,7 @@ export async function buildScoredStocksList(): Promise<ScoredStockListItem[]> {
  * Sorted by symbol for a stable typeahead order.
  */
 export async function buildUniverseStocksList(): Promise<UniverseStockListItem[]> {
-  const { stocks, byStock } = await loadUniverse();
+  const { stocks, byStock } = await getUniverseRows();
 
   return stocks
     .map((st): UniverseStockListItem => {
@@ -252,7 +184,7 @@ function trajectoryTier(it: StockScanItem): number {
 }
 
 async function buildTrajectoryScan(): Promise<StockScanItem[]> {
-  const { stocks, byStock } = await loadUniverse();
+  const { stocks, byStock } = await getUniverseRows();
 
   const items = stocks.flatMap((st): StockScanItem[] => {
     const rows = byStock.get(st.id);
@@ -354,7 +286,7 @@ function divergenceDirection(gapDelta: number | null): DivergenceDirection {
 const flagTier: Record<DivergenceFlag, number> = { wide: 2, notable: 1, none: 0 };
 
 async function buildDivergenceScan(): Promise<DivergenceScanItem[]> {
-  const { stocks, byStock } = await loadUniverse();
+  const { stocks, byStock } = await getUniverseRows();
 
   const items = stocks.flatMap((st): DivergenceScanItem[] => {
     const rows = byStock.get(st.id);
@@ -482,7 +414,7 @@ const pledgePctOfPromoter = (pledged: bigint | null, promoter: bigint | null): n
 };
 
 async function buildOwnershipScan(): Promise<OwnershipScanItem[]> {
-  const { stocks, byStock } = await loadUniverse();
+  const { stocks, byStock } = await getUniverseRows();
 
   const latestByStock = new Map<
     string,

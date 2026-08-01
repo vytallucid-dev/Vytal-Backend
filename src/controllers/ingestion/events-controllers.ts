@@ -27,6 +27,18 @@ export const getAllCalendarEvents = async (req: Request, res: Response) => {
       .map((t) => t.trim())
       .filter(Boolean);
 
+    // ── ⚠ `select:`, NOT `include:` — AND THE PROJECTION IS THE WHOLE RESPONSE ────────────────────
+    // This endpoint used to send the same 155 events TWICE: `data.calendar` (the raw rows, every
+    // column, with a joined stock object, grouped by date) and `data.events` (the 14-field projection
+    // below). Nothing has ever read `data.calendar` — the only consumer in either repo is
+    // Vytal-Frontend/lib/api/hooks/use-events-calendar.ts, which reads `r.data.events` and whose
+    // response type does not even declare a `calendar` key. The duplicate was pure transfer cost,
+    // and on an Indian 4G link transfer is the budget that matters, not server time.
+    //
+    // `include:` also meant every scalar came back whether or not the projection used it —
+    // stockId, isConfirmed, purpose, source, createdAt, updatedAt are six columns per row that
+    // reached the wire and were then thrown away by the map. `select:` lists exactly the fields the
+    // projection reads, so adding a field to the response is a deliberate act rather than a default.
     const events = await prisma.corporateEvent.findMany({
       where: {
         eventDate: { gte: from, lte: to },
@@ -39,10 +51,33 @@ export const getAllCalendarEvents = async (req: Request, res: Response) => {
         },
       },
       orderBy: [{ eventDate: "asc" }, { impactLevel: "asc" }],
-      include: {
+      select: {
+        id: true,
+        // ★ stockId IS BACK, AND ONLY stockId. It was dropped with the five other unread scalars in
+        // the byte fix; it comes back because it turned out to be READ — every reminder row on the
+        // calendar needs it, and the only other way to get it was for the client to download the
+        // 504-row universe list (22.0 KB gzip) and .find() through it. Measured: carrying it costs
+        // +3.5 KB gzip across 155 events (a scalar column, no join — CorporateEvent denormalises it),
+        // so the calendar nets ~18.5 KB gzip smaller AND loses a whole request. A per-symbol resolver
+        // endpoint would have been N calls for N rows; a batch resolver would have been a new endpoint
+        // shape with a cap to argue about. This is neither.
+        //
+        // A symbol→id map sent once was also measured and is WORSE (+4.0 KB gzip): the repeated UUIDs
+        // in-row compress better than a map's extra symbol keys do.
+        stockId: true,
+        symbol: true,
+        eventType: true,
+        eventDate: true,
+        exDate: true,
+        recordDate: true,
+        impactLevel: true,
+        dividendAmount: true,
+        dividendType: true,
+        bonusRatio: true,
+        splitRatio: true,
+        description: true,
         stock: {
           select: {
-            symbol: true,
             name: true,
             sector: { select: { displayName: true } },
           },
@@ -50,22 +85,13 @@ export const getAllCalendarEvents = async (req: Request, res: Response) => {
       },
     });
 
-    // Group by date for calendar view
-    const grouped: Record<string, typeof events> = {};
-    for (const event of events) {
-      const dateKey = event.eventDate.toISOString().split("T")[0];
-      if (!grouped[dateKey]) grouped[dateKey] = [];
-      grouped[dateKey].push(event);
-    }
-
     return res.json({
       success: true,
       data: {
         total: events.length,
-        calendar: grouped,
-        // Flat list for simpler consumption
         events: events.map((e) => ({
           id: e.id,
+          stockId: e.stockId,
           symbol: e.symbol,
           companyName: e.stock.name,
           sector: e.stock.sector?.displayName ?? null,

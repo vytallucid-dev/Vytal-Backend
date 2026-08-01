@@ -469,6 +469,7 @@ export async function buildHealthSnapshotView(
     return {
       scored: false,
       identity: {
+        id: stock.id,
         symbol: stock.symbol,
         name: stock.name,
         sector: stock.sector ? { key: stock.sector.name, displayName: stock.sector.displayName } : null,
@@ -490,6 +491,7 @@ export async function buildHealthSnapshotView(
 
   // ── identity ──
   const identity: HealthSnapshotView["identity"] = {
+    id: stock.id,
     symbol: stock.symbol,
     name: stock.name,
     sector: stock.sector ? { key: stock.sector.name, displayName: stock.sector.displayName } : null,

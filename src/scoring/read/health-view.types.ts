@@ -59,6 +59,23 @@ export type SectorClass =
   | null;
 
 export interface IdentitySection {
+  /**
+   * ★ The raw Stock.id (UUID). Carried here because the CLIENT NEEDS IT AND HAD NOWHERE ELSE TO GET IT.
+   *
+   * Every per-stock mutation is keyed on the id, not the symbol — watchlist pin/unpin, alert rules,
+   * event reminders, the relational card. The stock page had no id in any response it already read, so
+   * four components resolved it the only way available: download GET /api/stocks/universe (104 KB raw /
+   * 22.1 KB gzip, 504 rows) and run `universe.find(s => s.symbol === symbol)?.id`. A full universe
+   * scan, per page, to read one 36-byte field the server already had in hand.
+   *
+   * TRADEOFF, STATED: hanging it here means anything that needs the id waits on the health fetch. That
+   * is not a new dependency — the relational card was already gated behind the universe list resolving,
+   * and the page awaits health before it renders anything at all. It IS a real coupling for the
+   * not-scored path, which is why the `scored: false` branch populates it too: identity is always
+   * present even when every snapshot-derived section is null, so the id never depends on a stock
+   * having been scored.
+   */
+  id: string;
   symbol: string;
   name: string;
   sector: { key: string; displayName: string } | null;

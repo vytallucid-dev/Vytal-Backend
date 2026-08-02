@@ -35,13 +35,30 @@
 // claim about what happens next — which is the thing §0.3 actually protects.
 //
 // ── SCOPE ─────────────────────────────────────────────────────────────────────────────────────────
-//   IN     `verdict:` / `verbatim:` values in REGISTERED rules + the ownership persist path (R1).
+//   IN     `verdict:` / `verbatim:` values in REGISTERED rules + the ownership persist path (R1) —
+//          PLUS, for a rule whose file carries no such value (the D/T/S families: the authored
+//          sentence lives entirely in verdicts.ts, no rule-file fallback), the sentence verdicts.ts
+//          renders for that key, over EVERY branch fixture verify-verdicts.ts already exercises.
+//          PLUS, for Family N specifically — whose rule file DOES carry a `verdict:`, but it is DEAD
+//          on the primary surface (n-family-copy.ts's authored sentence, via VERDICTS/N_VERDICTS,
+//          always wins precedence when the finding fires) — that LIVE sentence too, rendered over
+//          every branch fixture AND the §8.3 missing-evidence fallback. The dead rule-file text stays
+//          in scope alongside it: it still reaches the model raw (ai/grounding.ts dumps
+//          triggeringValues, the rule's full evidence object, verbatim), so it is labelled, not
+//          dropped.
 //   OUT    guardrail `explanation:` — operator/audit text, not reader copy; it legitimately names
 //          outcomes and thresholds. Scoping is exact where an allowlist needs upkeep forever.
+//
+// ── EXEMPTIONS ────────────────────────────────────────────────────────────────────────────────────
+//   A banned term used in the OPPOSITE sense the ban targets (negation, an explicit refusal to
+//   forecast) is declared in EXEMPTIONS below — keyed to the exact phrase, not the bare key or term,
+//   so it cannot silently widen. Never edit copy to satisfy the gate; declare why it's exempt instead.
 //
 //   npx tsx src/scripts/verify-evidence-register.ts
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { readFileSync, readdirSync } from "fs";
+import { VERDICTS } from "../scoring/findings/verdicts.js";
+import { VERDICT_FIXTURES, type VerdictFixture } from "./lib/verdict-fixtures.js";
 
 let fail = 0;
 const ok = (n: string, c: boolean, d = "") => {
@@ -95,6 +112,51 @@ const FORWARD_DENY: { term: string; re: RegExp; why: string }[] = [
   { term: "should", re: /\byou should\b/i, why: "instruction" },
 ];
 
+/**
+ * NARROW, DECLARED, VISIBLE exemptions — never a blanket per-key or per-term skip. Each entry
+ * exempts one banned-TERM match inside one EXACT PHRASE, in one finding KEY. An affirmative use of
+ * the same term in the same key is a different phrase, does not match, and is NOT covered — §2/§4's
+ * negative controls prove that directly.
+ *
+ * Reserved for cases where the term is doing the OPPOSITE of what the ban targets (negation, an
+ * explicit refusal to forecast) — never for "this reads fine to me." If a second case needing this
+ * for the same term ever appears, that is the trigger to reconsider negation-aware matching instead
+ * of a growing exemption list; noted here rather than built now.
+ */
+interface Exemption { key: string; term: string; phrase: string; reason: string }
+const EXEMPTIONS: Exemption[] = [
+  {
+    key: "divergence_S2_sticky_divergence",
+    term: "reliably",
+    phrase: "neither pillar reliably closes the gap",
+    reason: 'NEGATED, not a durability claim — the sentence says the gap does NOT reliably close. The inverse of what the ban targets.',
+  },
+  {
+    key: "divergence_S2_sticky_divergence",
+    term: "will",
+    phrase: "not when it will close",
+    reason: 'sits inside an explicit REFUSAL to forecast ("the model can show you that it exists, but not when it will close") — the inverse of a forecast, not an instance of one.',
+  },
+];
+
+/** A deny-list hit, classified against EXEMPTIONS. `exemptedReason` is set only when the sentence's
+ *  TEXT contains the exemption's exact phrase — not merely matching key + term — so an affirmative
+ *  use of the same term in the same key is a miss on this check and reported as a real violation. */
+interface DenyHit { s: Sentence; term: string; matched: string; why: string; exemptedReason: string | null }
+function scanDenyList(scanned: Sentence[], denyList: { term: string; re: RegExp; why: string }[]): DenyHit[] {
+  return scanned.flatMap((s) =>
+    denyList
+      .filter((t) => t.re.test(s.text))
+      .map((t) => {
+        const matched = s.text.match(t.re)![0];
+        const exemption = EXEMPTIONS.find(
+          (e) => e.key === s.key && e.term.toLowerCase() === t.term.toLowerCase() && s.text.includes(e.phrase),
+        );
+        return { s, term: t.term, matched, why: t.why, exemptedReason: exemption?.reason ?? null };
+      }),
+  );
+}
+
 const RULES_DIR = "src/scoring/findings/rules";
 
 /** Only REGISTERED rules — a deregistered file cannot fire, so its copy cannot reach anyone. */
@@ -103,7 +165,7 @@ function registeredRuleFiles(): string[] {
   return [...engine.matchAll(/from "\.\/rules\/([a-z0-9-]+)\.js"/g)].map((m) => m[1]);
 }
 
-interface Sentence { file: string; base: string; field: string; text: string; isFamilyN: boolean }
+interface Sentence { file: string; base: string; field: string; text: string; isFamilyN: boolean; source: "rule-file" | "rendered"; key: string | null }
 
 /**
  * Pull every `verdict:` / `verbatim:` sentence out of a rule file.
@@ -118,14 +180,20 @@ function sentencesIn(path: string): Sentence[] {
   const src = readFileSync(path, "utf8");
   const base = path.split("/").pop() ?? path;
   const isFamilyN = /\/n\d-/.test(path);
+  const key = keyOf(src);
+  // ⚠ For Family N, this inline text is NOT what a reader sees — n-family-copy.ts's authored verdict
+  // always wins precedence (§3 below adds THAT live copy separately). It still reaches the model raw
+  // though: ai/grounding.ts dumps triggeringValues (the rule's full evidence object, this field
+  // included) verbatim — so it stays in scope, labelled, rather than dropped.
+  const deadNote = isFamilyN ? " [dead on the primary surface — superseded by verdicts.ts; still reaches the model raw via triggeringValues]" : "";
   const out: Sentence[] = [];
 
   for (const field of ["verdict", "verbatim"]) {
     // Two shapes, because the rules use both: an inline `verdict:` value, and a `const verdict = …`
     // assembled above and passed by shorthand (B and D). Matching only the first silently skipped two
     // registered rules — caught by the coverage assertion, which is why that assertion runs first.
-    const key = new RegExp(`^\\s*(?:const\\s+)?${field}\\s*[:=]`, "gm");
-    for (const m of src.matchAll(key)) {
+    const fieldRe = new RegExp(`^\\s*(?:const\\s+)?${field}\\s*[:=]`, "gm");
+    for (const m of src.matchAll(fieldRe)) {
       const from = m.index ?? 0;
       // End at the next object key at the same-or-lower nesting, or the closing brace of the literal.
       const rest = src.slice(from + m[0].length);
@@ -133,12 +201,141 @@ function sentencesIn(path: string): Sentence[] {
       const span = stop === -1 ? rest : rest.slice(0, stop);
       const bodies = span.split("`").filter((_, i) => i % 2 === 1);
       const text = bodies.join(" ").replace(/\$\{[^}]*\}/g, " N ");
-      if (text.trim()) out.push({ file: path, base, field, text, isFamilyN });
+      if (text.trim()) out.push({ file: path, base, field: `${field}${deadNote}`, text, isFamilyN, source: "rule-file", key });
     }
   }
   // Family-N rules also carry their reader sentence through catalogue/n-family-copy.ts; the rule file
   // is the only place this gate can see, and it is the place the escape happened.
   return out;
+}
+
+/** The finding key a rule fires, read off its own `key:` field — either an inline literal
+ *  (`key: "divergence_D1_…"`) or the `const KEY = "…"; … key: KEY` shorthand the newer rules use. */
+function keyOf(src: string): string | null {
+  const inline = src.match(/\bkey:\s*"([A-Za-z0-9_]+)"/);
+  if (inline) return inline[1];
+  const named = src.match(/\bkey:\s*([A-Za-z_]\w*)\s*,/);
+  if (!named) return null;
+  const constDecl = src.match(new RegExp(`\\bconst\\s+${named[1]}\\s*=\\s*"([A-Za-z0-9_]+)"`));
+  return constDecl ? constDecl[1] : null;
+}
+
+type MissReason =
+  | { kind: "no-key-resolved" }
+  | { kind: "no-renderer"; key: string }
+  | { kind: "no-fixture"; key: string }
+  | { kind: "renderer-empty"; key: string; fixtures: number };
+
+/**
+ * FALLBACK for a rule whose file carries no inline `verdict:`/`verbatim:` — the D/T/S families,
+ * whose authored sentence lives entirely in verdicts.ts (§ SCOPE above). Renders that sentence
+ * against EVERY branch fixture verify-verdicts.ts already exercises for the key, so a phase- or
+ * tier-conditional sentence is scanned on every branch, not just one.
+ *
+ * `verdicts`/`fixtures` are injectable so the failure classification itself can be tested in
+ * isolation (§1's negative controls) without depending on the real catalogue ever landing in one
+ * of these states. Returns a reason a rule ends up with NO sentence anywhere, so that fails BY
+ * NAME (§1's coverage assertion) rather than being silently absorbed.
+ */
+function centrallyRenderedSentencesFrom(
+  src: string,
+  path: string,
+  base: string,
+  verdicts: Record<string, (ev: Record<string, unknown>) => string> = VERDICTS,
+  fixtures: readonly VerdictFixture[] = VERDICT_FIXTURES,
+): { sentences: Sentence[] } | { miss: MissReason } {
+  const key = keyOf(src);
+  if (!key) return { miss: { kind: "no-key-resolved" } };
+  const renderer = verdicts[key];
+  if (!renderer) return { miss: { kind: "no-renderer", key } };
+  const matched = fixtures.filter((fx) => fx.key === key);
+  if (matched.length === 0) return { miss: { kind: "no-fixture", key } };
+  // The renderer directly, NOT the exported renderVerdict() — these 17 keys have no rule-file
+  // evidence.verdict/verbatim to race against, so there is no precedence fallback to resolve, and
+  // renderVerdict()'s generic last resort (guaranteed non-empty) would mask a renderer that authors
+  // nothing, exactly the gap this fallback exists to catch.
+  const rendered = matched
+    .map((fx) => {
+      let text = "";
+      try {
+        text = renderer(fx.evidence) ?? "";
+      } catch {
+        /* a renderer that throws on this fixture authors nothing to scan */
+      }
+      return { fx, text };
+    })
+    .filter((r) => r.text.trim());
+  if (rendered.length === 0) return { miss: { kind: "renderer-empty", key, fixtures: matched.length } };
+  return {
+    sentences: rendered.map((r) => ({
+      file: path,
+      base,
+      field: `verdict (rendered · ${r.fx.label})`,
+      text: r.text,
+      isFamilyN: false,
+      source: "rendered",
+      key,
+    })),
+  };
+}
+
+/**
+ * Family N's live-copy fallback, run in ADDITION to (not instead of) `sentencesIn`'s inline extraction
+ * — unlike the D/T/S families, N's rule file already yields a sentence (§ SCOPE), so it never trips
+ * the D/T/S fallback above. But that inline sentence is dead on the primary surface (see the note in
+ * `sentencesIn`); the sentence a reader actually gets is n-family-copy.ts's, via `VERDICTS[key]`
+ * (spread first as `N_VERDICTS`), and THAT has never been register-scanned until now.
+ *
+ * Renders every VERDICT_FIXTURES branch for the key, exactly like the D/T/S fallback, PLUS the §8.3
+ * missing-evidence guard explicitly (`renderer({})`) for every key — not relying on a fixture
+ * happening to cover it, because two of seven currently don't (N2/N4/N5/N6/N7 have no empty-evidence
+ * fixture; §8.3 covers all seven regardless).
+ */
+function nFamilyLiveSentencesFrom(
+  src: string,
+  path: string,
+  base: string,
+  verdicts: Record<string, (ev: Record<string, unknown>) => string> = VERDICTS,
+  fixtures: readonly VerdictFixture[] = VERDICT_FIXTURES,
+): Sentence[] {
+  const key = keyOf(src);
+  const renderer = key ? verdicts[key] : undefined;
+  if (!key || !renderer) return [];
+
+  const out: Sentence[] = [];
+  for (const fx of fixtures.filter((f) => f.key === key)) {
+    let text = "";
+    try {
+      text = renderer(fx.evidence) ?? "";
+    } catch {
+      /* nothing to scan */
+    }
+    if (text.trim()) out.push({ file: path, base, field: `verdict (LIVE · rendered · ${fx.label})`, text, isFamilyN: true, source: "rendered", key });
+  }
+  // §8.3 GUARD, explicitly: evidence missing → renders the static description, never "undefined".
+  let fallback = "";
+  try {
+    fallback = renderer({}) ?? "";
+  } catch {
+    /* nothing to scan */
+  }
+  if (fallback.trim()) {
+    out.push({ file: path, base, field: "verdict (LIVE · rendered · §8.3 missing-evidence fallback)", text: fallback, isFamilyN: true, source: "rendered", key });
+  }
+  return out;
+}
+
+function describeMiss(base: string, m: MissReason): string {
+  switch (m.kind) {
+    case "no-key-resolved":
+      return `${base}: NO SOURCE — no rule-file verdict/verbatim, and no readable \`key:\` to look up a renderer by`;
+    case "no-renderer":
+      return `${base}: NO SOURCE — "${m.key}" has no rule-file verdict/verbatim and no VERDICTS["${m.key}"] renderer in verdicts.ts`;
+    case "no-fixture":
+      return `${base}: SOURCE FOUND BUT PRODUCED NOTHING — VERDICTS["${m.key}"] exists but no VERDICT_FIXTURES entry is keyed to "${m.key}" to render it against`;
+    case "renderer-empty":
+      return `${base}: SOURCE FOUND BUT PRODUCED NOTHING — VERDICTS["${m.key}"] rendered empty for all ${m.fixtures} fixture(s) keyed to it`;
+  }
 }
 
 async function main() {
@@ -147,29 +344,116 @@ async function main() {
     ...registered.map((f) => `${RULES_DIR}/${f}.ts`),
     "src/scoring/ownership/primary.ts", // R1 — written by the persist path, not a FireRule
   ];
-  const sentences = files.flatMap(sentencesIn);
+
+  const sentences: Sentence[] = [];
+  const misses: string[] = [];
+  for (const path of files) {
+    const base = path.split("/").pop() ?? path;
+    const isFamilyN = /\/n\d-/.test(path);
+    const inline = sentencesIn(path);
+    sentences.push(...inline);
+
+    if (isFamilyN) {
+      // ADDITIVE, not a fallback — N always has inline text (dead, see above), so this is the
+      // separate live-copy corpus §3 needs, not a substitute for the coverage check below.
+      sentences.push(...nFamilyLiveSentencesFrom(readFileSync(path, "utf8"), path, base));
+      continue;
+    }
+    if (inline.length > 0) continue;
+
+    const result = centrallyRenderedSentencesFrom(readFileSync(path, "utf8"), path, base);
+    if ("miss" in result) misses.push(describeMiss(base, result.miss));
+    else sentences.push(...result.sentences);
+  }
 
   rule("1 · COVERAGE — every registered rule's assertive sentences are in scope");
   const onDisk = readdirSync(RULES_DIR).filter((f) => f.endsWith(".ts")).length;
+  const nDeadInline = sentences.filter((s) => s.isFamilyN && s.source === "rule-file").length;
+  const otherInline = sentences.filter((s) => !s.isFamilyN && s.source === "rule-file").length;
+  const nLive = sentences.filter((s) => s.isFamilyN && s.source === "rendered");
+  const dtsRendered = sentences.filter((s) => !s.isFamilyN && s.source === "rendered");
   console.log(`  rule files on disk: ${onDisk} · REGISTERED (scanned): ${registered.length}  + the ownership persist path (R1)`);
-  console.log(`  assertive sentences extracted: ${sentences.length}  (Family N: ${sentences.filter((s) => s.isFamilyN).length})`);
-  const missed = registered.filter((f) => !sentences.some((s) => s.base === `${f}.ts`));
+  console.log(
+    `  assertive sentences extracted: ${sentences.length}  (rule-file, other families: ${otherInline}` +
+      ` · Family N inline [dead — see §3]: ${nDeadInline}` +
+      ` · Family N LIVE, rendered from verdicts.ts: ${nLive.length}` +
+      ` · D/T/S rendered from verdicts.ts: ${dtsRendered.length} across ${new Set(dtsRendered.map((s) => s.base)).size} rules)`,
+  );
   ok(
-    "every registered rule yielded at least one sentence (the extractor is not silently skipping files)",
-    missed.length === 0,
-    missed.join(",") || `${registered.length}/${registered.length}`,
+    "every registered rule yielded at least one sentence — from its rule file, or (D/T/S) from verdicts.ts rendered against every branch fixture",
+    misses.length === 0,
+    misses.join("\n       ") || `${registered.length + 1}/${registered.length + 1}`,
+  );
+  const N_RULE_COUNT = 7;
+  const nRulesWithLiveFallback = new Set(
+    nLive.filter((s) => s.field.includes("§8.3 missing-evidence fallback")).map((s) => s.base),
+  ).size;
+  ok(
+    "all seven Family N patterns' LIVE copy (verdicts.ts, not the dead rule-file text) is scanned, including the §8.3 missing-evidence fallback branch for each",
+    new Set(nLive.map((s) => s.base)).size === N_RULE_COUNT && nRulesWithLiveFallback === N_RULE_COUNT,
+    `${new Set(nLive.map((s) => s.base)).size}/${N_RULE_COUNT} rules · ${nLive.length} sentences (incl. ${nRulesWithLiveFallback}/${N_RULE_COUNT} fallback branches)`,
+  );
+  // NEGATIVE CONTROLS — constructed directly against the classifier (synthetic source text /
+  // injected maps), not by breaking a real rule file, and covering both failure shapes §1 must
+  // distinguish: NO source at all, vs. a source that was found but produced nothing.
+  const noKey = centrallyRenderedSentencesFrom("export const rule = () => ({ evidence: {} });", "x.ts", "x.ts");
+  ok(
+    'NEGATIVE CONTROL — a rule file with no `key:` at all fails "NO SOURCE", not silently',
+    "miss" in noKey && noKey.miss.kind === "no-key-resolved",
+    "miss" in noKey ? describeMiss("x.ts", noKey.miss) : "DID NOT FIRE — the gate is dead",
+  );
+  const noRenderer = centrallyRenderedSentencesFrom('key: "__ghost_finding_key_never_registered__",', "x.ts", "x.ts");
+  ok(
+    'NEGATIVE CONTROL — a key with no rule-file sentence AND no VERDICTS renderer fails "NO SOURCE"',
+    "miss" in noRenderer && noRenderer.miss.kind === "no-renderer",
+    "miss" in noRenderer ? describeMiss("x.ts", noRenderer.miss) : "DID NOT FIRE — the gate is dead",
+  );
+  const producedNothing = centrallyRenderedSentencesFrom(
+    'key: "fake_key",',
+    "x.ts",
+    "x.ts",
+    { fake_key: () => "" },
+    [{ label: "fake", key: "fake_key", evidence: {} }],
+  );
+  ok(
+    'NEGATIVE CONTROL — a renderer that exists but renders empty on every fixture fails "PRODUCED NOTHING", not "NO SOURCE"',
+    "miss" in producedNothing && producedNothing.miss.kind === "renderer-empty",
+    "miss" in producedNothing ? describeMiss("x.ts", producedNothing.miss) : "DID NOT FIRE — the gate is dead",
   );
 
   rule("2 · UNIVERSAL REGISTER — promotional adjectives, banned in every family");
-  const uni = sentences.flatMap((s) =>
-    UNIVERSAL_DENY.filter((t) => t.re.test(s.text)).map((t) => `${s.base} .${s.field}: "${s.text.match(t.re)![0]}" — ${t.why}`),
+  const uniHits = scanDenyList(sentences, UNIVERSAL_DENY);
+  const uniExempted = uniHits.filter((h) => h.exemptedReason);
+  const uniViolations = uniHits.filter((h) => !h.exemptedReason);
+  for (const h of uniExempted) console.log(`  ⚪ EXEMPTED — ${h.s.base} .${h.s.field}: "${h.matched}" — ${h.exemptedReason}`);
+  ok(
+    "ZERO promotional adjectives in any rule-authored sentence, beyond declared narrow exemptions",
+    uniViolations.length === 0,
+    uniViolations.map((h) => `${h.s.base} .${h.s.field}: "${h.matched}" — ${h.why}`).join("\n       ") ||
+      `${sentences.length} sentences · ${UNIVERSAL_DENY.length} terms${uniExempted.length ? ` · ${uniExempted.length} exempted` : ""}`,
   );
-  ok("ZERO promotional adjectives in any rule-authored sentence", uni.length === 0, uni.join("\n       ") || `${sentences.length} sentences · ${UNIVERSAL_DENY.length} terms`);
   const preFix = "Cash-backed earnings — operating cash flow has fully covered net profit for N straight years ( N – N ); earnings converting reliably to cash.";
   ok(
     'NEGATIVE CONTROL — the scan CATCHES N1\'s pre-fix "earnings converting reliably to cash"',
     UNIVERSAL_DENY.some((t) => t.re.test(preFix)),
     UNIVERSAL_DENY.filter((t) => t.re.test(preFix)).map((t) => t.term).join(",") || "DID NOT FIRE — the gate is dead",
+  );
+  // NEGATIVE CONTROL — the S2 exemption is narrow: it keys off the exact PHRASE, not the bare
+  // key+term, so an AFFIRMATIVE "reliably" in the SAME key does not match it and still fails.
+  const s2Affirmative: Sentence = {
+    file: "TEST", base: "TEST (synthetic)", field: "verdict (probe)", isFamilyN: false, source: "rendered",
+    key: "divergence_S2_sticky_divergence",
+    text: "In this configuration the gap reliably closes at the next reading.",
+  };
+  const affirmativeHits = scanDenyList([s2Affirmative], UNIVERSAL_DENY).filter((h) => h.term === "reliably");
+  ok(
+    'NEGATIVE CONTROL — the S2 exemption does NOT leak: an AFFIRMATIVE "reliably" in the same key still fails',
+    affirmativeHits.length === 1 && affirmativeHits[0].exemptedReason === null,
+    affirmativeHits.length === 0
+      ? "DID NOT FIRE — the gate is dead"
+      : affirmativeHits[0].exemptedReason
+        ? `WRONGLY EXEMPTED: ${affirmativeHits[0].exemptedReason}`
+        : "correctly flagged, not exempted",
   );
 
   rule("3 · FAMILY-N REGISTER — §4.2's remaining words, applied ONLY where they are a verdict");
@@ -202,14 +486,37 @@ async function main() {
   );
 
   rule("4 · NO PREDICTION — what happens NEXT is never claimed");
-  const fwd = sentences.flatMap((s) =>
-    FORWARD_DENY.filter((t) => t.re.test(s.text)).map((t) => `${s.base} .${s.field}: "${t.term}" (${t.why})`),
+  const fwdHits = scanDenyList(sentences, FORWARD_DENY);
+  const fwdExempted = fwdHits.filter((h) => h.exemptedReason);
+  const fwdViolations = fwdHits.filter((h) => !h.exemptedReason);
+  for (const h of fwdExempted) console.log(`  ⚪ EXEMPTED — ${h.s.base} .${h.s.field}: "${h.matched}" (${h.why}) — ${h.exemptedReason}`);
+  ok(
+    "ZERO predictive terms in any rule-authored sentence, beyond declared narrow exemptions",
+    fwdViolations.length === 0,
+    fwdViolations.map((h) => `${h.s.base} .${h.s.field}: "${h.matched}" (${h.why})`).join("\n       ") ||
+      `${sentences.length} sentences · ${FORWARD_DENY.length} terms${fwdExempted.length ? ` · ${fwdExempted.length} exempted` : ""}`,
   );
-  ok("ZERO predictive terms in any rule-authored sentence", fwd.length === 0, fwd.join("\n       ") || `${sentences.length} sentences · ${FORWARD_DENY.length} terms`);
   ok(
     'NEGATIVE CONTROL — the scan CATCHES "the gap will likely revert — a buying opportunity"',
     FORWARD_DENY.filter((t) => t.re.test("the gap will likely revert — a buying opportunity")).length >= 4,
     FORWARD_DENY.filter((t) => t.re.test("the gap will likely revert — a buying opportunity")).map((t) => t.term).join(","),
+  );
+  // NEGATIVE CONTROL — same leak proof as §2's, for the "will" exemption: an AFFIRMATIVE forecast
+  // use of "will" in the SAME S2 key does not match the exempted phrase and still fails.
+  const s2Forecast: Sentence = {
+    file: "TEST", base: "TEST (synthetic)", field: "verdict (probe)", isFamilyN: false, source: "rendered",
+    key: "divergence_S2_sticky_divergence",
+    text: "The gap will close at the next reading.",
+  };
+  const forecastHits = scanDenyList([s2Forecast], FORWARD_DENY).filter((h) => h.term === "will");
+  ok(
+    'NEGATIVE CONTROL — the S2 exemption does NOT leak: an AFFIRMATIVE "will" (forecast) in the same key still fails',
+    forecastHits.length === 1 && forecastHits[0].exemptedReason === null,
+    forecastHits.length === 0
+      ? "DID NOT FIRE — the gate is dead"
+      : forecastHits[0].exemptedReason
+        ? `WRONGLY EXEMPTED: ${forecastHits[0].exemptedReason}`
+        : "correctly flagged, not exempted",
   );
   ok(
     '…and does NOT bite "a genuine sell-down" or "Promoter defense buying" (facts about what owners DID)',

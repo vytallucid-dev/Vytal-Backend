@@ -280,7 +280,7 @@ export const VERDICTS: Record<string, (ev: Ev) => string> = {
     `This business has moved out of below-par territory into steady, from ${f(ev.compositePrior, 0)} to ${f(ev.compositeNow, 0)} — a recovery that has held long enough to cross a band. Treat as directional: the sample behind this reading was not preserved, so it carries less weight than the other trajectory patterns.${regimeSentence(ev)}`,
 
   trajectory_D_T5_foundation_out_of_weak: (ev) =>
-    `The latest results moved the balance-sheet reading out of weak territory, from ${f(ev.foundationPrior, 0)} to ${f(ev.foundationNow, 0)}. A real improvement from a low base, and historically the most reliable of the single-pillar improvements — carried by small gains like this one rather than by large jumps.${regimeSentence(ev)}`,
+    `The latest results moved the balance-sheet reading out of weak territory, from ${f(ev.foundationPrior, 0)} to ${f(ev.foundationNow, 0)}. A real improvement from a low base — carried by small gains like this one rather than by large jumps.${regimeSentence(ev)}`,
 
   trajectory_B_T6_momentum_breaking_into_weak: (ev) =>
     `The operating trajectory has broken into weak territory, ${f(ev.momentumPrior, 0)} to ${f(ev.momentumNow, 0)}. The balance sheet may still be intact, but the direction of the business has changed.${regimeSentence(ev)}`,

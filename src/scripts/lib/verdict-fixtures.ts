@@ -1,13 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // VERDICT FIXTURES — one realistic evidence payload per finding key, plus the branch variants.
 //
-// Shared by TWO harnesses on purpose:
-//   scripts/verify-verdicts.ts       — the permanent gate (every key renders, non-empty, correct branch)
-//   the Stage-3 byte-identity proof  — renders the SAME fixtures through the frontend's original
-//                                      renderers and asserts the two outputs are character-identical
+// Shared by THREE harnesses on purpose:
+//   scripts/verify-verdicts.ts          — the permanent gate (every key renders, non-empty, correct branch)
+//   the Stage-3 byte-identity proof     — renders the SAME fixtures through the frontend's original
+//                                         renderers and asserts the two outputs are character-identical
+//   scripts/verify-evidence-register.ts — for the D/T/S keys, whose authored sentence lives only here
+//                                         (no rule-file verdict/verbatim to scan), renders every branch
+//                                         fixture for the key and register-scans THAT output instead
 //
-// If the fixtures lived in the gate, the identity proof would need its own copy and the two could
-// disagree about what "the same input" means — which would make a passing identity proof worthless.
+// If the fixtures lived in any one consumer, the others would need their own copy and could disagree
+// about what "the same input" means — which would make a passing check worthless.
 //
 // ⚠ THE EVIDENCE KEYS HERE ARE THE ENGINE'S, NOT INVENTED. Each was read off the rule that writes it
 // (scoring/findings/rules/*.ts) and off ownership/primary.ts for R1. A fixture with a misspelled key

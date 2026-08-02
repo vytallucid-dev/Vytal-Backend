@@ -22,19 +22,14 @@
 
 import { prisma } from "../../db/prisma.js";
 import { getUniverseRows, type LeanSnap } from "./universe-rows.cache.js";
-import type {
-  LabelBand,
-  TrajectoryMarker,
-  DivergenceFlag,
-  PillarKey,
-} from "./health-view.types.js";
+import { buildToolScan as buildFindingsToolScan, type ToolScanItem } from "./tool-scan.service.js";
+import type { LabelBand, PillarKey } from "./health-view.types.js";
+
+/** Recent in-force composites carried for the OWNERSHIP landing card's sparkline. */
+const SPARK_MAX = 8;
 import type {
   ScoredStockListItem,
   UniverseStockListItem,
-  StockScanItem,
-  DivergenceScanItem,
-  DivergenceConfig,
-  DivergenceDirection,
   OwnershipScanItem,
   OwnershipTell,
   SectorRef,
@@ -54,21 +49,11 @@ const numN = (d: unknown): number | null =>
       : Number(d);
 const round2 = (x: number): number => Math.round(x * 100) / 100;
 
-const TRAJECTORY_EPS = 1.0; // same threshold as health-view / peer-group marker
-const SPARK_MAX = 8; // recent in-force composites carried for the landing card
+// ⚠ DELETED IN PHASE 4 — the tool-recomputation constants. Not moved, not renamed: GONE.
+//   TRAJECTORY_EPS · DIVERGENCE_NOTABLE (15) · DIVERGENCE_WIDE (25) · GAP_EPS · ALL_PILLARS
+// The 15/25 pair was the tools' own definition of "divergence", competing with the engine's
+// (which Phase 2 moved to 12). Both tools now read the persisted findings — see buildToolScan.
 
-// Divergence thresholds — IDENTICAL to health-view (DIVERGENCE_NOTABLE/WIDE) so the
-// scan's flag matches the single view's.
-const DIVERGENCE_NOTABLE = 15;
-const DIVERGENCE_WIDE = 25;
-const GAP_EPS = 1.0; // slope deadband for widening vs narrowing
-const ALL_PILLARS: PillarKey[] = ["foundation", "momentum", "market", "ownership"];
-
-/** A lean snapshot row used for the in-force reduction. Carries the four pillar
- *  subtotals AND their applied weights (both denormalised on ScoreSnapshot) so the
- *  divergence scan needs no join. A pillar with applied weight 0 was
- *  `unavailable_redistributed` — its subtotal is meaningless and must be excluded
- *  from the spread, else a phantom gap dominates the ranking. */
 /** Reduce a stock's raw snapshots to its in-force series, NEWEST→OLDEST:
  *  MAX(version) within each periodKey, then ordered by asOfDate desc. */
 function inForceNewestFirst(rows: LeanSnap[]): LeanSnap[] {
@@ -159,190 +144,43 @@ export async function buildUniverseStocksList(): Promise<UniverseStockListItem[]
 }
 
 /**
- * Scored stocks ranked for the given tool's landing scan. `trajectory` and
- * `divergence` are implemented (over the SAME lean query group); `ownership`
- * remains the seam for later. Returns null for an unimplemented tool so the
- * controller can answer honestly (400).
+ * Scored stocks for the given tool's landing scan.
+ *
+ * ── ★ trajectory / divergence NOW READ THE PERSISTED FINDINGS ─────────────────
+ * They no longer recompute a pattern. buildFindingsToolScan (read/tool-scan.service.ts)
+ * reads score_patterns on each head snapshot, filters to the tool's FAMILIES, and
+ * resolves every string from the catalogue. The recomputed vocabulary this file used
+ * to emit — wide|notable|none, value|price_ahead|ownership|mixed — matched no finding
+ * key and carried its own 15/25 thresholds, which Phase 2 superseded with 12. Both are
+ * gone; see the header of tool-scan.service.ts for the full reasoning.
+ *
+ * `ownership` is a DIFFERENT instrument and is untouched: it ranks by institutional
+ * flow deltas read straight from shareholding filings, not by a recomputed pattern,
+ * so it never competed with the findings layer.
  */
 export async function buildToolScan(
   tool: string,
-): Promise<StockScanItem[] | DivergenceScanItem[] | OwnershipScanItem[] | null> {
-  if (tool === "trajectory") return buildTrajectoryScan();
-  if (tool === "divergence") return buildDivergenceScan();
+): Promise<ToolScanItem[] | OwnershipScanItem[] | null> {
+  if (tool === "trajectory") return buildFindingsToolScan("trajectory");
+  if (tool === "divergence") return buildFindingsToolScan("divergence");
   if (tool === "ownership") return buildOwnershipScan();
   return null;
 }
 
-// ── TRAJECTORY scan ───────────────────────────────────────────────────────────
-
-/** Rank tier — movers (improving/deteriorating) above stable above building-history.
- *  Within a tier, larger |delta| first. Surfaces the most-interesting journeys. */
-function trajectoryTier(it: StockScanItem): number {
-  if (it.marker == null) return 0; // building history (no second period)
-  if (it.marker === "stable") return 1;
-  return 2; // improving | deteriorating
-}
-
-async function buildTrajectoryScan(): Promise<StockScanItem[]> {
-  const { stocks, byStock } = await getUniverseRows();
-
-  const items = stocks.flatMap((st): StockScanItem[] => {
-    const rows = byStock.get(st.id);
-    if (!rows || rows.length === 0) return [];
-    const series = inForceNewestFirst(rows); // newest → oldest
-    const latest = series[0];
-    const prior = series[1] ?? null;
-
-    let marker: TrajectoryMarker | null = null;
-    let delta: number | null = null;
-    if (prior) {
-      delta = round2(latest.composite - prior.composite);
-      marker =
-        delta > TRAJECTORY_EPS
-          ? "improving"
-          : delta < -TRAJECTORY_EPS
-            ? "deteriorating"
-            : "stable";
-    }
-
-    const spark = series
-      .slice(0, SPARK_MAX)
-      .map((s) => round2(s.composite))
-      .reverse();
-
-    return [
-      {
-        symbol: st.symbol,
-        name: st.name,
-        sector: sectorRef(st.sector),
-        composite: round2(latest.composite),
-        band: latest.labelBand,
-        periodKey: latest.periodKey,
-        marker,
-        delta,
-        previousComposite: prior ? round2(prior.composite) : null,
-        previousPeriodKey: prior?.periodKey ?? null,
-        spark,
-      },
-    ];
-  });
-
-  items.sort(
-    (a, b) =>
-      trajectoryTier(b) - trajectoryTier(a) ||
-      Math.abs(b.delta ?? 0) - Math.abs(a.delta ?? 0) ||
-      a.symbol.localeCompare(b.symbol),
-  );
-
-  return items;
-}
-
-// ── DIVERGENCE scan ───────────────────────────────────────────────────────────
-
-const subtotalOf = (s: LeanSnap, p: PillarKey): number =>
-  p === "foundation" ? s.foundation : p === "momentum" ? s.momentum : p === "market" ? s.market : s.ownership;
-
-const weightOf = (s: LeanSnap, p: PillarKey): number =>
-  p === "foundation" ? s.wFoundation : p === "momentum" ? s.wMomentum : p === "market" ? s.wMarket : s.wOwnership;
-
-/** Pillars that were actually SCORED in this snapshot (applied weight > 0). An
- *  `unavailable_redistributed` pillar has weight 0 and a meaningless subtotal — it
- *  must never enter the spread (else a phantom gap dominates). */
-const scoredPillars = (s: LeanSnap): PillarKey[] => ALL_PILLARS.filter((p) => weightOf(s, p) > 0);
-
-/** The two SCORED pillars furthest apart (max / min subtotal). Null when fewer than
- *  two pillars were scored — no spread can be read. */
-function highLowPair(s: LeanSnap): { high: PillarKey; low: PillarKey } | null {
-  const scored = scoredPillars(s);
-  if (scored.length < 2) return null;
-  let high = scored[0];
-  let low = scored[0];
-  for (const p of scored) {
-    if (subtotalOf(s, p) > subtotalOf(s, high)) high = p;
-    if (subtotalOf(s, p) < subtotalOf(s, low)) low = p;
-  }
-  return { high, low };
-}
-
-/** The asymmetric taxonomy from the (high, low) pair. Ownership in the pair → an
- *  ownership tell; else Market leading → price_ahead, Market lagging → value;
- *  else two fundamental pillars apart → mixed. */
-export function divergenceConfig(high: PillarKey, low: PillarKey): DivergenceConfig {
-  if (high === "ownership" || low === "ownership") return "ownership";
-  if (high === "market") return "price_ahead";
-  if (low === "market") return "value";
-  return "mixed";
-}
-
-export function divergenceFlag(gap: number): DivergenceFlag {
-  return gap >= DIVERGENCE_WIDE ? "wide" : gap >= DIVERGENCE_NOTABLE ? "notable" : "none";
-}
-
-function divergenceDirection(gapDelta: number | null): DivergenceDirection {
-  if (gapDelta == null) return "steady";
-  return gapDelta > GAP_EPS ? "widening" : gapDelta < -GAP_EPS ? "narrowing" : "steady";
-}
-
-const flagTier: Record<DivergenceFlag, number> = { wide: 2, notable: 1, none: 0 };
-
-async function buildDivergenceScan(): Promise<DivergenceScanItem[]> {
-  const { stocks, byStock } = await getUniverseRows();
-
-  const items = stocks.flatMap((st): DivergenceScanItem[] => {
-    const rows = byStock.get(st.id);
-    if (!rows || rows.length === 0) return [];
-    const series = inForceNewestFirst(rows); // newest → oldest
-    const latest = series[0];
-
-    // Fix the spread pair on the latest SCORED pillars; skip stocks that can't read
-    // a spread (fewer than two scored pillars).
-    const pair = highLowPair(latest);
-    if (!pair) return [];
-    const { high, low } = pair;
-
-    // The fixed pair's gap, but only over periods where BOTH were scored (weight > 0)
-    // — so a quarter where one pillar was unavailable never injects a phantom gap.
-    const validGaps = series
-      .filter((s) => weightOf(s, high) > 0 && weightOf(s, low) > 0)
-      .map((s) => round2(subtotalOf(s, high) - subtotalOf(s, low))); // newest → oldest
-
-    const gap = validGaps[0];
-    const previousGap = validGaps[1] ?? null;
-    const gapDelta = previousGap != null ? round2(gap - previousGap) : null;
-
-    const spark = validGaps.slice(0, SPARK_MAX).reverse(); // oldest → newest
-
-    return [
-      {
-        symbol: st.symbol,
-        name: st.name,
-        sector: sectorRef(st.sector),
-        composite: round2(latest.composite),
-        band: latest.labelBand,
-        periodKey: latest.periodKey,
-        gap,
-        flag: divergenceFlag(gap),
-        config: divergenceConfig(high, low),
-        direction: divergenceDirection(gapDelta),
-        highPillar: high,
-        lowPillar: low,
-        previousGap,
-        gapDelta,
-        spark,
-      },
-    ];
-  });
-
-  // Rank by tension: flag tier, then gap magnitude.
-  items.sort(
-    (a, b) =>
-      flagTier[b.flag] - flagTier[a.flag] ||
-      b.gap - a.gap ||
-      a.symbol.localeCompare(b.symbol),
-  );
-
-  return items;
-}
+// ── TRAJECTORY + DIVERGENCE scans — REMOVED (Phase 4) ─────────────────────────
+//
+// Both recomputed their own patterns here. Deleted wholesale:
+//   TRAJECTORY_EPS (1.0) · trajectoryTier() · buildTrajectoryScan()
+//   DIVERGENCE_NOTABLE (15) · DIVERGENCE_WIDE (25) · GAP_EPS (1.0)
+//   highLowPair() · scoredPillars() · divergenceConfig() · divergenceFlag()
+//   divergenceDirection() · flagTier · buildDivergenceScan()
+//
+// They are replaced by read/tool-scan.service.ts, which reads the PERSISTED findings.
+// Nothing that remains in this file computes a pattern.
+//
+// ⚠ subtotalOf/weightOf survive below ONLY because the OWNERSHIP scan uses them — that
+// scan reads shareholding flow, not a recomputed pattern, and was never part of the
+// duplication.
 
 // ── OWNERSHIP scan ────────────────────────────────────────────────────────────
 //

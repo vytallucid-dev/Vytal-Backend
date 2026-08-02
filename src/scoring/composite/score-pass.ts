@@ -61,6 +61,8 @@ import type { CompositeResult, Pillar, PillarInput } from "./types.js";
 // §2/§5 findings engine — the fire-and-persist contract. Hook runs AFTER composite
 // assembly (reads the assembled pillars/composite/trajectory), emitting fired findings.
 import { runFindingsDetailed, type DeclinedCheck } from "../findings/engine.js";
+import { getRegimeForPeerGroup } from "../regime/regime.service.js";
+import { REGIME_EVIDENCE_KEY, toStamp } from "../regime/regime.js";
 import { opmSeriesFromQuarters, pillarMapOf } from "../findings/context.js";
 import { persistFindings } from "../findings/persist.js";
 import { loadTrajectorySeries } from "../findings/trajectory/load-series.js";
@@ -491,6 +493,44 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       m.findings.push(...lens.escalated);
       m.lensAudit = lens.audit;
     }
+    // ── ★ FIRE-TIME REGIME STAMP (post-fire, pre-dampen, pre-persist) ──────────────
+    // The regime that PREVAILED WHEN THESE FIRED, written into evidence under
+    // REGIME_EVIDENCE_KEY. Evidentially this is the only correct choice: the study measured
+    // "T3 events that OCCURRED DURING HOT phases returned −5.2%". A read-time regime would let
+    // a T3 that fired in HOT silently become NORMAL weeks later and lose the directional read
+    // it was entitled to — or gain one it never had.
+    //
+    // ⚠ ONLY findings that DECLARE a regime dependency are stamped (a `regimeTier` from the
+    // trajectory family, or `regimeConditionalCopy` from divergence D1/D6). Self-selecting, so
+    // there is no key list here to drift, and the other ~30 findings' evidence is untouched.
+    //
+    // ⚠ BEST-EFFORT, ALWAYS. Findings never block a score write, and neither does this: a regime
+    // lookup failure leaves the stamp absent, which the verdict layer already renders as
+    // "the market phase could not be established" — never as a fabricated NORMAL.
+    // Resolved ONCE per PG (the service caches per sector+trading-day), not once per member.
+    try {
+      const needsRegime = members.some((m) =>
+        m.findings?.some((f) => {
+          const ev = f.evidence as Record<string, unknown> | null;
+          return ev != null && (ev.regimeTier !== undefined || ev.regimeConditionalCopy !== undefined);
+        }),
+      );
+      if (needsRegime) {
+        const view = await getRegimeForPeerGroup(pgRow.id, { asOf });
+        const stamp = toStamp(view);
+        for (const m of members) {
+          for (const f of m.findings ?? []) {
+            const ev = f.evidence as Record<string, unknown> | null;
+            if (ev != null && (ev.regimeTier !== undefined || ev.regimeConditionalCopy !== undefined)) {
+              ev[REGIME_EVIDENCE_KEY] = stamp;
+            }
+          }
+        }
+      }
+    } catch {
+      // swallow — the phase is context, never a precondition for a score.
+    }
+
     // ── PG-WIDE DAMPENING (post-fire, pre-persist) ─────────────────────────────────
     // A pattern firing on >80% of the PG's SCORED members is a sector-wide condition →
     // halve magnitude + mark "dampened". Mutates the fired sets in place (patterns only;

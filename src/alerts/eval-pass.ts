@@ -22,6 +22,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 import type { AlertType, LabelBand } from "../generated/prisma/client.js";
 import { prisma } from "../db/prisma.js";
+import { dropRetiredFlags, dropRetiredPatterns } from "../catalogue/retired-findings.js";
 import {
   priceConditionTrue,
   bandConditionTrue,
@@ -139,8 +140,12 @@ export async function assembleReadings(stockIds: string[]): Promise<Map<string, 
     set.add(key);
     keysBySnap.set(snapId, set);
   };
-  for (const p of patterns) add(p.snapshotId, p.patternKey);
-  for (const f of redFlags) add(f.snapshotId, f.flagKey);
+  // ★ RETIREMENT SUPPRESSION (boundary 5 of 9 — alert evaluation). Load-bearing beyond display: an
+  //   existing user alert on a retired key must stop EVALUATING, not just stop rendering. Without
+  //   this, a stale snapshot still carrying a retired key would keep the alert in its "fired" state
+  //   forever — and a `clears` alert would never clear.
+  for (const p of dropRetiredPatterns(patterns)) add(p.snapshotId, p.patternKey);
+  for (const f of dropRetiredFlags(redFlags)) add(f.snapshotId, f.flagKey);
 
   for (const stockId of stockIds) {
     const snaps = snapsByStock.get(stockId) ?? [];

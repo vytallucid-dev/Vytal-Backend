@@ -74,14 +74,20 @@ async function main() {
   // sentence into evidence.verdict / evidence.verbatim. The frontend's renderers overrode it. If the
   // relocated module read the engine's string first — a change that looks like a simplification —
   // every stock page in the product would start showing a different sentence with no copy edited.
-  const withEngine = renderVerdict("trajectory_I_band_transition", {
-    toBand: "Healthy",
+  // Re-pointed off the retired trajectory_I_band_transition onto a live key — the precedence rule is
+  // what is under test, and a probe keyed to a retired finding exercises a path no reader can reach.
+  const withEngine = renderVerdict("trajectory_D_T8_foundation_strong_improving", {
+    card: "T8",
+    foundationPrior: 75,
+    foundationNow: 79,
+    regimeTier: "magnitude_caveat",
+    regimeReadPhases: null,
     verdict: "ENGINE SENTENCE — must not win",
     verbatim: "ENGINE VERBATIM — must not win either",
   });
   ok(
     "an authored renderer BEATS both evidence.verdict and evidence.verbatim",
-    withEngine === "Crossed into Healthy." && !withEngine.includes("ENGINE"),
+    withEngine.includes("already-strong business that is still strengthening") && !withEngine.includes("ENGINE"),
     `"${withEngine}"`,
   );
   const noRenderer = renderVerdict("lens_lm7_CASA", { verbatim: "ENGINE VERBATIM", verdict: "ENGINE VERDICT" });

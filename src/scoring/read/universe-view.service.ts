@@ -15,6 +15,8 @@ import { prisma } from "../../db/prisma.js";
 // The ONE severity ordering (File 1 §5, total over all eight tokens). See `worseSeverity` below
 // for why this is imported rather than redeclared locally — the local copy was silently wrong.
 import { severityWeight as severityRank } from "../../catalogue/divergence.js";
+import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
 import { computeScopeAggregate, describeScope, type ScopeMember } from "./scope-aggregate.js";
 import { resolveHeadSnapshots, splitByStaleness, pluralityPeriod } from "./head-snapshot.js";
 import type {
@@ -50,8 +52,9 @@ const num = (d: unknown): number =>
 const ymd = (d: Date): string => d.toISOString().slice(0, 10);
 const round2 = (x: number): number => Math.round(x * 100) / 100;
 
-const DIVERGENCE_NOTABLE = 15;
-const DIVERGENCE_WIDE = 25;
+// ★ PHASE 4 — canonical bands, not a local copy. See health-view.service.ts for the full note.
+const DIVERGENCE_NOTABLE = GAP_MATERIAL;
+const DIVERGENCE_WIDE = GAP_STRETCHED;
 const TRAJECTORY_EPS = 1.0;
 const MOVER_CAP = 10;
 const DETERIORATION_THRESHOLD = -2.0;
@@ -441,7 +444,11 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
     if (s.ownershipPillar?.pillarState === "scored")
       scoredSubs.push({ pillar: "ownership", subtotal: pillars.ownership });
 
-    const firedFlags: FiredFlag[] = s.redFlags
+    // ★ RETIREMENT SUPPRESSION (boundary 2 of 9 — the universe/Hub census, and via its `members`
+    //   the Hub projection AND the peer-group pathology census, both of which read these arrays
+    //   rather than the DB). A retired key here would inflate a census row and be counted as a
+    //   live pathology across the whole universe.
+    const firedFlags: FiredFlag[] = dropRetiredFlags(s.redFlags)
       .map((rf) => ({
         flagKey: rf.flagKey,
         severity: rf.severity,
@@ -449,7 +456,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
-    const firedPatterns: FiredPattern[] = s.patterns
+    const firedPatterns: FiredPattern[] = dropRetiredPatterns(s.patterns)
       .map((p) => ({
         patternKey: p.patternKey,
         direction: p.direction,

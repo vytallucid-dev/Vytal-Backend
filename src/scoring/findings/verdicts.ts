@@ -38,6 +38,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { N_FAMILY_COPY, familyOf, findingDescription, findingName } from "../../catalogue/index.js";
+import { REGIME_EVIDENCE_KEY } from "../regime/regime.js";
 
 type Ev = Record<string, unknown>;
 
@@ -191,38 +192,116 @@ export const VERDICTS: Record<string, (ev: Ev) => string> = {
   // stock whose owners are walking out — a directional inversion, in front of a reader, with no error
   // anywhere. Moving the renderer next to the rule closes that by construction: they now read the
   // same evidence object in the same module tree.
-  divergence_C1_price_ahead: (ev) =>
-    `Price (${f(ev.market, 0)}) sits ${f(ev.gap, 1)} pts above its fundamentals (F${f(ev.foundation, 0)} / M${f(ev.momentum, 0)}) — a wide gap.`,
-  divergence_C2_ownership_vs_fundamentals: (ev) => {
-    const fnd = f(ev.foundation, 0), own = f(ev.ownership, 0), g = f(ev.gap, 0);
-    return str(ev.subtype) === "exit_under_strength"
-      ? `Owners stepping back beneath a holding floor — Foundation ${fnd} but Ownership only ${own} (a ${g}pt gap).`
-      : `Smart money building under weakness — Ownership ${own} above a weak Foundation ${fnd} (a ${g}pt gap, the regime-robust tell).`;
-  },
-  divergence_C3_floor_trajectory_split: (ev) => {
-    const fnd = f(ev.foundation, 0), m = f(ev.momentum, 0), g = f(ev.gap, 0);
-    return ev.floorLed
-      ? `Floor–trajectory split — a strong Foundation ${fnd} over weak Momentum ${m} (a ${g}pt gap): the balance sheet holds while the near-term trajectory lags.`
-      : `Floor–trajectory split — Momentum ${m} running well ahead of Foundation ${fnd} (a ${g}pt gap): the trajectory outruns the floor.`;
-  },
-  divergence_C_over_time_widening: (ev) =>
-    `Price-vs-fundamentals gap widening — up from ${f(ev.recentLowGap, 1)} to ${f(ev.currentGap, 1)} pts over recent snapshots (a developing divergence, not yet wide).`,
+  // ⚠ C1 / C2 / C3 / C-over-time are RETIRED (catalogue/retired-findings.ts) and have NO renderer
+  //   here — deliberately, exactly as P2/P3 have none. A retired key never reaches renderVerdict
+  //   because the read layer drops the row first; an entry here would be a second place to maintain a
+  //   sentence for a finding we have decided is not true.
 
-  // ── B / D · Trajectory crosses (§5B / §5D) ──
-  trajectory_B_deterioration: (ev) => {
-    const variant = str(ev.variant);
-    const where =
-      variant === "pillar"
-        ? `${pl(ev.leg)} slipped below its strong mark`
-        : variant === "out_of_pristine"
-          ? "composite fell below 74, out of Pristine"
-          : "composite fell out of Healthy";
-    return `Sliding from a high base — ${where}, sustained ${num(ev.sustainedSnapshots) ?? "≥2"} snapshots — an early risk-regime change, typically before price reacts.`;
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+  // Family C · DIVERGENCE (Vytal_Divergence_Tool_Spec Parts 2–3)
+  //
+  // ★ THREE PLACES THE COPY IS GATED ON EVIDENCE, NOT ON TASTE:
+  //   D1/D2  never claim an independently measured figure — the split was not separately measured,
+  //          so the sentence says the direction is INHERITED from the shared configuration.
+  //   D3/D4  the ±8 tier selects the register. `strong` ⇒ the study's figures may be spoken;
+  //          otherwise the movement is stated and its DRIVER named, with no measured claim attached.
+  //   D5     the n=5 caveat rides in the sentence itself, per the spec's "display prominently".
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+  divergence_D1_price_ahead_quality: (ev) =>
+    `The market is paying well above what the quality of this business currently supports — Market ${f(ev.market, 0)} against a Foundation of ${f(ev.foundation, 0)}, a ${f(ev.gapPp, 0)}-point gap. That closes one of two ways: the business improves into the price, or the price comes back to the business. Direction inherited from the combined price-ahead test (n=${num(ev.sharedN) ?? 79}); the quality-versus-trajectory split was not separately measured.`,
+
+  divergence_D2_price_ahead_trajectory: (ev) =>
+    `The price is running ahead of the company's current trajectory — Market ${f(ev.market, 0)} against a Momentum of ${f(ev.momentum, 0)}, a ${f(ev.gapPp, 0)}-point gap. The market is pricing an improvement the results have not yet shown. Direction inherited from the combined price-ahead test (n=${num(ev.sharedN) ?? 79}); this half was not separately measured.`,
+
+  divergence_D3_ownership_building_weak_foundation: (ev) => {
+    const d = num(ev.ownershipDeltaPp);
+    const move = `Ownership rose ${d === null ? "—" : `${d.toFixed(2)}`} points (${f(ev.ownershipFrom, 0)}→${f(ev.ownershipTo, 0)}) while Foundation still reads ${f(ev.foundation, 0)}`;
+    const driver = str(ev.driver);
+    return ev.strong
+      ? `${move}. Institutional ownership is rising while the fundamentals still read as weak — informed money buying against the visible evidence, historically one of the more meaningful things this model detects. ${driver}`.trim()
+      : `${move}. A small move at a weak base — the same condition the evidenced pattern describes, but below the size that population was measured on, so no outcome is claimed. ${driver}`.trim();
   },
-  trajectory_D_recovery: (ev) => {
-    const where = ev.isPillar ? `${pl(ev.leg)} leads the recovery` : "composite crossed up out of Below-par";
-    return `Turning up out of weakness — ${where}, sustained ${num(ev.sustainedSnapshots) ?? "≥2"} snapshots.`;
+
+  divergence_D4_ownership_exiting_healthy: (ev) => {
+    const d = num(ev.ownershipDeltaPp);
+    const move = `Ownership fell ${d === null ? "—" : `${Math.abs(d).toFixed(2)}`} points (${f(ev.ownershipFrom, 0)}→${f(ev.ownershipTo, 0)}) while Foundation still reads ${f(ev.foundation, 0)}`;
+    const driver = str(ev.driver);
+    return ev.strong
+      ? `${move}. Institutions have cut their position while the business still reads as healthy — when ownership moves before the fundamentals do, it is worth understanding what they are seeing. Sample-starved (n=${num(ev.evidencedN) ?? 11}): a reason to investigate, never a verdict. ${driver}`.trim()
+      : `${move}. A small move against a healthy base — the same condition, below the size the evidenced population was measured on, so no outcome is claimed. ${driver}`.trim();
   },
+
+  divergence_D5_laggard_catching_up: (ev) =>
+    `The balance sheet was already strong; the trajectory is now turning up to match it — Momentum rose ${f(ev.momentumRisePp, 1)} points to ${f(ev.momentum, 0)} against a Foundation of ${f(ev.foundation, 0)}, closing a ${f(ev.gapPp, 0)}-point gap. The weaker pillar is converging toward the stronger one, which is the whole point: the same rise away from a weak base read −3.8%, 27% positive. Seen in four separate tests, but n=${num(ev.evidencedN) ?? 5} on the core cell — a directional hypothesis, not a proven edge.`,
+
+  divergence_D6_quality_rolling_over: (ev) =>
+    `A strong business the market already recognises as strong — Foundation ${f(ev.foundation, 0)} — whose trajectory has now turned down, Momentum crossing below ${f(ev.crossedBelow, 0)} to ${f(ev.momentum, 0)}. When quality is fully priced in, a cooling trajectory is the thing that tends to matter.`,
+
+  divergence_D7_trajectory_breaking_base_holds: (ev) =>
+    `The balance sheet is still sound at Foundation ${f(ev.foundation, 0)}, but the operating trajectory has broken into weak territory — Momentum crossed below ${f(ev.crossedBelow, 0)} to ${f(ev.momentum, 0)}. This is early: the base has not deteriorated yet, but the direction has changed. The intact Foundation does not cushion it — the version with fundamentals holding reads more negative than the bare Momentum break alone.`,
+
+  divergence_S2_sticky_divergence: (ev) => {
+    const n = num(ev.sustainedReadings) ?? 2;
+    return `Foundation ${f(ev.foundation, 0)} and Momentum ${f(ev.momentum, 0)} have sat ${f(ev.gapPp, 0)} points apart for ${n} consecutive readings (since ${str(ev.sincePeriod) || "the prior reading"}) and are not converging. At this distance neither pillar reliably closes the gap at the next reading. The tension is unresolved — the model can show you that it exists, but not when it will close.`;
+  },
+
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+  // Family T · TRAJECTORY (Vytal_Trajectory_Tool_Spec Parts 2–3)
+  //
+  // ⚠ B / D / I are RETIRED and have NO renderers here, deliberately — a retired key never reaches
+  //   renderVerdict because the read layer drops the row first.
+  //
+  // ★ THE REGIME TIERS DO THEIR WORK HERE. The rule stamps the CONTRACT (tier + which phases carry a
+  //   read); the fire-time stamp under REGIME_EVIDENCE_KEY supplies the PHASE; this layer resolves
+  //   the two into a sentence. That split is why a rule can stay pure while the copy stays honest.
+  //
+  //   Tier 1 (T3/T6) — regimeSentence() returns the no-directional-read line when the fired phase is
+  //                    absent from the pattern's table. The CROSSING is still stated (§1.4 line 87);
+  //                    only the direction is withheld.
+  //   Tier 2 (T2)    — the phase is appended unconditionally, plus the spec's HOT sentence.
+  //   Tier 3 (rest)  — HOT appends a "magnitude flattered" caveat; other phases add nothing.
+  //
+  // ⚠ Part 4 constrains every string below: no "early warning" (R2), no "you're early" (R3), and
+  //   nothing scaled by move size (R1). scripts/verify-trajectory.ts lints these renderers' OUTPUT
+  //   over fixture evidence, so a violation fails a gate rather than relying on review.
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+  trajectory_D_T1_recovery_low_zone: (ev) =>
+    `This business is recovering from a weak position — the score rose from ${f(ev.compositePrior, 0)} to ${f(ev.compositeNow, 0)}. A real improvement in the underlying fundamentals, not just a price move: on shifts of this size the non-price pillars contribute most of the change. The market has typically already started repricing it by the time this shows.${regimeSentence(ev)}`,
+
+  trajectory_B_T2_deterioration_high_base: (ev) =>
+    `A business that was in good shape is measurably weakening — the score fell from ${f(ev.compositePrior, 0)} to ${f(ev.compositeNow, 0)}. This is the kind of change worth reviewing your reasons for holding it.${regimeSentence(ev)}`,
+
+  trajectory_B_T3_falling_out_of_pristine: (ev) =>
+    `This business has slipped out of the top health band, from ${f(ev.compositePrior, 0)} to ${f(ev.compositeNow, 0)}.${regimeSentence(ev)}`,
+
+  trajectory_D_T4_recovering_out_of_below_par: (ev) =>
+    `This business has moved out of below-par territory into steady, from ${f(ev.compositePrior, 0)} to ${f(ev.compositeNow, 0)} — a recovery that has held long enough to cross a band. Treat as directional: the sample behind this reading was not preserved, so it carries less weight than the other trajectory patterns.${regimeSentence(ev)}`,
+
+  trajectory_D_T5_foundation_out_of_weak: (ev) =>
+    `The latest results moved the balance-sheet reading out of weak territory, from ${f(ev.foundationPrior, 0)} to ${f(ev.foundationNow, 0)}. A real improvement from a low base, and historically the most reliable of the single-pillar improvements — carried by small gains like this one rather than by large jumps.${regimeSentence(ev)}`,
+
+  trajectory_B_T6_momentum_breaking_into_weak: (ev) =>
+    `The operating trajectory has broken into weak territory, ${f(ev.momentumPrior, 0)} to ${f(ev.momentumNow, 0)}. The balance sheet may still be intact, but the direction of the business has changed.${regimeSentence(ev)}`,
+
+  trajectory_D_T7_momentum_improving_while_weak: (ev) => {
+    // ★ R3 — on a large rise the copy must state that the price has already moved. Never "you're
+    //   early": before results producing a 15+ point gain the price had already run +3.0%
+    //   sector-excess (70% positive) and did nothing afterwards.
+    const late = ev.largeMovePriceAlreadyRan
+      ? " On a move this size the price has usually already run before the reading catches up."
+      : "";
+    return `Still weak, but improving — the trajectory rose from ${f(ev.momentumPrior, 0)} to ${f(ev.momentumNow, 0)}, the earliest point at which a recovery becomes visible in the numbers.${late}${regimeSentence(ev)}`;
+  },
+
+  trajectory_D_T8_foundation_strong_improving: (ev) =>
+    `An already-strong business that is still strengthening — the balance-sheet reading rose from ${f(ev.foundationPrior, 0)} to ${f(ev.foundationNow, 0)}, above its strong mark. Uncommon, and historically one of the more consistent positive readings.${regimeSentence(ev)}`,
+
+  trajectory_B_T9_foundation_weak_declining: (ev) =>
+    // ★ THE HIT-RATE, NOT THE MEAN. The +0.6% mean is dragged by outliers; roughly two-thirds of
+    //   cases fell. Quoting the mean here would read as mildly positive — the opposite of the truth.
+    `A business that was already weak is continuing to deteriorate, from ${f(ev.foundationPrior, 0)} to ${f(ev.foundationNow, 0)}. Of all the trajectory readings tested, this one had the poorest odds of the price holding up — only ${f(ev.evidencedPositivePct, 0)}% of cases rose.${regimeSentence(ev)}`,
 
   // ── F · Composition (§5F) ──
   composition_F1_atypical: (ev) => {
@@ -237,14 +316,8 @@ export const VERDICTS: Record<string, (ev: Ev) => string> = {
     return `Mix shifted while the score held (${prior}→${current})${lead}.`;
   },
 
-  // ── G · Convergence (§5G) ──
-  trajectory_G_convergence: (ev) => {
-    const healthy = str(ev.type) === "healthy_resolution";
-    const peak = f(ev.peakSpread, 1), cur = f(ev.currentSpread, 1);
-    return healthy
-      ? `Converging — the ${pl(ev.laggardPillar)} laggard rose ${f(ev.laggardRosePp, 1)}pp, closing a ${peak}pp pillar gap to ${cur}pp (healthy resolution).`
-      : `Converging — the ${pl(ev.leaderPillar)} leader fell ${f(ev.leaderFellPp, 1)}pp, closing a ${peak}pp pillar gap to ${cur}pp (deterioration convergence).`;
-  },
+  // ── G · Convergence — ⚠ RETIRED. No renderer, for the same reason as C1–C3. Its resolution
+  //      typing lives on as findings/divergence/resolution.ts, un-fired and unregistered. ──
 
   // ── H · Ownership events (§5H) ──
   ownership_H_block_events: (ev) => {
@@ -254,9 +327,67 @@ export const VERDICTS: Record<string, (ev: Ev) => string> = {
     return `Ownership event — ${n} block/bulk deal${n === 1 ? "" : "s"} (₹${f(ev.grossCr, 0)} Cr, ${lean}) this window.`;
   },
 
-  // ── I · Band transition (§5I) ──
-  trajectory_I_band_transition: (ev) => `Crossed into ${str(ev.toBand)}.`,
+  // ── I · Band transition — ⚠ RETIRED (fired the excluded composite ↓62 and the untested ↑68). ──
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE TRAJECTORY REGIME SENTENCE — where §1.4's three tiers become words.
+//
+// Reads TWO things off the evidence, which were written by two different layers:
+//   · the CONTRACT  (regimeTier + regimeReadPhases) — stamped by the RULE, static per pattern
+//   · the PHASE     (REGIME_EVIDENCE_KEY.regime)    — stamped at FIRE TIME by the scoring pass
+// Keeping them apart is what lets the rule stay a pure function while the copy stays phase-accurate.
+//
+// ★ THE UNKNOWN CASE IS NOT THE SAME AS THE NO-READ CASE. If the regime could not be established the
+//   sentence says so; it never silently falls back to the "no directional read in this phase" line,
+//   which would assert that we KNOW the phase and it happens to be uninformative.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** The spec's own T3 copy for the phases where it carries no read (Part 2, T3 · "User copy
+ *  (NORMAL / STRESSED)"). Verbatim. */
+const T3_NO_READ = " In calm markets this crossing has not historically carried a directional read.";
+/** The spec's HOT-append for T2 (Part 2, T2 · "In a HOT regime, append"). Verbatim. */
+const T2_HOT_APPEND =
+  " The sector is in a strong run, which has historically postponed this kind of deterioration showing up in the price rather than cancelling it.";
+/** The spec's HOT copy for T3 (Part 2, T3 · "User copy (HOT)"). */
+const T3_HOT =
+  " Its sector is running hot — historically the least forgiving combination, a fully-priced business losing the thing that justified the price.";
+
+function regimeSentence(ev: Ev): string {
+  const tier = str(ev.regimeTier);
+  if (!tier) return "";
+  const stamp = ev[REGIME_EVIDENCE_KEY] as { regime?: unknown } | undefined;
+  const phase = stamp && typeof stamp.regime === "string" ? stamp.regime : null;
+
+  // Regime not established — say that, never imply we checked and found nothing.
+  if (!phase) {
+    return tier === "decides_read"
+      ? " The market phase could not be established for this sector, and this reading depends on it."
+      : "";
+  }
+
+  if (tier === "decides_read") {
+    const phases = Array.isArray(ev.regimeReadPhases) ? (ev.regimeReadPhases as string[]) : [];
+    if (phases.includes(phase)) {
+      // The phase carries a measured read — name it.
+      if (str(ev.card) === "T3") return T3_HOT;
+      if (str(ev.card) === "T6") return " The sector is calm, which is the phase in which this reading has held.";
+      return ` Its sector is in a ${phase} phase, where this reading has held.`;
+    }
+    // ★ §1.4 line 87 — the crossing stands; the direction does not.
+    if (str(ev.card) === "T3") return T3_NO_READ;
+    if (str(ev.card) === "T6") return " Its sector is running hot, and in that phase this break has not historically carried a directional read.";
+    return ` In a ${phase} phase this reading has no directional history.`;
+  }
+
+  if (tier === "always_display") {
+    const base = ` Market phase at the time of this reading: ${phase}.`;
+    return phase === "HOT" ? `${base}${T2_HOT_APPEND}` : base;
+  }
+
+  // magnitude_caveat — HOT flatters the size of the move; other phases add nothing.
+  return phase === "HOT" ? " The sector is running hot, which flatters the size of moves like this one." : "";
+}
 
 /** Generic last-resort copy when no renderer matched and the engine wrote no sentence. */
 function genericVerdict(key: string): string {

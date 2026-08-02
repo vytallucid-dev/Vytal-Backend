@@ -19,6 +19,7 @@
 import { prisma } from "../db/prisma.js";
 import { getLatestSnapshotRef } from "../scoring/read/scoring-read.service.js";
 import { deriveCoverage } from "./coverage.js";
+import { dropRetiredFlags, dropRetiredPatterns } from "../catalogue/retired-findings.js";
 import type { ObjectState, ObjectFinding } from "./types.js";
 
 /** `_N\d+_` ⇒ Family N (positive). A red flag is negative. Otherwise fall back to the fired instance's
@@ -221,8 +222,11 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
     };
   }
 
+  // ★ RETIREMENT SUPPRESSION (boundary 6 of 9 — the relational card's object state). A retired key
+  //   reaching here would be handed to derivePolarity/deriveTemporalClass and could win a card slot,
+  //   putting an obsolete claim in the reader's most prominent surface.
   const findings: ObjectFinding[] = [
-    ...snap.patterns.map((p): ObjectFinding => ({
+    ...dropRetiredPatterns(snap.patterns).map((p): ObjectFinding => ({
       kind: "pattern",
       key: p.patternKey,
       severity: p.severity,
@@ -230,7 +234,7 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
       temporalClass: deriveTemporalClass(asRecord(p.evidence)),
       evidence: asRecord(p.evidence),
     })),
-    ...snap.redFlags.map((r): ObjectFinding => ({
+    ...dropRetiredFlags(snap.redFlags).map((r): ObjectFinding => ({
       kind: "red_flag",
       key: r.flagKey,
       severity: r.severity ?? "critical",

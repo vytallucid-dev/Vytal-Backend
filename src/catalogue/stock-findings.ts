@@ -77,19 +77,39 @@ export const STOCK_FINDING_KEYS = [
   "momentum_P11_margin_compression",
   "momentum_P12_margin_recovery",
   "momentum_P13_revenue_inflection",
-  // B/C/D/F/G/H/I · structural cards
-  "trajectory_B_deterioration",
-  "divergence_C1_price_ahead",
-  "divergence_C2_ownership_vs_fundamentals",
-  "divergence_C3_floor_trajectory_split",
-  "divergence_C_over_time_widening",
+  // F/H · structural cards
+  //   ⚠ RETIRED and therefore ABSENT (no copy for a key that cannot fire) — see retired-findings.ts:
+  //     C1 · C2 · C3 · C_over_time · G  (wave 2, → the D-family divergence rebuild)
+  //     trajectory_B_deterioration · trajectory_D_recovery · trajectory_I_band_transition
+  //       (wave 3, → the T-family trajectory rebuild)
   "divergence_consolidated",
-  "trajectory_D_recovery",
   "composition_F1_atypical",
   "trajectory_F2_composition_shift",
-  "trajectory_G_convergence",
   "ownership_H_block_events",
-  "trajectory_I_band_transition",
+  // C · the divergence family (Vytal_Divergence_Tool_Spec Parts 2–3). Seven patterns + one state.
+  //   S1 (Aligned) is deliberately NOT here: it is the neutral control the TOOL renders, not a card
+  //   stamped on every quiet stock — see findings/divergence/bands.ts for why.
+  "divergence_D1_price_ahead_quality",
+  "divergence_D2_price_ahead_trajectory",
+  "divergence_D3_ownership_building_weak_foundation",
+  "divergence_D4_ownership_exiting_healthy",
+  "divergence_D5_laggard_catching_up",
+  "divergence_D6_quality_rolling_over",
+  "divergence_D7_trajectory_breaking_base_holds",
+  "divergence_S2_sticky_divergence",
+  // T · the trajectory family (Vytal_Trajectory_Tool_Spec Parts 2–3). One score's own path.
+  //   ★ The key PREFIX carries the family: trajectory_B_* = deterioration, trajectory_D_* = recovery.
+  //     familyOf's existing `startsWith("trajectory_B_"/"trajectory_D_")` branches classify all nine
+  //     with no new branch — and therefore no frontend familyOf change to keep in step.
+  "trajectory_D_T1_recovery_low_zone",
+  "trajectory_B_T2_deterioration_high_base",
+  "trajectory_B_T3_falling_out_of_pristine",
+  "trajectory_D_T4_recovering_out_of_below_par",
+  "trajectory_D_T5_foundation_out_of_weak",
+  "trajectory_B_T6_momentum_breaking_into_weak",
+  "trajectory_D_T7_momentum_improving_while_weak",
+  "trajectory_D_T8_foundation_strong_improving",
+  "trajectory_B_T9_foundation_weak_declining",
   // N · Notable (constructive twins)
   "foundation_N1_cash_backed_earnings",
   "foundation_N2_working_capital",
@@ -380,58 +400,199 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
   // and the `trajectory` concern is what carries them onto the Hub board instead of orphaning them.
   // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-  // B · Deterioration from a High Base
-  trajectory_B_deterioration: {
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+  // Family B / D · THE TRAJECTORY FAMILY — Vytal_Trajectory_Tool_Spec Parts 2–3.
+  // One score moving along its own path. Nine patterns, split across the two existing trajectory
+  // families by DIRECTION: B = deterioration (T2/T3/T6/T9), D = recovery (T1/T4/T5/T7/T8). The
+  // families' existing boundary lines already fit, so no new FAMILY_DOESNT_MEAN entry is needed.
+  //
+  // ⚠ NO DESCRIPTION HERE MAY IMPLY (Part 4):
+  //   R1 · that a bigger move is a bigger signal — measured, the reverse holds
+  //   R2 · that Momentum leads the composite — median lead 0 days across 39 matched pairs
+  //   R3 · that the reader is early on a large positive Momentum move — they are late by construction
+  // Enforced by the copy lint in trajectory/regime-tier.ts, gated in scripts/verify-trajectory.ts.
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+  // T1 · Recovery from the Low Zone
+  trajectory_D_T1_recovery_low_zone: {
+    name: "Recovery from the Low Zone",
+    description:
+      "A struggling business is genuinely turning — the overall score has risen materially from a weak starting point. This is a real improvement in the underlying fundamentals rather than a price move: on shifts of this size the non-price pillars contribute most of the change. The market has typically already begun repricing it by the time this shows.",
+    family: "D",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // T2 · Deterioration from a High Base
+  trajectory_B_T2_deterioration_high_base: {
     name: "Deterioration from a High Base",
     description:
-      "The composite, or one pillar, has crossed down out of strong territory and stayed there across at least two snapshots. A company that was solid is sliding — a change in risk profile that usually shows up before price reacts.",
+      "A business that was in good shape is measurably weakening — the overall score has fallen materially from a strong starting point. This is the kind of change worth reviewing your reasons for holding it. How much weight it carries depends on the market phase, which is why this reading always shows the phase it fired in.",
     family: "B",
     concern: "trajectory",
     status: "live",
   },
 
-  // C1 · Price Ahead of Fundamentals
-  divergence_C1_price_ahead: {
-    name: "Price Ahead of Fundamentals",
+  // T3 · Falling Out of Pristine
+  trajectory_B_T3_falling_out_of_pristine: {
+    name: "Falling Out of Pristine",
     description:
-      "The Market read sits well above what Foundation and Momentum support. Price has run ahead of the business underneath it.",
+      "This business has slipped out of the top health band. That band is defined as fully priced — a company already recognised as excellent — so falling out of it means the one thing supporting a premium rating has started to slip. Whether this carries a directional read depends entirely on the market phase.",
+    family: "B",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // T4 · Recovering Out of Below Par
+  trajectory_D_T4_recovering_out_of_below_par: {
+    name: "Recovering Out of Below Par",
+    description:
+      "This business has moved out of below-par territory into steady — a recovery that has held long enough to cross a band. Directional only: the sample behind this reading was not preserved, so it has not been established with the confidence of the other trajectory patterns.",
+    family: "D",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // T5 · Foundation Growing Out of the Weak Zone
+  trajectory_D_T5_foundation_out_of_weak: {
+    name: "Foundation Growing Out of the Weak Zone",
+    description:
+      "The latest results moved the balance-sheet reading out of weak territory — a real improvement from a low base, and the most consistent of the single-pillar improvements observed. Notably it is the small gains that carried this: large jumps in the same reading did not.",
+    family: "D",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // T6 · Momentum Breaking Into Weak
+  trajectory_B_T6_momentum_breaking_into_weak: {
+    name: "Momentum Breaking Into Weak",
+    description:
+      "The operating trajectory has broken into weak territory. The balance sheet may still be intact, but the direction of the business has changed. This reading is located at the trajectory pillar's own weak mark rather than a borrowed one — measured at the wrong threshold, the same condition reads the opposite way.",
+    family: "B",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // T7 · Momentum Improving While Still Weak
+  trajectory_D_T7_momentum_improving_while_weak: {
+    name: "Momentum Improving While Still Weak",
+    description:
+      "Still weak, but improving — the trajectory has turned up from a low base, the earliest point at which a recovery becomes visible in the numbers. On the larger improvements the price has usually already moved by the time the reading catches up.",
+    family: "D",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // T8 · Foundation Strong and Still Improving
+  trajectory_D_T8_foundation_strong_improving: {
+    name: "Foundation Strong and Still Improving",
+    description:
+      "An already-strong business that is still strengthening — the balance-sheet reading sits above its strong mark and has risen again. Uncommon, and one of the more consistent positive readings on the strong side of the range.",
+    family: "D",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // T9 · Foundation Weak and Still Declining
+  trajectory_B_T9_foundation_weak_declining: {
+    name: "Foundation Weak and Still Declining",
+    description:
+      "A business that was already weak is continuing to deteriorate. Not a dramatic break — steady erosion from a low base. Of all the trajectory readings tested, this one had the poorest odds of the price holding up: roughly two-thirds of cases fell.",
+    family: "B",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+  // Family C · THE DIVERGENCE FAMILY — Vytal_Divergence_Tool_Spec Parts 2–3.
+  // Two pillars disagreeing. Seven patterns (D1–D7) + one state (S2). Display-only; nothing rescores.
+  // Descriptions describe THE COMPANY, never the scoring mechanism, and carry no return claim — the
+  // measured figures live in each rule's evidence and are spoken by the verdict, gated where the
+  // spec gates them (D1/D2's shared n=79 inheritance, D3/D4's ±8 register, D5's n=5 caveat).
+  // ═════════════════════════════════════════════════════════════════════════════════════════════════
+
+  // D1 · Price Ahead of Quality — Market vs Foundation, the re-rating story
+  divergence_D1_price_ahead_quality: {
+    name: "Price Ahead of Quality",
+    description:
+      "The market is paying far more than the underlying quality of the business justifies. Foundation is a slow-moving read on how fundamentally sound a company is, so when price runs away from it the market is changing what it is willing to pay for a given level of quality. A re-rating story — structural and slower-moving.",
     family: "C",
     concern: "trajectory",
     status: "live",
   },
 
-  // C2 · Ownership Against Fundamentals
-  divergence_C2_ownership_vs_fundamentals: {
-    name: "Ownership Against Fundamentals",
+  // D2 · Price Ahead of Trajectory — Market vs Momentum, the expectations story
+  divergence_D2_price_ahead_trajectory: {
+    name: "Price Ahead of Trajectory",
     description:
-      "Ownership behaviour contradicts the fundamentals — either owners are stepping back from a business that looks sound, or building into one that looks weak. Both are worth understanding; the second is the classic smart-money tell.",
+      "The market is pricing a turn the results have not delivered. Momentum reads how the business is trending right now, so a gap here is about earnings expectations rather than quality. Faster-moving and noisier than the quality version, and more likely to resolve quickly in either direction, because a single set of results can close it.",
     family: "C",
     concern: "trajectory",
     status: "live",
   },
 
-  // C3 · Floor–Trajectory Split
-  divergence_C3_floor_trajectory_split: {
-    name: "Floor–Trajectory Split",
+  // D3 · Ownership Building Against a Weak Foundation
+  divergence_D3_ownership_building_weak_foundation: {
+    name: "Ownership Building Against a Weak Foundation",
     description:
-      "Foundation and Momentum are far apart — a sound balance sheet with deteriorating trends, or improving trends built on a weak base. What the company is and where it's heading disagree.",
+      "Institutions are increasing their stake in a business whose published fundamentals look weak. That is a deliberate, costly decision taken against the visible evidence, which is what makes it informative — someone with a better view is putting real money behind a thesis the numbers do not yet reflect.",
+    family: "C",
+    concern: "ownership",
+    status: "live",
+  },
+
+  // D4 · Ownership Exiting a Healthy Business
+  divergence_D4_ownership_exiting_healthy: {
+    name: "Ownership Exiting a Healthy Business",
+    description:
+      "Institutions have cut their position while the business still reads as healthy on the published numbers. The exit tends to precede the deterioration showing up in the financials.",
+    family: "C",
+    concern: "ownership",
+    status: "live",
+  },
+
+  // D5 · Laggard Catching Up
+  divergence_D5_laggard_catching_up: {
+    name: "Laggard Catching Up",
+    description:
+      "A fundamentally sound business whose trajectory had fallen behind is now turning up. The weaker pillar is converging toward the stronger one — and the direction of convergence is the whole point, because the same improvement moving away from a weak base reads very differently.",
     family: "C",
     concern: "trajectory",
     status: "live",
   },
 
-  // C · Divergence Widening (over time)
-  divergence_C_over_time_widening: {
-    name: "Divergence Widening",
+  // D6 · Quality Rolling Over
+  divergence_D6_quality_rolling_over: {
+    name: "Quality Rolling Over",
     description:
-      "The gap between how this company's share price reads and what the business underneath supports was already notable, and has widened further over recent snapshots. Price and fundamentals are drifting further apart rather than converging.",
+      "A high-quality business the market has already priced as high-quality, whose only fresh input — the trajectory — has turned down. When quality is fully priced in, there is no upside surprise left to deliver, and a cooling trajectory is the thing that tends to matter.",
+    family: "C",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // D7 · Trajectory Breaking While the Base Holds
+  divergence_D7_trajectory_breaking_base_holds: {
+    name: "Trajectory Breaking While the Base Holds",
+    description:
+      "The balance sheet is still intact but the operating trajectory has broken into weakness. This is early — the base has not deteriorated yet, but the direction has changed. The intact balance sheet does not cushion it.",
+    family: "C",
+    concern: "trajectory",
+    status: "live",
+  },
+
+  // S2 · Sticky Divergence — a STATE, no return claim attached
+  divergence_S2_sticky_divergence: {
+    name: "Sticky Divergence",
+    description:
+      "Foundation and Momentum have disagreed materially for more than one reading and are not converging. At this distance neither pillar reliably closes the gap at the next reading. The tension is real and unresolved — the state is readable, the timing is not.",
     family: "C",
     concern: "trajectory",
     status: "live",
   },
 
   // C · Divergence (consolidated) — ★ SYNTHESISED, never emitted. See divergence.ts for the §5C rule
-  //     that produces it from the four C sub-types above.
+  //     that produces it from the price-ahead sub-types (D1/D2), which co-fire on the same stock.
   divergence_consolidated: {
     name: "Divergence",
     description:
@@ -441,15 +602,9 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
     status: "synthesised",
   },
 
-  // D · Recovery from Weakness
-  trajectory_D_recovery: {
-    name: "Recovery from Weakness",
-    description:
-      "The composite, or one pillar, has turned up out of weak territory and held the improvement. In this program's testing, recovery from weakness has been the most durable signal observed — stated descriptively, not as a forecast.",
-    family: "D",
-    concern: "trajectory",
-    status: "live",
-  },
+  // D · Recovery from Weakness — ⚠ RETIRED. Its pillar loop broke on first match, so a multi-pillar
+  //     recovery persisted ONE finding naming ONE pillar. Replaced by T1/T4/T5/T7/T8 as independent
+  //     per-pattern rules, which makes that defect unrepresentable.
 
   // F1 · Atypical Composition
   composition_F1_atypical: {
@@ -471,15 +626,8 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
     status: "live",
   },
 
-  // G · Convergence
-  trajectory_G_convergence: {
-    name: "Convergence",
-    description:
-      "A pillar gap that was previously notable has narrowed. Which way it closed matters: the laggard rising is a different story from the leader falling.",
-    family: "G",
-    concern: "trajectory",
-    status: "live",
-  },
+  // G · Convergence — ⚠ RETIRED (narrowing spread is EXCLUDED: +0.2%, 51% positive, n=239).
+  //     Absent by design. Its resolution TYPING survives as findings/divergence/resolution.ts.
 
   // H · Ownership Events
   ownership_H_block_events: {
@@ -491,15 +639,9 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
     status: "live",
   },
 
-  // I · Band Transition
-  trajectory_I_band_transition: {
-    name: "Band Transition",
-    description:
-      "The composite crossed into Healthy on the way up, or into Below-par on the way down — the two boundaries either side of the middle of the scale.",
-    family: "I",
-    concern: "trajectory",
-    status: "live",
-  },
+  // I · Band Transition — ⚠ RETIRED. It fired the composite ↓62 crossing, which is on the spec's
+  //     EXCLUDED list (+5.4%, bull-masked), and composite ↑68, which is untested. The one composite
+  //     down-cross that survived the phase split is at 74, and that is T3.
 };
 
 /**

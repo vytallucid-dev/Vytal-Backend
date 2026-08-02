@@ -31,12 +31,28 @@
 
 import type { StockFindingKey } from "./stock-findings.js";
 
-/** The four sub-types the engine can fire. Consolidation is defined over exactly these. */
+/**
+ * The sub-types consolidation is defined over.
+ *
+ * ── ★ REPOINTED FROM THE RETIRED C SUB-TYPES TO THE PRICE-AHEAD PAIR ──────────────────────────────
+ * This was the four C keys (C1/C2/C3/C-over-time), all now retired. It is NOT simply emptied, because
+ * the condition §5C exists to prevent is live and unchanged under the new family:
+ *
+ *     Market ≥ 74  AND  Foundation < 58  AND  Momentum < 58   ⇒  D1 AND D2 both fire
+ *
+ * That is BHEL, the spec's own named case (Market 78, Foundation 53, Momentum 48) — and it produces
+ * two cards both saying "price has run ahead", which is the same fact told twice. D1 and D2 are the
+ * two halves of ONE measured configuration (the shared n=79), so consolidating them is not a display
+ * convenience; it is a restatement of how the evidence was actually gathered.
+ *
+ * ⚠ Only the price-ahead pair belongs here. D3/D4 (ownership movement), D5 (convergence), D6/D7
+ * (crossings) and S2 (a sustained state) each say a DIFFERENT thing about a different pair of
+ * pillars, and collapsing them into one "Divergence" row would hide findings rather than de-duplicate
+ * them. Consolidation removes repetition; it must never remove content.
+ */
 export const DIVERGENCE_SUB_TYPE_KEYS = [
-  "divergence_C1_price_ahead",
-  "divergence_C2_ownership_vs_fundamentals",
-  "divergence_C3_floor_trajectory_split",
-  "divergence_C_over_time_widening",
+  "divergence_D1_price_ahead_quality",
+  "divergence_D2_price_ahead_trajectory",
 ] as const;
 
 export type DivergenceSubTypeKey = (typeof DIVERGENCE_SUB_TYPE_KEYS)[number];

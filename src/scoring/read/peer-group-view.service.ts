@@ -14,6 +14,8 @@
 import { prisma } from "../../db/prisma.js";
 // The ONE severity ordering (File 1 §5, total over all eight tokens) — see `worseSeverity` below.
 import { severityWeight as severityRank } from "../../catalogue/divergence.js";
+import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
 import { getSnapshotSeries } from "./scoring-read.service.js";
 import {
   computeScopeAggregate,
@@ -65,8 +67,9 @@ const numN = (d: unknown): number | null =>
       ? (d as { toNumber: () => number }).toNumber()
       : Number(d);
 
-const DIVERGENCE_NOTABLE = 15;
-const DIVERGENCE_WIDE = 25;
+// ★ PHASE 4 — canonical bands, not a local copy. See health-view.service.ts for the full note.
+const DIVERGENCE_NOTABLE = GAP_MATERIAL;
+const DIVERGENCE_WIDE = GAP_STRETCHED;
 const TRAJECTORY_EPS = 1.0;
 const MOVER_CAP = 10; // top-N each side; honestly capped (ponds are ≤10 today)
 
@@ -416,10 +419,14 @@ export async function buildPeerGroupHealthView(
     if (s.marketPillar.pillarState === "scored") scoredSubs.push({ pillar: "market", subtotal: pillars.market });
     if (s.ownershipPillar.pillarState === "scored") scoredSubs.push({ pillar: "ownership", subtotal: pillars.ownership });
 
-    const firedFlags = [...s.redFlags]
+    // ★ RETIREMENT SUPPRESSION (boundary 9 of 9 — the peer-group pathology census). This service
+    //   reads score_patterns INDEPENDENTLY of universe-view, so it needs its own filter: without it
+    //   a retired key would be counted as a live pathology across the PG's members ("fires on 4 of
+    //   8 peers") while the same key was suppressed everywhere else.
+    const firedFlags = dropRetiredFlags(s.redFlags)
       .map((rf) => ({ flagKey: rf.flagKey, severity: rf.severity, tier: rf.tier as "auto" | "review" }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
-    const firedPatterns = [...s.patterns]
+    const firedPatterns = dropRetiredPatterns(s.patterns)
       .map((p) => ({ patternKey: p.patternKey, direction: p.direction, severity: p.severity, displayState: (p.displayState ?? "active") as "active" | "pending_data_integration" | "dampened" }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 

@@ -40,6 +40,9 @@ import type { CatalogueEntry, RegistryId } from "./types.js";
 
 export * from "./types.js";
 export * from "./divergence.js";
+// Retirement: the suppression registry + the read-layer filters. Exported here so a consumer that
+// already imports the catalogue does not need a second import path to drop retired rows.
+export * from "./retired-findings.js";
 export {
   STOCK_FINDINGS,
   STOCK_FINDING_KEYS,

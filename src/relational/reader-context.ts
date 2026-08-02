@@ -18,6 +18,7 @@
 
 import { prisma } from "../db/prisma.js";
 import { probeStockRelationship } from "../ai/insight/relationship.js";
+import { dropRetiredFlags, dropRetiredPatterns, retiredKeysSqlPredicate } from "../catalogue/retired-findings.js";
 import { buildPortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
 import { listUnifiedPositions } from "../brokers/union.js";
 import { resolveToneForUser } from "../ai/tone.js";
@@ -192,7 +193,13 @@ async function resolveDelta(
       });
       if (seen) {
         lastSeenBand = seen.labelBand;
-        const seenKeys = new Set<string>([...seen.patterns.map((p) => p.patternKey), ...seen.redFlags.map((r) => r.flagKey)]);
+        // Retired keys dropped on BOTH sides of the comparison: a retired key present in the
+        // last-seen snapshot but suppressed now would otherwise read as "this cleared since you
+        // last looked", announcing a resolution that never happened.
+        const seenKeys = new Set<string>([
+          ...dropRetiredPatterns(seen.patterns).map((p) => p.patternKey),
+          ...dropRetiredFlags(seen.redFlags).map((r) => r.flagKey),
+        ]);
         const nowKeys = new Set(currentKeys);
         newlyStandingKeys = currentKeys.filter((k) => !seenKeys.has(k));
         clearedKeys = [...seenKeys].filter((k) => !nowKeys.has(k));
@@ -250,6 +257,10 @@ async function resolveEcho(userId: string, book: ReaderBook | null): Promise<Rea
       FROM head
       JOIN stocks st ON st.id = head.stock_id
       JOIN score_patterns p ON p.snapshot_id = head.id
+      -- ★ RETIREMENT SUPPRESSION (boundary 8 of 9 — "N of your holdings also show this"). RAW SQL,
+      --   the second reader a Prisma extension would have missed. Without it a retired key would be
+      --   presented to the reader as a live pattern shared across their own portfolio.
+      WHERE ${retiredKeysSqlPredicate("p.pattern_key")}
     `;
 
     const scoredStocks = new Set<string>();

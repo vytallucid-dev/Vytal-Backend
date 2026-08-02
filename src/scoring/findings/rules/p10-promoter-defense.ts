@@ -14,9 +14,15 @@
 
 import type { FireRule } from "../types.js";
 import { INSIDER_WINDOW_DAYS, INSIDER_ELIGIBLE_CR } from "./p6-insider-conviction.js";
+import { NATIVE_ZONES } from "../thresholds.js";
 
 export const P10_MIN_NET_CR = 2;       // material promoter net buy — FLAG: provisional
-export const P10_MARKET_NOT_STRONG = 72; // Market < strong mark ⇒ "into weakness"
+// ★ FIXED — this was hardcoded 72, Foundation/Ownership's strong mark, borrowed onto Market by
+// mistake. Market's own native strong mark is 74 (NATIVE_ZONES.market.strong). Now read from the
+// one shared table rather than typed as a second literal — the exact class of bug §1.2's "never
+// borrow a pillar's threshold for another pillar" rule exists to prevent, and the only instance of
+// it found on a repo-wide grep for a bare `72`/`74`/`60`/`54`/`50` beside a `market`/`mkt` pillar read.
+export const P10_MARKET_NOT_STRONG = NATIVE_ZONES.market.strong; // Market < strong mark ⇒ "into weakness"
 
 export const ruleP10: FireRule = (ctx) => {
   const txns = ctx.feeds.insiderTxns;

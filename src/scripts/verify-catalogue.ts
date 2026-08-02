@@ -76,11 +76,34 @@ function registeredRuleFiles(): string[] {
   return [...engine.matchAll(/from "\.\/rules\/([a-z0-9-]+)\.js"/g)].map((m) => m[1]);
 }
 
+/**
+ * Every finding key a rule file emits, discovered FROM SOURCE (never from a maintained list).
+ *
+ * Two forms are recognised, because both are in use:
+ *   key: "divergence_D1_price_ahead_quality"     — the literal form
+ *   const KEY = "trajectory_D_T1_…"; … key: KEY  — the const form, used by the T-family so the same
+ *                                                  identifier feeds both `key:` and
+ *                                                  trajectorySeverity(KEY) with no chance of the two
+ *                                                  drifting apart
+ *
+ * ⚠ Resolving the const form matters to this gate's PURPOSE. A rule whose key it cannot see reads as
+ * "catalogued but never emitted", which fails §4 — so without this the gate would push authors back
+ * to duplicating the key string inside each rule, which is exactly the drift it exists to prevent.
+ * Only same-file, single-quoted-or-double-quoted string consts are resolved; anything computed stays
+ * invisible and will (correctly) fail the reconciliation.
+ */
 function keysInFile(path: string): string[] {
   const src = readFileSync(path, "utf8");
-  return [...src.matchAll(/\bkey:\s*"([^"]+)"/g)]
-    .map((m) => m[1])
-    .filter((k) => KEY_SHAPE.test(k));
+  const consts = new Map<string, string>();
+  for (const m of src.matchAll(/\bconst\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?=\s*["']([^"']+)["']\s*;/g)) {
+    consts.set(m[1], m[2]);
+  }
+  const out: string[] = [];
+  for (const m of src.matchAll(/\bkey:\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*))/g)) {
+    const k = m[1] ?? consts.get(m[2]);
+    if (k && KEY_SHAPE.test(k)) out.push(k);
+  }
+  return out;
 }
 
 const registered = registeredRuleFiles();
@@ -347,7 +370,10 @@ async function main() {
   ok("…ordered into slot 3 when any sub-type is wide", c!.orderRank === 3, `rank ${c!.orderRank}`);
   ok('…titled "Divergence — two gaps at once" when two are shown', c!.name === "Divergence — two gaps at once", c!.name);
 
-  const one = consolidateDivergence([{ key: "divergence_C1_price_ahead", severity: "medium" }]);
+  // ⚠ Uses DIVERGENCE_SUB_TYPE_KEYS[0], never a hardcoded key: the sub-type set was repointed from
+  // the retired C family to the price-ahead pair (D1/D2), and a literal here would have kept
+  // asserting the behaviour of a key that can no longer fire.
+  const one = consolidateDivergence([{ key: DIVERGENCE_SUB_TYPE_KEYS[0], severity: "medium" }]);
   ok("a single notable sub-type → slot 5, titled plain \"Divergence\"", one!.orderRank === 5 && one!.name === "Divergence", `rank ${one!.orderRank} · "${one!.name}"`);
   ok("no divergence fired → null (the caller leaves the set untouched)", consolidateDivergence([{ key: "ownership_R1_pledge", severity: "critical" }]) === null, "null");
   ok(
@@ -456,7 +482,11 @@ async function main() {
     ["momentum_P11_margin_compression", /fallen for two or more consecutive quarters/],
     ["momentum_P12_margin_recovery", /risen for two or more consecutive quarters/],
     ["momentum_P13_revenue_inflection", /at least 5 percentage points/],
-    ["trajectory_B_deterioration", /at least two snapshots/],
+    // ⚠ trajectory_B_deterioration's "at least two snapshots" bar is GONE WITH THE RULE. It was a
+    //   SUSTAIN requirement, and the T-family that replaces it has none — the Trajectory spec's
+    //   triggers compare the current reading with the immediately-prior one and ask for no run
+    //   length. There is no successor bar to protect here, so the entry is removed rather than
+    //   re-pointed at a threshold no T pattern actually applies.
   ];
   const softened = BAR_NAMING.filter(([k, re]) => !re.test(STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].description));
   ok(

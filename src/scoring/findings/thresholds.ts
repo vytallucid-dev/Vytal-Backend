@@ -10,7 +10,20 @@
 // duplicated — those come from composite/label.ts (labelFor / LABEL_BAND_MAP), the single
 // source, which the audit confirmed already matches File 1.
 
-/** K2 — pillar-gap divergence spreads (File 1 §0/§5C). Pillar SCORE gaps, not price. */
+/**
+ * K2 — the ORIGINAL pillar-gap spreads (File 1 §0/§5C).
+ *
+ * ⚠ SUPERSEDED. NOT THE CURRENT DIVERGENCE BANDS. The divergence family's live cuts are
+ * findings/divergence/bands.ts (§1.1: aligned ≤7 · minor 8–11 never surfaces · material ≥12 ·
+ * stretched ≥16 · extreme ≥25). These two constants are reachable ONLY from c1-divergence.ts,
+ * c2-ownership-divergence.ts, c3-floor-trajectory-split.ts and c-over-time.ts — all four RETIRED and
+ * unregistered since Phase 2, so nothing live reads them.
+ *
+ * They survive with their files, for the same reason those files survive: a retired rule's source is
+ * kept as a record of what was tried. Do NOT import them into anything new — 15 is not the material
+ * cut and has not been since Phase 2, which is exactly how the tool copy came to state a number the
+ * engine no longer used.
+ */
 export const K2_NOTABLE = 15;
 export const K2_WIDE = 25;
 

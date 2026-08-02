@@ -8,7 +8,6 @@ import type { FireRule, FiringContext, FiredFinding } from "./types.js";
 import { isNotEvaluable } from "./types.js";
 import { ruleR6 } from "./rules/r6-distribution.js";
 import { ruleP11 } from "./rules/p11-margin-compression.js";
-import { ruleC1 } from "./rules/c1-divergence.js";
 import { ruleR2 } from "./rules/r2-promoter-exit.js";
 import { ruleR4 } from "./rules/r4-debt-explosion.js";
 import { ruleP1 } from "./rules/p1-clean-rotation.js";
@@ -20,14 +19,7 @@ import { ruleP7 } from "./rules/p7-accruals.js";
 import { ruleR5 } from "./rules/r5-interest-coverage.js";
 import { ruleP12 } from "./rules/p12-margin-recovery.js";
 import { ruleP13 } from "./rules/p13-revenue-inflection.js";
-import { ruleB } from "./rules/b-deterioration.js";
-import { ruleD } from "./rules/d-recovery.js";
-import { ruleI } from "./rules/i-band-transition.js";
-import { ruleG } from "./rules/g-convergence.js";
 import { ruleF2 } from "./rules/f2-composition-shift.js";
-import { ruleC2 } from "./rules/c2-ownership-divergence.js";
-import { ruleC3 } from "./rules/c3-floor-trajectory-split.js";
-import { ruleCOverTime } from "./rules/c-over-time.js";
 import { ruleP5 } from "./rules/p5-insider-distress.js";
 import { ruleP6 } from "./rules/p6-insider-conviction.js";
 import { ruleP10 } from "./rules/p10-promoter-defense.js";
@@ -42,10 +34,34 @@ import { ruleN4 } from "./rules/n4-coverage-strengthening.js";
 import { ruleN5 } from "./rules/n5-dual-institutional-build.js";
 import { ruleN6 } from "./rules/n6-promoter-accumulation.js";
 import { ruleN7 } from "./rules/n7-pledge-release.js";
+// Family C (Divergence) — Vytal_Divergence_Tool_Spec Parts 2–3. Seven patterns + one state.
+// These REPLACE the retired C1 / C2 / C3 / C-over-time / G set IN THE SAME CHANGE (see
+// catalogue/retired-findings.ts), so no stock can ever show both an old C card and its D successor.
+import { ruleD1 } from "./rules/d1-price-ahead-quality.js";
+import { ruleD2 } from "./rules/d2-price-ahead-trajectory.js";
+import { ruleD3 } from "./rules/d3-ownership-building-weak-foundation.js";
+import { ruleD4 } from "./rules/d4-ownership-exiting-healthy.js";
+import { ruleD5 } from "./rules/d5-laggard-catching-up.js";
+import { ruleD6 } from "./rules/d6-quality-rolling-over.js";
+import { ruleD7 } from "./rules/d7-trajectory-breaking-base-holds.js";
+import { ruleS2 } from "./rules/s2-sticky-divergence.js";
+// Family T (Trajectory) — Vytal_Trajectory_Tool_Spec Parts 2–3. One score moving along its own path.
+// These REPLACE the retired B / D / I set IN THE SAME CHANGE (see catalogue/retired-findings.ts).
+// Keys carry their family in the prefix (trajectory_B_* = deterioration, trajectory_D_* = recovery),
+// so familyOf classifies them with NO new branch — see the §5 note in the build report.
+import { ruleT1 } from "./rules/t1-recovery-low-zone.js";
+import { ruleT2 } from "./rules/t2-deterioration-high-base.js";
+import { ruleT3 } from "./rules/t3-falling-out-of-pristine.js";
+import { ruleT4 } from "./rules/t4-recovering-out-of-below-par.js";
+import { ruleT5 } from "./rules/t5-foundation-out-of-weak.js";
+import { ruleT6 } from "./rules/t6-momentum-breaking-into-weak.js";
+import { ruleT7 } from "./rules/t7-momentum-improving-while-weak.js";
+import { ruleT8 } from "./rules/t8-foundation-strong-improving.js";
+import { ruleT9 } from "./rules/t9-foundation-weak-declining.js";
 
 /** Stage-A proven set: one red flag (R6), one single-snapshot pattern (P11), one
  *  divergence (C1) — one rule per major class, proved the contract end-to-end. */
-export const STAGE_A_RULES: FireRule[] = [ruleR6, ruleP11, ruleC1];
+export const STAGE_A_RULES: FireRule[] = [ruleR6, ruleP11];
 
 /** Stage-B set: the clean, low-distortion-risk rules. R2/P1/P4 reuse the engine's proven
  *  ownership logic; R4/P8 read robust balance-sheet inputs.
@@ -59,10 +75,10 @@ export const STAGE_B_RULES: FireRule[] = [ruleR2, ruleR4, ruleP1, ruleP4, ruleP8
  *  flagged); P13 is TTM-smoothed (and data-depth-gated until ~9 quarters land). */
 export const STAGE_C_RULES: FireRule[] = [ruleR3, ruleP7, ruleR5, ruleP12, ruleP13];
 
-/** Stage-D set: the TRAJECTORY rules (read FiringContext.priorSnapshots). B/D are sustained
- *  band crosses (persistence self-guards); I is subordinate to B/D (single-signal); G/C-over-
- *  time/C2/C3 share the K2 thresholds; F2 reads the mix shift vs last snapshot. */
-export const STAGE_D_RULES: FireRule[] = [ruleB, ruleD, ruleI, ruleG, ruleF2, ruleC2, ruleC3, ruleCOverTime];
+/** Stage-D set: what remains of the original trajectory stage. B / D / I are RETIRED (see
+ *  catalogue/retired-findings.ts — between them they fired five Part-5 EXCLUDED conditions under
+ *  three keys), replaced by FAMILY_T_RULES below. F2 (mix shift vs last snapshot) is untouched. */
+export const STAGE_D_RULES: FireRule[] = [ruleF2];
 
 /** Stage-E set: feed-gated insider/block patterns (P5/P6/P10/H — ACTIVE, feed live) + F1
  *  (atypical-for-band). §2 risk-shape is NOT here — it is a read-layer computation
@@ -75,10 +91,35 @@ export const STAGE_E_RULES: FireRule[] = [ruleP5, ruleP6, ruleP10, ruleH, ruleF1
  *  MANDATORY — an unregistered rule never fires (the P2/P3 lesson); all seven go in ALL_RULES. */
 export const FAMILY_N_RULES: FireRule[] = [ruleN1, ruleN2, ruleN3, ruleN4, ruleN5, ruleN6, ruleN7];
 
+/** Family C (Divergence) — two pillars disagreeing (Vytal_Divergence_Tool_Spec Parts 2–3).
+ *  D1/D2 price ahead of quality / of trajectory (two halves of ONE n=79 configuration, so they
+ *  consolidate); D3/D4 ownership MOVEMENT against the Foundation level (the ±8 cut selects the
+ *  LANGUAGE, never whether they fire); D5 convergence toward the strong pillar; D6/D7 crossings,
+ *  which require the prior reading; S2 a sustained state carrying no return claim.
+ *  S1 (Aligned) is deliberately NOT a rule — it is the tool's neutral control, not a card stamped on
+ *  every quiet stock. REGISTRATION IS MANDATORY — an unregistered rule never fires (the P2/P3
+ *  lesson); all eight go in ALL_RULES. */
+export const FAMILY_C_RULES: FireRule[] = [ruleD1, ruleD2, ruleD3, ruleD4, ruleD5, ruleD6, ruleD7, ruleS2];
+
+/** Family T (Trajectory) — ONE score moving along its own path (Vytal_Trajectory_Tool_Spec Parts
+ *  2–3). T1/T2 are MOVE patterns (prev level + Δ magnitude); T3/T4/T5/T6 are crossings; T7/T8/T9 are
+ *  level-and-direction states. Every one reads the IMMEDIATELY-PRIOR reading only — no sustain,
+ *  because the spec's triggers ask for none.
+ *
+ *  ★ NINE SEPARATE RULES, NOT THREE MULTI-LEG ONES. The retired D packed four pillar legs into one
+ *  key behind a `break`, so a stock recovering on three pillars persisted ONE finding naming one
+ *  pillar. Per-pattern rules make that defect unrepresentable: T5 (Foundation), T7 (Momentum) and T8
+ *  (Foundation strong) are independent and all fire when all are true.
+ *
+ *  ★ REGIME IS A REQUIRED FIELD PER PATTERN (§1.4), in three tiers — T3/T6 decide whether a
+ *  directional read EXISTS (and point OPPOSITE ways); T2 must always display the phase; the rest
+ *  take it as a magnitude caveat. See trajectory/regime-tier.ts. */
+export const FAMILY_T_RULES: FireRule[] = [ruleT1, ruleT2, ruleT3, ruleT4, ruleT5, ruleT6, ruleT7, ruleT8, ruleT9];
+
 /** The full active catalog (ordering here is registry order, NOT File 1's §5 display
  *  ordering — that A→I sort is a read-layer concern). P9 stays UNBUILT (capex unavailable);
  *  P2/P3 are RETIRED (consolidated into R6/R1). */
-export const ALL_RULES: FireRule[] = [...STAGE_A_RULES, ...STAGE_B_RULES, ...STAGE_C_RULES, ...STAGE_D_RULES, ...STAGE_E_RULES, ...FAMILY_N_RULES];
+export const ALL_RULES: FireRule[] = [...STAGE_A_RULES, ...STAGE_B_RULES, ...STAGE_C_RULES, ...STAGE_D_RULES, ...STAGE_E_RULES, ...FAMILY_N_RULES, ...FAMILY_C_RULES, ...FAMILY_T_RULES];
 
 /** Run the rule set against a context; return the fired findings (order = registry
  *  order). A single throwing rule is isolated so it can never abort the others or the
@@ -113,14 +154,17 @@ export function runFindings(ctx: FiringContext, rules: FireRule[] = ALL_RULES): 
 // degrades to "unknown_rule" rather than throwing — a diagnostic gap, never a broken scoring pass.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 export const RULE_REFS: ReadonlyMap<FireRule, string> = new Map<FireRule, string>([
-  [ruleR6, "R6"], [ruleP11, "P11"], [ruleC1, "C1"],
+  [ruleR6, "R6"], [ruleP11, "P11"],
   [ruleR2, "R2"], [ruleR4, "R4"], [ruleP1, "P1"], [ruleP4, "P4"], [ruleP8, "P8"],
   [ruleR3, "R3"], [ruleP7, "P7"], [ruleR5, "R5"], [ruleP12, "P12"], [ruleP13, "P13"],
-  [ruleB, "B"], [ruleD, "D"], [ruleI, "I"], [ruleG, "G"], [ruleF2, "F2"],
-  [ruleC2, "C2"], [ruleC3, "C3"], [ruleCOverTime, "C_over_time"],
+  [ruleF2, "F2"],
   [ruleP5, "P5"], [ruleP6, "P6"], [ruleP10, "P10"], [ruleH, "H"], [ruleF1, "F1"],
   [ruleN1, "N1"], [ruleN2, "N2"], [ruleN3, "N3"], [ruleN4, "N4"],
   [ruleN5, "N5"], [ruleN6, "N6"], [ruleN7, "N7"],
+  [ruleD1, "D1"], [ruleD2, "D2"], [ruleD3, "D3"], [ruleD4, "D4"],
+  [ruleD5, "D5"], [ruleD6, "D6"], [ruleD7, "D7"], [ruleS2, "S2"],
+  [ruleT1, "T1"], [ruleT2, "T2"], [ruleT3, "T3"], [ruleT4, "T4"], [ruleT5, "T5"],
+  [ruleT6, "T6"], [ruleT7, "T7"], [ruleT8, "T8"], [ruleT9, "T9"],
 ]);
 
 export const ruleRefOf = (rule: FireRule): string => RULE_REFS.get(rule) ?? "unknown_rule";

@@ -28,6 +28,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { prisma } from "../db/prisma.js";
+import { retiredKeysSqlPredicate } from "../catalogue/retired-findings.js";
 
 /** One key's incidence across the scored universe. */
 export interface BaseRate {
@@ -72,6 +73,11 @@ fired AS (
   SELECT p.pattern_key, count(DISTINCT h.stock_id)::int AS n
   FROM score_patterns p
   JOIN head h ON h.id = p.snapshot_id
+  -- ★ RETIREMENT SUPPRESSION (boundary 7 of 9 — the relational base rates). RAW SQL, which is
+  --   precisely why suppression is not a Prisma client extension: an extension would silently miss
+  --   this query and the base rate would keep quoting "fires on N of 95" for a retired pattern.
+  --   The predicate is BUILT FROM the same catalogue array, never a copy of it.
+  WHERE ${retiredKeysSqlPredicate("p.pattern_key")}
   GROUP BY p.pattern_key
 )
 SELECT f.pattern_key AS "patternKey",

@@ -37,6 +37,8 @@ import {
 // File-1 §5 verdict sentences, rendered onto the finding rows (Stage 3 of the copy catalogue).
 // Additive: the field is new, and nothing reads it until the frontend switches at Stage 5.
 import { renderVerdict } from "../findings/verdicts.js";
+import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
 import type {
   HealthSnapshotView,
   PillarView,
@@ -80,8 +82,15 @@ const NATIVE_MARKS: Record<PillarKey, { lower: number; upper: number }> = {
   market: { lower: 50, upper: 74 },
   ownership: { lower: 60, upper: 72 },
 };
-const DIVERGENCE_NOTABLE = 15;
-const DIVERGENCE_WIDE = 25;
+// ★ PHASE 4 — the local 15/25 pair is GONE. These now come from the ONE place the divergence family
+//   declares its bands (findings/divergence/bands.ts §1.1), so this view can no longer disagree with
+//   the engine. It used to: the engine's material cut moved to 12 in Phase 2 while this file kept
+//   calling 15 "notable", so a stock could carry divergence_S2 (gap 13) and read "none" here.
+//   `notable` = the MATERIAL band (≥12) · `wide` = STRETCHED and above (≥16).
+//   ⚠ This is a SPREAD DESCRIPTOR for display (which two pillars, how far apart), not a pattern
+//   claim — the patterns are the fired D-family findings. Do not re-derive a pattern from it.
+const DIVERGENCE_NOTABLE = GAP_MATERIAL;
+const DIVERGENCE_WIDE = GAP_STRETCHED;
 const TRAJECTORY_EPS = 1.0; // composite-point delta for improving/deteriorating
 const PILLARS: PillarKey[] = ["foundation", "momentum", "market", "ownership"];
 
@@ -674,7 +683,9 @@ export async function buildHealthSnapshotView(
   }
 
   // ── fired headlines for anti-double-count ────────────────────────────────────────
-  const firedHeadlines: FiredHeadline[] = snap.patterns.map((p) => {
+  // Retired keys are dropped here too: anti-double-count suppresses a lens pattern when a headline
+  // covers the same ground, and a RETIRED headline must not go on suppressing a live lens read.
+  const firedHeadlines: FiredHeadline[] = dropRetiredPatterns(snap.patterns).map((p) => {
     const ev = p.evidence as { leg?: string } | null;
     return { patternKey: p.patternKey, leg: ev?.leg ?? null };
   });
@@ -897,7 +908,11 @@ export async function buildHealthSnapshotView(
   };
 
   // ── findings (raw, sorted by severity; red flags first, then patterns) ──
-  const redFlags: RedFlagView[] = snap.redFlags
+  // ★ RETIREMENT SUPPRESSION (boundary 1 of 9 — the stock page, and via it the chat's
+  //   get-stock-facts and the AI grounding block, which both read THIS view's findings).
+  //   A retired key's persisted row would otherwise render with a humanised title, a family
+  //   boundary line and the fluent sentence the retired rule wrote into evidence at fire time.
+  const redFlags: RedFlagView[] = dropRetiredFlags(snap.redFlags)
     .map((rf) => ({
       flagKey: rf.flagKey,
       severity: rf.severity,
@@ -907,7 +922,7 @@ export async function buildHealthSnapshotView(
       verdict: renderVerdict(rf.flagKey, rf.triggeringValues ?? null),
     }))
     .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
-  const patterns: PatternView[] = snap.patterns
+  const patterns: PatternView[] = dropRetiredPatterns(snap.patterns)
     .map((p) => ({
       patternKey: p.patternKey,
       direction: p.direction,

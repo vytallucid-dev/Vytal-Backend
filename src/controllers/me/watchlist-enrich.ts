@@ -33,6 +33,7 @@ import { composeLmVerdict, composeLpVerdict } from "../../scoring/lens-patterns/
 // ONE canonical finding row, shared with the per-stock health read (Stage 3) — see `findings` below.
 import type { FindingsSection, RedFlagView, PatternView } from "../../scoring/read/health-view.types.js";
 import { renderVerdict } from "../../scoring/findings/verdicts.js";
+import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const numN = (v: unknown): number | null => (v == null ? null : Number(v));
@@ -345,8 +346,11 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
         ]);
 
   // group findings + pillar meta + metrics by their keys
-  const redBySnap = groupBy(redFlags, (rf) => rf.snapshotId);
-  const patBySnap = groupBy(patterns, (p) => p.snapshotId);
+  // ★ RETIREMENT SUPPRESSION (boundary 4 of 9 — the watchlist). Applied at the grouping step so
+  //   every downstream consumer of these two maps (the entry's findings section AND the lens
+  //   anti-double-count) sees the same suppressed set.
+  const redBySnap = groupBy(dropRetiredFlags(redFlags), (rf) => rf.snapshotId);
+  const patBySnap = groupBy(dropRetiredPatterns(patterns), (p) => p.snapshotId);
   const pillarById = new Map(pillarScores.map((p) => [p.id, p]));
   const metricsByPillar = groupBy(metricScores, (m) => m.pillarScoreId);
   // peer-stats fallback map, keyed by "peerGroupId|asOfDate" → (metricKey → cross-section).

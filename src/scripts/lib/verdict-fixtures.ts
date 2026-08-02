@@ -160,74 +160,206 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
     expectContains: "decelerated from 14.0% to 8.1%",
   },
 
-  // ── C · divergence · ★ BOTH BRANCHES OF C2 AND C3 (3d — the rule-decided discriminants) ─────────
+  // ── C · DIVERGENCE (Vytal_Divergence_Tool_Spec Parts 2–3) ───────────────────────────────────────
+  // ★ The three EVIDENCE-GATED branches are covered on BOTH sides, because each gate is a claim the
+  //   copy is allowed to make only under a condition the rule stamped:
+  //     D1/D2 — must say the direction is INHERITED, never claim its own measurement
+  //     D3/D4 — `strong` selects whether the study's figures may be spoken at all
+  //   A one-sided fixture would let the ungated branch regress silently, which is exactly how a
+  //   measured figure ends up attached to a population it was never measured on.
   {
-    label: "divergence_C1_price_ahead",
-    key: "divergence_C1_price_ahead",
-    evidence: { market: 72, foundation: 35, momentum: 20, gap: 44.2, meanFundamentals: 27.6 },
-    expectContains: "sits 44.2 pts above its fundamentals (F35 / M20)",
+    label: "divergence_D1_price_ahead_quality (inheritance stated)",
+    key: "divergence_D1_price_ahead_quality",
+    evidence: { market: 78, foundation: 53, gapPp: 25, tier: "extreme", sharedN: 79, evidenceInherited: true },
+    expectContains: "Direction inherited from the combined price-ahead test (n=79)",
   },
   {
-    label: "divergence_C2 (subtype = exit_under_strength)",
-    key: "divergence_C2_ownership_vs_fundamentals",
-    evidence: { subtype: "exit_under_strength", foundation: 72, ownership: 50, gap: 22 },
-    expectContains: "Owners stepping back beneath a holding floor",
+    label: "divergence_D2_price_ahead_trajectory (inheritance stated)",
+    key: "divergence_D2_price_ahead_trajectory",
+    evidence: { market: 78, momentum: 48, gapPp: 30, tier: "extreme", sharedN: 79, evidenceInherited: true },
+    expectContains: "this half was not separately measured",
   },
   {
-    label: "divergence_C2 (subtype = build_under_weakness)",
-    key: "divergence_C2_ownership_vs_fundamentals",
-    evidence: { subtype: "build_under_weakness", foundation: 35, ownership: 75, gap: 40 },
-    expectContains: "Smart money building under weakness",
+    label: "divergence_D3 (strong ⇒ the evidenced claim IS spoken)",
+    key: "divergence_D3_ownership_building_weak_foundation",
+    evidence: {
+      foundation: 48, ownershipDeltaPp: 9, ownershipFrom: 60, ownershipTo: 69, strong: true,
+      cause: "shareholding_changed", driver: "Behind it: FII +1.20pp, DII +0.80pp.",
+    },
+    expectContains: "informed money buying against the visible evidence",
   },
   {
-    label: "divergence_C3 (floorLed = true)",
-    key: "divergence_C3_floor_trajectory_split",
-    evidence: { floorLed: true, foundation: 81, momentum: 53, gap: 28 },
-    expectContains: "the balance sheet holds while the near-term trajectory lags",
+    label: "divergence_D3 (NOT strong ⇒ the evidenced claim is WITHHELD)",
+    key: "divergence_D3_ownership_building_weak_foundation",
+    evidence: {
+      foundation: 48, ownershipDeltaPp: 2, ownershipFrom: 60, ownershipTo: 62, strong: false,
+      cause: "flow_activity", driver: "The shareholding filing is unchanged — this moved on 3 block deals.",
+    },
+    expectContains: "below the size that population was measured on, so no outcome is claimed",
   },
   {
-    label: "divergence_C3 (floorLed = false)",
-    key: "divergence_C3_floor_trajectory_split",
-    evidence: { floorLed: false, foundation: 53, momentum: 80, gap: 27 },
-    expectContains: "the trajectory outruns the floor",
+    label: "divergence_D4 (strong ⇒ evidenced + the n=11 caveat)",
+    key: "divergence_D4_ownership_exiting_healthy",
+    evidence: {
+      foundation: 74, ownershipDeltaPp: -12, ownershipFrom: 72, ownershipTo: 60, strong: true,
+      evidencedN: 11, cause: "shareholding_changed", driver: "Behind it: FII -2.10pp.",
+    },
+    expectContains: "a reason to investigate, never a verdict",
   },
   {
-    label: "divergence_C_over_time_widening",
-    key: "divergence_C_over_time_widening",
-    evidence: { recentLowGap: 12.4, currentGap: 19.8 },
-    expectContains: "up from 12.4 to 19.8 pts",
+    label: "divergence_D4 (NOT strong ⇒ withheld)",
+    key: "divergence_D4_ownership_exiting_healthy",
+    evidence: {
+      foundation: 74, ownershipDeltaPp: -3, ownershipFrom: 72, ownershipTo: 69, strong: false,
+      cause: "undetermined", driver: "The shareholding filing is unchanged since the last reading; no insider or block activity is recorded to account for it.",
+    },
+    expectContains: "no outcome is claimed",
+  },
+  {
+    label: "divergence_D5_laggard_catching_up (mirror + n=5 caveat both present)",
+    key: "divergence_D5_laggard_catching_up",
+    evidence: { foundation: 78, momentum: 60, momentumRisePp: 7, gapPp: 18, evidencedN: 5 },
+    expectContains: "the same rise away from a weak base read −3.8%, 27% positive",
+  },
+  {
+    label: "divergence_D6_quality_rolling_over (crossing named)",
+    key: "divergence_D6_quality_rolling_over",
+    evidence: { foundation: 73, momentum: 67, momentumPrior: 80, crossedBelow: 75 },
+    expectContains: "Momentum crossing below 75 to 67",
+  },
+  {
+    label: "divergence_D7_trajectory_breaking_base_holds (the base does NOT cushion it)",
+    key: "divergence_D7_trajectory_breaking_base_holds",
+    evidence: { foundation: 66, momentum: 49, momentumPrior: 57, crossedBelow: 54 },
+    expectContains: "The intact Foundation does not cushion it",
+  },
+  {
+    label: "divergence_S2_sticky_divergence (sustain count + no return claim)",
+    key: "divergence_S2_sticky_divergence",
+    evidence: { foundation: 74, momentum: 55, gapPp: 19, sustainedReadings: 3, sincePeriod: "FY25Q4" },
+    expectContains: "for 3 consecutive readings (since FY25Q4)",
   },
 
-  // ── B / D · trajectory crosses (all three B variants) ───────────────────────────────────────────
+  // ── T · TRAJECTORY (Vytal_Trajectory_Tool_Spec Parts 2–3) ──────────────────────────────────────
+  // ★ THE TIER-1 PATTERNS ARE COVERED ON BOTH SIDES OF THEIR PHASE TABLE. T3 reads in HOT and is
+  //   blank in NORMAL; T6 is the exact reverse. A one-sided fixture would let the "no directional
+  //   read" branch regress into a bearish assertion — the single failure §1.4 exists to prevent.
   {
-    label: "trajectory_B_deterioration (variant = pillar)",
-    key: "trajectory_B_deterioration",
-    evidence: { variant: "pillar", leg: "market", sustainedSnapshots: 2 },
-    expectContains: "Market slipped below its strong mark",
+    label: "T3 · HOT ⇒ the directional read IS spoken",
+    key: "trajectory_B_T3_falling_out_of_pristine",
+    evidence: {
+      card: "T3", compositePrior: 76, compositeNow: 71, regimeTier: "decides_read",
+      regimeReadPhases: ["HOT"], regimeAtEvent: { regime: "HOT" },
+    },
+    expectContains: "sector is running hot — historically the least forgiving",
   },
   {
-    label: "trajectory_B_deterioration (variant = out_of_pristine)",
-    key: "trajectory_B_deterioration",
-    evidence: { variant: "out_of_pristine", sustainedSnapshots: 3 },
-    expectContains: "out of Pristine",
+    label: "★ T3 · NORMAL ⇒ crossing SHOWN, direction WITHHELD (§1.4 line 87)",
+    key: "trajectory_B_T3_falling_out_of_pristine",
+    evidence: {
+      card: "T3", compositePrior: 76, compositeNow: 71, regimeTier: "decides_read",
+      regimeReadPhases: ["HOT"], regimeAtEvent: { regime: "NORMAL" },
+    },
+    expectContains: "has not historically carried a directional read",
   },
   {
-    label: "trajectory_B_deterioration (composite out of Healthy)",
-    key: "trajectory_B_deterioration",
-    evidence: { variant: "composite", sustainedSnapshots: 2 },
-    expectContains: "composite fell out of Healthy",
+    label: "★ T3 · regime UNKNOWN ⇒ says so, never the no-read line",
+    key: "trajectory_B_T3_falling_out_of_pristine",
+    evidence: {
+      card: "T3", compositePrior: 76, compositeNow: 71, regimeTier: "decides_read",
+      regimeReadPhases: ["HOT"], regimeAtEvent: { regime: null },
+    },
+    expectContains: "market phase could not be established",
   },
   {
-    label: "trajectory_D_recovery (pillar-led)",
-    key: "trajectory_D_recovery",
-    evidence: { isPillar: true, leg: "momentum", sustainedSnapshots: 2 },
-    expectContains: "Momentum leads the recovery",
+    label: "T6 · NORMAL ⇒ the directional read IS spoken",
+    key: "trajectory_B_T6_momentum_breaking_into_weak",
+    evidence: {
+      card: "T6", momentumPrior: 57, momentumNow: 49, regimeTier: "decides_read",
+      regimeReadPhases: ["NORMAL"], regimeAtEvent: { regime: "NORMAL" },
+    },
+    expectContains: "sector is calm, which is the phase in which this reading has held",
   },
   {
-    label: "trajectory_D_recovery (composite)",
-    key: "trajectory_D_recovery",
-    evidence: { isPillar: false, sustainedSnapshots: 2 },
-    expectContains: "composite crossed up out of Below-par",
+    label: "★ T6 · HOT ⇒ masked, crossing shown without a direction",
+    key: "trajectory_B_T6_momentum_breaking_into_weak",
+    evidence: {
+      card: "T6", momentumPrior: 57, momentumNow: 49, regimeTier: "decides_read",
+      regimeReadPhases: ["NORMAL"], regimeAtEvent: { regime: "HOT" },
+    },
+    expectContains: "has not historically carried a directional read",
+  },
+  {
+    label: "★ T2 · Tier 2 — the phase is ALWAYS displayed (NORMAL)",
+    key: "trajectory_B_T2_deterioration_high_base",
+    evidence: {
+      card: "T2", compositePrior: 76, compositeNow: 68, regimeTier: "always_display",
+      regimeReadPhases: null, regimeAtEvent: { regime: "NORMAL" },
+    },
+    expectContains: "Market phase at the time of this reading: NORMAL.",
+  },
+  {
+    label: "★ T2 · HOT appends the spec's postponement sentence",
+    key: "trajectory_B_T2_deterioration_high_base",
+    evidence: {
+      card: "T2", compositePrior: 76, compositeNow: 68, regimeTier: "always_display",
+      regimeReadPhases: null, regimeAtEvent: { regime: "HOT" },
+    },
+    expectContains: "postponed this kind of deterioration showing up in the price rather than cancelling it",
+  },
+  {
+    label: "T1 · Tier 3 — HOT adds the magnitude caveat",
+    key: "trajectory_D_T1_recovery_low_zone",
+    evidence: {
+      card: "T1", compositePrior: 52, compositeNow: 61, regimeTier: "magnitude_caveat",
+      regimeReadPhases: null, regimeAtEvent: { regime: "HOT" },
+    },
+    expectContains: "flatters the size of moves like this one",
+  },
+  {
+    label: "T4 · the unpreserved-n caveat rides in the sentence",
+    key: "trajectory_D_T4_recovering_out_of_below_par",
+    evidence: { card: "T4", compositePrior: 59, compositeNow: 63, regimeTier: "magnitude_caveat", regimeReadPhases: null },
+    expectContains: "sample behind this reading was not preserved",
+  },
+  {
+    label: "T5 · small gains carried the drift (R1 on the card)",
+    key: "trajectory_D_T5_foundation_out_of_weak",
+    evidence: { card: "T5", foundationPrior: 57, foundationNow: 62, regimeTier: "magnitude_caveat", regimeReadPhases: null },
+    expectContains: "carried by small gains like this one rather than by large jumps",
+  },
+  {
+    label: "★ T7 · a LARGE Momentum rise says the price already ran (R3)",
+    key: "trajectory_D_T7_momentum_improving_while_weak",
+    evidence: {
+      card: "T7", momentumPrior: 26, momentumNow: 48, risePp: 22, largeMovePriceAlreadyRan: true,
+      regimeTier: "magnitude_caveat", regimeReadPhases: null,
+    },
+    expectContains: "price has usually already run before the reading catches up",
+  },
+  {
+    label: "T7 · a small rise omits the R3 clause",
+    key: "trajectory_D_T7_momentum_improving_while_weak",
+    evidence: {
+      card: "T7", momentumPrior: 44, momentumNow: 48, risePp: 4, largeMovePriceAlreadyRan: false,
+      regimeTier: "magnitude_caveat", regimeReadPhases: null,
+    },
+    expectContains: "earliest point at which a recovery becomes visible",
+  },
+  {
+    label: "T8 · already strong, still strengthening",
+    key: "trajectory_D_T8_foundation_strong_improving",
+    evidence: { card: "T8", foundationPrior: 75, foundationNow: 79, regimeTier: "magnitude_caveat", regimeReadPhases: null },
+    expectContains: "already-strong business that is still strengthening",
+  },
+  {
+    label: "★ T9 · quotes the HIT-RATE, never the misleading +0.6% mean",
+    key: "trajectory_B_T9_foundation_weak_declining",
+    evidence: {
+      card: "T9", foundationPrior: 55, foundationNow: 51, evidencedPositivePct: 36, meanPct: 0.6,
+      regimeTier: "magnitude_caveat", regimeReadPhases: null,
+    },
+    expectContains: "poorest odds of the price holding up — only 36% of cases rose",
   },
 
   // ── F / G / H / I ───────────────────────────────────────────────────────────────────────────────
@@ -249,18 +381,10 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
     evidence: { compositeHeld: { prior: 75, current: 77 }, leaderChanged: false },
     expectContains: "Mix shifted while the score held (75→77).",
   },
-  {
-    label: "trajectory_G_convergence (healthy_resolution)",
-    key: "trajectory_G_convergence",
-    evidence: { type: "healthy_resolution", laggardPillar: "momentum", laggardRosePp: 9.2, peakSpread: 31.0, currentSpread: 14.4 },
-    expectContains: "the Momentum laggard rose 9.2pp",
-  },
-  {
-    label: "trajectory_G_convergence (deterioration)",
-    key: "trajectory_G_convergence",
-    evidence: { type: "deterioration_convergence", leaderPillar: "market", leaderFellPp: 12.7, peakSpread: 28.0, currentSpread: 11.1 },
-    expectContains: "the Market leader fell 12.7pp",
-  },
+  // ⚠ trajectory_G_convergence fixtures REMOVED with the rule. G is retired (narrowing spread is on
+  //   the spec's EXCLUDED list), so it has no renderer and a fixture for it would assert the
+  //   behaviour of a key that can never reach renderVerdict. Its resolution TYPING survives as
+  //   findings/divergence/resolution.ts, which is pure and un-fired — nothing to render.
   {
     label: "ownership_H_block_events (net buying)",
     key: "ownership_H_block_events",
@@ -279,12 +403,8 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
     evidence: { deals: 4, netCr: 0, grossCr: 640 },
     expectContains: "two-sided",
   },
-  {
-    label: "trajectory_I_band_transition",
-    key: "trajectory_I_band_transition",
-    evidence: { toBand: "Below-par", sustainedSnapshots: 2 },
-    expectContains: "Crossed into Below-par.",
-  },
+  // ⚠ trajectory_I_band_transition fixtures REMOVED with the rule (it fired the EXCLUDED composite
+  //   ↓62 and the untested ↑68). T3 is the one composite crossing that survived the phase split.
 
   // ── N · Notable — the spec templates, plus the §8.3 missing-evidence guard ──────────────────────
   {
@@ -345,9 +465,14 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
   // ── PRECEDENCE + FALLBACK — the three-tier resolution, exercised deliberately ───────────────────
   {
     label: "★ precedence · an authored renderer BEATS the engine's own evidence.verdict",
-    key: "trajectory_I_band_transition",
-    evidence: { toBand: "Healthy", verdict: "ENGINE SENTENCE — must not win" },
-    expectContains: "Crossed into Healthy.",
+    // Re-pointed off the retired I key onto a live one. The precedence rule is what is under test,
+    // not the key — but a fixture keyed to a retired finding tests a path no reader can reach.
+    key: "trajectory_D_T8_foundation_strong_improving",
+    evidence: {
+      card: "T8", foundationPrior: 75, foundationNow: 79, regimeTier: "magnitude_caveat",
+      regimeReadPhases: null, verdict: "ENGINE SENTENCE — must not win",
+    },
+    expectContains: "already-strong business that is still strengthening",
   },
   {
     label: "★ fallback 2 · no authored renderer → the engine's evidence.verbatim",

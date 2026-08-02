@@ -26,6 +26,7 @@
 // "alert me on P2" is that it cannot fire any more.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { prisma } from "../db/prisma.js";
+import { RETIRED_FINDING_KEYS as CATALOGUE_RETIRED_KEYS } from "../catalogue/retired-findings.js";
 
 /**
  * Keys the engine emits, transcribed from the rule sources. ⚠ RETIRED (P2/P3) and UNBUILT (P9) are
@@ -50,18 +51,29 @@ export const STATIC_FINDING_KEYS: readonly string[] = [
   "momentum_P11_margin_compression",
   "momentum_P12_margin_recovery",
   "momentum_P13_revenue_inflection",
-  // B/C/D/F/G/H/I · structural cards
-  "trajectory_B_deterioration",
-  "divergence_C1_price_ahead",
-  "divergence_C2_ownership_vs_fundamentals",
-  "divergence_C3_floor_trajectory_split",
-  "divergence_C_over_time_widening",
-  "trajectory_D_recovery",
+  // F/H · structural cards
   "composition_F1_atypical",
   "trajectory_F2_composition_shift",
-  "trajectory_G_convergence",
   "ownership_H_block_events",
-  "trajectory_I_band_transition",
+  // T · trajectory family (Vytal_Trajectory_Tool_Spec Parts 2–3)
+  "trajectory_D_T1_recovery_low_zone",
+  "trajectory_B_T2_deterioration_high_base",
+  "trajectory_B_T3_falling_out_of_pristine",
+  "trajectory_D_T4_recovering_out_of_below_par",
+  "trajectory_D_T5_foundation_out_of_weak",
+  "trajectory_B_T6_momentum_breaking_into_weak",
+  "trajectory_D_T7_momentum_improving_while_weak",
+  "trajectory_D_T8_foundation_strong_improving",
+  "trajectory_B_T9_foundation_weak_declining",
+  // C · divergence family (Vytal_Divergence_Tool_Spec Parts 2–3)
+  "divergence_D1_price_ahead_quality",
+  "divergence_D2_price_ahead_trajectory",
+  "divergence_D3_ownership_building_weak_foundation",
+  "divergence_D4_ownership_exiting_healthy",
+  "divergence_D5_laggard_catching_up",
+  "divergence_D6_quality_rolling_over",
+  "divergence_D7_trajectory_breaking_base_holds",
+  "divergence_S2_sticky_divergence",
   // N · Notable (constructive twins)
   "foundation_N1_cash_backed_earnings",
   "foundation_N2_working_capital",
@@ -72,11 +84,21 @@ export const STATIC_FINDING_KEYS: readonly string[] = [
   "ownership_N7_pledge_release",
 ];
 
-/** Retired rules — recognised so the refusal can SAY they are retired rather than "unknown". */
-export const RETIRED_FINDING_KEYS: readonly string[] = [
-  "ownership_P2_distribution_retail", // consolidated into R6
-  "ownership_P3_promoter_stress", // consolidated into R1
-];
+/**
+ * Retired rules — recognised so the refusal can SAY they are retired rather than "unknown".
+ *
+ * ★ SINGLE-SOURCED from catalogue/retired-findings.ts. This file previously kept its own copy of the
+ * list; two lists meant a key could be retired in one and live in the other, and the failure mode was
+ * an alert accepted on a finding that can never fire again — permanently silent, and indistinguishable
+ * from "it just hasn't triggered yet". The catalogue list is the one that also drives read-layer
+ * suppression, so they cannot drift.
+ *
+ * ⚠ This is the one caller that must still SEE retired keys in live data (to refuse them by name),
+ * which is why suppression is applied at each read boundary rather than globally on the Prisma client.
+ */
+// Widened to readonly string[] deliberately: callers test membership with an arbitrary user-supplied
+// key (chat/tools/alerts-write.ts), which a literal-tuple type would reject at the call site.
+export const RETIRED_FINDING_KEYS: readonly string[] = CATALOGUE_RETIRED_KEYS;
 
 /** STATIC ∪ LIVE, resolved once per turn by the caller's memo (it is two cheap DISTINCT scans). */
 export async function loadFindingKeys(): Promise<Set<string>> {

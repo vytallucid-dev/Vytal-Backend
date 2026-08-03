@@ -1,7 +1,7 @@
 // File: src/scoring/read/results-list.service.ts
 //
-// THE results-list assembler for GET /api/v1/results — a cross-stock earnings feed in
-// two REAL, dense halves:
+// THE page assembler for GET /api/v1/results — the cross-stock earnings feed, served one
+// scroll page at a time, in two REAL halves:
 //
 //   • REPORTED  — the latest filed quarterly result per active stock, read straight
 //                 from the five per-family quarterly_results tables (the same dense
@@ -11,335 +11,194 @@
 //   • UPCOMING  — corporate_events of eventType "earnings" across the active universe:
 //                 real board-meeting/result dates, honest "pending" (no numbers yet).
 //
-// UNITS: money is ₹ Crore (pass-through — every source column is already Cr); the
-// growth + headline-margin columns are ALREADY percent in the source (the fundamentals
-// view's `passPct` fields), so they pass through unscaled. We deliberately do NOT read
-// the fraction-stored ratios (gnpa/cet1/roe) here, so no family-aware ×100 is needed.
+// The whole reduction lives in results-feed.cache.ts (it needs every row of five tables
+// before anything can be ordered, so it cannot be a per-page query). What happens HERE is
+// per-request and cheap: filter the cached half, slice the requested page off it by keyset,
+// and hand back an opaque cursor for the next one.
 //
-// NO market-reaction and NO estimate-relative "beat/miss" — both are absent from the
-// data (reaction needs the price window = the viewer, build #2; estimates were dropped
-// permanently). Every number is real or honest-null.
+// ── WHY KEYSET AND NOT OFFSET ──────────────────────────────────────────────────────────
+// The cache rebuilds under the reader (5-minute TTL). An offset cursor resolves against a
+// list that may have grown a row at the top since page 1, which silently repeats the card
+// that got pushed across the boundary. A keyset cursor names the last row the reader
+// actually SAW — "everything ordered after this filing date + symbol" — so a rebuild
+// mid-scroll can add or drop rows without ever duplicating or skipping one on screen.
+//
+// UNITS: money is ₹ Crore; growth + headline-margin fields are already percent at the
+// source (normalised in the cache). NO market-reaction and NO estimate-relative
+// "beat/miss" — both are absent from the data. Every number is real or honest-null.
 
-import { prisma } from "../../db/prisma.js";
-import { toNum, round } from "./fundamentals-normalize.js";
-import { buildScoredStocksList } from "./stocks-list.service.js";
+import { getResultsFeedRows } from "./results-feed.cache.js";
 import type {
   ReportedResultItem,
   UpcomingResultItem,
-  ResultsListData,
+  ResultsFeedKind,
+  ResultsFeedPage,
+  ResultsOverview,
 } from "./results-list.types.js";
-
-const ymd = (d: Date): string => d.toISOString().slice(0, 10);
-const money = (x: unknown): number | null => round(toNum(x)); // ₹ Cr pass-through
-const pctPass = (x: unknown): number | null => round(toNum(x)); // already-percent pass-through
-
-// Families whose preferred display basis is STANDALONE (mirrors fundamentals-view:
-// the regulated/complete filing for banks & insurers). Everything else → consolidated.
-const FINANCIAL_STANDALONE = new Set(["banking", "life_insurance", "general_insurance"]);
-const preferredBasis = (family: string): string =>
-  FINANCIAL_STANDALONE.has(family) ? "standalone" : "consolidated";
 
 const DAY_MS = 86_400_000;
 
-// ── Normalised pre-attach row (dates still Date for the latest-per-stock reduction) ──
-interface RawReported {
-  stockId: string;
-  symbol: string;
-  name: string;
-  sector: string | null;
-  industryType: string;
-  quarter: string;
-  fiscalYear: string;
-  reportDate: Date;
-  filingDate: Date;
-  resultType: string;
-  revenue: number | null;
-  revenueLabel: string;
-  revenueYoy: number | null;
-  revenueQoq: number | null;
-  netProfit: number | null;
-  profitYoy: number | null;
-  profitQoq: number | null;
-  margin: number | null;
-  marginLabel: string;
-  netMargin: number | null;
-  xbrlUrl: string;
+/** Top-growers strip size on the Results landing. */
+const TOP_GROWERS = 10;
+
+const ymd = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+/** The upcoming window, resolved per REQUEST rather than per cache build. The slot is built
+ *  once and served for up to five minutes, so a build that straddles midnight would otherwise
+ *  keep yesterday's earnings dates in an "upcoming" feed. Both ends are re-derived here. */
+function upcomingWindow(days: number): { from: string; to: string } {
+  const midnight = new Date();
+  midnight.setUTCHours(0, 0, 0, 0);
+  return { from: ymd(midnight.getTime()), to: ymd(midnight.getTime() + days * DAY_MS) };
 }
 
-const stockSelect = {
-  select: {
-    symbol: true,
-    name: true,
-    sector: { select: { displayName: true } },
-  },
-} as const;
+/* ------------------------------------------------------------------ cursors */
 
-const sectorName = (s: { sector: { displayName: string } | null }): string | null =>
-  s.sector?.displayName ?? null;
+/** A cursor is just the sort key of the last row on the page, base64url'd so no caller is
+ *  tempted to construct one. Decoding a malformed cursor yields null → the request is served
+ *  as an unpaged first page rather than as an error; a stale link should show the feed, not a 400. */
+const encodeCursor = (date: string, symbol: string): string =>
+  Buffer.from(`${date}|${symbol}`, "utf8").toString("base64url");
 
-// ── Per-family fetchers — each returns its rows already normalised to RawReported ────
-
-async function fetchNonFinancial(since?: Date): Promise<RawReported[]> {
-  const rows = await prisma.quarterlyResult.findMany({
-    where: { stock: { isActive: true }, ...(since ? { filingDate: { gte: since } } : {}) },
-    select: {
-      stockId: true, quarter: true, fiscalYear: true, reportDate: true, filingDate: true,
-      resultType: true, xbrlUrl: true,
-      revenue: true, revenueYoy: true, revenueQoq: true,
-      netProfit: true, profitYoy: true, profitQoq: true,
-      operatingMargin: true, netMargin: true,
-      stock: stockSelect,
-    },
-  });
-  return rows.map((q) => ({
-    stockId: q.stockId, symbol: q.stock.symbol, name: q.stock.name, sector: sectorName(q.stock),
-    industryType: "non_financial",
-    quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
-    resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.revenue), revenueLabel: "Revenue",
-    revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
-    netProfit: money(q.netProfit), profitYoy: pctPass(q.profitYoy), profitQoq: pctPass(q.profitQoq),
-    margin: pctPass(q.operatingMargin), marginLabel: "Op margin", netMargin: pctPass(q.netMargin),
-  }));
-}
-
-async function fetchBanking(since?: Date): Promise<RawReported[]> {
-  const rows = await prisma.bankingQuarterlyResult.findMany({
-    where: { stock: { isActive: true }, ...(since ? { filingDate: { gte: since } } : {}) },
-    select: {
-      stockId: true, quarter: true, fiscalYear: true, reportDate: true, filingDate: true,
-      resultType: true, xbrlUrl: true,
-      nii: true, niiYoy: true, niiQoq: true,
-      netProfit: true, patYoy: true, patQoq: true,
-      netMargin: true,
-      stock: stockSelect,
-    },
-  });
-  return rows.map((q) => ({
-    stockId: q.stockId, symbol: q.stock.symbol, name: q.stock.name, sector: sectorName(q.stock),
-    industryType: "banking",
-    quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
-    resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.nii), revenueLabel: "Net interest income",
-    revenueYoy: pctPass(q.niiYoy), revenueQoq: pctPass(q.niiQoq),
-    netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
-    margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
-  }));
-}
-
-async function fetchNbfc(since?: Date): Promise<RawReported[]> {
-  const rows = await prisma.nbfcQuarterlyResult.findMany({
-    where: { stock: { isActive: true }, ...(since ? { filingDate: { gte: since } } : {}) },
-    select: {
-      stockId: true, quarter: true, fiscalYear: true, reportDate: true, filingDate: true,
-      resultType: true, xbrlUrl: true,
-      revenue: true, revenueYoy: true, revenueQoq: true,
-      netProfit: true, patYoy: true, patQoq: true,
-      netMargin: true,
-      stock: stockSelect,
-    },
-  });
-  return rows.map((q) => ({
-    stockId: q.stockId, symbol: q.stock.symbol, name: q.stock.name, sector: sectorName(q.stock),
-    industryType: "nbfc",
-    quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
-    resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.revenue), revenueLabel: "Revenue",
-    revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
-    netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
-    margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
-  }));
-}
-
-async function fetchLifeInsurance(since?: Date): Promise<RawReported[]> {
-  const rows = await prisma.lifeInsuranceQuarterlyResult.findMany({
-    where: { stock: { isActive: true }, ...(since ? { filingDate: { gte: since } } : {}) },
-    select: {
-      stockId: true, quarter: true, fiscalYear: true, reportDate: true, filingDate: true,
-      resultType: true, xbrlUrl: true,
-      netPremiumIncome: true, premiumYoy: true, premiumQoq: true,
-      netProfit: true, patYoy: true, patQoq: true,
-      netMargin: true,
-      stock: stockSelect,
-    },
-  });
-  return rows.map((q) => ({
-    stockId: q.stockId, symbol: q.stock.symbol, name: q.stock.name, sector: sectorName(q.stock),
-    industryType: "life_insurance",
-    quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
-    resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.netPremiumIncome), revenueLabel: "Net premium",
-    revenueYoy: pctPass(q.premiumYoy), revenueQoq: pctPass(q.premiumQoq),
-    netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
-    margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
-  }));
-}
-
-async function fetchGeneralInsurance(since?: Date): Promise<RawReported[]> {
-  const rows = await prisma.generalInsuranceQuarterlyResult.findMany({
-    where: { stock: { isActive: true }, ...(since ? { filingDate: { gte: since } } : {}) },
-    select: {
-      stockId: true, quarter: true, fiscalYear: true, reportDate: true, filingDate: true,
-      resultType: true, xbrlUrl: true,
-      grossPremiumsWritten: true, gpwYoy: true, gpwQoq: true,
-      netProfit: true, patYoy: true, patQoq: true,
-      netMargin: true,
-      stock: stockSelect,
-    },
-  });
-  return rows.map((q) => ({
-    stockId: q.stockId, symbol: q.stock.symbol, name: q.stock.name, sector: sectorName(q.stock),
-    industryType: "general_insurance",
-    quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
-    resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.grossPremiumsWritten), revenueLabel: "Gross premium",
-    revenueYoy: pctPass(q.gpwYoy), revenueQoq: pctPass(q.gpwQoq),
-    netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
-    margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
-  }));
-}
-
-/** Reduce every (stock, period, basis) row to ONE card per stock: the most-recent
- *  period (by reportDate), on the family's preferred basis (falling back to whatever
- *  basis filed that period). */
-function latestPerStock(rows: RawReported[]): RawReported[] {
-  const byStock = new Map<string, RawReported[]>();
-  for (const r of rows) {
-    const arr = byStock.get(r.stockId) ?? [];
-    arr.push(r);
-    byStock.set(r.stockId, arr);
+function decodeCursor(raw: string | undefined): { date: string; symbol: string } | null {
+  if (!raw) return null;
+  try {
+    const [date, symbol] = Buffer.from(raw, "base64url").toString("utf8").split("|");
+    if (!date || !symbol) return null;
+    return { date, symbol };
+  } catch {
+    return null;
   }
-
-  const out: RawReported[] = [];
-  for (const arr of byStock.values()) {
-    const maxTime = Math.max(...arr.map((r) => r.reportDate.getTime()));
-    const latest = arr.filter((r) => r.reportDate.getTime() === maxTime);
-    const pref = preferredBasis(latest[0].industryType);
-    out.push(latest.find((r) => r.resultType === pref) ?? latest[0]);
-  }
-  return out;
 }
 
-async function buildReported(since: Date | undefined, limit: number): Promise<ReportedResultItem[]> {
-  const families = await Promise.all([
-    fetchNonFinancial(since),
-    fetchBanking(since),
-    fetchNbfc(since),
-    fetchLifeInsurance(since),
-    fetchGeneralInsurance(since),
-  ]);
+/* ------------------------------------------------------------------ filters */
 
-  const latest = latestPerStock(families.flat())
-    .sort((a, b) => b.filingDate.getTime() - a.filingDate.getTime())
-    .slice(0, limit);
+const matches = (q: string, symbol: string, name: string, sector: string | null): boolean =>
+  symbol.toLowerCase().includes(q) ||
+  name.toLowerCase().includes(q) ||
+  (sector ?? "").toLowerCase().includes(q);
 
-  if (latest.length === 0) return [];
-
-  // Honest extras — health score (only scored stocks) + a real earnings_analysis
-  // headline (only stocks that have one). Both keyed by symbol/stockId, null otherwise.
-  const stockIds = latest.map((r) => r.stockId);
-  const [scored, summaries] = await Promise.all([
-    buildScoredStocksList(),
-    prisma.aiSummary.findMany({
-      where: { stockId: { in: stockIds }, summaryType: "earnings_analysis" },
-      orderBy: { generatedAt: "desc" },
-      select: { stockId: true, headline: true },
-    }),
-  ]);
-
-  const scoreBySymbol = new Map(scored.map((s) => [s.symbol, s.composite]));
-  const aiByStock = new Map<string, string>();
-  for (const s of summaries)
-    if (s.headline && !aiByStock.has(s.stockId)) aiByStock.set(s.stockId, s.headline);
-
-  return latest.map((r) => ({
-    symbol: r.symbol,
-    name: r.name,
-    sector: r.sector,
-    industryType: r.industryType,
-    quarter: r.quarter,
-    fiscalYear: r.fiscalYear,
-    periodLabel: `${r.quarter} ${r.fiscalYear}`,
-    reportDate: ymd(r.reportDate),
-    filingDate: ymd(r.filingDate),
-    resultType: r.resultType,
-    revenue: r.revenue,
-    revenueLabel: r.revenueLabel,
-    revenueYoy: r.revenueYoy,
-    revenueQoq: r.revenueQoq,
-    netProfit: r.netProfit,
-    profitYoy: r.profitYoy,
-    profitQoq: r.profitQoq,
-    margin: r.margin,
-    marginLabel: r.marginLabel,
-    netMargin: r.netMargin,
-    xbrlUrl: r.xbrlUrl,
-    healthScore: scoreBySymbol.get(r.symbol) ?? null,
-    aiHeadline: aiByStock.get(r.stockId) ?? null,
-  }));
-}
-
-async function buildUpcoming(days: number, limit: number): Promise<UpcomingResultItem[]> {
-  const now = new Date();
-  now.setUTCHours(0, 0, 0, 0);
-  const to = new Date(now.getTime() + days * DAY_MS);
-
-  const events = await prisma.corporateEvent.findMany({
-    where: { eventType: "earnings", eventDate: { gte: now, lte: to }, stock: { isActive: true } },
-    orderBy: { eventDate: "asc" },
-    take: limit,
-    select: {
-      symbol: true,
-      eventDate: true,
-      isConfirmed: true,
-      description: true,
-      stock: { select: { name: true, sector: { select: { displayName: true } } } },
-    },
-  });
-
-  return events.map((e) => ({
-    symbol: e.symbol,
-    name: e.stock.name,
-    sector: e.stock.sector?.displayName ?? null,
-    eventDate: ymd(e.eventDate),
-    isConfirmed: e.isConfirmed,
-    description: e.description,
-  }));
-}
-
-export interface ResultsListOpts {
-  /** "reported" | "upcoming" | "all" — which halves to build (default "all"). */
-  filter?: "reported" | "upcoming" | "all";
-  /** Reported window: only results filed within the last `days`. Omit → latest per
-   *  stock regardless of age (the default landing feed). */
+export interface ResultsFeedOpts {
+  /** Which half to page (default "reported"). */
+  feed?: ResultsFeedKind;
+  /** Free-text match over symbol / name / sector. */
+  q?: string;
+  /** Reported only: keep results filed within the last `days` (the "This week" chip sends 7). */
   days?: number;
-  /** Upcoming look-ahead window in days (default 60). */
+  /** Reported only: keep results whose stock carries a health score. */
+  scoredOnly?: boolean;
+  /** Upcoming only: look-ahead window in days (default 60). */
   upcomingDays?: number;
-  /** Max items per half (default 250). */
+  /** Page size (default 12). */
   limit?: number;
+  /** Opaque cursor from the previous page. Omit for the first page. */
+  cursor?: string;
 }
 
-export async function buildResultsList(opts: ResultsListOpts = {}): Promise<ResultsListData> {
-  const { filter = "all", days, upcomingDays = 60, limit = 250 } = opts;
-  const since = days != null ? new Date(Date.now() - days * DAY_MS) : undefined;
+/* ------------------------------------------------------------------- paging */
 
-  const [reported, upcoming] = await Promise.all([
-    filter === "upcoming" ? Promise.resolve([]) : buildReported(since, limit),
-    filter === "reported" ? Promise.resolve([]) : buildUpcoming(upcomingDays, limit),
-  ]);
+export async function buildResultsFeed(opts: ResultsFeedOpts = {}): Promise<ResultsFeedPage> {
+  const { feed = "reported", q, days, scoredOnly, upcomingDays = 60, limit = 12, cursor } = opts;
+  const rows = await getResultsFeedRows();
+  const term = q?.trim().toLowerCase();
+  const after = decodeCursor(cursor);
 
-  const weekAgoMs = Date.now() - 7 * DAY_MS;
-  const reportedThisWeek = reported.filter(
-    (r) => new Date(r.filingDate).getTime() >= weekAgoMs,
-  ).length;
+  if (feed === "upcoming") {
+    // The cached half runs a year ahead; the request's window is a filter over it.
+    const { from, to } = upcomingWindow(upcomingDays);
 
+    const all = rows.upcoming.filter(
+      (u) =>
+        u.eventDate >= from &&
+        u.eventDate <= to &&
+        (!term || matches(term, u.symbol, u.name, u.sector)),
+    );
+    // Ascending feed: "after the cursor" is a LATER date, or the same date and a later symbol.
+    const rest = after
+      ? all.filter(
+          (u) =>
+            u.eventDate > after.date || (u.eventDate === after.date && u.symbol > after.symbol),
+        )
+      : all;
+    const items = rest.slice(0, limit);
+    const last = items[items.length - 1];
+    const hasMore = rest.length > items.length;
+    return {
+      feed,
+      items,
+      total: all.length,
+      cursor: hasMore && last ? encodeCursor(last.eventDate, last.symbol) : null,
+      hasMore,
+    };
+  }
+
+  const since =
+    days != null ? new Date(Date.now() - days * DAY_MS).toISOString().slice(0, 10) : null;
+
+  const all = rows.reported.filter(
+    (r) =>
+      (since == null || r.filingDate >= since) &&
+      (!scoredOnly || r.healthScore != null) &&
+      (!term || matches(term, r.symbol, r.name, r.sector)),
+  );
+  // Descending feed: "after the cursor" is an EARLIER filing, or the same day and a later symbol.
+  const rest = after
+    ? all.filter(
+        (r) => r.filingDate < after.date || (r.filingDate === after.date && r.symbol > after.symbol),
+      )
+    : all;
+  const items = rest.slice(0, limit);
+  const last = items[items.length - 1];
+  const hasMore = rest.length > items.length;
   return {
-    reported,
-    upcoming,
-    counts: {
-      reported: reported.length,
-      upcoming: upcoming.length,
-      reportedThisWeek,
-    },
+    feed,
+    items,
+    total: all.length,
+    cursor: hasMore && last ? encodeCursor(last.filingDate, last.symbol) : null,
+    hasMore,
   };
 }
+
+/* ----------------------------------------------------------------- overview */
+
+const mean = (vals: (number | null)[]): number | null => {
+  const real = vals.filter((v): v is number => v != null);
+  if (real.length === 0) return null;
+  return Math.round((real.reduce((a, b) => a + b, 0) / real.length) * 100) / 100;
+};
+
+/**
+ * Whole-feed context for the Results landing — header stats, filter-chip counts, top growers.
+ *
+ * Separate from the pages ON PURPOSE. These numbers describe the ENTIRE feed, so folding them
+ * into page 1 would make them look page- or filter-dependent and would recompute them on every
+ * scroll. Read once per visit; both halves come off the same cached rows the pages slice.
+ */
+export async function buildResultsOverview(upcomingDays = 60): Promise<ResultsOverview> {
+  const rows = await getResultsFeedRows();
+
+  const weekAgo = ymd(Date.now() - 7 * DAY_MS);
+  const { from, to } = upcomingWindow(upcomingDays);
+
+  // `.filter()` copies, so the sort below never touches the shared cached array.
+  const topGrowers = rows.reported
+    .filter((r) => r.profitYoy != null)
+    .sort((a, b) => (b.profitYoy ?? 0) - (a.profitYoy ?? 0))
+    .slice(0, TOP_GROWERS);
+
+  return {
+    counts: {
+      reported: rows.reported.length,
+      reportedThisWeek: rows.reported.filter((r) => r.filingDate >= weekAgo).length,
+      scored: rows.reported.filter((r) => r.healthScore != null).length,
+      upcoming: rows.upcoming.filter((u) => u.eventDate >= from && u.eventDate <= to).length,
+    },
+    averages: {
+      revenueYoy: mean(rows.reported.map((r) => r.revenueYoy)),
+      profitYoy: mean(rows.reported.map((r) => r.profitYoy)),
+    },
+    topGrowers,
+  };
+}
+
+export type { ReportedResultItem, UpcomingResultItem };

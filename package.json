@@ -9,9 +9,9 @@
     "start": "node dist/server.js",
     "postinstall": "prisma generate",
     "gen:copy": "tsx src/scripts/gen-frontend-fallback.ts",
-    "verify:copy": "tsx src/scripts/verify-build-gate-hygiene.ts && tsx src/scripts/verify-catalogue.ts && tsx src/scripts/verify-verdicts.ts && tsx src/scripts/verify-catalogue-endpoint.ts && tsx src/scripts/verify-grounding-names.ts && tsx src/scripts/verify-evidence-register.ts && tsx src/scripts/verify-phs-copy.ts && tsx src/scripts/verify-boundary-corpus.ts",
+    "verify:copy": "tsx src/scripts/verify-build-gate-hygiene.ts && tsx src/scripts/verify-catalogue.ts && tsx src/scripts/verify-verdicts.ts && tsx src/scripts/verify-catalogue-endpoint.ts && tsx src/scripts/verify-grounding-names.ts && tsx src/scripts/verify-evidence-register.ts && tsx src/scripts/verify-phs-copy.ts && tsx src/scripts/verify-boundary-corpus.ts && tsx src/scripts/verify-quarter-brief-vocabulary.ts",
     "verify:copy-fresh": "tsx src/scripts/gen-frontend-fallback.ts --check",
-    "verify:cross-repo": "tsx src/scripts/cross-repo/verify-boundary-render.ts && npm run verify:copy-fresh",
+    "verify:cross-repo": "tsx src/scripts/cross-repo/verify-boundary-render.ts && tsx src/scripts/cross-repo/verify-quarter-brief-money.ts && tsx src/scripts/cross-repo/verify-quarter-brief-badge.ts && npm run verify:copy-fresh",
     "verify:all": "npm run verify:copy && npm run verify:cross-repo"
   },
   "keywords": [],

@@ -48,7 +48,8 @@ export interface ReportedResultItem {
 
   // Honest extras — present only when a REAL backing row exists, else null.
   healthScore: number | null; // composite health score (0–100) when the stock is scored
-  aiHeadline: string | null; // latest earnings_analysis AiSummary headline, if any
+  /** The COMPUTED verdict label of the live Quarter in Brief for THIS period, if one exists. */
+  quarterBriefVerdict: string | null;
 }
 
 /** One UPCOMING result — a real earnings/board-meeting date with no numbers yet. */
@@ -61,12 +62,36 @@ export interface UpcomingResultItem {
   description: string | null;
 }
 
-export interface ResultsListData {
-  reported: ReportedResultItem[];
-  upcoming: UpcomingResultItem[];
+/** Which half of the feed a page request is paging over. One request = one half; the two
+ *  are separate lists with separate orderings and therefore separate cursors. */
+export type ResultsFeedKind = "reported" | "upcoming";
+
+/** One PAGE of one half. `cursor` is opaque — hand it back verbatim to get the next page.
+ *  `total` counts the whole set matching the query's filters, not the page. */
+export interface ResultsFeedPage {
+  feed: ResultsFeedKind;
+  items: ReportedResultItem[] | UpcomingResultItem[];
+  total: number;
+  cursor: string | null; // null once the feed is exhausted
+  hasMore: boolean;
+}
+
+/** Whole-feed context for the Results landing: the header stats, the filter-chip counts and
+ *  the top-growers strip. Deliberately NOT part of a page — these describe the entire feed and
+ *  must not shift as the reader scrolls or searches. */
+export interface ResultsOverview {
   counts: {
-    reported: number; // reported items returned
-    upcoming: number; // upcoming items returned
-    reportedThisWeek: number; // reported with filingDate within the last 7 days
+    reported: number; // stocks with a filed result
+    reportedThisWeek: number; // filingDate within the last 7 days
+    scored: number; // reported AND carrying a health score
+    upcoming: number; // earnings dates inside the default look-ahead window
   };
+  /** Means across every reported result that HAS the figure (nulls excluded, never zero-filled).
+   *  Null when not one result carries it. Percent. */
+  averages: {
+    revenueYoy: number | null;
+    profitYoy: number | null;
+  };
+  /** Highest net-profit YoY first. Only results that actually report the figure. */
+  topGrowers: ReportedResultItem[];
 }

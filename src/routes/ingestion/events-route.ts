@@ -11,6 +11,7 @@ import { Router } from "express";
 import {
   backfillEvents,
   getAllCalendarEvents,
+  getCalendarBounds,
   getEventLogs,
   getEventsBySymbol,
   triggerDailyEventRefresh,
@@ -20,8 +21,15 @@ import {
 export const eventsRouter = Router();
 export const adminEventsRouter = Router();
 
+// ── GET /api/events/calendar/bounds ───────────────────────────
+// The earliest / latest event date we hold — the month grid's navigation limits.
+// Registered ahead of "/calendar" purely for readability; the paths are distinct.
+
+eventsRouter.get("/calendar/bounds", getCalendarBounds);
+
 // ── GET /api/events/calendar ──────────────────────────────────
-// Upcoming events across all stocks in universe.
+// Events across all stocks in universe — the forward `days` look-ahead by default, an
+// explicit `from`/`to` window (including history) on request, keyset-paged with `limit`.
 // Primary driver for the event calendar UI feature.
 
 eventsRouter.get("/calendar", getAllCalendarEvents);

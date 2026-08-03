@@ -47,21 +47,32 @@ export interface ReactionPoint {
 }
 
 /** Three honest states:
- *  - 'complete'   — full T+12 window elapsed, ≥ MIN points, pre-filing base present.
- *  - 'forming'    — window still open (filing < ~20 cal days ago), pre-base + ≥1 post day.
- *  - 'unavailable'— no pre-filing base, or no post-filing days, or sparse & window closed. */
+ *  - 'complete'   — window elapsed, with a post-filing close and ≥ MIN points.
+ *  - 'forming'    — window still open. INCLUDES a result filed today, which has a baseline
+ *                   and a run-up but no post-filing close yet: not-yet-opened, not absent.
+ *  - 'unavailable'— no pre-filing baseline or no points at all; or a CLOSED window that
+ *                   never printed a post-filing close, or is too sparse to draw. */
 export type ReactionState = "complete" | "forming" | "unavailable";
 
 export interface MarketReaction {
   reactionState: ReactionState;
-  /** true ⇔ complete or forming (pre-base + ≥1 post day → render the line). */
+  /** true ⇔ complete or forming (baseline + ≥1 point → render the line). */
   available: boolean;
   filingDate: string;
   windowFrom: string;
   windowTo: string;
   points: ReactionPoint[]; // ascending; empty when unavailable
-  preClose: number | null; // last close on/before filingDate; null when unavailable
-  tradingDaysSinceFiling: number; // 0 when unavailable
+  /** ★ Last close STRICTLY BEFORE filingDate — never the filing day's own close, which
+   *  already carries the reaction. Null when the stock has no close in the lead window
+   *  (first-ever result, or coverage starting on the filing date), and when unavailable. */
+  preClose: number | null;
+  /** Closes STRICTLY AFTER filingDate. 0 for a result filed today — a forming window that
+   *  has not opened yet, which the viewer states as such rather than as "0 of ~N". */
+  tradingDaysSinceFiling: number;
+  /** The window's nominal length in trading days, DERIVED from the served window (weekdays
+   *  after the filing through windowTo). Approximate — holidays are not modelled — so the
+   *  viewer renders it prefixed "~". Served so the denominator cannot drift from the window. */
+  expectedTradingDays: number;
 }
 
 export interface ViewerNews {
@@ -76,15 +87,17 @@ export interface ViewerNews {
   sentiment: string | null;
 }
 
+/** The stored Quarter in Brief for the VIEWED period. `available:false` covers three states that are
+ *  all one thing to a reader: never generated, generation refused, or marked stale by a correction.
+ *  A brief is whole or absent — there is no partial. */
 export interface ViewerAi {
-  /** false ⇔ no real earnings_analysis row → Context shows a marked Phase-2 stub. */
   available: boolean;
-  // Only the columns AiSummary actually stores — content, headline, keyPoints (a flat
-  // bullet array). The legacy mock invented qoqAnalysis/bottomLine; those are NOT real
-  // columns and are deliberately absent here (no fabrication).
-  headline: string | null;
   content: string | null;
-  keyPoints: string[] | null;
+  /** The COMPUTED verdict. Rendered as a badge; never written by the model. */
+  verdictKey: string | null;
+  verdictLabel: string | null;
+  /** As-of date of the pinned health snapshot, or null when the stock was unscored at generation. */
+  scoredAsOf: string | null;
   modelVersion: string | null;
   generatedAt: string | null;
 }

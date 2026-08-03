@@ -4,6 +4,8 @@ import { prisma } from "../../db/prisma.js";
 import { fetchFilingsList, groupFilingsByPeriod } from "./results/discovery.js";
 // import { fetchXbrlFile } from "./xbrl/fetcher.js";
 import { parseQuarterly, parseAnnual } from "./xbrl/parser.js";
+import { enqueueJob } from "../../jobs/enqueue.js";
+import { JobTypes } from "../../jobs/types.js";
 import { pickFilingsPerBasis, decideIngest } from "./picker.js";
 import {
   dispatchQuarterlyIngest,
@@ -224,6 +226,9 @@ type BasisOutcome = "ingested" | "refreshed" | "skipped";
 interface BasisIngestResult {
   outcome: BasisOutcome;
   quarter: string; // "Q1".."Q4" for quarterly; "Y" for annual fundamentals
+  /** Carried so the Quarter in Brief enqueue can name the period — processGroup has the stock but
+   *  not the parsed filing, and a periodKey needs both halves. */
+  fiscalYear: string;
   resultType: string; // basis actually parsed/written
   rowId?: string;
   /** Did a score-relevant column move? Absent ⇒ nothing was written (skip/reject). */
@@ -300,12 +305,18 @@ async function processGroup(
       const r = await ingestQuarterly(stock, filing, xml, taxonomy, ctx, options);
       bump(r.outcome, r.scoreRelevantChanged);
       addLog(r.quarter, pick.basis, r.outcome);
+      // ★ QUARTER IN BRIEF — the only place a discrete (stock, quarter) identity exists. The
+      // RESULTS_SCAN job payload carries `changedSymbols` with no quarter, so it cannot drive this.
+      await enqueueQuarterBriefIfWritten(stock.symbol, r);
       continue;
     }
 
     // ── Annual: write BOTH fundamentals AND derived Q4 quarterly, per basis ──
     // The same Mar-31 XBRL contains both annual (FourD) and Q4 (OneD) data.
     const annual = await ingestAnnual(stock, filing, xml, taxonomy, ctx, options);
+    // NOTE: no brief enqueue here. The ANNUAL row is not a brief input — a brief carries no
+    // balance-sheet fact and does no annual read. The Q4 QUARTERLY row derived from this same filing
+    // is enqueued below, where it is written.
     bump(annual.outcome, annual.scoreRelevantChanged);
     addLog("Y", pick.basis, annual.outcome);
 
@@ -406,6 +417,7 @@ async function ingestQuarterly(
     return {
       outcome: "skipped",
       quarter: parsed.data.quarter,
+      fiscalYear: parsed.data.fiscalYear,
       resultType: parsed.data.resultType,
     };
   }
@@ -425,10 +437,44 @@ async function ingestQuarterly(
           ? "skipped"
           : "ingested",
     quarter: parsed.data.quarter,
+    fiscalYear: parsed.data.fiscalYear,
     resultType: parsed.data.resultType,
     rowId: ingest.rowId,
     scoreRelevantChanged: ingest.scoreRelevantChanged,
   };
+}
+
+/**
+ * Enqueue a brief for a quarter we ACTUALLY WROTE. Fire-and-forget: ingestion must never block on an
+ * AI call, and it must never fail because a queue insert failed.
+ *
+ * ⚠ THE GATE IS DELIBERATELY GENEROUS. It fires on any write (ingested OR refreshed), including the
+ * ~19×-rewritten re-filings that carry identical numbers. That is not sloppiness — writeQuarterBrief
+ * compares the fact fingerprint before spending anything, so an over-enqueue costs one job row and a
+ * few indexed reads, while a MISSED enqueue is a brief that silently never appears. An extra job is
+ * visible and free; a missing brief is invisible. Prefer the free, visible failure.
+ *
+ * ⚠ DO NOT MONITOR JOB COUNTS AS A HEALTH SIGNAL. Observed 2026-08-04: six basis-refreshes of one
+ * symbol produced 3 QUARTER_BRIEF jobs on the first pass and 1 on an identical second pass, with the
+ * first pass's jobs already marked succeeded. That points at dedup behaviour inside enqueueJob which
+ * has NOT been read. Correctness is unaffected — the fingerprint absorbs both over- and
+ * under-enqueueing — but the count does not mean what it appears to, so anyone building an alert on
+ * "jobs enqueued per scan" should read enqueue.ts's dedup first.
+ */
+async function enqueueQuarterBriefIfWritten(
+  symbol: string,
+  r: { outcome: BasisOutcome; quarter: string; fiscalYear: string },
+): Promise<void> {
+  if (r.outcome !== "ingested" && r.outcome !== "refreshed") return;
+  try {
+    await enqueueJob({
+      type: JobTypes.QUARTER_BRIEF,
+      payload: { symbol, periodKey: `${r.fiscalYear}${r.quarter}` },
+      triggeredBy: "hook:result_ingested",
+    });
+  } catch (e) {
+    console.warn(`[quarter-brief] enqueue failed for ${symbol} ${r.fiscalYear}${r.quarter}: ${(e as Error).message}`);
+  }
 }
 
 async function ingestAnnual(
@@ -455,6 +501,7 @@ async function ingestAnnual(
     return {
       outcome: "skipped",
       quarter: "Y",
+      fiscalYear: parsed.data.fiscalYear,
       resultType: parsed.data.resultType,
     };
   }
@@ -474,6 +521,7 @@ async function ingestAnnual(
           ? "skipped"
           : "ingested",
     quarter: "Y",
+    fiscalYear: parsed.data.fiscalYear,
     resultType: parsed.data.resultType,
     rowId: ingest.rowId,
     scoreRelevantChanged: ingest.scoreRelevantChanged,

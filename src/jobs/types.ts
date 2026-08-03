@@ -108,6 +108,7 @@ export const JobTypes = {
   NEWS_CONTENT_EXTRACTION: "news_content_extraction",
   PEER_METRICS_COMPUTE_ALL: "peer_metrics_compute_all",
   RESULTS_SCAN: "results_scan",
+  QUARTER_BRIEF: "quarter_brief",
   LEGACY_BACKFILL: "legacy_backfill",
   // ── Event-driven scoring ───────────────────────────────────
   // Recompute one peer group's Health Scores (PG-scoped). Enqueued by the
@@ -245,6 +246,15 @@ export interface QuarterlyResultsScanPayload {
   hoursBack: number;
   dryRun: boolean;
   symbols?: string[];
+}
+
+/** ONE (stock, quarter). Deliberately per-stock rather than a batch: a batch would collapse sixty
+ *  different refusal reasons into one errorMessage, and 4b-5 needs them distinguishable. Restart
+ *  safety comes from the fingerprint instead — a re-run skips anything already written, free. */
+export interface QuarterBriefPayload {
+  symbol: string;
+  /** "FY27Q1". Omitted ⇒ the newest quarter on file. */
+  periodKey?: string;
 }
 
 export interface ResultsScanPayload {
@@ -501,6 +511,7 @@ export type JobPayload =
       data: PeerMetricsComputeAllPayload;
     }
   | { type: typeof JobTypes.RESULTS_SCAN; data: ResultsScanPayload }
+  | { type: typeof JobTypes.QUARTER_BRIEF; data: QuarterBriefPayload }
   | { type: typeof JobTypes.LEGACY_BACKFILL; data: LegacyBackfillPayload }
   | { type: typeof JobTypes.PG_RESCORE; data: PgRescorePayload }
   | { type: typeof JobTypes.PG_CASCADE_RESCORE; data: PgCascadeRescorePayload }
@@ -581,6 +592,7 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   [JobTypes.PEER_METRICS_COMPUTE_ALL]: { maxAttempts: 1 }, // pure computation — wasteful to retry
   // v3 results scan — NSE 5xx is transient; 3 attempts clears most failures
   [JobTypes.RESULTS_SCAN]: { maxAttempts: 3 },
+  [JobTypes.QUARTER_BRIEF]: { maxAttempts: 1 },
   // Legacy backfill — manual, network-bound; 3 attempts for transient NSE failures
   [JobTypes.LEGACY_BACKFILL]: { maxAttempts: 3 },
   // PG rescore — DB-only, idempotent (fingerprint + append-only supersede). The whole

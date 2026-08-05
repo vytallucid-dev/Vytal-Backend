@@ -307,7 +307,7 @@ async function processGroup(
       addLog(r.quarter, pick.basis, r.outcome);
       // ★ QUARTER IN BRIEF — the only place a discrete (stock, quarter) identity exists. The
       // RESULTS_SCAN job payload carries `changedSymbols` with no quarter, so it cannot drive this.
-      await enqueueQuarterBriefIfWritten(stock.symbol, r);
+      // await enqueueQuarterBriefIfWritten(stock.symbol, r);
       continue;
     }
 

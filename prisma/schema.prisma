@@ -71,7 +71,7 @@ model Stock {
   shareholdingPatterns     ShareholdingPattern[]
   insiderTrades            InsiderTrade[]
   news                     StockNews[]
-  aiSummaries              AiSummary[]
+  quarterBriefs            QuarterBrief[]
   attentionEvents          AttentionEvent[]
   relationshipEvents       RelationshipEvent[]
   behaviorRollups          BehaviorRollup[]
@@ -988,7 +988,6 @@ model StockNews {
   extractedAt DateTime? @map("extracted_at")
 
   stock       Stock       @relation(fields: [stockId], references: [id], onDelete: Cascade)
-  aiSummaries AiSummary[]
 
   @@unique([stockId, sourceId])
   @@index([stockId])
@@ -1009,46 +1008,69 @@ model StockNews {
 //   - Context cache hits are tracked for cost optimisation
 //   - Multiple summary types per stock (daily brief, event, earnings)
 // ─────────────────────────────────────────────
-model AiSummary {
-  id      String @id @default(uuid())
-  stockId String @map("stock_id")
 
-  // Which news items were used to generate this summary
-  newsItems StockNews[]
+// ─────────────────────────────────────────────
+// QUARTER IN BRIEF — the per-(stock, quarter) generated reading.
+//
+// REPLACES ai_summaries (dropped in the same migration). One row per QUARTER, not per stock, and
+// overwritten in place when that quarter's figures are corrected. Keying on stockId alone would look
+// identical today and break the moment a reader opens an older result — the Results page lists past
+// quarters and each would show the newest brief against the wrong numbers.
+//
+// ── ⚠ NOT APPEND-ONLY, AND DELIBERATELY THE OPPOSITE DEFAULT ────────────────────────────────────────
+// The scoring layer is append-only with newest-version-wins, because it is INTERNAL HISTORY and a
+// superseded row is still true about the moment it described. This is USER-FACING PROSE. A superseded
+// brief is not history, it is a wrong answer sitting next to corrected figures, and "newest wins" fails
+// open — if the newer row is never written, the stale one is still served. So: one mutable row per
+// period, and an explicit `status`. A brief goes `stale` the moment its inputs change, and the read
+// path serves ONLY `live`. Absence is the safe state; being trusted is what must be earned.
+// ─────────────────────────────────────────────
+enum QuarterBriefStatus {
+  live // generated, passed every guard, and its inputs are unchanged since
+  stale // an input changed (a raw-field correction). HIDDEN on read until regenerated.
+}
 
-  summaryType String @map("summary_type")
-  // "event_summary"      → single announcement summarised
-  // "daily_brief"        → all news for a stock today (~3 items)
-  // "earnings_analysis"  → deep quarterly results breakdown
-  // "stock_overview"     → rolling narrative for stock page
+model QuarterBrief {
+  id         String @id @default(uuid())
+  stockId    String @map("stock_id")
+  quarter    String // "Q1" … "Q4"
+  fiscalYear String @map("fiscal_year") // "FY27"
+  resultType String @map("result_type") // the DISPLAYED basis only — the other is honestly absent
 
-  content   String // AI-generated markdown text
-  headline  String? // AI-generated 1-line headline (optional)
-  keyPoints Json?   @map("key_points")
-  // Array of bullet points extracted from content
-  // e.g. ["Revenue up 15% YoY", "Management guides for 12% growth"]
+  /// The generated prose. Whole or absent — a refused generation writes NO row.
+  content String
 
-  // AI metadata for cost tracking
-  modelVersion String  @map("model_version")
-  promptTokens Int?    @map("prompt_tokens")
-  outputTokens Int?    @map("output_tokens")
-  cacheHit     Boolean @default(false) @map("cache_hit")
-  cachedTokens Int?    @map("cached_tokens")
-  // Tokens served from Gemini context cache (billed at 4x lower rate)
+  /// The COMPUTED verdict, stored as key + label so a vocabulary rename is a migration, not a silent
+  /// relabelling of history. Never written by the model.
+  verdictKey   String @map("verdict_key")
+  verdictLabel String @map("verdict_label")
 
-  // Quality
-  isApproved    Boolean @default(true) @map("is_approved")
-  feedbackScore Int?    @map("feedback_score") // -1 | 0 | 1
+  /// ★ PINNING. The as-of date of the ScoreSnapshot the health section was written from, or NULL when
+  /// the stock carried no score at generation time. The health score moves on ordinary trading days,
+  /// so the section is pinned and dated rather than chased — see types.ts HealthMovementSection.
+  scoredAsOf DateTime? @map("scored_as_of") @db.Date
+
+  status      QuarterBriefStatus @default(live)
+  staleReason String?            @map("stale_reason")
+  staleAt     DateTime?          @map("stale_at")
+
+  /// Hash of the exact fact text the model was given. Lets a regeneration pass skip briefs whose
+  /// inputs did not actually move, and makes "was this written from the current figures?" answerable.
+  factsFingerprint String @map("facts_fingerprint")
+
+  model        String
+  promptTokens Int? @map("prompt_tokens")
+  outputTokens Int? @map("output_tokens")
 
   generatedAt DateTime @default(now()) @map("generated_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
 
   stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
-  @@index([stockId])
-  @@index([summaryType])
-  @@index([generatedAt(sort: Desc)])
-  @@index([stockId, summaryType])
-  @@map("ai_summaries")
+  @@unique([stockId, quarter, fiscalYear, resultType])
+  @@index([stockId, status])
+  @@index([status])
+  @@map("quarter_briefs")
 }
 
 // ─────────────────────────────────────────────

@@ -20,6 +20,7 @@ import { Prisma } from "../generated/prisma/client.js";
 import { prisma } from "../db/prisma.js";
 import { reDeriveRow, NO_RESCORE_TABLES, PRICE_TABLES, type ReDeriveResult } from "./re-derive.js";
 import { triggerCasaCascade, triggerFillCascade, triggerRescoreForSymbols } from "../jobs/scoring-triggers.js";
+import { invalidateBriefsForEdit } from "../insight/quarter-brief/invalidate.js";
 import { resolveEditedPeriod } from "../scoring/rescore/general-cascade.js";
 import { bankingPgForSymbol, scoredBankingPeriods } from "../scoring/rescore/banking-cascade.js";
 
@@ -235,6 +236,17 @@ export async function applyRawFieldEdit(input: RawFieldEditInput): Promise<RawFi
       rescore = out;
       jobId = out?.jobId ?? null;
     }
+  }
+
+  // ── QUARTER IN BRIEF — withdraw any brief this correction could have falsified, and queue it back.
+  // Runs for EVERY cascade branch (including "none"): a brief reads the quarterly tables directly, so
+  // whether the SCORER cares about this edit is a different question from whether a READER does.
+  // No-ops for the tables a brief never reads — see invalidate.ts.
+  const briefs = await invalidateBriefsForEdit(
+    input.table, reDerived.symbol, reDerived.periodKey, reason, triggeredBy,
+  );
+  if (briefs.marked > 0) {
+    console.log(`[quarter-brief] ${reDerived.symbol}: ${briefs.marked} brief(s) stale, ${briefs.enqueued} queued to return (${reason})`);
   }
 
   return { ok: true, reDerived, cascade, jobId, rescore };

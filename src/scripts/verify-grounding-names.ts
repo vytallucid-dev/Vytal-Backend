@@ -102,15 +102,32 @@ async function main() {
   );
 
   rule("3 · THE STALE evidence.name CANNOT WIN, even when it is present and disagrees");
+  // A fixture keyed to a finding the catalogue no longer carries (retired, or renamed out from under
+  // it) must fail as a NAMED assertion — never as a TypeError reading `.name` off `undefined`. `known`
+  // short-circuits the lookup below before it can throw.
+  function staleNameVerdict(k: string, ev: Record<string, unknown>): { pass: boolean; detail: string } {
+    const known = k in STOCK_FINDINGS;
+    if (!known) return { pass: false, detail: `"${k}" is absent from the catalogue — retired or renamed; re-point STALE_NAME at a live key` };
+    const canonical = STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].name;
+    return { pass: findingName(k) !== ev.name && findingName(k) === canonical, detail: "canonical wins" };
+  }
+
   const contested = Object.keys(STALE_NAME);
   for (const k of contested) {
     const ev = evidenceFor(k);
-    ok(
-      `${k}: catalogue "${findingName(k)}" beats evidence "${ev.name}"`,
-      findingName(k) !== ev.name && findingName(k) === STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].name,
-      "canonical wins",
-    );
+    const { pass, detail } = staleNameVerdict(k, ev);
+    ok(`${k}: catalogue "${findingName(k)}" beats evidence "${ev.name}"`, pass, detail);
   }
+
+  // NEGATIVE CONTROL — a fixture naming a key the catalogue does not carry must fail BY NAME, not
+  // throw. This is the shape of the bug that crashed this gate when Phases 2–3 retired
+  // trajectory_B_deterioration / divergence_C1_price_ahead out from under the fixtures above.
+  const ghost = staleNameVerdict("__ghost_key_for_regression_test__", { name: "Whatever", verdict: "x" });
+  ok(
+    "NEGATIVE CONTROL — a fixture key absent from the catalogue fails by name, not by throwing",
+    ghost.pass === false && ghost.detail.includes("absent from the catalogue"),
+    ghost.detail,
+  );
   const r1 = evidenceFor("ownership_R1_pledge");
   ok(
     "ownership_R1_pledge — evidence carries NO name at all, and the model still gets one",

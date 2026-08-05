@@ -69,10 +69,29 @@ export const IndexBackfillSchema = z.object({
   days: z.number().int().min(1).max(365).default(365),
 });
 
+// ── The calendar window is TWO-DIRECTIONAL ────────────────────────────────────────────
+// `days` is the original forward look-ahead and still the default every legacy caller gets
+// (dashboard / portfolio "upcoming" cards send days=90 and are untouched). `from`/`to` are the
+// explicit window the calendar's month grid needs to read HISTORY — corporate events are
+// permanent records, not a forward-only feed, so a reader must be able to walk back to the
+// oldest row we hold. Supplying either one replaces the `days` window entirely; an omitted end
+// is open (from-only = everything from that date on, to-only = all history up to it).
+//
+// `limit`/`cursor` turn the same endpoint into a keyset-paged feed for the timeline's infinite
+// scroll. Keyset, not offset: the events table is re-ingested weekly under the reader, and an
+// offset page 2 resolved against a list that gained a row at the top silently repeats a card.
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
 export const CalendarQuerySchema = z.object({
   days: z.coerce.number().int().min(1).max(90).default(30),
+  from: z.string().regex(YMD, "from must be YYYY-MM-DD").optional(),
+  to: z.string().regex(YMD, "to must be YYYY-MM-DD").optional(),
   types: z.string().optional(), // comma-separated: "earnings,dividend"
   sector: z.string().optional(),
+  /** Page size. Present ⇒ the response is paged and carries a `cursor`. */
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+  /** Opaque cursor from the previous page. Omit for the first page. */
+  cursor: z.string().optional(),
 });
 
 export const InsiderTradesQuerySchema = z.object({

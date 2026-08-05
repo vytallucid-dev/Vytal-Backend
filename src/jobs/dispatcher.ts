@@ -71,6 +71,8 @@ export type JobHandler<TPayload = any, TResult = any> = (
   ctx: JobContext<TPayload>,
 ) => Promise<TResult>;
 
+import { handleQuarterBrief } from "./handlers/quarter-brief.handler.js";
+
 const HANDLERS: Record<JobType, JobHandler> = {
   // Backfill / one-off
   [JobTypes.DEALS_BACKFILL]: handleDealsBackfill,
@@ -103,6 +105,7 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.NEWS_CONTENT_EXTRACTION]: handleNewsContentExtraction,
   [JobTypes.PEER_METRICS_COMPUTE_ALL]: handlePeerMetricsComputeAll,
   [JobTypes.RESULTS_SCAN]: handleResultsScan,
+  [JobTypes.QUARTER_BRIEF]: handleQuarterBrief as JobHandler,
   [JobTypes.LEGACY_BACKFILL]: handleLegacyBackfill,
   [JobTypes.PG_RESCORE]: handlePgRescore,
   [JobTypes.PG_CASCADE_RESCORE]: handlePgCascadeRescore,

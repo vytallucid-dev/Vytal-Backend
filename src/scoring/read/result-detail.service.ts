@@ -14,6 +14,7 @@ import { prisma } from "../../db/prisma.js";
 import { toNum, round } from "./fundamentals-normalize.js";
 import { buildHealthSnapshotView } from "./health-view.service.js";
 import { buildFundamentalsView } from "./fundamentals-view.service.js";
+import { readVerdict } from "../../insight/quarter-brief/verdict.js";
 import type {
   ResultDetailData,
   ViewerQuarter,
@@ -32,6 +33,14 @@ import type {
 const DAY_MS = 86_400_000;
 const MIN_REACTION_POINTS = 3; // fewer than this → honest-empty (never a 2-point line)
 const SPINE_MAX = 12;
+
+/** ── THE REACTION WINDOW, DEFINED ONCE ──────────────────────────────────────────
+ *  Calendar days either side of the filing. The chart's "N of ~M trading days"
+ *  denominator is DERIVED from REACTION_WINDOW_DAYS below and served — it used to be
+ *  the literal "~12" typed into the frontend JSX twice, which was not the length of
+ *  this window (20 calendar days is ~14 weekdays, not 12) and could not follow it. */
+const REACTION_LEAD_DAYS = 5;
+const REACTION_WINDOW_DAYS = 20;
 
 const ymd = (d: Date): string => d.toISOString().slice(0, 10);
 const money = (x: unknown): number | null => round(toNum(x));
@@ -182,11 +191,28 @@ async function resolveSpine(
   return { basis, spine };
 }
 
+/** Weekdays STRICTLY AFTER the filing through the window's close — the nominal length of
+ *  the reaction window, derived from REACTION_WINDOW_DAYS rather than guessed at.
+ *
+ *  ⚠ APPROXIMATE BY DESIGN, and the UI must say so. Exchange holidays are not modelled
+ *  anywhere in this codebase (there is no holiday table), so this counts weekdays and can
+ *  read one or two high across a festival week. That is why the rendered figure is prefixed
+ *  "~". What it can no longer be is a number unrelated to the window it describes. */
+function expectedTradingDaysIn(filingDate: string, windowTo: string): number {
+  const end = Date.parse(`${windowTo}T00:00:00Z`);
+  let n = 0;
+  for (let t = Date.parse(`${filingDate}T00:00:00Z`) + DAY_MS; t <= end; t += DAY_MS) {
+    const dow = new Date(t).getUTCDay(); // 0=Sun..6=Sat
+    if (dow !== 0 && dow !== 6) n++;
+  }
+  return n;
+}
+
 // ── Market Reaction — factual price path around the filing date (no verdict) ────
 async function buildReaction(stockId: string, filingDate: string): Promise<MarketReaction> {
   const filingMs = new Date(filingDate).getTime();
-  const from = new Date(filingMs - 5 * DAY_MS);
-  const to = new Date(filingMs + 20 * DAY_MS);
+  const from = new Date(filingMs - REACTION_LEAD_DAYS * DAY_MS);
+  const to = new Date(filingMs + REACTION_WINDOW_DAYS * DAY_MS);
 
   const rows = await prisma.dailyPrice.findMany({
     where: { stockId, date: { gte: from, lte: to } },
@@ -199,9 +225,22 @@ async function buildReaction(stockId: string, filingDate: string): Promise<Marke
     return { date: d, close: Number(r.close), isFilingDay: d === filingDate };
   });
 
+  /** ★ STRICTLY BEFORE THE FILING. `<=` was inclusive of the filing day, which made
+   *  "pre-filing" mean two different things depending on the day of the week a company
+   *  filed. On a weekday, a close exists that day and the baseline became the filing
+   *  day's OWN close — already carrying the reaction it was supposed to be measured
+   *  against (ABLBL 7 May: baseline 118.21, up 9.9% from 6 May's 107.60, so the panel
+   *  reported −13.7% for a window that moved −5.2% from the last genuinely pre-filing
+   *  close). On a weekend there is no such close, so the loop fell through to the prior
+   *  trading day and the same field meant the honest thing. Two references, one label,
+   *  chosen by the calendar — the figures were not comparable across stocks.
+   *
+   *  Now it is the last close BEFORE the filing, always. `null` when the stock has no
+   *  close in the lead window at all (a first-ever result, or price coverage that starts
+   *  on the filing date) — that is a real state and the block honest-empties on it. */
   let preClose: number | null = null;
   for (const p of points) {
-    if (p.date <= filingDate) preClose = p.close;
+    if (p.date < filingDate) preClose = p.close;
     else break;
   }
 
@@ -210,20 +249,28 @@ async function buildReaction(stockId: string, filingDate: string): Promise<Marke
   const today = ymd(new Date());
   const windowComplete = today > windowTo;
 
-  // Three honest states:
-  // • unavailable — no pre-filing base, or no post-filing days (nothing to compare against)
-  // • complete    — full window elapsed, ≥ MIN points with a pre-filing base
-  // • forming     — window still open (filing < ~20 cal days ago), pre-base + ≥1 post day
+  /** Three honest states:
+   *  • unavailable — no pre-filing baseline at all, or no points; or a CLOSED window that
+   *                  never printed a post-filing close, or is too sparse to draw.
+   *  • forming     — the window is still open. A result filed today has a baseline and a
+   *                  run-up but no post-filing close yet; that is a window that has not
+   *                  opened, not one that is absent.
+   *  • complete    — window elapsed, with a post-filing close and ≥ MIN points.
+   *
+   *  ⚠ `!hasPost` IS NO LONGER A REASON FOR `unavailable` WHILE THE WINDOW IS OPEN. It was,
+   *  and it meant a result filed today rendered "not available for this result date" over
+   *  four real closes (BLUEJET, 3 Aug: 29/30/31 Jul + 3 Aug, clean baseline). Nothing was
+   *  missing except a close that cannot exist yet. It still gates `complete`, because a
+   *  window that CLOSED without a post-filing print (a suspension, a delisting) is not a
+   *  complete reaction and must not be labelled one. */
   let reactionState: "complete" | "forming" | "unavailable";
-  if (preClose == null || !hasPost) {
+  if (preClose == null || points.length === 0) {
     reactionState = "unavailable";
-  } else if (windowComplete && points.length >= MIN_REACTION_POINTS) {
-    reactionState = "complete";
   } else if (!windowComplete) {
-    // Window is still forming — partial line is real and honest
     reactionState = "forming";
+  } else if (hasPost && points.length >= MIN_REACTION_POINTS) {
+    reactionState = "complete";
   } else {
-    // Sparse stock: window closed but below MIN points threshold
     reactionState = "unavailable";
   }
 
@@ -239,6 +286,7 @@ async function buildReaction(stockId: string, filingDate: string): Promise<Marke
     points: available ? points : [],
     preClose: available ? preClose : null,
     tradingDaysSinceFiling: available ? tradingDaysSinceFiling : 0,
+    expectedTradingDays: expectedTradingDaysIn(filingDate, windowTo),
   };
 }
 
@@ -271,30 +319,44 @@ async function buildNews(stockId: string, filingDate: string): Promise<ViewerNew
   }));
 }
 
-// ── AI earnings analysis (real where present; 0 rows today → always stub) ────────
-async function buildAi(stockId: string): Promise<ViewerAi> {
-  const row = await prisma.aiSummary.findFirst({
-    where: { stockId, summaryType: "earnings_analysis" },
-    orderBy: { generatedAt: "desc" },
-    select: { headline: true, content: true, keyPoints: true, modelVersion: true, generatedAt: true },
+// ── Quarter in Brief — the generated reading for THIS stock and THIS period ─────────────────────
+// ⚠ PERIOD-KEYED, and that is the whole point of this function's shape. It previously took stockId
+// alone and ordered by generatedAt desc, while the page it serves is period-addressed
+// (GET /api/v1/results/:symbol?period=FY26Q4). Opening an older quarter would therefore have shown
+// the NEWEST brief against that older quarter's figures. The bug never fired only because the table
+// it read was empty; it is fixed here before anything writes a row.
+// Only `live` rows are served: a brief whose inputs changed is HIDDEN, never shown stale.
+async function buildQuarterBrief(
+  stockId: string,
+  quarter: string,
+  fiscalYear: string,
+  resultType: string,
+): Promise<ViewerAi> {
+  const row = await prisma.quarterBrief.findUnique({
+    where: {
+      stockId_quarter_fiscalYear_resultType: { stockId, quarter, fiscalYear, resultType },
+    },
+    select: {
+      content: true, verdictKey: true, verdictLabel: true, scoredAsOf: true,
+      model: true, generatedAt: true, status: true,
+    },
   });
 
-  if (!row) {
-    return { available: false, headline: null, content: null, keyPoints: null, modelVersion: null, generatedAt: null };
+  if (!row || row.status !== "live") {
+    return { available: false, content: null, verdictKey: null, verdictLabel: null, scoredAsOf: null, modelVersion: null, generatedAt: null };
   }
 
-  // keyPoints is a flat bullet array (per schema). Accept only string entries; ignore
-  // any other shape rather than guessing — never fabricate structure.
-  const keyPoints = Array.isArray(row.keyPoints)
-    ? (row.keyPoints.filter((p): p is string => typeof p === "string"))
-    : null;
+  // ★ A BRIEF WITH NO VERDICT IS A REAL, RENDERABLE STATE — prose present, badge absent. The stored
+  // sentinel becomes a true null here so the renderer branches on the contract, not on a magic string.
+  const verdict = readVerdict(row.verdictKey, row.verdictLabel);
 
   return {
     available: true,
-    headline: row.headline,
     content: row.content,
-    keyPoints: keyPoints && keyPoints.length ? keyPoints : null,
-    modelVersion: row.modelVersion,
+    verdictKey: verdict?.key ?? null,
+    verdictLabel: verdict?.label ?? null,
+    scoredAsOf: row.scoredAsOf ? ymd(row.scoredAsOf) : null,
+    modelVersion: row.model,
     generatedAt: row.generatedAt.toISOString(),
   };
 }
@@ -607,7 +669,7 @@ export async function buildResultDetail(
     await Promise.all([
       buildReaction(stock.id, current.filingDate),
       buildNews(stock.id, current.filingDate),
-      buildAi(stock.id),
+      buildQuarterBrief(stock.id, current.quarter, current.fiscalYear, current.resultType),
       buildCorpEvents(stock.id, current.filingDate),
       buildPeers(stock.id, family, current.quarter, current.fiscalYear),
       buildHealthSnapshotView(stock.symbol),

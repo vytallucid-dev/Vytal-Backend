@@ -65,13 +65,11 @@ export interface Exemption {
 }
 
 export const EXEMPTIONS: Record<string, Exemption> = {
-  // stock_news referenced by an ai_summary (implicit m2m `_AiSummaryToStockNews`,
-  // column "B" = StockNews.id, alphabetical after "A" = AiSummary.id) is source
-  // material for a generated summary — never prune it out from under one.
-  ai_summary_referenced: {
-    spares: "stock_news rows referenced by an ai_summary",
-    deleteClause: `AND "id" NOT IN (SELECT "B" FROM "_AiSummaryToStockNews")`,
-  },
+  // ── REMOVED 2026-08-03 with ai_summaries. `ai_summary_referenced` spared stock_news rows joined to
+  // an ai_summary; both that table and its m2m join are dropped (see the migration for why the earlier
+  // "deliberately untouched" ruling was reversed). Its policy row's except_where was cleared in the
+  // SAME migration, BEFORE the drop — a named exemption left pointing at a missing relation would
+  // break stock_news pruning silently. Quarter in Brief needs no equivalent: it reads no stock_news.
   // A fired event with delivered=false is an UNSENT notification — the email drain
   // still owes it. Prune only delivered=true; spare delivered=false.
   delivered_only: {

@@ -605,7 +605,13 @@ const PATTERN_CLAUSES: Record<string, (ev: Ev) => PatternClauseParts> = {
 
   trajectory_D_T5_foundation_out_of_weak: () => ({
     observation: "The latest results moved the balance-sheet reading out of weak territory.",
-    size: "Consistently the most reliable of the single-pillar improvements.",
+    // ⚠ "MOST RELIABLE" WAS REMOVED, AND NOT FOR TONE. `reliably`/`reliable` is on the evidence
+    //   register's UNIVERSAL deny list — the N1 escape that gate was built to catch — and since the
+    //   D/S/T clause copy is now RENDERED INTO that scan, this claim tripped it. The claim itself is
+    //   real (T5 is `confidence: "robust"`) and is kept; only the banned adjective is gone. The
+    //   register phrase "consistently" is retained deliberately: with the figures stripped from
+    //   cards it is the reader's only signal of how strong the evidence behind this is.
+    size: "Of the single-pillar improvements, this one has held up most consistently.",
   }),
 
   trajectory_B_T6_momentum_breaking_into_weak: () => ({

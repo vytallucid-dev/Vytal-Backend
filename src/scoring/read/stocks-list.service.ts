@@ -23,6 +23,7 @@
 import { prisma } from "../../db/prisma.js";
 import { getUniverseRows, type LeanSnap } from "./universe-rows.cache.js";
 import { buildToolScan as buildFindingsToolScan, type ToolScanItem } from "./tool-scan.service.js";
+import { loadPeerGroupByStock } from "./peer-group-map.js";
 import type { LabelBand, PillarKey } from "./health-view.types.js";
 
 /** Recent in-force composites carried for the OWNERSHIP landing card's sparkline. */
@@ -289,6 +290,11 @@ async function buildOwnershipScan(): Promise<OwnershipScanItem[]> {
     });
   }
 
+  // 1 query: the pond each stock sits in — the landing's peer-group filter. The SAME shared read
+  // the trajectory/divergence scans use (peer-group-map.ts), so all three tools bucket a stock
+  // identically; a second copy of this query is how they'd drift apart.
+  const pgByStock = await loadPeerGroupByStock();
+
   // 1 query: full shareholding history for all stocks (newest-first per stock).
   const stockIds = [...byStock.keys()];
   const shpRows = stockIds.length
@@ -338,6 +344,7 @@ async function buildOwnershipScan(): Promise<OwnershipScanItem[]> {
         composite: latest.composite,
         band: latest.band,
         periodKey: latest.periodKey,
+        peerGroup: pgByStock.get(st.id) ?? null,
         tell: ownershipTell(os.r1Fired, pledgedPctOfPromoter, instDelta, fiiDelta, diiDelta),
         r1Fired: os.r1Fired,
         pledgedPctOfPromoter,

@@ -24,6 +24,15 @@ export interface SectorRef {
   displayName: string;
 }
 
+/** The stock's pond, lean — an id to filter a landing scan on, a name to label the option with.
+ *  Deliberately NOT PeerGroupListItem: a scan row needs an identity, not a pond's aggregate.
+ *  Carried by EVERY scan shape, so the peer-group filter works on all three tools. */
+export interface ScanPeerGroupRef {
+  id: string;
+  name: string;
+  displayName: string;
+}
+
 /** Divergence configuration TYPE — the asymmetric taxonomy (not all gaps mean the
  *  same thing). value = fundamentals ahead of price (robust); price_ahead = price
  *  ahead of fundamentals (masked caution); ownership = ownership diverging from the
@@ -124,6 +133,11 @@ export interface OwnershipScanItem {
   composite: number;
   band: LabelBand;
   periodKey: string;
+  /** The stock's peer group — the landing's pond filter. Null when it is in none. */
+  peerGroup: ScanPeerGroupRef | null;
+  /** ★ The tell IS this tool's categorical dimension — what the pattern filter narrows on here.
+   *  Ownership fires no findings (it reads shareholding flow, not the findings engine), so the
+   *  scan's `patterns=` filter matches this field on ownership rows. See tool-scan.page.ts. */
   tell: OwnershipTell;
   r1Fired: boolean;
   pledgedPctOfPromoter: number | null;

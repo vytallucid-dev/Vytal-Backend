@@ -30,10 +30,17 @@
 // ~every quiet company would invert the §1.6 discipline (loud at the edges, quiet in the middle) that
 // makes the loud findings credible. The tool page renders it; the engine does not emit it.
 
-/** §1.1 — the alignment ceiling. At or below this the pillars agree; nothing to read. */
-export const GAP_ALIGNED_MAX = 7;
-/** §1.1 — the first gap that carries demonstrated meaning. Anything in 8–11 is MINOR and suppressed. */
-export const GAP_MATERIAL = 12;
+import { ALIGNED_GAP_CEILING, MATERIAL_GAP_FLOOR } from "../../../catalogue/pattern-facts.js";
+
+/** §1.1 — the alignment ceiling. At or below this the pillars agree; nothing to read.
+ *  ★ DECLARED IN THE CATALOGUE, not here — S1's record and this band are the same number, and this
+ *  module used to be its only home. Re-exported so the read layer's existing imports are unchanged. */
+export const GAP_ALIGNED_MAX = ALIGNED_GAP_CEILING;
+/** §1.1 — the first gap that carries demonstrated meaning. Anything in 8–11 is MINOR and suppressed.
+ *  ★ DECLARED IN THE CATALOGUE (MATERIAL_GAP_FLOOR), which also records WHERE it was evidenced
+ *  (Foundation↔Momentum) and where it is inherited. Alias kept: three read-layer services and four
+ *  rules import this name, and renaming them is not this build's job. */
+export const GAP_MATERIAL = MATERIAL_GAP_FLOOR;
 /** §1.1/§1.2 — Market vs a fundamental pillar at this distance is the "stretched" condition. */
 export const GAP_STRETCHED = 16;
 /** §1.2 — the top tier. */

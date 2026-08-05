@@ -302,10 +302,18 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
     // remains on the read view / API — this is a render-layer withholding, not a data change.
     L.push(kv("Trajectory marker", vd.trajectoryMarker));
     L.push(scoreKv("Trajectory delta (score points)", vd.trajectoryDelta));
-    L.push(kv("Divergence flag", vd.divergence.flag));
-    L.push(scoreKv("Divergence gap (max−min pillar subtotal)", vd.divergence.gap));
-    L.push(kv("Divergence highest pillar", vd.divergence.high ? `${vd.divergence.high.pillar}=${scoreStr(vd.divergence.high.subtotal)}` : null));
-    L.push(kv("Divergence lowest pillar", vd.divergence.low ? `${vd.divergence.low.pillar}=${scoreStr(vd.divergence.low.subtotal)}` : null));
+    // ★ RULING 3's HEADLINE STATE, AND THE PAIR THE FIRED FINDING NAMES.
+    //
+    // ⚠ THE MODEL USED TO BE HANDED THE WIDEST SCORED PAIR under the label "Divergence highest/lowest
+    // pillar". On IOC that is Foundation↔Market, while the finding standing on the stock is S2 about
+    // Foundation↔Momentum — so the fact block named one pair and the finding row beside it named
+    // another, with nothing marking them as different questions. It now gets the finding's own pair,
+    // or nothing at all when nothing is firing.
+    L.push(kv("Divergence headline", vd.divergence.headline));
+    L.push(scoreKv("Pillar spread (max−min — the alignment test's own input)", vd.divergence.spread));
+    L.push(kv("Divergence pair (from the fired finding's own record)", vd.divergence.pair
+      ? `${vd.divergence.pair.patternKey}: ${vd.divergence.pair.high.pillar}=${scoreStr(vd.divergence.pair.high.subtotal)} vs ${vd.divergence.pair.low.pillar}=${scoreStr(vd.divergence.pair.low.subtotal)}`
+      : null));
     // ★ THE STORED SCALAR IS WITHHELD FROM THE BLOCK — same lock as the pillar weights above it, and for
     // literally the same arithmetic reason as the `contribution` removal one level down.
     //

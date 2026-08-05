@@ -11,11 +11,19 @@
 //   Pond   → widespread = N/M ≥ 0.50 (half the pond, N≈4–10)
 //   Universe → widespread = N/M ≥ 0.20 (one fifth of 93 stocks — systemic signal)
 
+import type { DivergenceHeadline } from "./health-view.types.js";
 import { prisma } from "../../db/prisma.js";
+import { firingDivergenceKeys, headlineOf, pillarSpreadOf } from "./divergence-headline.js";
+import { COMPOSITE_MOVE_DEADBAND } from "./display-constants.js";
 // The ONE severity ordering (File 1 §5, total over all eight tokens). See `worseSeverity` below
 // for why this is imported rather than redeclared locally — the local copy was silently wrong.
 import { severityWeight as severityRank } from "../../catalogue/divergence.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+// ★ NOT-COVERED SUPPRESSION (mirrors the retirement guards on this page) — a persisted `notcovered_*`
+//   row must never enter the member-level fired list or the universe pathology census; the census in
+//   particular would otherwise report "fires on N of the universe" about a configuration explicitly
+//   excluded from ranking against anything.
+import { dropNotCoveredPatterns } from "../../catalogue/not-covered.js";
 import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
 import { computeScopeAggregate, describeScope, type ScopeMember } from "./scope-aggregate.js";
 import { resolveHeadSnapshots, splitByStaleness, pluralityPeriod } from "./head-snapshot.js";
@@ -55,7 +63,6 @@ const round2 = (x: number): number => Math.round(x * 100) / 100;
 // ★ PHASE 4 — canonical bands, not a local copy. See health-view.service.ts for the full note.
 const DIVERGENCE_NOTABLE = GAP_MATERIAL;
 const DIVERGENCE_WIDE = GAP_STRETCHED;
-const TRAJECTORY_EPS = 1.0;
 const MOVER_CAP = 10;
 const DETERIORATION_THRESHOLD = -2.0;
 const RECOVERY_THRESHOLD = 2.0;
@@ -100,22 +107,23 @@ const BAND_RANK: Record<LabelBand, number> = {
 };
 
 /**
- * ★ THE CANONICAL READER-FACING DIVERGENCE. Same definition as DivergenceView.gap on the per-stock
- * view (health-view.types.ts, where the three competing meanings of the word are set out in full):
- * max − min across SCORED pillar subtotals, unsigned, banded notable ≥15 / wide ≥25.
+ * ★ RULING 3's HEADLINE STATE — read/divergence-headline.ts, the ONE home.
  *
- * NOT `score_snapshots.divergence` — that column is the engine's signed market-vs-blend scalar, it
- * disagrees with this on every stock in the universe, and it has no reader. Do not "reconcile" them.
+ * ⚠ THIS REPLACED A LOCAL `divergenceOf` THAT SORTED THE SCORED SUBTOTALS, TOOK THE EXTREMES AND
+ * BANDED THE DISTANCE AT 15/25. Three services carried that block independently (this one,
+ * peer-group-view, health-view) plus the frontend's `pickScoredPair`. It chose a pair with no
+ * reference to which pair any fired finding was about — the IOC bug — and its 15/25 banding was a
+ * third severity scale beside §1.2's 12/16/25 and S1's ≤7.
+ *
+ * A list row shows the STATE, not a pair: it has no chart to put one on. The pair is served per
+ * finding on the per-stock view, where a card can actually render it.
  */
 function divergenceOf(
-  subtotals: { pillar: PillarKey; subtotal: number }[],
-): { flag: DivergenceFlag; gap: number } {
-  if (subtotals.length < 2) return { flag: "none", gap: 0 };
-  const sorted = [...subtotals].sort((a, b) => b.subtotal - a.subtotal);
-  const gap = round2(sorted[0].subtotal - sorted[sorted.length - 1].subtotal);
-  const flag: DivergenceFlag =
-    gap >= DIVERGENCE_WIDE ? "wide" : gap >= DIVERGENCE_NOTABLE ? "notable" : "none";
-  return { flag, gap };
+  scoredSubtotals: { pillar: PillarKey; subtotal: number }[],
+  fired: { patternKey: string }[],
+): { headline: DivergenceHeadline; spread: number | null } {
+  const spread = pillarSpreadOf(scoredSubtotals);
+  return { headline: headlineOf(spread, firingDivergenceKeys(fired)), spread };
 }
 
 function reachOf(n: number, m: number): PathologyReach {
@@ -456,7 +464,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
-    const firedPatterns: FiredPattern[] = dropRetiredPatterns(s.patterns)
+    const firedPatterns: FiredPattern[] = dropNotCoveredPatterns(dropRetiredPatterns(s.patterns))
       .map((p) => ({
         patternKey: p.patternKey,
         direction: p.direction,
@@ -473,7 +481,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       const d = round2(num(s.composite) - num(priorSnap.composite));
       trajectoryDelta = d;
       trajectoryMarker =
-        d > TRAJECTORY_EPS ? "improving" : d < -TRAJECTORY_EPS ? "deteriorating" : "stable";
+        d > COMPOSITE_MOVE_DEADBAND ? "improving" : d < -COMPOSITE_MOVE_DEADBAND ? "deteriorating" : "stable";
     }
 
     const sector = sectorByPg.get(currentLeanByStock.get(s.stockId)?.peerGroupId ?? "") ?? null;
@@ -494,7 +502,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       pillars,
       trajectoryMarker,
       trajectoryDelta,
-      divergence: divergenceOf(scoredSubs),
+      divergence: divergenceOf(scoredSubs, firedPatterns),
       firedFlags,
       firedPatterns,
       sector,
@@ -521,7 +529,7 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       acc.members.push({ symbol: s.symbol, sev: rf.severity });
       flagAcc.set(rf.flagKey, acc);
     }
-    for (const p of s.patterns) {
+    for (const p of dropNotCoveredPatterns(dropRetiredPatterns(s.patterns))) {
       const acc = patternAcc.get(p.patternKey) ?? { severity: null, members: [], states: [] };
       acc.severity = worseSeverity(acc.severity, p.severity);
       acc.members.push({ symbol: s.symbol, sev: p.severity });

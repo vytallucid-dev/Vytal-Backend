@@ -15,6 +15,12 @@
 // edges and quiet in the middle; that quiet is what makes the loud parts credible"). So it is
 // computed HERE, read by the divergence tool, and never persisted to score_patterns.
 //
+// ⚠ RULING 3 — S1 DOES HAVE A REAL CATALOGUE KEY (`divergence_S1_aligned`, status `never_emitted`).
+// A tool STATE and a catalogue ENTRY are different questions: the first asks whether a rule ever fires
+// it (no), the second asks whether it has one home for its name/description/facts (now yes — the same
+// home every other pattern has). Giving it a key did not make it a finding; it closed the second home
+// its facts used to have. See types.ts's KeyStatus for the full distinction from `synthesised`.
+//
 // ── ★ AND WHY IT LIVES IN THIS MODULE SPECIFICALLY ────────────────────────────────────────────────
 // S1's arithmetic is the pillar spread — the SAME quantity the retired scan-layer derivations
 // computed independently seven times over. Putting S1 anywhere else would recreate exactly the
@@ -28,17 +34,44 @@
 // exclusivity is a theorem, not a rule to enforce — but it is asserted in verification anyway,
 // because a theorem that is never checked is an assumption.
 
-import { GAP_ALIGNED_MAX } from "./bands.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { pillarSpread } from "../trajectory/cross.js";
 
-/** The spec's own copy, VERBATIM (Part 3 · S1 · "User copy"). */
-export const S1_NAME = "Aligned — No Tension";
-export const S1_DESCRIPTION =
-  "The market's view and the business's condition agree. Nothing is unresolved. This is a genuinely useful reading, not an empty one — most of a screening tool's value is telling you where you do not need to look.";
+/**
+ * ★ S1, READ FROM ITS OWN CATALOGUE ENTRY (Ruling 3 — S1 is a real catalogue key now, status
+ * `never_emitted`; see types.ts's KeyStatus). This is the ONE place its name/description/facts are
+ * read FROM, never re-typed — the same discipline every D/S/T rule already follows for its own key.
+ */
+const ENTRY = STOCK_FINDINGS.divergence_S1_aligned;
+const FACTS = ENTRY.facts;
+
+/**
+ * ★ S1's CEILING, READ FROM ITS OWN DECLARED RECORD.
+ *
+ * S1's facts: all four pillars, gap basis, spread ≤ 7, no directional read in any phase, and the
+ * measured control population (−0.1%, 49% positive, n=226). Those live with every other pattern's,
+ * so S1 is not the one reading in the system whose defining number is a local literal.
+ *
+ * ⚠ On S1's record `gapFloor` bounds from ABOVE — see the note there.
+ */
+const GAP_ALIGNED_MAX = FACTS.gapFloor;
+
+/** The catalogue's own name/description — no longer re-typed here. */
+export const S1_NAME = ENTRY.name;
+export const S1_DESCRIPTION = ENTRY.description;
+/** The spec's own copy, VERBATIM (Part 3 · S1 · "User copy"). Instance-level "user copy", distinct
+ *  from `description` ("what it means") — S1 never fires as a FiredFinding with evidence to bind a
+ *  dynamic verdict to, so this stays a static constant rather than a renderVerdict entry. */
 export const S1_VERDICT =
   "The pillars agree. What the market is paying and what the business shows are in line — no unresolved tension to read here.";
-/** The control's measured neutrality. Stated as evidence, never as a return claim about a stock. */
-export const S1_EVIDENCE = { meanPct: -0.1, positivePct: 49, n: 226 } as const;
+/** The control's measured neutrality. Stated as evidence, never as a return claim about a stock.
+ *  ★ PROJECTED FROM S1's RECORD, not re-typed — the same three numbers every other pattern's
+ *  `evidenceStats` carries, in the shape this module's consumers already read. */
+export const S1_EVIDENCE = {
+  meanPct: FACTS.evidenceStats.effectPct,
+  positivePct: FACTS.evidenceStats.hitRatePct,
+  n: FACTS.evidenceStats.n,
+} as const;
 
 export interface AlignedState {
   aligned: boolean;

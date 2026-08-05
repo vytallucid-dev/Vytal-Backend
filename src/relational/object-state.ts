@@ -20,6 +20,9 @@ import { prisma } from "../db/prisma.js";
 import { getLatestSnapshotRef } from "../scoring/read/scoring-read.service.js";
 import { deriveCoverage } from "./coverage.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../catalogue/retired-findings.js";
+// ★ NOT-COVERED SUPPRESSION (companion to boundary 6 of 9 above) — a persisted `notcovered_*` row
+//   must never win a card slot on the relational surface either.
+import { dropNotCoveredPatterns } from "../catalogue/not-covered.js";
 import type { ObjectState, ObjectFinding } from "./types.js";
 
 /** `_N\d+_` ⇒ Family N (positive). A red flag is negative. Otherwise fall back to the fired instance's
@@ -226,7 +229,7 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
   //   reaching here would be handed to derivePolarity/deriveTemporalClass and could win a card slot,
   //   putting an obsolete claim in the reader's most prominent surface.
   const findings: ObjectFinding[] = [
-    ...dropRetiredPatterns(snap.patterns).map((p): ObjectFinding => ({
+    ...dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns)).map((p): ObjectFinding => ({
       kind: "pattern",
       key: p.patternKey,
       severity: p.severity,

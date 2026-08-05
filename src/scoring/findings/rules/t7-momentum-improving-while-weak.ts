@@ -8,11 +8,16 @@
 // The turn is happening while the business still reads as weak — the earliest visible point of a
 // trajectory recovery, before it has crossed back into normal territory.
 //
-// ── ★ THE RISE IS EPSILON-GATED ───────────────────────────────────────────────────────────────────
-// `movedUp()` (trajectory/prev-now.ts), not a bare `m.delta <= 0`. 1 of 11 persisted T7 fires
-// (BHEL) carried `risePp: 0` from the same live-vs-persisted rounding noise that hit T8/T9 harder —
-// Momentum's quarterly TTM recompute churns more than annual Foundation, so exact ties are rarer here
-// but not absent. See prev-now.ts's header for the full incident.
+// ── ★ THE RISE IS EPSILON-GATED, THEN MOVEMENT-FLOOR-GATED ───────────────────────────────────────
+// TWO gates, in order, doing DIFFERENT jobs:
+//   1. `movedUp()` (trajectory/prev-now.ts) — is this a real move AT ALL, and which way? Epsilon-
+//      gated against TRAJECTORY_DELTA_EPSILON (0.0001), which exists to reject persistence
+//      round-trip noise. 1 of 11 persisted T7 fires (BHEL) carried `risePp: 0` from exactly that
+//      noise before this gate existed. Epsilon keeps this role — it still decides direction.
+//   2. `m.delta < T7_MOVEMENT_FLOOR` — is the real move BIG ENOUGH to be the pattern the study
+//      measured? ★ THE MOVEMENT-FLOOR RULING: this is now a FIRING gate (FACTS.gateType ===
+//      "firing"), not merely declared. Epsilon no longer decides whether T7 fires — it only
+//      protects step 1's direction call. See prev-now.ts's header for the epsilon incident.
 //
 // ── EVIDENCE ──────────────────────────────────────────────────────────────────────────────────────
 // +5.8%, 63% positive at 15 days (n=19); +3.0%, 68% positive at 7 days.
@@ -40,32 +45,50 @@
 //
 // ── REGIME · TIER 3 (magnitude caveat) ────────────────────────────────────────────────────────────
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { pillarPrevNow, movedUp } from "../trajectory/prev-now.js";
 import { TIER_MAGNITUDE_CAVEAT, trajectorySeverity } from "../trajectory/regime-tier.js";
 import { CALIBRATION_NOTE } from "../trajectory/view.js";
-import { NATIVE_ZONES } from "../thresholds.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** Momentum's NATIVE weak mark — the ceiling this pattern sits beneath. */
-export const T7_MOMENTUM_WEAK = NATIVE_ZONES.momentum.weak; // 54
-/** The R3 threshold: at or above this rise, price has already run and the reader is late. */
+/** ★ THE RECORD, NOT A RE-TYPED STRING — see d1-price-ahead-quality.ts for the full note. */
+const ENTRY = STOCK_FINDINGS.trajectory_D_T7_momentum_improving_while_weak;
+const FACTS = ENTRY.facts;
+
+/** Momentum's NATIVE weak mark — the ceiling this pattern sits beneath. From T7's own record. */
+export const T7_MOMENTUM_WEAK = FACTS.evidencedTier; // 54
+/** ★ THE MOVEMENT FLOOR — NOW A FIRING GATE (the movement-floor ruling). Below 1.0pp the move is real
+ *  (it already cleared the epsilon noise floor) but too small to be the pattern the study measured;
+ *  T7 requires an actual rise of at least 1.0pp. See the header for how this composes with epsilon. */
+export const T7_MOVEMENT_FLOOR = FACTS.movementFloor; // 1.0 — enforced
+/** The R3 threshold: at or above this rise, price has already run and the reader is late.
+ *  ⚠ No declared home — it marks a COPY constraint (Part 4 · R3), not a firing threshold. Reported. */
 export const T7_LARGE_MOVE_PP = 15;
 
-const KEY = "trajectory_D_T7_momentum_improving_while_weak";
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleT7: FireRule = (ctx) => {
   const m = pillarPrevNow(ctx, "momentum");
   if (!m) return null;
   if (m.now >= T7_MOMENTUM_WEAK) return null; // no longer weak — this is the still-weak pattern
   if (!movedUp(m.delta)) return null;         // not improving (falling into weak is T6's condition) — epsilon-gated, see prev-now.ts
+  if (m.delta < T7_MOVEMENT_FLOOR) return null; // ★ real but too small — the movement-floor ruling
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). Defensive here: the enforced 1.0pp
+  // movement floor already sits above the rounding granularity — asserted, not assumed. This is the
+  // named incident (BHEL) the whole precision pass exists to close: the OLD code rounded prior/now to
+  // 1dp only when writing evidence, so a real rise this small could render "37 to 37"; the epsilon and
+  // movement-floor gates above decide whether the raw move is real and big enough, this decides
+  // whether the RENDERED numbers can tell the two readings apart.
+  if (!distinctAtPrecision(m.prev, m.now, FACTS.displayPrecision)) return null;
 
   const largeMove = m.delta >= T7_LARGE_MOVE_PP;
 
   return {
     kind: "pattern",
-    key: KEY,
-    severity: trajectorySeverity(KEY), // ★ R1 — cannot see m.delta
+    key: ENTRY.key,
+    severity: trajectorySeverity(ENTRY.key), // ★ R1 — cannot see m.delta
     direction: "positive",
     polarity: "positive",
     temporalClass: "EVENT",
@@ -74,9 +97,9 @@ export const ruleT7: FireRule = (ctx) => {
     evidence: {
       card: "T7",
       name: "Momentum Improving While Still Weak",
-      momentumPrior: r1(m.prev),
-      momentumNow: r1(m.now),
-      risePp: r1(m.delta),
+      momentumPrior: round(m.prev),
+      momentumNow: round(m.now),
+      risePp: round(m.delta),
       stillBelow: T7_MOMENTUM_WEAK,
       priorPeriod: m.priorPeriodKey,
       ...TIER_MAGNITUDE_CAVEAT,

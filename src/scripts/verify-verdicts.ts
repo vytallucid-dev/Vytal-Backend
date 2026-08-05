@@ -37,9 +37,14 @@ async function main() {
   const unauthored = STOCK_FINDING_KEYS.filter((k) => VERDICTS[k] === undefined);
   console.log(`  authored renderers: ${authored.length} of ${STOCK_FINDING_KEYS.length} catalogue keys`);
   console.log(`  no renderer:        ${unauthored.join(", ") || "none"}`);
+  // ★ never_emitted joins synthesised as an explained absence. S1 (Aligned) never fires as a
+  // FiredFinding — it has no evidence to bind a dynamic verdict to (see aligned.ts's S1_VERDICT,
+  // a static constant, not a renderVerdict entry) — so it correctly has no renderer here, for the
+  // same reason the synthesised consolidation row has its own (composed, not authored) sentence.
+  const NO_RENDERER_STATUSES = new Set(["synthesised", "never_emitted"]);
   ok(
-    "every key WITHOUT a renderer is explained (only the synthesised consolidation row, which composes its sub-types' sentences)",
-    unauthored.every((k) => STOCK_FINDINGS[k].status === "synthesised"),
+    "every key WITHOUT a renderer is explained (the synthesised consolidation row, which composes its sub-types' sentences; and never_emitted keys, which have no evidence to bind a dynamic verdict to)",
+    unauthored.every((k) => NO_RENDERER_STATUSES.has(STOCK_FINDINGS[k].status)),
     unauthored.map((k) => `${k} [${STOCK_FINDINGS[k].status}]`).join(" · ") || "none",
   );
   // The other direction: a renderer for a key the catalogue does not carry would be dead copy.
@@ -66,6 +71,15 @@ async function main() {
     wrongBranch.map((r) => `${r.fx.label}: expected "${r.fx.expectContains}" · got "${r.out}"`).join("\n       ") ||
       `${rendered.filter((r) => r.fx.expectContains).length} branch assertions`,
   );
+  // ★ THE ABSENCE ASSERTIONS. The claim rule is satisfied by what is NOT said, and a contains-only
+  //   suite cannot fail when a suppression is deleted. See VerdictFixture.expectOmits.
+  const leaked = rendered.filter((r) => r.fx.expectOmits && r.out.includes(r.fx.expectOmits));
+  ok(
+    "every fixture OMITTED what it must not say (the relaxed-tier claim rule)",
+    leaked.length === 0,
+    leaked.map((r) => `${r.fx.label}: must not contain "${r.fx.expectOmits}" · got "${r.out}"`).join("\n       ") ||
+      `${rendered.filter((r) => r.fx.expectOmits).length} omission assertions`,
+  );
 
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   rule("4 · PRECEDENCE — the authored renderer wins; the engine's own sentence is the FALLBACK");
@@ -87,7 +101,7 @@ async function main() {
   });
   ok(
     "an authored renderer BEATS both evidence.verdict and evidence.verbatim",
-    withEngine.includes("already-strong business that is still strengthening") && !withEngine.includes("ENGINE"),
+    withEngine.includes("A business that was already sound is getting sounder") && !withEngine.includes("ENGINE"),
     `"${withEngine}"`,
   );
   const noRenderer = renderVerdict("lens_lm7_CASA", { verbatim: "ENGINE VERBATIM", verdict: "ENGINE VERDICT" });

@@ -38,6 +38,7 @@ import {
   CONSOLIDATED_DIVERGENCE_KEY,
 } from "../../catalogue/index.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+import { dropNotCoveredPatterns } from "../../catalogue/not-covered.js";
 import { renderVerdict } from "../findings/verdicts.js";
 import { resolveHeadSnapshots, splitByStaleness } from "./head-snapshot.js";
 import { BAND_LABEL, type Capped } from "./universe-projection.types.js";
@@ -213,7 +214,7 @@ export async function readFindingsForSymbols(
   //   push so a retired key can reach neither the folded rows NOR `definitionKeys`, which would
   //   otherwise ask the catalogue for copy that has deliberately been removed.
   for (const f of dropRetiredFlags(flags)) push(f.snapshotId, { key: f.flagKey, kind: "red flag", severity: f.severity, evidence: f.triggeringValues });
-  for (const p of dropRetiredPatterns(patterns)) {
+  for (const p of dropNotCoveredPatterns(dropRetiredPatterns(patterns))) {
     // ⚠ The composed three-lens keys are excluded here for the same reason the universe census
     //   excludes them: `lens_lm3_F7` is a face id plus a RAW METRIC CODE, and no reader-safe name
     //   for the metric exists anywhere in the product today. Dropped, never guessed at.

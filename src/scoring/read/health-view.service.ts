@@ -36,9 +36,37 @@ import {
 } from "../lens-patterns/standing-context.js";
 // File-1 §5 verdict sentences, rendered onto the finding rows (Stage 3 of the copy catalogue).
 // Additive: the field is new, and nothing reads it until the frontend switches at Stage 5.
-import { renderVerdict } from "../findings/verdicts.js";
+import { renderVerdict, composeVerdict, composeEndedVerdict } from "../findings/verdicts.js";
+import { findingName } from "../../catalogue/index.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+// ★ RETIREMENT SUPPRESSION's sibling — a persisted `notcovered_*` row (this turn's Part 2) must never
+//   reach a finding-facing surface either. Same guard shape, applied at the same three boundaries.
+import { dropNotCoveredPatterns, notCoveredPatternKey, NOT_COVERED_SILENT_LINE } from "../../catalogue/not-covered.js";
 import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
+import { NATIVE_ZONES } from "../findings/thresholds.js";
+import { COMPOSITE_MOVE_DEADBAND } from "./display-constants.js";
+// ★ RULING 3 + the fired finding's own pair — ONE home, replacing the widest-pair derivation that
+//   existed here, in universe-view, in peer-group-view and on the frontend. See that file's header.
+import {
+  ALIGNED_MAX,
+  firingDivergenceKeys,
+  headlineOf,
+  leadDivergence,
+  pairOf,
+  pillarSpreadOf,
+} from "./divergence-headline.js";
+import { isPatternKey, PATTERN_FACTS } from "../../catalogue/pattern-facts.js";
+// ★ THE SAME NARROWING THE CATALOGUE ENDPOINT APPLIES — one function, so a finding row and the
+//   catalogue document cannot disagree about which facts are safe to serve.
+import { servedFacts } from "../../catalogue/serialise.js";
+import { firedCrossingEvents } from "./fired-crossings.js";
+import { notCoveredFor, type SubjectReadings } from "./not-covered.service.js";
+import { forTool } from "../../catalogue/tool-families.js";
+import { severityWeight } from "../../catalogue/divergence.js";
+import { getRegimeByStock } from "../regime/regime.service.js";
+// Finding lifecycle — firstSeen / runLength / direction / ended+resolution, read off the append-only
+// pattern history. Facts only; no sentence in this file changes because of it.
+import { resolveFindingLifecycles } from "./finding-lifecycle.service.js";
 import type {
   HealthSnapshotView,
   PillarView,
@@ -63,6 +91,7 @@ import type {
   DailyTrajectoryPoint,
   ResultDayMarker,
   CrossingEvent,
+  CrossToolSummary,
   CorporateEventView,
   RedFlagView,
   PatternView,
@@ -76,11 +105,16 @@ import type {
 
 // ── LOCKED CONSTANTS (methodology — not fitted, not per-PG) ──────────────────────
 // Native-zone marks per pillar (the spec's locked [lower, upper] zone bounds).
+// ★ NATIVE_MARKS WAS A VERBATIM SECOND TRANSCRIPTION OF NATIVE_ZONES (findings/thresholds.ts) — the
+// same four pairs of numbers the pattern RECORDS are themselves derived from, in a third home that no
+// rule ever read. A copy nothing reads is the one that can drift for a whole release without a single
+// finding changing. Projected from the one home instead; the shape is kept because two call sites
+// below want {lower, upper} rather than {weak, strong}.
 const NATIVE_MARKS: Record<PillarKey, { lower: number; upper: number }> = {
-  foundation: { lower: 60, upper: 72 },
-  momentum: { lower: 54, upper: 75 },
-  market: { lower: 50, upper: 74 },
-  ownership: { lower: 60, upper: 72 },
+  foundation: { lower: NATIVE_ZONES.foundation.weak, upper: NATIVE_ZONES.foundation.strong },
+  momentum: { lower: NATIVE_ZONES.momentum.weak, upper: NATIVE_ZONES.momentum.strong },
+  market: { lower: NATIVE_ZONES.market.weak, upper: NATIVE_ZONES.market.strong },
+  ownership: { lower: NATIVE_ZONES.ownership.weak, upper: NATIVE_ZONES.ownership.strong },
 };
 // ★ PHASE 4 — the local 15/25 pair is GONE. These now come from the ONE place the divergence family
 //   declares its bands (findings/divergence/bands.ts §1.1), so this view can no longer disagree with
@@ -91,7 +125,6 @@ const NATIVE_MARKS: Record<PillarKey, { lower: number; upper: number }> = {
 //   claim — the patterns are the fired D-family findings. Do not re-derive a pattern from it.
 const DIVERGENCE_NOTABLE = GAP_MATERIAL;
 const DIVERGENCE_WIDE = GAP_STRETCHED;
-const TRAJECTORY_EPS = 1.0; // composite-point delta for improving/deteriorating
 const PILLARS: PillarKey[] = ["foundation", "momentum", "market", "ownership"];
 
 const num = (d: unknown): number =>
@@ -495,6 +528,9 @@ export async function buildHealthSnapshotView(
       trajectory: null,
       findings: null,
       peerStanding: null,
+      // The regime is a SECTOR fact and is resolvable for an unscored stock, but this branch returns
+      // nothing snapshot-derived at all; a badge with no reading beside it has nothing to qualify.
+      regime: null,
     };
   }
 
@@ -522,7 +558,7 @@ export async function buildHealthSnapshotView(
     const prev = series[series.length - 2].composite;
     trajectoryDelta = Math.round((last - prev) * 1e4) / 1e4;
     trajectoryMarker =
-      trajectoryDelta > TRAJECTORY_EPS ? "improving" : trajectoryDelta < -TRAJECTORY_EPS ? "deteriorating" : "stable";
+      trajectoryDelta > COMPOSITE_MOVE_DEADBAND ? "improving" : trajectoryDelta < -COMPOSITE_MOVE_DEADBAND ? "deteriorating" : "stable";
   }
 
   // ── divergence (derived from SCORED pillar subtotals) ──
@@ -536,17 +572,27 @@ export async function buildHealthSnapshotView(
     .filter((p) => p.state === "scored")
     .map((p) => ({ pillar: p.pillar, subtotal: p.subtotal }));
 
-  let divergence: DivergenceView;
-  if (scoredPillarSubtotals.length >= 2) {
-    const sorted = [...scoredPillarSubtotals].sort((a, b) => b.subtotal - a.subtotal);
-    const high = sorted[0];
-    const low = sorted[sorted.length - 1];
-    const gap = Math.round((high.subtotal - low.subtotal) * 1e4) / 1e4;
-    const flag: DivergenceFlag = gap >= DIVERGENCE_WIDE ? "wide" : gap >= DIVERGENCE_NOTABLE ? "notable" : "none";
-    divergence = { flag, gap, high, low, storedScalar: num(snap.divergence) };
-  } else {
-    divergence = { flag: "none", gap: 0, high: null, low: null, storedScalar: num(snap.divergence) };
-  }
+  // ── divergence: RULING 3's headline state + the LEAD FINDING'S OWN PAIR ──────────────────────────
+  //
+  // ★ THE WIDEST-PAIR DERIVATION IS GONE. It sorted the four scored subtotals, took the extremes, and
+  //   banded the distance at 15/25 — producing a pair chosen with no reference to which pair any fired
+  //   finding is actually about, and a third severity scale alongside §1.2's and S1's. IOC is the
+  //   case: it fires S2 on Foundation↔Momentum while its widest pair is Foundation↔Market, so the
+  //   chart and the prose on one card named different pillars. The same block existed, independently,
+  //   in universe-view and peer-group-view.
+  //
+  //   What remains here is S1's arithmetic and nothing else: the spread, its ceiling, and the
+  //   three-way state that ceiling decides. The PAIR now comes from the fired finding's own record.
+  const spread = pillarSpreadOf(scoredPillarSubtotals);
+  const liveRows = dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns));
+  const lead = leadDivergence(liveRows);
+  const divergence: DivergenceView = {
+    headline: headlineOf(spread, firingDivergenceKeys(liveRows)),
+    spread,
+    alignedMax: ALIGNED_MAX,
+    pair: lead ? pairOf(lead.patternKey, scoredPillarSubtotals) : null,
+    storedScalar: num(snap.divergence),
+  };
 
   const verdict: HealthSnapshotView["verdict"] = {
     composite: num(snap.composite),
@@ -685,7 +731,7 @@ export async function buildHealthSnapshotView(
   // ── fired headlines for anti-double-count ────────────────────────────────────────
   // Retired keys are dropped here too: anti-double-count suppresses a lens pattern when a headline
   // covers the same ground, and a RETIRED headline must not go on suppressing a live lens read.
-  const firedHeadlines: FiredHeadline[] = dropRetiredPatterns(snap.patterns).map((p) => {
+  const firedHeadlines: FiredHeadline[] = dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns)).map((p) => {
     const ev = p.evidence as { leg?: string } | null;
     return { patternKey: p.patternKey, leg: ev?.leg ?? null };
   });
@@ -835,6 +881,24 @@ export async function buildHealthSnapshotView(
     ownership: p.ownershipSubtotal,
   }));
 
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ★ THE CROSSING OVERLAY — FIRED T3–T6 ROWS ONLY. The local zone derivation is DELETED.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ⚠ WHAT WENT, AND WHY IT WAS A PATTERN FACT. The `pillar_zone` half of this loop banded each
+  // pillar against NATIVE_ZONES at every period and emitted a "crossing" whenever the label changed —
+  // a fifth local derivation of a pattern-defining fact, sitting on the very tool whose job is to
+  // render T3–T6. It competed directly with them: it drew a Momentum zone crossing at 54 that T6 may
+  // not have fired (T6 is a crossing WITH a measured directional read that the regime gates), and it
+  // drew Foundation crossings at 60/72 where only the ↑60 one (T5) survived the study at all —
+  // Part 5's excluded list kills Foundation ↓60 (+8.2%, "the cross arrives late") and the cross INTO
+  // strong (a single +59% outlier drove it). So the overlay was, literally, drawing excluded
+  // conditions beside the surviving ones with nothing marking which was which.
+  //
+  // ★ IT WILL READ NEAR-EMPTY UNTIL THE D/S/T FAMILY ACCUMULATES QUARTERS, AND THAT IS THE POINT.
+  // The live T-family is one quarter old, so almost no historical T3–T6 rows exist yet. Honest-empty
+  // over a fifth local derivation — the same call the retired coverage ceiling got.
+  //
+  // The BAND crossings stay: `labelBand` is the composite's own persisted band, not a pattern claim.
   const crossings: CrossingEvent[] = [];
   for (let i = 1; i < series.length; i++) {
     const prev = series[i - 1];
@@ -842,15 +906,11 @@ export async function buildHealthSnapshotView(
     if (prev.labelBand !== cur.labelBand) {
       crossings.push({ type: "band", fromPeriod: prev.periodKey, toPeriod: cur.periodKey, pillar: null, from: prev.labelBand, to: cur.labelBand });
     }
-    for (const pillar of PILLARS) {
-      const key = `${pillar}Subtotal` as const;
-      const zonePrev = zoneLabel(pillar, prev[key]);
-      const zoneCur = zoneLabel(pillar, cur[key]);
-      if (zonePrev !== zoneCur) {
-        crossings.push({ type: "pillar_zone", fromPeriod: prev.periodKey, toPeriod: cur.periodKey, pillar, from: zonePrev, to: zoneCur });
-      }
-    }
   }
+  // The pillar-zone crossings a T-pattern ACTUALLY fired, read off the persisted rows across the
+  // window. `crossedBelow`/`crossedAbove` is the mark the rule itself stamped; the pillar is the
+  // record's own subject. Nothing here re-derives a zone.
+  for (const ev of await firedCrossingEvents(stock.id, series.map((p) => p.periodKey))) crossings.push(ev);
 
   // Event window = the series span; widen back windowQuarters quarters when the
   // series is a single point so the overlay is meaningful.
@@ -922,19 +982,136 @@ export async function buildHealthSnapshotView(
       verdict: renderVerdict(rf.flagKey, rf.triggeringValues ?? null),
     }))
     .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
-  const patterns: PatternView[] = dropRetiredPatterns(snap.patterns)
-    .map((p) => ({
-      patternKey: p.patternKey,
-      direction: p.direction,
-      severity: p.severity,
-      displayState: (p.displayState ?? "active") as PatternView["displayState"],
-      magnitude: numN(p.magnitude),
-      evidence: p.evidence ?? null,
-      metricRefs: p.metricRefs ?? null,
-      verdict: renderVerdict(p.patternKey, p.evidence ?? null),
-    }))
+  // ★ LIFECYCLE — how long each finding has been true, which way it is moving, and what ended.
+  //   A pure read over the append-only score_patterns history (read/finding-lifecycle.service.ts);
+  //   it re-runs no rule and changes no firing decision. The verdict sentences above are untouched.
+  //   `snap.periodKey` is passed so the resolver's notion of "current" is THIS view's head, not a
+  //   second derivation of it — see the param note on resolveFindingLifecycles.
+  const lifecycles = await resolveFindingLifecycles(stock.id, snap.periodKey);
+
+  const patterns: PatternView[] = dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns))
+    .map((p) => {
+      const lifecycle = lifecycles.firing.get(p.patternKey) ?? null;
+      // ★ THE CLAUSE SET, COMPOSED WITH THE LIFECYCLE — this is the one call site that can supply the
+      //   value history, so it is the one place the `movement` clause becomes available. `text` is the
+      //   joined string the `verdict` field has always carried; the parts ship beside it.
+      const composed = composeVerdict(p.patternKey, p.evidence ?? null, lifecycle);
+      return {
+        patternKey: p.patternKey,
+        direction: p.direction,
+        severity: p.severity,
+        displayState: (p.displayState ?? "active") as PatternView["displayState"],
+        magnitude: numN(p.magnitude),
+        evidence: p.evidence ?? null,
+        metricRefs: p.metricRefs ?? null,
+        // ⚠ PRECEDENCE UNCHANGED. renderVerdict still resolves authored → engine → generic, and the
+        //   authored path is now composeVerdict's own text. Falling back to renderVerdict when the
+        //   composer produced nothing keeps the engine-sentence and generic tiers reachable.
+        verdict: composed.text || renderVerdict(p.patternKey, p.evidence ?? null),
+        lifecycle,
+        clauses: composed.clauses.length ? composed.clauses : null,
+        // ★ THE RECORD, ON THE ROW. Every surface that used to pick a pair for itself now reads the
+        //   pair this finding declares. Narrowed by the SAME function the catalogue endpoint uses, so
+        //   a finding row can never serve a threshold the document withholds.
+        facts: isPatternKey(p.patternKey) ? servedFacts(PATTERN_FACTS[p.patternKey]) : null,
+        state: ((): "formed" | "building" | null => {
+          const st = (p.evidence as { state?: unknown } | null)?.state;
+          return st === "formed" || st === "building" ? st : null;
+        })(),
+        tier: typeof (p.evidence as { tierWord?: unknown } | null)?.tierWord === "string"
+          ? ((p.evidence as { tierWord: string }).tierWord)
+          : null,
+        pair: pairOf(p.patternKey, scoredPillarSubtotals),
+      };
+    })
     .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
-  const findings: HealthSnapshotView["findings"] = { redFlags, patterns };
+  // ── NOT-COVERED · the head's readings and its immediate prior ────────────────────────────────
+  // ⚠ THE PRIOR COMES FROM THE SAME SERIES THE CHART DRAWS, head-of-chain per period. A crossing
+  //   needs two adjacent readings; with only one, nothing matches — which is correct, a stock with
+  //   one reading has not crossed anything.
+  // Reuses the SAME inert-0-guarded set the divergence pair is resolved from — an
+  // `unavailable_redistributed` pillar persists a 0 that is not a score, and a not-covered trigger
+  // reading it as one would report a phantom crossing.
+  const scoredByPillar = new Map(scoredPillarSubtotals.map((x) => [x.pillar, x.subtotal]));
+  const ncNow: SubjectReadings = {
+    composite: num(snap.composite),
+    foundation: scoredByPillar.get("foundation") ?? null,
+    momentum: scoredByPillar.get("momentum") ?? null,
+    market: scoredByPillar.get("market") ?? null,
+    ownership: scoredByPillar.get("ownership") ?? null,
+  };
+  const priorPoint = series.length >= 2 ? series[series.length - 2] : null;
+  const ncPrior: SubjectReadings | null = priorPoint
+    ? {
+        composite: priorPoint.composite,
+        foundation: priorPoint.foundationSubtotal,
+        momentum: priorPoint.momentumSubtotal,
+        market: priorPoint.marketSubtotal,
+        ownership: priorPoint.ownershipSubtotal,
+      }
+    : null;
+  // ★ LIFECYCLE, ATTACHED — the SAME `lifecycles.firing` map resolved above for `patterns`. It makes
+  //   no assumption about key namespace (see finding-lifecycle.service.ts), so a persisted
+  //   `notcovered_*` row resolves through it exactly like a real finding's row does; `null` only when
+  //   this is the FIRST period the configuration has matched (nothing persisted yet to walk).
+  const notCovered = notCoveredFor(ncNow, ncPrior).map((n) => ({
+    ...n,
+    lifecycle: lifecycles.firing.get(notCoveredPatternKey(n.id)) ?? null,
+  }));
+
+  // ── THE THIRD SILENT STATE — a scored stock, nothing firing, and no not-covered configuration
+  //   matched either. `patterns` is built above; `notCovered` just above this. Both empty is the ONLY
+  //   condition this line renders under — see the field note on HealthSnapshotView.findings.quietNote.
+  const quietNote: string | null = patterns.length === 0 && notCovered.length === 0 ? NOT_COVERED_SILENT_LINE : null;
+
+  // ── CROSS-TOOL · what the OTHER tool is showing, in two lines ────────────────────────────────
+  // Built from the `patterns` array already assembled — one source, so the summary and the tool's
+  // own cards cannot disagree. `leadFact` is the lead finding's OWN observation clause, verbatim.
+  const crossTool: CrossToolSummary[] = (["divergence", "trajectory"] as const).map((tool) => {
+    const mine = forTool(patterns, tool, (p) => p.patternKey);
+    const lead = [...mine].sort((a, b) => severityWeight(a.severity) - severityWeight(b.severity))[0] ?? null;
+    return {
+      tool,
+      count: mine.length,
+      names: mine.map((p) => findingName(p.patternKey)),
+      leadFact: lead?.clauses?.find((c) => c.type === "observation")?.text ?? null,
+      leadPatternKey: lead?.patternKey ?? null,
+    };
+  });
+
+  const findings: HealthSnapshotView["findings"] = {
+    redFlags,
+    patterns,
+    // Ended findings ride in their OWN array with their OWN closed-card clause set — see the field
+    // note. A consumer that ignores this key renders exactly what it rendered before; one that reads
+    // it cannot mistake an ending for a firing, because there is no shared array to confuse them in.
+    // ★ NOT-COVERED — evaluated at READ TIME from the head and its prior, matched against the SAME
+    //   registry the persisted `notcovered_*` rows come from, and now carrying that row's lifecycle
+    //   (see the `lifecycle.firing.get` above). Still never a FireRule and never merged into
+    //   `patterns` — see not-covered.ts's header for why persistence + lifecycle stopped short of
+    //   "this is a claim".
+    notCovered,
+    // ★ THE THIRD SILENT STATE — see the field note. Null whenever `patterns` or `notCovered` has
+    //   something to say.
+    quietNote,
+    // ★ THE OTHER TOOL, summarised. Built from the SAME `patterns` array below — no second query,
+    //   no second opinion.
+    crossTool,
+    // ★ NOT-COVERED SUPPRESSION — a persisted `notcovered_*` row must never surface as "this
+    //   configuration ended", which would misreport a decision-not-to-claim as a claim that closed.
+    //   (Retired keys are ALREADY excluded — resolveFindingLifecycles drops them before the run-walk,
+    //   per its own header — so only the not-covered guard is new here.)
+    recentlyEnded: dropNotCoveredPatterns(lifecycles.recentlyEnded).map((e) => {
+      const composed = composeEndedVerdict(e.patternKey, e.lifecycle);
+      return {
+        patternKey: e.patternKey,
+        name: findingName(e.patternKey),
+        lifecycle: e.lifecycle,
+        clauses: composed.clauses,
+        text: composed.text,
+      };
+    }),
+  };
 
   // ── peer standing (rank within PG by composite at this period) ──
   const peerStanding = pg
@@ -963,13 +1140,27 @@ export async function buildHealthSnapshotView(
     }
   }
 
-  return { scored: true, identity, verdict, pillars, trajectory, findings, peerStanding };
+  // ★ THE LIVE REGIME — resolved THROUGH the stock's peer group, never computed on the stock. This
+  //   is the first call site getRegimeByStock has ever had: before it, the only regime a reader could
+  //   see was a frozen stamp inside one finding's evidence, at that scoring run's asOf rather than now.
+  const regimeView = (await getRegimeByStock([stock.id])).get(stock.id) ?? null;
+  const regime: HealthSnapshotView["regime"] = regimeView
+    ? {
+        regime: regimeView.regime,
+        trailing6mo: regimeView.trailing6mo,
+        source: regimeView.source,
+        indexName: regimeView.indexName,
+        asOf: regimeView.asOf,
+        reason: regimeView.reason ?? null,
+      }
+    : null;
+
+  return { scored: true, identity, verdict, pillars, trajectory, findings, peerStanding, regime };
 }
 
-function zoneLabel(pillar: PillarKey, subtotal: number): string {
-  const m = NATIVE_MARKS[pillar];
-  return subtotal < m.lower ? "below_native" : subtotal > m.upper ? "above_native" : "in_native";
-}
+// ★ zoneLabel() IS DELETED. It banded a pillar against NATIVE_ZONES to emit chart crossings — the
+// fifth local derivation of a pattern fact, and the one sitting on the very tool that renders T3–T6.
+// See read/fired-crossings.ts for what replaced it, and why the overlay is thin for now.
 
 function buildPeerStanding(
   peerGroupId: string,

@@ -19,6 +19,10 @@
 import { prisma } from "../db/prisma.js";
 import { probeStockRelationship } from "../ai/insight/relationship.js";
 import { dropRetiredFlags, dropRetiredPatterns, retiredKeysSqlPredicate } from "../catalogue/retired-findings.js";
+// ★ NOT-COVERED SUPPRESSION (companion to boundary 8 of 9 below) — a persisted `notcovered_*` row
+//   would otherwise tell a reader "N of your holdings also show this" about a configuration explicitly
+//   never shipped as a claim.
+import { dropNotCoveredPatterns, notCoveredKeysSqlPredicate } from "../catalogue/not-covered.js";
 import { buildPortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
 import { listUnifiedPositions } from "../brokers/union.js";
 import { resolveToneForUser } from "../ai/tone.js";
@@ -197,7 +201,7 @@ async function resolveDelta(
         // last-seen snapshot but suppressed now would otherwise read as "this cleared since you
         // last looked", announcing a resolution that never happened.
         const seenKeys = new Set<string>([
-          ...dropRetiredPatterns(seen.patterns).map((p) => p.patternKey),
+          ...dropNotCoveredPatterns(dropRetiredPatterns(seen.patterns)).map((p) => p.patternKey),
           ...dropRetiredFlags(seen.redFlags).map((r) => r.flagKey),
         ]);
         const nowKeys = new Set(currentKeys);
@@ -260,7 +264,7 @@ async function resolveEcho(userId: string, book: ReaderBook | null): Promise<Rea
       -- ★ RETIREMENT SUPPRESSION (boundary 8 of 9 — "N of your holdings also show this"). RAW SQL,
       --   the second reader a Prisma extension would have missed. Without it a retired key would be
       --   presented to the reader as a live pattern shared across their own portfolio.
-      WHERE ${retiredKeysSqlPredicate("p.pattern_key")}
+      WHERE ${retiredKeysSqlPredicate("p.pattern_key")} AND ${notCoveredKeysSqlPredicate("p.pattern_key")}
     `;
 
     const scoredStocks = new Set<string>();

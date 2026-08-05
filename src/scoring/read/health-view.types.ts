@@ -12,6 +12,29 @@
 //     never fabricated. The frontend can rely on the key existing.
 //   • Enum-ish fields are string unions matching the DB enums.
 
+// ★ THE LIFECYCLE TYPES ARE RE-EXPORTED, NOT RE-DECLARED. They are computed in
+// read/finding-lifecycle.service.ts and every field's meaning — why `resolved` is a different question
+// from `type`, why a crossing's quantity is `distance_from_mark`, which clock ran — is documented
+// beside the code that produces it. Restating the shape here would be a second home for it, and the
+// second home is the one that goes stale. When mirroring this contract into the frontend's
+// types/health.ts, inline these from the service file.
+import type { FindingLifecycle } from "./finding-lifecycle.types.js";
+import type { VerdictClause } from "../findings/verdicts.js";
+import type { ServedPatternFacts } from "../../catalogue/pattern-facts.js";
+import type { NotCoveredNote } from "./not-covered.service.js";
+export type { NotCoveredNote, NotCoveredReading, NotCoveredPair } from "./not-covered.service.js";
+export type { ServedPatternFacts } from "../../catalogue/pattern-facts.js";
+export type { VerdictClause, ClauseType, ComposedVerdict } from "../findings/verdicts.js";
+export type {
+  FindingLifecycle,
+  LifecycleState,
+  LifecycleDirection,
+  LifecycleValueBasis,
+  LifecycleClock,
+  IntraPeriodPoint,
+  EndedResolution,
+} from "./finding-lifecycle.types.js";
+
 export type IndustryPath = "non_financial" | "banking";
 export type CoverageState = "scored" | "covered" | "off_platform";
 export type LabelBand = "fragile" | "below_par" | "steady" | "healthy" | "pristine";
@@ -127,21 +150,108 @@ export interface BandColour {
  * has no reader, and the grounding withholding below.
  */
 export interface DivergenceView {
-  /** Derived from the SCORED pillar subtotals: notable ≥15, wide ≥25. */
-  flag: DivergenceFlag;
-  /** ★ CANONICAL. max(subtotal) − min(subtotal) across scored pillars. Unsigned. */
-  gap: number;
-  high: { pillar: PillarKey; subtotal: number } | null;
-  low: { pillar: PillarKey; subtotal: number } | null;
+  /**
+   * ★ RULING 3 — THE HEADLINE STATE, DECIDED HERE. A surface renders it; no surface computes it.
+   *
+   *   aligned           spread ≤ S1's ceiling (7). The pillars agree — the study's measured CONTROL.
+   *   no_pattern        spread is past the ceiling but NOTHING matched: the 8–11 minor band, or a
+   *                     ≥12 spread on a pair no rule names. ★ THIS IS THE STATE THAT DID NOT EXIST.
+   *   patterns_firing   one or more D/S findings are standing.
+   *
+   * ⚠ THE MISSING THIRD STATE IS THE WHOLE POINT. Every surface used to run `lead ? patterns :
+   * Aligned` — a two-way branch over a three-way fact. GLENMARK carries a 49-point Market↔Foundation
+   * spread and no live D finding (its rows are retired C-family), so that branch rendered it as
+   * "Aligned — no tension" on the widest spread in the universe. `no_pattern` says the true thing:
+   * the pillars do NOT agree, and nothing we have measured describes this shape.
+   */
+  headline: DivergenceHeadline;
+  /**
+   * ★ max − min across SCORED pillar subtotals — S1's OWN quantity, and the only thing this object
+   * measures. Null when fewer than two pillars are scored.
+   *
+   * ⚠ THIS IS NOT "THE DIVERGENCE". It is the ALIGNMENT TEST's input (findings/divergence/aligned.ts),
+   * which is why it may be computed here at all: S1 is a real catalogue record and this is its
+   * arithmetic, not a surface inventing a pattern. The gap a FIRED finding is about lives on that
+   * finding, under its own `pair`.
+   */
+  spread: number | null;
+  /** S1's ceiling, read from S1's record. Carried so a surface can state the test without typing 7. */
+  alignedMax: number;
+  /**
+   * ★ THE PAIR THE LEAD FIRING FINDING IS ABOUT — from ITS OWN RECORD's `pillarPair`. Null when
+   * nothing is firing (`aligned` or `no_pattern`), because then there is no pair: absence, not a
+   * fallback to the widest one.
+   *
+   * ⚠ THIS REPLACES `high`/`low`, WHICH WERE THE WIDEST SCORED PAIR AND WERE THE IOC BUG. IOC fires
+   * S2 (Foundation ↔ Momentum, 30.6 apart) while its widest pair is Foundation ↔ Market. The old
+   * fields put Market on the chart and Momentum in the prose, on the same card, and the four services
+   * that computed them each did it independently.
+   */
+  pair: DivergencePair | null;
   /**
    * ⚠ NOT `gap`, AND NOT FOR DISPLAY. The engine's own per-snapshot scalar (denormalised on the row).
    * It reaches no render path, and grounding.ts deliberately keeps it out of the model's fact block:
    * it is a linear function of the WITHHELD pillar weights, so printing it beside the four subtotals
    * hands over the weight vector. It is also lossy — persist.ts coerces null → 0, so a stored 0 cannot
    * be told apart from "the Market pillar was unavailable" (live: VEDL, INDUSINDBK).
-   * Kept on the view for parity with the persisted row. If you are reaching for it, you want `gap`.
+   * Kept on the view for parity with the persisted row. If you are reaching for it, you want the
+   * fired finding's own `pair`, or `spread` for the alignment test.
    */
   storedScalar: number;
+}
+
+/** Ruling 3's three states. Total — there is no fourth, and no surface may add one. */
+export type DivergenceHeadline = "aligned" | "no_pattern" | "patterns_firing";
+
+/** One end of a fired finding's declared pair, resolved against the current snapshot. */
+export interface PillarReading {
+  pillar: PillarKey;
+  subtotal: number;
+}
+
+/**
+ * The pair a fired finding names, high/low resolved. Resolved SERVER-SIDE so a surface never decides
+ * which end is which — that is arithmetic over a pattern fact, and Ruling 0 puts it here.
+ */
+export interface DivergencePair {
+  /** Which finding this pair belongs to. A second firing pattern may name a different pair. */
+  patternKey: string;
+  high: PillarReading;
+  low: PillarReading;
+  /** |high − low| for THIS pair, at the pattern's own display precision. */
+  gap: number;
+}
+
+/**
+ * ★ THE LIVE MARKET REGIME for this stock's sector — NET-NEW ON THE WIRE.
+ *
+ * ── ⚠ THERE WAS NO LIVE REGIME PATH AT ALL ────────────────────────────────────────────────────────
+ * `getRegimeByStock` existed with ZERO call sites, and regime resolved only inside the scoring batch,
+ * for the findings that declare a dependency, stamped at THAT RUN's asOf. So the only regime a reader
+ * could ever see was a frozen stamp inside one finding's evidence — there was no answer at all to
+ * "what phase is this sector in right now", which is the question the T-family's Tier-1 patterns turn
+ * on (T3 reads in HOT and is blank in NORMAL; T6 is the exact reverse).
+ *
+ * ⚠ RESOLUTION BY STOCK, NEVER COMPUTATION ON A STOCK. The value is the stock's PEER GROUP's phase,
+ * identical for every member. A stock in no peer group gets null and a reason — never a regime
+ * derived from its own closes.
+ *
+ * ⚠ NULL IS A FIRST-CLASS ANSWER AND HAS NO NUMERIC FALLBACK. When the window is too short, too
+ * stale, or the stock has no peer group, `regime` is null and `reason` says why. A surface states
+ * that plainly; there is no "assume NORMAL" and inventing one would put a phase-conditional reading
+ * on screen with nothing behind it.
+ */
+export interface RegimeBadgeView {
+  regime: "HOT" | "NORMAL" | "STRESSED" | null;
+  /** Signed FRACTION (0.2215 = +22.15%), the pool's trailing ~6-month return. Null iff regime null. */
+  trailing6mo: number | null;
+  source: "index" | "pg_pool" | null;
+  /** The index the reading came from, or null on a pg_pool reading. */
+  indexName: string | null;
+  /** Trading date the reading is AS OF (YYYY-MM-DD). Null when not computable. */
+  asOf: string | null;
+  /** Why, whenever `regime` is null — and on pg_pool readings, which members and why no index. */
+  reason: string | null;
 }
 
 /** PG-level pond mask (File 1 §5 / File 2 §3.3) — inherited from the snapshot's PG. */
@@ -539,11 +649,148 @@ export interface PatternView {
   metricRefs: unknown | null;
   /** The File-1 §5 verdict sentence, bound to this firing's own evidence. Never empty. */
   verdict: string;
+  /**
+   * ★ HOW LONG THIS HAS BEEN TRUE AND WHICH WAY IT IS MOVING — read/finding-lifecycle.service.ts.
+   *
+   * FACTS ONLY. The verdict sentence above is unchanged by this field and does not read it: a gap of
+   * 31 still renders exactly as it did, and nothing here becomes language until a later prompt turns
+   * it into one.
+   *
+   * NULL MEANS ONE OF TWO THINGS, AND BOTH ARE HONEST ABSENCES: either this surface does not resolve
+   * lifecycles (the watchlist list-view does not — see `recentlyEnded`), or the stock's history
+   * carries no HEAD row for this key (a finding that has only ever appeared on a superseded version).
+   * It never means "this finding has no history".
+   */
+  lifecycle: FindingLifecycle | null;
+  /**
+   * ★ THE SAME VERDICT, DECOMPOSED — observation · movement · size · phase · boundary, fixed order.
+   *
+   * `verdict` above is the joined string and stays the finished-string contract every consumer already
+   * reads. These are the parts it was joined from, so a surface can render them separately (or drop
+   * one) without re-parsing prose. Null for a finding with no authored clause set.
+   *
+   * ⚠ The `boundary` clause is PRESENT here and ABSENT from `verdict` — every card already renders
+   * `doesntMean` in its own slot, and joining it would print it twice. See ComposedVerdict.text.
+   */
+  clauses: VerdictClause[] | null;
+  /**
+   * ★ THE PATTERN'S OWN RECORD FACTS — `pillarPair`, `basis`, `displayPrecision`. Served so a surface
+   * reads which pillars this finding is ABOUT instead of picking the widest pair for itself.
+   *
+   * ⚠ DISPLAY GEOMETRY ONLY. Every threshold field (gapFloor, movementFloor, evidencedTier, legs,
+   * regimeMap, evidenceStats) is a scoring bar and is stripped before serving — the same narrowing
+   * catalogue/serialise.ts applies to the catalogue document. Null for a finding with no record (a red
+   * flag, an ownership event): those genuinely have no pillar pair, and inventing one is the defect
+   * this field exists to end.
+   */
+  facts: ServedPatternFacts | null;
+  /**
+   * The §1.2 severity tier word — `material` / `stretched` / `extreme` — off the finding's own
+   * evidence, where the rule stamped it. Null for every CROSSING and MOVEMENT pattern, which have no
+   * severity gradient (bands.ts; Trajectory §1.3 inverts the scale outright). A surface that wants to
+   * order by tension reads this; it does not re-band a gap.
+   */
+  tier: string | null;
+  /**
+   * ★ FORMED or BUILDING — the pattern state, stamped by the rule (D1–D4 today).
+   *
+   * A threshold grades intensity; it does not gate existence. `building` means the shape holds but at
+   * least one leg has not crossed its evidenced threshold — so the card carries NO claim, NO study
+   * figure and NO regime clause, and a surface must render it as visibly a different state from
+   * `formed` rather than as a weaker version of the same card. Null for patterns that declare no
+   * state (D5–D7, S2, T1–T9 — crossings and measured discriminants with no "almost").
+   */
+  state: "formed" | "building" | null;
+  /** This finding's own pair, high/low resolved. Null for a pattern whose subject is not two real
+   *  pillars (the composite patterns T1–T4, and the single-pillar T5–T9). */
+  pair: DivergencePair | null;
 }
 
 export interface FindingsSection {
   redFlags: RedFlagView[];
   patterns: PatternView[];
+  /**
+   * ★ FINDINGS THAT HAVE ENDED — carried for the tool surfaces, NEVER mixed into `patterns`.
+   *
+   * They are a separate array, not a flag on a row in the firing set, so a consumer cannot render one
+   * as current by forgetting to check a boolean. Each carries its own `lifecycle` with `state:
+   * "ended"`, how many periods ago it ended, and — for a gap-basis divergence — whether it converged
+   * or collapsed. Bounded to `RECENTLY_ENDED_WINDOW_PERIODS` (4) periods; retired keys are excluded
+   * at source, because a rule we withdrew is not a divergence that resolved.
+   *
+   * ⚠ `null` ≠ `[]`. `[]` is a resolved answer — lifecycles were computed and nothing ended in the
+   * window. `null` says this surface DID NOT RESOLVE them at all: the watchlist is a list view over
+   * many stocks and a per-stock history walk there would be N× the queries for a fact it does not
+   * render. Collapsing the two into `[]` would let a list view silently assert "nothing has ended"
+   * about every stock on it.
+   */
+  recentlyEnded: EndedFindingView[] | null;
+  /**
+   * ★ NOT-COVERED NOTES — configurations both specs TESTED AND DELIBERATELY DID NOT SHIP.
+   *
+   * ⚠ THEIR OWN ARRAY, PLAINLY SEPARATE FROM `patterns`, AND THAT IS THE DESIGN. A not-covered note
+   * is the record of a decision NOT to make a claim. It carries no severity, no lifecycle, no gap
+   * size and no ordering, and it must never be merged into the finding list — the moment a 41-point
+   * version reads louder than a 15-point one, the excluded generic-spread pattern is back.
+   * See catalogue/not-covered.ts for the four things it must never acquire.
+   */
+  notCovered: NotCoveredNote[];
+  /**
+   * ★ THE THIRD SILENT STATE, NAMED. A scored stock can be quiet for two different reasons that used
+   * to render identically: nothing tested reliably here (a `NOT_COVERED_RECORDS` trigger matched, so
+   * `notCovered` is non-empty), or truly nothing was looked at that had anything to say (`patterns`
+   * AND `notCovered` are both empty). This carries the registry-level line for the SECOND case only —
+   * `null` whenever there is a pattern firing or a not-covered note already saying something.
+   */
+  quietNote: string | null;
+  /**
+   * ★ THE OTHER TOOL, IN TWO LINES. Both tools ignored the other family entirely, so a stock with a
+   * divergence AND a trajectory reading showed each surface half its own story with no signpost.
+   * Enough to render a summary line and a link — deliberately NOT enough to render a card, because a
+   * second card is a duplicate and duplicates are how two surfaces start disagreeing.
+   */
+  crossTool: CrossToolSummary[];
+}
+
+/** A compact per-family digest of what the OTHER tool is showing. */
+export interface CrossToolSummary {
+  tool: "divergence" | "trajectory";
+  /** How many patterns of that tool's families are firing. */
+  count: number;
+  /** Their display names, in the tool's own order. */
+  names: string[];
+  /**
+   * The single most severe one's headline fact — its OBSERVATION clause, verbatim. Not a new
+   * sentence: the same words that tool's own card leads with, so the two cannot drift.
+   */
+  leadFact: string | null;
+  leadPatternKey: string | null;
+}
+
+/**
+ * ★ AN ENDED FINDING — ITS OWN CARD. What it was, how long it stood, that it has closed, and how.
+ *
+ * This is the tool proving it was reading something real: a divergence that simply vanished taught the
+ * reader nothing, and taught them to distrust the next one. It lives in its own array and carries its
+ * own `name` and `clauses` so a surface renders it as a closed card, never as a firing one — the
+ * separation is structural, not a flag someone can forget to check.
+ */
+export interface EndedFindingView {
+  patternKey: string;
+  /** The catalogue's display title — so the card can say WHAT it was without a second lookup. */
+  name: string;
+  lifecycle: FindingLifecycle;
+  /**
+   * The closed-card clause set. `observation` states what the finding was; `movement` carries the
+   * closure and — when the resolution typing established it — whether it CONVERGED or COLLAPSED.
+   *
+   * ⚠ NO `size` AND NO `phase` ON AN ENDED CARD, EVER. Both qualify a claim about a condition that
+   * holds NOW, and this one does not hold. Quoting the study's reading beside a closed divergence
+   * would attach a live population's outcome to a stock that has left it.
+   */
+  clauses: VerdictClause[];
+  /** The joined closed-card sentence (boundary excluded, same rule as `verdict`). */
+  text: string;
 }
 
 export interface PeerRankView {
@@ -579,4 +826,6 @@ export interface HealthSnapshotView {
   trajectory: TrajectorySection | null;
   findings: FindingsSection | null;
   peerStanding: PeerStandingSection | null;
+  /** ★ The LIVE sector regime — see RegimeBadgeView. Null on the not-scored path only. */
+  regime: RegimeBadgeView | null;
 }

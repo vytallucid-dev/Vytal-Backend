@@ -39,6 +39,8 @@
 // authoritative for that library.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
+import type { PatternFacts } from "./pattern-facts.js";
+
 /** The four namespaces. A key is only ever meaningful WITHIN one of them — `LM3` is a lens face and
  *  `PC3` is a portfolio finding and neither is a stock finding, so they are never compared. */
 export type RegistryId = "stock_finding" | "lens_face" | "guardrail_signature" | "phs_finding";
@@ -53,12 +55,21 @@ export type RegistryId = "stock_finding" | "lens_face" | "guardrail_signature" |
  *                   dormant key with no copy is a title-only card on a page nobody thinks to check.
  *   synthesised     never emitted by any rule — composed by the READ layer (divergence_consolidated).
  *                   CI exempts it from the emitter check BY NAME, never by a wildcard.
+ *   never_emitted   a real entry — real copy, real facts — that no rule and no read-layer composition
+ *                   EVER produces as a fired finding. S1 (Aligned) is the one member: it is a tool
+ *                   state the divergence tool reads directly (findings/divergence/aligned.ts), never
+ *                   persisted to score_patterns. Distinct from `synthesised` (which IS composed, from
+ *                   other findings, by the read layer) and from `dormant` (a registered rule that
+ *                   COULD fire and simply hasn't recently) — S1 has no rule at all to fire it. The
+ *                   emitter-reconciliation gate (verify-catalogue.ts §4) reads THIS FIELD to decide
+ *                   whether a catalogued-but-unemitted key is explained, rather than hand-listing keys
+ *                   itself — a status the gate did not know about would fail loud, not silently pass.
  *
  * RETIRED keys (P2 → R6, P3 → R1) are NOT a status: they are ABSENT. A deregistered rule cannot fire
  * again, so carrying copy for it would be carrying a lie. alerts/finding-catalog.ts takes the same
  * line — it recognises them only to refuse them.
  */
-export type KeyStatus = "live" | "dormant" | "synthesised";
+export type KeyStatus = "live" | "dormant" | "synthesised" | "never_emitted";
 
 // ── stock findings (Master Spec XII–XIII · StockPage Rules Spec §5 · Family N Amendment) ───────────
 
@@ -87,6 +98,26 @@ export interface StockFindingEntry extends EntryBase<"stock_finding"> {
   readonly family: FindingFamily;
   readonly concern: FindingConcern;
   readonly status: KeyStatus;
+  /**
+   * ★ THE PATTERN-DEFINING FACTS — which pillars, what threshold, what the regime does, how many
+   * decimals. See pattern-facts.ts for why they are declared rather than derived.
+   *
+   * NON-NULL for every divergence (S1, D1–D7, S2) and trajectory (T1–T9) pattern; NULL everywhere
+   * else, because a red flag or an ownership event has no pillar pair, no gap floor and no regime map,
+   * and inventing one would be authoring a fact rather than moving it.
+   *
+   * ⚠ The REGISTRY type narrows this per key (see stock-findings.ts's StockFindingRegistry): a rule
+   * reading `STOCK_FINDINGS.divergence_S2_sticky_divergence.facts.gapFloor` gets a `number` with no
+   * null-check, and `STOCK_FINDINGS.ownership_R1_pledge.facts` is `null` and cannot be dereferenced.
+   * That narrowing IS the compile-time binding; this widened declaration is the shape a generic
+   * consumer sees.
+   *
+   * ⚠ PARTIALLY SERVED. serialise.ts narrows this to `{ pillarPair, basis, displayPrecision }`
+   * (pattern-facts.ts's `ServedPatternFacts`) before the document is built — display geometry a chart
+   * needs, never a threshold. Every gapFloor / movementFloor / evidencedTier / leg value /
+   * sustainReadings / regimeMap / evidenceStats is a scoring bar and stays engine-side only.
+   */
+  readonly facts: PatternFacts | null;
 }
 
 export interface LensFaceEntry extends EntryBase<"lens_face"> {

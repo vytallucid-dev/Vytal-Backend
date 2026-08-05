@@ -23,7 +23,7 @@
 // +3.2%. Correctly located at Momentum's own weak mark, it is NEGATIVE. §1.2: "The composite's bands
 // must never be borrowed for a pillar; doing so mislabels the zone and has been shown to flip a
 // signal's sign (see T6)."
-// So the 54 here is NATIVE_ZONES.momentum.weak, taken from the shared constant rather than written as
+// So the 54 here is declared on T6's own catalogue record rather than being written here as
 // a literal — the one place in this family where using the wrong number is a documented sign-flip.
 //
 // ── ⚠ R2 — THIS IS NOT AN EARLY WARNING ──────────────────────────────────────────────────────────
@@ -32,28 +32,36 @@
 // this card may present it as leading the headline score. Enforced by the copy lint in
 // trajectory/regime-tier.ts (FORWARD_LANGUAGE_BANS) and gated in scripts/verify-trajectory.ts.
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { pillarPrevNow } from "../trajectory/prev-now.js";
 import { TIER_DECIDES_READ, trajectorySeverity } from "../trajectory/regime-tier.js";
 import { CALIBRATION_NOTE } from "../trajectory/view.js";
-import { NATIVE_ZONES } from "../thresholds.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** ★ Momentum's NATIVE weak mark. On the borrowed composite 60 this pattern read a false +3.2%. */
-export const T6_MOMENTUM_WEAK = NATIVE_ZONES.momentum.weak; // 54
+/** ★ THE RECORD, NOT A RE-TYPED STRING — see d1-price-ahead-quality.ts for the full note. */
+const ENTRY = STOCK_FINDINGS.trajectory_B_T6_momentum_breaking_into_weak;
+const FACTS = ENTRY.facts;
 
-const KEY = "trajectory_B_T6_momentum_breaking_into_weak";
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** ★ Momentum's NATIVE weak mark. On the borrowed composite 60 this pattern read a false +3.2%.
+ *  Declared on T6's own record, which is the one place the correct number now lives. */
+export const T6_MOMENTUM_WEAK = FACTS.evidencedTier; // 54
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleT6: FireRule = (ctx) => {
   const m = pillarPrevNow(ctx, "momentum");
   if (!m) return null;                          // no prior reading, or either end not scored
   if (m.prev < T6_MOMENTUM_WEAK) return null;   // was already weak — not a break
   if (m.now >= T6_MOMENTUM_WEAK) return null;   // still at/above the mark
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). REAL effect — same shape as T3/T4/T5.
+  if (!distinctAtPrecision(m.prev, m.now, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: KEY,
-    severity: trajectorySeverity(KEY),
+    key: ENTRY.key,
+    severity: trajectorySeverity(ENTRY.key),
     direction: "negative",
     polarity: "negative",
     temporalClass: "EVENT",
@@ -62,8 +70,8 @@ export const ruleT6: FireRule = (ctx) => {
     evidence: {
       card: "T6",
       name: "Momentum Breaking Into Weak",
-      momentumPrior: r1(m.prev),
-      momentumNow: r1(m.now),
+      momentumPrior: round(m.prev),
+      momentumNow: round(m.now),
       crossedBelow: T6_MOMENTUM_WEAK,
       isCrossing: true,
       priorPeriod: m.priorPeriodKey,

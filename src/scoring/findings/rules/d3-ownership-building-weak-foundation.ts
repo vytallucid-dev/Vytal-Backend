@@ -38,27 +38,48 @@
 // exactly 60.0), which structurally limits sample size on every Ownership pattern. Directionally the
 // strongest positive found; not a large-sample law.
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { ownershipMove, driverClause } from "../divergence/ownership-move.js";
-import { NATIVE_ZONES } from "../thresholds.js";
+import { roundToPrecision } from "../format.js";
+import { movementState } from "../divergence/pattern-state.js";
 import type { FireRule } from "../types.js";
 
-/** §Part 2 D3 — Foundation's own weak mark. */
-export const D3_FOUNDATION_MAX = NATIVE_ZONES.foundation.weak; // 60
+const ENTRY = STOCK_FINDINGS.divergence_D3_ownership_building_weak_foundation;
+const FACTS = ENTRY.facts;
 
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** ★ Now homed in `FACTS.legs` — the one condition genuinely expressible as a current-value pillar
+ *  threshold (the ΔOwnership leg is a delta, not a level, and stays in `movementFloor`; see the
+ *  record's own comment). */
+export const D3_FOUNDATION_MAX = FACTS.legs.find((l) => l.pillar === "foundation")!.value; // 60
+/** ★ The ±8 register cut, read from the record. NOT a firing gate — it selects which language the
+ *  verdict may use (see the header). Same value as before; the home moved, the behaviour did not. */
+export const D3_STRONG_CUT_PP = FACTS.evidencedTier; // 8
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleD3: FireRule = (ctx) => {
   const f = ctx.current.pillars.foundation;
   if (f.state !== "scored" || f.subtotal === null) return null; // inert-0 guard
   if (f.subtotal >= D3_FOUNDATION_MAX) return null;
 
-  const move = ownershipMove(ctx);
-  if (!move) return null;          // no prior snapshot / unscored / zero movement
+  // ★ ownershipMove ALREADY rounds deltaPp/priorSubtotal/currentSubtotal to FACTS.displayPrecision and
+  // refuses to return a move invisible at that precision (the display-precision gate — format.ts).
+  const move = ownershipMove(ctx, D3_STRONG_CUT_PP, FACTS.displayPrecision);
+  if (!move) return null;          // no prior snapshot / unscored / zero (or invisible) movement
   if (move.deltaPp <= 0) return null; // D3 is the BUILDING side
+
+  // ★ THE STATE — BY SIZE OF MOVE, NOT BY LEVEL. `evidencedTier` (8) is the Building/Formed
+  //   boundary; `movementFloor` (2) is the Absent/Building one. Both were already declared on the
+  //   record; what changed is that they are read as a three-way state instead of an on/off gate.
+  //   ⚠ movementFloor was previously declared-and-unwired — this is where it becomes live, and it
+  //   is what stops a 0.4pp drift surfacing as a pattern at all.
+  const state = movementState(Math.abs(move.deltaPp), FACTS.evidencedTier, FACTS.movementFloor);
+  if (state === "absent") return null;
 
   return {
     kind: "pattern",
-    key: "divergence_D3_ownership_building_weak_foundation",
+    key: ENTRY.key,
     // Constructive. `green` maps to the `rec` accent — never a warning colour.
     severity: "green",
     direction: "positive",
@@ -69,14 +90,18 @@ export const ruleD3: FireRule = (ctx) => {
     evidence: {
       card: "D3",
       name: "Ownership Building Against a Weak Foundation",
-      foundation: r1(f.subtotal),
+      foundation: round(f.subtotal),
       foundationMax: D3_FOUNDATION_MAX,
       ownershipDeltaPp: move.deltaPp,
       ownershipFrom: move.priorSubtotal,
       ownershipTo: move.currentSubtotal,
       // ★ the tier that selects the register (see the header) — NOT a firing gate
       strong: move.strong,
-      strongCutPp: 8,
+      // ★ formed | building. Absent returned null above.
+      state,
+      formedAtPp: FACTS.evidencedTier,
+      buildingFloorPp: FACTS.movementFloor,
+      strongCutPp: D3_STRONG_CUT_PP,
       // ★ what actually drove it
       cause: move.cause,
       shareholding: move.shareholding,

@@ -28,27 +28,37 @@
 // ── REGIME · TIER 3 (magnitude caveat) ────────────────────────────────────────────────────────────
 // Reads across phases; strongest in the study's low zone. In HOT, treat the magnitude as flattered.
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { compositePrevNow } from "../trajectory/prev-now.js";
 import { TIER_MAGNITUDE_CAVEAT, trajectorySeverity } from "../trajectory/regime-tier.js";
 import { CALIBRATION_NOTE } from "../trajectory/view.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-export const T1_PREV_MAX = 58;   // the low zone (§1.5)
-export const T1_MIN_RISE = 6;    // §1.2 material trajectory event
+/** ★ THE RECORD, NOT A RE-TYPED STRING — see d1-price-ahead-quality.ts for the full note. */
+const ENTRY = STOCK_FINDINGS.trajectory_D_T1_recovery_low_zone;
+const FACTS = ENTRY.facts;
 
-const KEY = "trajectory_D_T1_recovery_low_zone";
-const r1 = (x: number) => Math.round(x * 10) / 10;
+export const T1_PREV_MAX = FACTS.evidencedTier;   // 58 — the low zone (§1.5)
+export const T1_MIN_RISE = FACTS.movementFloor;  // 6  — §1.2 material trajectory event
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleT1: FireRule = (ctx) => {
   const c = compositePrevNow(ctx);
   if (!c) return null;                       // no prior reading — cannot evaluate a move
   if (c.prev > T1_PREV_MAX) return null;      // not starting from the low zone
   if (c.delta < T1_MIN_RISE) return null;     // drift, not a trajectory event
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). Defensive here: the +6 move
+  // threshold sits far above the rounding granularity, so this can't reject a real T1 fire today —
+  // asserted rather than assumed, in case the floor is ever recalibrated.
+  if (!distinctAtPrecision(c.prev, c.now, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: KEY,
-    severity: trajectorySeverity(KEY), // ★ R1 — cannot see c.delta
+    key: ENTRY.key,
+    severity: trajectorySeverity(ENTRY.key), // ★ R1 — cannot see c.delta
     direction: "positive",
     polarity: "positive",
     temporalClass: "EVENT",
@@ -57,9 +67,9 @@ export const ruleT1: FireRule = (ctx) => {
     evidence: {
       card: "T1",
       name: "Recovery from the Low Zone",
-      compositePrior: r1(c.prev),
-      compositeNow: r1(c.now),
-      movePp: r1(c.delta),
+      compositePrior: round(c.prev),
+      compositeNow: round(c.now),
+      movePp: round(c.delta),
       prevMax: T1_PREV_MAX,
       minRise: T1_MIN_RISE,
       isMovePattern: true,

@@ -6,9 +6,9 @@
 // vice-versa). Both pillars must be genuinely scored (inert-0 guard).
 
 import { K2_WIDE } from "../thresholds.js";
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
-export const ruleC3: FireRule = (ctx) => {
+export const ruleC3: RetiredRule = (ctx) => {
   const f = ctx.current.pillars.foundation, m = ctx.current.pillars.momentum;
   if (f.state !== "scored" || m.state !== "scored" || f.subtotal === null || m.subtotal === null) return null;
   const gap = Math.abs(f.subtotal - m.subtotal);

@@ -45,7 +45,7 @@ import type {
   SectorClass,
   TrajectoryMarker,
   TrajectoryPoint,
-  DivergenceFlag,
+  DivergenceHeadline,
   FindingsSection,
   PondMask,
 } from "./health-view.types.js";
@@ -152,7 +152,8 @@ export interface Comparee {
     composite: number | null;
     band: LabelBand | null;
     trajectoryMarker: TrajectoryMarker | null;
-    divergenceFlag: DivergenceFlag | null;
+    /** ★ Ruling 3's headline state — was the retired widest-pair `notable`/`wide` flag. */
+    divergenceFlag: DivergenceHeadline | null;
     divergenceGap: number | null;
     foundation: number | null;
     momentum: number | null;

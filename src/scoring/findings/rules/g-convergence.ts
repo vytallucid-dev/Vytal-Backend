@@ -12,11 +12,11 @@
 import { pillarSpread } from "../trajectory/cross.js";
 import { seriesWithCurrent, CALIBRATION_NOTE } from "../trajectory/view.js";
 import { K2_NOTABLE, K2_WIDE } from "../thresholds.js";
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
 export const G_NARROW_PP = 8; // the gap must have narrowed ≥ 8pp from its peak — FLAG: provisional
 
-export const ruleG: FireRule = (ctx) => {
+export const ruleG: RetiredRule = (ctx) => {
   const series = seriesWithCurrent(ctx);
   if (series.length < 2) return null;
   const curSpread = pillarSpread(series[series.length - 1]);

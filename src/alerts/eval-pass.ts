@@ -23,6 +23,12 @@
 import type { AlertType, LabelBand } from "../generated/prisma/client.js";
 import { prisma } from "../db/prisma.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../catalogue/retired-findings.js";
+// ★ NOT-COVERED SUPPRESSION (companion to boundary 5 of 9 below) — finding-catalog.ts's
+//   loadFindingKeys already refuses to let a NEW alert be written on a `notcovered_*` key, but this is
+//   the evaluator: without the guard here too, a persisted not-covered row would still count as "a
+//   finding present on this snapshot" for whatever DOES reach this loop, which is the load-bearing
+//   half of the retirement comment above (evaluation, not just display).
+import { dropNotCoveredPatterns } from "../catalogue/not-covered.js";
 import {
   priceConditionTrue,
   bandConditionTrue,
@@ -144,7 +150,7 @@ export async function assembleReadings(stockIds: string[]): Promise<Map<string, 
   //   existing user alert on a retired key must stop EVALUATING, not just stop rendering. Without
   //   this, a stale snapshot still carrying a retired key would keep the alert in its "fired" state
   //   forever — and a `clears` alert would never clear.
-  for (const p of dropRetiredPatterns(patterns)) add(p.snapshotId, p.patternKey);
+  for (const p of dropNotCoveredPatterns(dropRetiredPatterns(patterns))) add(p.snapshotId, p.patternKey);
   for (const f of dropRetiredFlags(redFlags)) add(f.snapshotId, f.flagKey);
 
   for (const stockId of stockIds) {

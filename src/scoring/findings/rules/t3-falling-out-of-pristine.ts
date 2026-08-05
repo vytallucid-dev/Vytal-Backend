@@ -32,27 +32,38 @@
 // (+5.4%) — both bull-masked, both read POSITIVE. The retired B/I fired exactly those. T3 crosses
 // only at 74, the Pristine floor, which is the one down-cross that survived the phase split.
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { compositePrevNow } from "../trajectory/prev-now.js";
 import { TIER_DECIDES_READ, trajectorySeverity } from "../trajectory/regime-tier.js";
 import { CALIBRATION_NOTE } from "../trajectory/view.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** The Pristine floor (composite band edge — a COMPOSITE threshold on a COMPOSITE value). */
-export const T3_PRISTINE_FLOOR = 74;
+/** ★ THE RECORD, NOT A RE-TYPED STRING — see d1-price-ahead-quality.ts for the full note. */
+const ENTRY = STOCK_FINDINGS.trajectory_B_T3_falling_out_of_pristine;
+const FACTS = ENTRY.facts;
 
-const KEY = "trajectory_B_T3_falling_out_of_pristine";
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** The Pristine floor (composite band edge — a COMPOSITE threshold on a COMPOSITE value), read
+ *  from the record. */
+export const T3_PRISTINE_FLOOR = FACTS.evidencedTier; // 74
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleT3: FireRule = (ctx) => {
   const c = compositePrevNow(ctx);
   if (!c) return null;
   if (c.prev < T3_PRISTINE_FLOOR) return null; // was not in Pristine
   if (c.now >= T3_PRISTINE_FLOOR) return null; // still in Pristine — no crossing
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). REAL effect here: T3's crossing has
+  // no minimum-margin floor of its own — a genuine cross of the 74 boundary by an amount smaller than
+  // the display grid would otherwise render as "74 to 74."
+  if (!distinctAtPrecision(c.prev, c.now, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: KEY,
-    severity: trajectorySeverity(KEY),
+    key: ENTRY.key,
+    severity: trajectorySeverity(ENTRY.key),
     // ⚠ The DIRECTION field records that the crossing is downward. It does NOT assert a directional
     // READ — that is the regime's job, and in NORMAL there is none. The verdict is what must stay
     // silent on direction; the crossing itself is a fact.
@@ -64,8 +75,8 @@ export const ruleT3: FireRule = (ctx) => {
     evidence: {
       card: "T3",
       name: "Falling Out of Pristine",
-      compositePrior: r1(c.prev),
-      compositeNow: r1(c.now),
+      compositePrior: round(c.prev),
+      compositeNow: round(c.now),
       crossedBelow: T3_PRISTINE_FLOOR,
       isCrossing: true,
       priorPeriod: c.priorPeriodKey,

@@ -87,7 +87,7 @@ function renderLean(v: HealthSnapshotView): string {
     const traj = vd.trajectoryMarker
       ? `${vd.trajectoryMarker}${isNum(vd.trajectoryDelta) ? ` (${vd.trajectoryDelta >= 0 ? "+" : ""}${scoreStr(vd.trajectoryDelta)} pts)` : ""}`
       : NA;
-    L.push(`Composite health: ${scoreStr(vd.composite)} — band ${vd.label.band} (${vd.label.label}). Trajectory: ${traj}. Divergence: ${vd.divergence.flag ?? NA}.`);
+    L.push(`Composite health: ${scoreStr(vd.composite)} — band ${vd.label.band} (${vd.label.label}). Trajectory: ${traj}. Divergence: ${vd.divergence.headline ?? NA}.`);
   } else {
     L.push(`Composite health: ${NA}.`);
   }

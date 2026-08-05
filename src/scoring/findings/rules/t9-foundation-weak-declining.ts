@@ -8,12 +8,17 @@
 // Entrenched, worsening weakness. Not a dramatic break — a business that was already weak continuing
 // to erode.
 //
-// ── ★ THE DECLINE IS EPSILON-GATED — THIS IS THE PATTERN THAT SURFACED THE BUG ────────────────────
-// `movedDown()` (trajectory/prev-now.ts), not a bare `f.delta >= 0`. A live rescore found 12 of 13 T9
-// fires carrying `fallPp: 0` — Foundation hadn't moved; an unrounded live float compared against a
-// rounded, reloaded prior produced noise below 0.0001pp that a tolerance-free `< 0` treated as a real
-// decline. See prev-now.ts's header for the full incident and why the fix belongs there, once, for
-// every T-pattern that asks "did this move at all."
+// ── ★ THE DECLINE IS EPSILON-GATED, THEN MOVEMENT-FLOOR-GATED — THE PATTERN THAT SURFACED THE BUG ─
+// TWO gates, in order — same shape as T7/T8, see T7's header for the full note:
+//   1. `movedDown()` (trajectory/prev-now.ts) — epsilon-gated (TRAJECTORY_DELTA_EPSILON, 0.0001). A
+//      live rescore found 12 of 13 T9 fires carrying `fallPp: 0` — Foundation hadn't moved; an
+//      unrounded live float compared against a rounded, reloaded prior produced noise below
+//      0.0001pp that a tolerance-free `< 0` treated as a real decline. See prev-now.ts's header for
+//      the full incident and why the fix belongs there, once, for every T-pattern that asks "did
+//      this move at all."
+//   2. `Math.abs(f.delta) < T9_MOVEMENT_FLOOR` — ★ THE MOVEMENT-FLOOR RULING: now a FIRING gate,
+//      requiring an actual fall of at least 1.0pp. Epsilon still decides direction; it no longer
+//      decides firing.
 //
 // ── ★ THE DISPLAY NOTE IS BINDING: SHOW THE PERCENTAGE, NOT THE AVERAGE ──────────────────────────
 // This is the one pattern in the family where the mean and the hit-rate DISAGREE, and the spec
@@ -43,28 +48,40 @@
 //
 // ── REGIME · TIER 3 (magnitude caveat) ────────────────────────────────────────────────────────────
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { pillarPrevNow, movedDown } from "../trajectory/prev-now.js";
 import { TIER_MAGNITUDE_CAVEAT, trajectorySeverity } from "../trajectory/regime-tier.js";
 import { CALIBRATION_NOTE } from "../trajectory/view.js";
-import { NATIVE_ZONES } from "../thresholds.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** Foundation's NATIVE weak mark — never the composite's. */
-export const T9_FOUNDATION_WEAK = NATIVE_ZONES.foundation.weak; // 60
+/** ★ THE RECORD, NOT A RE-TYPED STRING — see d1-price-ahead-quality.ts for the full note. */
+const ENTRY = STOCK_FINDINGS.trajectory_B_T9_foundation_weak_declining;
+const FACTS = ENTRY.facts;
 
-const KEY = "trajectory_B_T9_foundation_weak_declining";
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** Foundation's NATIVE weak mark — never the composite's. From T9's own record. */
+export const T9_FOUNDATION_WEAK = FACTS.evidencedTier; // 60
+/** ★ NOW A FIRING GATE — see t7-momentum-improving-while-weak.ts's header for the full note. */
+export const T9_MOVEMENT_FLOOR = FACTS.movementFloor; // 1.0 — enforced
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleT9: FireRule = (ctx) => {
   const f = pillarPrevNow(ctx, "foundation");
   if (!f) return null;
   if (f.now >= T9_FOUNDATION_WEAK) return null; // not weak
   if (!movedDown(f.delta)) return null;         // not still declining — epsilon-gated, see prev-now.ts
+  if (Math.abs(f.delta) < T9_MOVEMENT_FLOOR) return null; // ★ real but too small — the movement-floor ruling
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts, named for this exact incident: 12 of
+  // 13 persisted fires carried fallPp: 0 before the epsilon/movement-floor gates existed). Defensive
+  // here on top of those two — the enforced 1.0pp floor already sits above the rounding granularity.
+  if (!distinctAtPrecision(f.prev, f.now, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: KEY,
-    severity: trajectorySeverity(KEY), // ★ R1 — cannot see f.delta
+    key: ENTRY.key,
+    severity: trajectorySeverity(ENTRY.key), // ★ R1 — cannot see f.delta
     direction: "negative",
     polarity: "negative",
     temporalClass: "CONDITION", // a standing state (weak AND falling), not a dated crossing
@@ -73,9 +90,9 @@ export const ruleT9: FireRule = (ctx) => {
     evidence: {
       card: "T9",
       name: "Foundation Weak and Still Declining",
-      foundationPrior: r1(f.prev),
-      foundationNow: r1(f.now),
-      fallPp: r1(f.delta),
+      foundationPrior: round(f.prev),
+      foundationNow: round(f.now),
+      fallPp: round(f.delta),
       weakMark: T9_FOUNDATION_WEAK,
       isCrossing: false,
       crossDownThrough60IsExcluded: true,

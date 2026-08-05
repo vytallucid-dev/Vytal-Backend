@@ -9,6 +9,8 @@
 // SCOPE NOTE: this is the contract + Stage-A rule shapes. The catalog (~24 rules)
 // pours through this same context/finding/persist path in later stages.
 
+import type { RetiredFindingKey } from "../../catalogue/retired-findings.js";
+import type { StockFindingKey } from "../../catalogue/stock-findings.js";
 import type { LabelBand, Pillar, PillarState } from "../composite/types.js";
 import type { OwnershipQuarter } from "../ownership/types.js";
 import type { FlowFeeds } from "../ownership/flow.js";
@@ -127,10 +129,33 @@ export type TemporalClass = "CONDITION" | "EVENT";
  * persist layer maps `evidence` → RedFlag.triggeringValues (red_flag) or
  * ScorePattern.evidence (pattern), and `metricRefs` → ScorePattern.metricRefs.
  */
+/**
+ * ★ THE ONE NAMESPACE NO STATIC LIST CAN ENUMERATE. Three-lens findings compose their key at runtime
+ * — `lens_${faceId}_${metricKey}` — one key per (lens × metric) combination that has ever fired. The
+ * catalogue says so in as many words ("unbounded, and no static list can enumerate it"), which is why
+ * lens COPY is keyed on the FACE rather than on the composed key.
+ *
+ * So the composed shape is admitted as a template-literal type rather than widening the whole field
+ * back to `string`: an arbitrary string still fails, and a typo in a REGISTRY key still fails.
+ */
+export type LensComposedKey = `lens_${string}`;
+
+/**
+ * ★ WHAT MAY GO ON THE WIRE AS A FINDING KEY. Either a catalogued stock finding or a composed lens
+ * key — never a free string.
+ *
+ * Before this, `key: string` meant a rule hand-wrote `"divergence_S2_sticky_divergence"`, the
+ * catalogue independently hand-wrote the same characters, and scripts/verify-catalogue.ts §4 diffed
+ * the two AFTER THE FACT by regex-scanning the rule sources. A typo was a runtime finding with no
+ * copy, caught by a script somebody had to run. Now it does not compile.
+ */
+export type FiredFindingKey = StockFindingKey | LensComposedKey;
+
 export interface FiredFinding {
   kind: FindingKind;
-  /** RedFlag.flagKey (red flags) or ScorePattern.patternKey (patterns). */
-  key: string;
+  /** RedFlag.flagKey (red flags) or ScorePattern.patternKey (patterns). See {@link FiredFindingKey}:
+   *  a rule takes this from its own catalogue entry (`ENTRY.key`), never from a re-typed literal. */
+  key: FiredFindingKey;
   /** Red flags: "critical" (File 1 §5A). Patterns: the family-native severity token —
    *  E-patterns use red/amber/green (§5E), structural cards use high/medium/low/recovery
    *  (§5B–I). The read layer maps token → accent colour. FLAG: File 1 doesn't explicitly
@@ -233,3 +258,22 @@ export function isNotEvaluable(r: RuleResult): r is NotEvaluable {
  *  NotEvaluable (could-not-check). Existing rules that return only `FiredFinding | null`
  *  remain valid — that shape is a subtype of RuleResult (additive, not a migration). */
 export type FireRule = (ctx: FiringContext) => RuleResult;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RETIRED RULES — "files kept, not registered" is now a TYPE, not a convention.
+// ═══════════════════════════════════════════════════════════════════════════════
+// Ten rule files survive on disk as a record of what was tried (P2/P3, the C/G
+// divergence rebuild, the B/D/I trajectory rebuild). Their keys are ABSENT from
+// STOCK_FINDING_KEYS by design — "carrying copy for a key that cannot fire would
+// be carrying a lie" — so with FiredFinding.key narrowed to the catalogue's
+// vocabulary they can no longer be typed as FireRule, and that is correct.
+//
+// ★ THE PROTECTION THIS BUYS. Until now, "not in ALL_RULES" was the ONLY thing
+// keeping a retired rule from firing — one import away from being undone, silently,
+// by someone tidying the registry. A RetiredRule is not assignable to FireRule, so
+// adding one to ALL_RULES does not compile. The P2/P3 lesson ("an unregistered rule
+// never fires") is now enforced from the other side too.
+export type RetiredFiredFinding = Omit<FiredFinding, "key"> & { key: RetiredFindingKey };
+
+/** A rule that has been retired: same shape, a key the catalogue deliberately does not carry. */
+export type RetiredRule = (ctx: FiringContext) => RetiredFiredFinding | NotEvaluable | null;

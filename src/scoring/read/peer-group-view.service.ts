@@ -11,10 +11,16 @@
 // PeerStatsSnapshot with the SAME usable-guard as the stock view. No scoring math is
 // recomputed here — this is a pure read over already-committed rows.
 
+import type { DivergenceHeadline } from "./health-view.types.js";
 import { prisma } from "../../db/prisma.js";
+import { firingDivergenceKeys, headlineOf, pillarSpreadOf } from "./divergence-headline.js";
+import { COMPOSITE_MOVE_DEADBAND } from "./display-constants.js";
 // The ONE severity ordering (File 1 §5, total over all eight tokens) — see `worseSeverity` below.
 import { severityWeight as severityRank } from "../../catalogue/divergence.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+// ★ NOT-COVERED SUPPRESSION — same reasoning as universe-view.service.ts (this page reads
+//   score_patterns INDEPENDENTLY of it, per the file's own note, so it needs its own guard too).
+import { dropNotCoveredPatterns } from "../../catalogue/not-covered.js";
 import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
 import { getSnapshotSeries } from "./scoring-read.service.js";
 import {
@@ -70,7 +76,6 @@ const numN = (d: unknown): number | null =>
 // ★ PHASE 4 — canonical bands, not a local copy. See health-view.service.ts for the full note.
 const DIVERGENCE_NOTABLE = GAP_MATERIAL;
 const DIVERGENCE_WIDE = GAP_STRETCHED;
-const TRAJECTORY_EPS = 1.0;
 const MOVER_CAP = 10; // top-N each side; honestly capped (ponds are ≤10 today)
 
 // ── SEVERITY ORDERING — imported, not redeclared. See the long note in
@@ -81,14 +86,24 @@ const MOVER_CAP = 10; // top-N each side; honestly capped (ponds are ≤10 today
 const worseSeverity = (a: string | null, b: string | null): string | null =>
   severityRank(a) <= severityRank(b) ? a : b;
 
+/**
+ * ★ RULING 3's HEADLINE STATE — read/divergence-headline.ts, the ONE home.
+ *
+ * ⚠ THIS REPLACED A LOCAL `divergenceOf` THAT SORTED THE SCORED SUBTOTALS, TOOK THE EXTREMES AND
+ * BANDED THE DISTANCE AT 15/25. Three services carried that block independently (this one,
+ * peer-group-view, health-view) plus the frontend's `pickScoredPair`. It chose a pair with no
+ * reference to which pair any fired finding was about — the IOC bug — and its 15/25 banding was a
+ * third severity scale beside §1.2's 12/16/25 and S1's ≤7.
+ *
+ * A list row shows the STATE, not a pair: it has no chart to put one on. The pair is served per
+ * finding on the per-stock view, where a card can actually render it.
+ */
 function divergenceOf(
   scoredSubtotals: { pillar: PillarKey; subtotal: number }[],
-): { flag: DivergenceFlag; gap: number } {
-  if (scoredSubtotals.length < 2) return { flag: "none", gap: 0 };
-  const sorted = [...scoredSubtotals].sort((a, b) => b.subtotal - a.subtotal);
-  const gap = round2(sorted[0].subtotal - sorted[sorted.length - 1].subtotal);
-  const flag: DivergenceFlag = gap >= DIVERGENCE_WIDE ? "wide" : gap >= DIVERGENCE_NOTABLE ? "notable" : "none";
-  return { flag, gap };
+  fired: { patternKey: string }[],
+): { headline: DivergenceHeadline; spread: number | null } {
+  const spread = pillarSpreadOf(scoredSubtotals);
+  return { headline: headlineOf(spread, firingDivergenceKeys(fired)), spread };
 }
 
 function reachOf(n: number, m: number): PathologyReach {
@@ -426,7 +441,7 @@ export async function buildPeerGroupHealthView(
     const firedFlags = dropRetiredFlags(s.redFlags)
       .map((rf) => ({ flagKey: rf.flagKey, severity: rf.severity, tier: rf.tier as "auto" | "review" }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
-    const firedPatterns = dropRetiredPatterns(s.patterns)
+    const firedPatterns = dropNotCoveredPatterns(dropRetiredPatterns(s.patterns))
       .map((p) => ({ patternKey: p.patternKey, direction: p.direction, severity: p.severity, displayState: (p.displayState ?? "active") as "active" | "pending_data_integration" | "dampened" }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
@@ -437,7 +452,7 @@ export async function buildPeerGroupHealthView(
     if (pts.length >= 2) {
       const d = round2(pts[pts.length - 1].composite - pts[pts.length - 2].composite);
       trajectoryDelta = d;
-      trajectoryMarker = d > TRAJECTORY_EPS ? "improving" : d < -TRAJECTORY_EPS ? "deteriorating" : "stable";
+      trajectoryMarker = d > COMPOSITE_MOVE_DEADBAND ? "improving" : d < -COMPOSITE_MOVE_DEADBAND ? "deteriorating" : "stable";
     }
 
     const flowCats = s.ownershipPillar?.ownershipScore?.flowCategories ?? [];
@@ -456,7 +471,7 @@ export async function buildPeerGroupHealthView(
       pillars,
       trajectoryMarker,
       trajectoryDelta,
-      divergence: divergenceOf(scoredSubs),
+      divergence: divergenceOf(scoredSubs, firedPatterns),
       firedFlags,
       firedPatterns,
       flowCategoryStates,
@@ -479,7 +494,7 @@ export async function buildPeerGroupHealthView(
       acc.members.push({ symbol: s.symbol, sev: rf.severity });
       flagAcc.set(rf.flagKey, acc);
     }
-    for (const p of s.patterns) {
+    for (const p of dropNotCoveredPatterns(dropRetiredPatterns(s.patterns))) {
       const acc = patternAcc.get(p.patternKey) ?? { severity: null, members: [], states: [] };
       acc.severity = worseSeverity(acc.severity, p.severity);
       acc.members.push({ symbol: s.symbol, sev: p.severity });

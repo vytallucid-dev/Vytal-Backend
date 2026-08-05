@@ -15,7 +15,7 @@
 // the column is absent — if pledgedShares is null, the pledging leg cannot be read → P3
 // does not fire (never a false "no stress" from missing data; it simply can't evaluate).
 
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
 export const P3_PLEDGE_MATERIAL = 0.20; // ≥20% of promoter holding pledged — FLAG: provisional
 export const P3_PLEDGE_RISE_PP = 3;     // OR pledge ratio rose ≥3pp QoQ — FLAG: provisional
@@ -29,7 +29,7 @@ function pledgeRatio(pledged: bigint | null, promoter: bigint | null): number | 
   return Number(pledged) / Number(promoter);
 }
 
-export const ruleP3: FireRule = (ctx) => {
+export const ruleP3: RetiredRule = (ctx) => {
   const sh = ctx.shareholding;
   if (sh.length < 2) return null;
   const cur = sh[sh.length - 1], prior = sh[sh.length - 2];

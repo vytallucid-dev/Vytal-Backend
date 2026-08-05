@@ -13,11 +13,11 @@
 // (15–25) and the C2/C3 sub-types are added in the divergence stage.
 
 import { K2_WIDE } from "../thresholds.js";
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
 
-export const ruleC1: FireRule = (ctx) => {
+export const ruleC1: RetiredRule = (ctx) => {
   const f = ctx.current.pillars.foundation;
   const m = ctx.current.pillars.momentum;
   const mkt = ctx.current.pillars.market;

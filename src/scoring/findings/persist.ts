@@ -18,6 +18,7 @@
 
 import type { Prisma } from "../../generated/prisma/client.js";
 import type { FiredFinding } from "./types.js";
+import type { NotCoveredId } from "../../catalogue/not-covered.js";
 
 type Db = Prisma.TransactionClient;
 
@@ -75,4 +76,72 @@ export async function persistFindings(
   }
 
   return { redFlags, patterns, skippedExisting };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// NOT-COVERED PERSISTENCE — a DELIBERATELY SEPARATE write, never routed through `persistFindings`
+// above and never built from a `FiredFinding`. See catalogue/not-covered.ts's header for why this
+// exists at all: a not-covered configuration is measured once per period, and discarding the firing
+// discards the only data that could ever overturn the exclusion.
+//
+// ── ★ WHY NOT persistFindings + a widened FiredFindingKey ────────────────────────────────────────
+// `FiredFinding.severity` is a required field with no natural not-covered value, and a
+// `notcovered_${NotCoveredId}` key does not belong in `FiredFindingKey` — that union is "what a RULE
+// may emit", and no rule emits these; score-pass.ts builds them directly from the not-covered match
+// engine. A dedicated write keeps that boundary a type-level fact rather than a convention: there is
+// no path through which a `FireRule` could produce one of these rows.
+//
+// severity / direction / magnitude are written NULL — not omitted, NULL — because the column exists
+// on score_patterns and a real finding writes it; leaving it out would look like an oversight rather
+// than the deliberate absence it is. displayState is the literal string "tested_not_shipped", so a row
+// is self-describing even to someone reading the table directly, never "active" (which would claim
+// this is a live reading).
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+export interface NotCoveredWriteRow {
+  id: NotCoveredId;
+  /** `notcovered_NC1` … `notcovered_NC10` — from catalogue/not-covered.ts's `notCoveredPatternKey`. */
+  patternKey: string;
+  /** Pillar values at fire time, the triggering gap/crossing's raw numbers, the period, and the
+   *  regime-at-fire stamp (best-effort — absent if the regime lookup failed; see score-pass.ts). */
+  evidence: Record<string, unknown>;
+}
+
+export interface PersistNotCoveredResult {
+  written: number;
+  skippedExisting: number;
+}
+
+/** IDEMPOTENT, same convention as persistFindings: a re-run that re-emits (snapshotId, patternKey)
+ *  skips the duplicate. */
+export async function persistNotCovered(
+  db: Db,
+  snapshotId: string,
+  symbol: string,
+  asOfDate: Date,
+  rows: NotCoveredWriteRow[],
+): Promise<PersistNotCoveredResult> {
+  let written = 0, skippedExisting = 0;
+
+  for (const r of rows) {
+    const exists = await db.scorePattern.findFirst({ where: { snapshotId, patternKey: r.patternKey }, select: { id: true } });
+    if (exists) { skippedExisting++; continue; }
+    await db.scorePattern.create({
+      data: {
+        snapshotId,
+        symbol,
+        asOfDate,
+        patternKey: r.patternKey,
+        direction: null,
+        severity: null,
+        displayState: "tested_not_shipped",
+        magnitude: null,
+        evidence: r.evidence as object,
+        metricRefs: undefined,
+      },
+    });
+    written++;
+  }
+
+  return { written, skippedExisting };
 }

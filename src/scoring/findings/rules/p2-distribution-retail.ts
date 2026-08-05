@@ -15,12 +15,12 @@
 // NOT suppressed here.
 
 import { B_MIN_MOVE_PP } from "../../ownership/flow.js";
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
 export const P2_INST_DROP_PP = 0.5;   // combined FII+DII fell ≥ 0.5pp — FLAG: provisional
 export const P2_RETAIL_RISE_PP = 0.5; // retail rose ≥ 0.5pp — FLAG: provisional
 
-export const ruleP2: FireRule = (ctx) => {
+export const ruleP2: RetiredRule = (ctx) => {
   const sh = ctx.shareholding;
   if (sh.length < 2) return null;
   const cur = sh[sh.length - 1], prior = sh[sh.length - 2];

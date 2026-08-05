@@ -26,63 +26,31 @@
 // "alert me on P2" is that it cannot fire any more.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { prisma } from "../db/prisma.js";
-import { RETIRED_FINDING_KEYS as CATALOGUE_RETIRED_KEYS } from "../catalogue/retired-findings.js";
+import { RETIRED_FINDING_KEYS as CATALOGUE_RETIRED_KEYS, isRetiredFinding } from "../catalogue/retired-findings.js";
+import { STOCK_FINDINGS, STOCK_FINDING_KEYS, type StockFindingKey } from "../catalogue/index.js";
+// ★ NOT-COVERED SUPPRESSION — a persisted `notcovered_*` row is a genuinely LIVE key in score_patterns
+//   (unlike a retired one, it was never in STOCK_FINDING_KEYS to begin with, so it cannot be caught by
+//   the retired-key deletion pass below). Without this, a chat tool could successfully write — and
+//   eval-pass.ts could genuinely FIRE — an alert on a configuration explicitly excluded from ever
+//   being a claim.
+import { isNotCoveredKey } from "../catalogue/not-covered.js";
 
 /**
- * Keys the engine emits, transcribed from the rule sources. ⚠ RETIRED (P2/P3) and UNBUILT (P9) are
- * absent BY DESIGN — an alert on them could never fire.
+ * ★ THE ENGINE’S EMITTABLE KEYS — PROJECTED FROM THE CATALOGUE, NOT TRANSCRIBED FROM IT.
+ *
+ * ⚠ THIS WAS A HAND-KEPT LIST OF ~40 STRINGS, and the failure mode was not a typo — a typo would
+ * have been caught. It was OMISSION: the list is what an alert rule may be written against, so a key
+ * missing here is a finding a user can never be alerted on, silently, with no error anywhere. It had
+ * already drifted once (the whole live D-family had to be appended by hand when the rules shipped).
+ *
+ * Typing it `readonly StockFindingKey[]` collapses it: the catalogue’s own key union is the source,
+ * so a new finding is alertable the moment it has copy, and a removed one stops being alertable in
+ * the same edit. Retired keys are excluded HERE rather than filtered downstream — a retired rule
+ * cannot fire again, so an alert on one is permanently dead.
  */
-export const STATIC_FINDING_KEYS: readonly string[] = [
-  // A · red flags (R-series)
-  "ownership_R1_pledge", // written by the ownership persist path, not a FireRule
-  "ownership_R2_promoter_exit",
-  "foundation_R3_earnings_quality",
-  "foundation_R4_debt_explosion",
-  "foundation_R5_interest_coverage",
-  "ownership_R6_distribution",
-  // E · patterns (P-series)
-  "ownership_P1_clean_rotation",
-  "ownership_P4_dual_exit",
-  "ownership_P5_insider_distress",
-  "ownership_P6_insider_conviction",
-  "foundation_P7_accruals",
-  "foundation_P8_receivables",
-  "ownership_P10_promoter_defense",
-  "momentum_P11_margin_compression",
-  "momentum_P12_margin_recovery",
-  "momentum_P13_revenue_inflection",
-  // F/H · structural cards
-  "composition_F1_atypical",
-  "trajectory_F2_composition_shift",
-  "ownership_H_block_events",
-  // T · trajectory family (Vytal_Trajectory_Tool_Spec Parts 2–3)
-  "trajectory_D_T1_recovery_low_zone",
-  "trajectory_B_T2_deterioration_high_base",
-  "trajectory_B_T3_falling_out_of_pristine",
-  "trajectory_D_T4_recovering_out_of_below_par",
-  "trajectory_D_T5_foundation_out_of_weak",
-  "trajectory_B_T6_momentum_breaking_into_weak",
-  "trajectory_D_T7_momentum_improving_while_weak",
-  "trajectory_D_T8_foundation_strong_improving",
-  "trajectory_B_T9_foundation_weak_declining",
-  // C · divergence family (Vytal_Divergence_Tool_Spec Parts 2–3)
-  "divergence_D1_price_ahead_quality",
-  "divergence_D2_price_ahead_trajectory",
-  "divergence_D3_ownership_building_weak_foundation",
-  "divergence_D4_ownership_exiting_healthy",
-  "divergence_D5_laggard_catching_up",
-  "divergence_D6_quality_rolling_over",
-  "divergence_D7_trajectory_breaking_base_holds",
-  "divergence_S2_sticky_divergence",
-  // N · Notable (constructive twins)
-  "foundation_N1_cash_backed_earnings",
-  "foundation_N2_working_capital",
-  "foundation_N3_deleveraging",
-  "foundation_N4_coverage_strengthening",
-  "ownership_N5_dual_institutional_build",
-  "ownership_N6_promoter_accumulation",
-  "ownership_N7_pledge_release",
-];
+export const STATIC_FINDING_KEYS: readonly StockFindingKey[] = STOCK_FINDING_KEYS.filter(
+  (k) => !isRetiredFinding(k) && STOCK_FINDINGS[k].status !== "never_emitted",
+);
 
 /**
  * Retired rules — recognised so the refusal can SAY they are retired rather than "unknown".
@@ -108,7 +76,7 @@ export async function loadFindingKeys(): Promise<Set<string>> {
       prisma.scorePattern.findMany({ distinct: ["patternKey"], select: { patternKey: true } }),
       prisma.redFlag.findMany({ distinct: ["flagKey"], select: { flagKey: true } }),
     ]);
-    for (const p of patterns) keys.add(p.patternKey);
+    for (const p of patterns) if (!isNotCoveredKey(p.patternKey)) keys.add(p.patternKey);
     for (const f of flags) keys.add(f.flagKey);
   } catch {
     // A failed live read degrades to the static list — narrower, never wider. Refusing a valid lens

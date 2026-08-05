@@ -40,6 +40,9 @@ import type { CatalogueEntry, RegistryId } from "./types.js";
 
 export * from "./types.js";
 export * from "./divergence.js";
+// The pattern-defining facts (which pillars · what threshold · what the regime does · what precision)
+// for the D/S/T families. Engine-side only — serialise.ts strips them from the wire document.
+export * from "./pattern-facts.js";
 // Retirement: the suppression registry + the read-layer filters. Exported here so a consumer that
 // already imports the catalogue does not need a second import path to drop retired rows.
 export * from "./retired-findings.js";

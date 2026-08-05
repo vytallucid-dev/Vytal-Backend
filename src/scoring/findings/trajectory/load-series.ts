@@ -33,6 +33,36 @@ export function periodOrdinal(periodKey: string): number {
 }
 
 /**
+ * ★ THE VERSION-CHURN REDUCTION — EXTRACTED SO IT HAS ONE HOME.
+ *
+ * ScoreSnapshot (and score_patterns hanging off it) is APPEND-ONLY with NO uniqueness constraint on
+ * (stock, period): a period accumulates one row per snapshot VERSION as the supersede chain grows.
+ * ACC/FY27Q1 exists at versions 11, 12 and 13; GLENMARK/FY26Q4 at 36. Reading those rows AS HISTORY
+ * reads version churn as pattern history and inflates every run length several-fold — which is the
+ * single correctness trap in any "how long has this been true" question asked of this schema.
+ *
+ * Collapse to the HEAD (max version) per period. A caller that genuinely needs the intra-period path
+ * asks for it explicitly and says why (see read/finding-lifecycle.service.ts's two-clock loader); this
+ * is the default, and it is the reduction loadTrajectorySeries has always done inline.
+ *
+ * @param strictlyBefore when set, periods at or after this key are excluded outright (the trajectory
+ *        loader's point-in-time rule: a rule scoring period P may never see P or the future).
+ */
+export function headOfChainByPeriod<T extends { periodKey: string; version: number }>(
+  rows: readonly T[],
+  opts: { strictlyBefore?: string } = {},
+): Map<string, T> {
+  const cutOrd = opts.strictlyBefore === undefined ? null : periodOrdinal(opts.strictlyBefore);
+  const head = new Map<string, T>();
+  for (const r of rows) {
+    if (cutOrd !== null && periodOrdinal(r.periodKey) >= cutOrd) continue;
+    const ex = head.get(r.periodKey);
+    if (!ex || r.version > ex.version) head.set(r.periodKey, r);
+  }
+  return head;
+}
+
+/**
  * Load a stock's prior-snapshot trajectory (oldest→newest), head-of-chain, STRICTLY before
  * `currentPeriodKey`, and ≤ `cutoff` when set. Excludes the current + future periods.
  */
@@ -50,14 +80,9 @@ export async function loadTrajectorySeries(
     },
   });
 
-  const curOrd = periodOrdinal(currentPeriodKey);
-  // Head-of-chain per period = max version; exclude current + future periods.
-  const headByPeriod = new Map<string, (typeof rows)[number]>();
-  for (const r of rows) {
-    if (periodOrdinal(r.periodKey) >= curOrd) continue; // strictly before current (no leak)
-    const ex = headByPeriod.get(r.periodKey);
-    if (!ex || r.version > ex.version) headByPeriod.set(r.periodKey, r);
-  }
+  // Head-of-chain per period = max version; exclude current + future periods. ★ ONE HOME — the same
+  // reduction the lifecycle resolver runs, extracted above rather than kept as two inline copies.
+  const headByPeriod = headOfChainByPeriod(rows, { strictlyBefore: currentPeriodKey });
 
   return [...headByPeriod.values()]
     .sort((a, b) => periodOrdinal(a.periodKey) - periodOrdinal(b.periodKey))

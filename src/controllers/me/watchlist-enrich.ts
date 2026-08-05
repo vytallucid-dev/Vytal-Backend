@@ -34,6 +34,7 @@ import { composeLmVerdict, composeLpVerdict } from "../../scoring/lens-patterns/
 import type { FindingsSection, RedFlagView, PatternView } from "../../scoring/read/health-view.types.js";
 import { renderVerdict } from "../../scoring/findings/verdicts.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+import { dropNotCoveredPatterns } from "../../catalogue/not-covered.js";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const numN = (v: unknown): number | null => (v == null ? null : Number(v));
@@ -350,7 +351,7 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
   //   every downstream consumer of these two maps (the entry's findings section AND the lens
   //   anti-double-count) sees the same suppressed set.
   const redBySnap = groupBy(dropRetiredFlags(redFlags), (rf) => rf.snapshotId);
-  const patBySnap = groupBy(dropRetiredPatterns(patterns), (p) => p.snapshotId);
+  const patBySnap = groupBy(dropNotCoveredPatterns(dropRetiredPatterns(patterns)), (p) => p.snapshotId);
   const pillarById = new Map(pillarScores.map((p) => [p.id, p]));
   const metricsByPillar = groupBy(metricScores, (m) => m.pillarScoreId);
   // peer-stats fallback map, keyed by "peerGroupId|asOfDate" → (metricKey → cross-section).
@@ -445,7 +446,32 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
           evidence: p.evidence ?? null,
           metricRefs: p.metricRefs ?? null,
           verdict: renderVerdict(p.patternKey, p.evidence ?? null),
+          // ⚠ NOT RESOLVED HERE, AND SAYING SO. The watchlist is a list view over N stocks; a
+          // per-stock lifecycle walk is two extra queries each for a fact this surface does not
+          // render. `null` is the honest "not computed" — see the field note on PatternView.
+          lifecycle: null,
+          // Same reasoning, one step on: without a lifecycle the clause set would be missing its
+          // `movement` clause, and a partial decomposition served as a complete one is worse than
+          // none. The joined `verdict` above is unaffected and is what this surface renders.
+          clauses: null,
+          // Same reasoning as `lifecycle`/`clauses`: this list view renders a row, not a card. The
+          // record facts are cheap (frozen constants, no query) but serving a pair here would mean
+          // resolving each stock's pillars, which is the join this surface deliberately does not do.
+          facts: null,
+          tier: null,
+          state: null,
+          pair: null,
         })),
+        // `null`, not `[]` — this surface did not resolve lifecycles, which is a different claim
+        // from "nothing ended". See the field note on FindingsSection.
+        recentlyEnded: null,
+        // Same reasoning as the rest of this digest: a list row renders neither a not-covered note
+        // nor a cross-tool line, and evaluating them per stock is a join this surface does not do.
+        notCovered: [],
+        // Same reasoning — the quiet/not-quiet distinction is a per-stock read this list view does
+        // not do; `null` here is consistent with `recentlyEnded: null` above, not a claim either way.
+        quietNote: null,
+        crossTool: [],
       },
       threeLens,
     };

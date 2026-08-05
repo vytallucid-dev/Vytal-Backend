@@ -15,11 +15,11 @@ import { detectRecentSustainedCross, MIN_SUSTAIN, RECENT_MAX_RUN } from "../traj
 import { seriesWithCurrent, CALIBRATION_NOTE } from "../trajectory/view.js";
 import { ruleB } from "./b-deterioration.js";
 import { ruleD } from "./d-recovery.js";
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
 const OPTS = { minRun: MIN_SUSTAIN, recentMax: RECENT_MAX_RUN };
 
-export const ruleI: FireRule = (ctx) => {
+export const ruleI: RetiredRule = (ctx) => {
   const series = seriesWithCurrent(ctx);
   if (series.length < MIN_SUSTAIN + 1) return null;
   const comps = series.map((s) => s.composite);

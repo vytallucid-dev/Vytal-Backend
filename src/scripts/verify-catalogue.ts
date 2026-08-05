@@ -79,17 +79,29 @@ function registeredRuleFiles(): string[] {
 /**
  * Every finding key a rule file emits, discovered FROM SOURCE (never from a maintained list).
  *
- * Two forms are recognised, because both are in use:
- *   key: "divergence_D1_price_ahead_quality"     — the literal form
- *   const KEY = "trajectory_D_T1_…"; … key: KEY  — the const form, used by the T-family so the same
- *                                                  identifier feeds both `key:` and
- *                                                  trajectorySeverity(KEY) with no chance of the two
- *                                                  drifting apart
+ * THREE forms are recognised, because all three are (or were) in use:
+ *   key: "divergence_D1_price_ahead_quality"          — the literal form. Family A/E/F/H/N.
+ *   const KEY = "trajectory_D_T1_…"; … key: KEY       — the const form.
+ *   const ENTRY = STOCK_FINDINGS.divergence_D1_…;     — ★ THE RECORD FORM, and the one that matters
+ *     … key: ENTRY.key                                  now: the D/S/T families take their key from
+ *                                                       their catalogue entry, so the rule and the
+ *                                                       catalogue hold the SAME expression.
  *
- * ⚠ Resolving the const form matters to this gate's PURPOSE. A rule whose key it cannot see reads as
- * "catalogued but never emitted", which fails §4 — so without this the gate would push authors back
- * to duplicating the key string inside each rule, which is exactly the drift it exists to prevent.
- * Only same-file, single-quoted-or-double-quoted string consts are resolved; anything computed stays
+ * ── ★ WHAT THIS SCAN IS NOW FOR, WHICH IS LESS THAN IT WAS ────────────────────────────────────────
+ * `FiredFinding.key` is typed `StockFindingKey | \`lens_${string}\``, so a FireRule can no longer emit
+ * a key the vocabulary does not carry — tsc rejects it before this script runs. For the 17 D/S/T rules
+ * this section is now a RESTATEMENT of a compile-time guarantee.
+ *
+ * It is kept, and it still earns its place, for the parts the type does NOT reach:
+ *   · the ownership persist path writes `flagKey: "ownership_R1_pledge"` as a raw string (not a
+ *     FireRule, not a FiredFinding) — nothing types that;
+ *   · the CATALOGUE → EMITTED direction (a catalogued key with no rule) is not expressible as a type
+ *     at all, and that is what caught the dormant/synthesised distinction;
+ *   · a rule file could still be written with a literal, and the scan proves it is not.
+ *
+ * ⚠ A rule whose key this cannot SEE reads as "catalogued but never emitted" and fails §4 — which is
+ * why the record form had to be taught here in the same change that introduced it. Only same-file
+ * string consts and direct STOCK_FINDINGS member access are resolved; anything computed stays
  * invisible and will (correctly) fail the reconciliation.
  */
 function keysInFile(path: string): string[] {
@@ -102,6 +114,11 @@ function keysInFile(path: string): string[] {
   for (const m of src.matchAll(/\bkey:\s*(?:"([^"]+)"|([A-Za-z_$][\w$]*))/g)) {
     const k = m[1] ?? consts.get(m[2]);
     if (k && KEY_SHAPE.test(k)) out.push(k);
+  }
+  // ★ the record form. A rule that looks its entry up in the catalogue IS emitting that key — the
+  // whole point of `key: ENTRY.key` is that the two can no longer be different strings.
+  for (const m of src.matchAll(/\bSTOCK_FINDINGS\.([A-Za-z_$][\w$]*)/g)) {
+    if (KEY_SHAPE.test(m[1])) out.push(m[1]);
   }
   return out;
 }
@@ -292,7 +309,12 @@ async function main() {
   );
 
   const noEmitter = [...catalogued].filter((k) => !emittedSet.has(k)).sort();
-  const explained = noEmitter.filter((k) => STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].status === "synthesised");
+  // ★ never_emitted joins synthesised as an EXPLAINED absence, not a wildcard. S1 (Aligned) is the one
+  // member: a real catalogue key with no rule and no read-layer composition ever producing it — see
+  // types.ts's KeyStatus. The gate reads the status field to decide this, exactly as asked: adding a
+  // status the gate does not recognise fails loud here, rather than silently passing.
+  const NO_EMITTER_STATUSES = new Set(["synthesised", "never_emitted"]);
+  const explained = noEmitter.filter((k) => NO_EMITTER_STATUSES.has(STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].status));
   ok(
     "every catalogue key with no emitter is EXPLAINED by status, never by a wildcard",
     noEmitter.every((k) => explained.includes(k)),
@@ -605,10 +627,10 @@ async function main() {
   console.log("                      emitted → entry : engine.ts's imports → each rule's `key:` literal + the");
   console.log("                                        ownership persist path's `flagKey:`. 34 keys.");
   console.log("                      entry → emitted : every catalogue key must be emitted, EXCEPT a");
-  console.log("                                        documented status (synthesised / dormant).");
+  console.log("                                        documented status (synthesised / never_emitted).");
   const emittedOk = EMITTED.every((k) => catalogued.has(k));
   const reverseOk = [...catalogued].every(
-    (k) => emittedSet.has(k) || STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].status === "synthesised",
+    (k) => emittedSet.has(k) || NO_EMITTER_STATUSES.has(STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].status),
   );
   ok("stock_finding · the bidirectional gate holds", emittedOk && reverseOk, `${EMITTED.length} emitted ⇄ ${STOCK_FINDING_KEYS.length} catalogued`);
 

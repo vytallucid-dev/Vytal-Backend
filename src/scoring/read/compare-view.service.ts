@@ -366,8 +366,9 @@ function buildComparee(symbol: string, data: EntityData): Comparee {
       composite: verdict?.composite ?? null,
       band: verdict?.label.band ?? null,
       trajectoryMarker: verdict?.trajectoryMarker ?? null,
-      divergenceFlag: verdict?.divergence.flag ?? null,
-      divergenceGap: verdict?.divergence.gap ?? null,
+      // ★ Ruling 3's headline STATE and S1's spread — not the retired widest-pair flag/gap pair.
+      divergenceFlag: verdict?.divergence.headline ?? null,
+      divergenceGap: verdict?.divergence.spread ?? null,
       foundation: pillarSubtotal(health, "foundation"),
       momentum: pillarSubtotal(health, "momentum"),
       market: pillarSubtotal(health, "market"),

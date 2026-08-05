@@ -26,6 +26,7 @@
 
 import type { FiringContext } from "../types.js";
 import { TRAJECTORY_DELTA_EPSILON } from "../trajectory/prev-now.js";
+import { roundToPrecision } from "../format.js";
 
 /** What actually moved the pillar. */
 export type OwnershipMoveCause =
@@ -83,7 +84,11 @@ export interface OwnershipMove {
  *             what drove it. Borrowing the evidenced claim for a 2-point move would attach a
  *             measured figure to a population it was never measured on.
  */
-export const OWNERSHIP_STRONG_MOVE_PP = 8;
+// ⚠ THE SHARED CONSTANT IS GONE. It was one `8` serving two patterns, which meant D3 and D4 could
+// not be re-tiered independently without editing a module neither of them owns. §4's rule is that
+// duplication in DATA is correct and duplication in LOGIC is not: each record now declares its own
+// `evidencedTier`, and the caller passes it in below. Both are 8 today, and that is a fact about the
+// two records agreeing, not about one constant they share.
 
 const r2 = (x: number) => Math.round(x * 100) / 100;
 const pctOf = (part: bigint | null, whole: bigint | null): number | null =>
@@ -133,8 +138,17 @@ function flowActivity(ctx: FiringContext): FlowActivity | null {
 /**
  * The Ownership pillar's move since the previous snapshot, with its cause. Returns null when there is
  * no prior snapshot, or when either end is not genuinely scored (the inert-0 guard).
+ *
+ * @param strongCutPp the CALLER's own `evidencedTier`, read from its catalogue record. This primitive
+ *        has no opinion about where the register cut sits — D3 and D4 each declare theirs.
+ * @param displayPrecision the CALLER's own `FACTS.displayPrecision`. `deltaPp` / `priorSubtotal` /
+ *        `currentSubtotal` — the three fields D3/D4 carry straight into `ownershipDeltaPp` /
+ *        `ownershipFrom` / `ownershipTo` and the reader sees on the card — are rounded to THIS, once,
+ *        so the evidence and the rendered sentence can never disagree. The shareholding/flow driver
+ *        detail below stays at its own internal 2dp: that is a single, already-consistent authority
+ *        (r2 → toFixed(2)) for a supporting explanation, not the pattern's own reading — out of scope.
  */
-export function ownershipMove(ctx: FiringContext): OwnershipMove | null {
+export function ownershipMove(ctx: FiringContext, strongCutPp: number, displayPrecision: number): OwnershipMove | null {
   const cur = ctx.current.pillars.ownership;
   if (cur.state !== "scored" || cur.subtotal === null) return null;
   if (ctx.priorSnapshots.length === 0) return null;
@@ -142,16 +156,23 @@ export function ownershipMove(ctx: FiringContext): OwnershipMove | null {
   const prior = ctx.priorSnapshots[ctx.priorSnapshots.length - 1];
   if (!prior.ownershipScored || prior.ownership === null) return null;
 
-  const deltaPp = r2(cur.subtotal - prior.ownership);
-  // ★ Same epsilon as the T-family's delta-sign gates (trajectory/prev-now.ts), applied here for
-  // consistency — the code SHAPE is identical (an unrounded live "now" vs a persisted-and-reloaded
-  // "prior"), so the same fresh-vs-stored noise could in principle appear. In practice it is a
-  // no-op: `deltaPp` is already r2-rounded (2dp), so it is either exactly 0 or at least 0.01 in
-  // magnitude — never inside (0, TRAJECTORY_DELTA_EPSILON]. That r2 rounding is WHY the live diagnostic
-  // found zero spurious D3/D4 fires (10/10 checked carried real, multi-point deltas) where T7/T8/T9's
-  // UNROUNDED comparison found 18. Kept as one shared constant rather than a second literal so the two
-  // gates can never drift apart if either rounding step is ever changed.
-  if (Math.abs(deltaPp) <= TRAJECTORY_DELTA_EPSILON) return null; // no movement — D3/D4 are movement patterns
+  // ★ THE EPSILON GUARD RUNS ON THE RAW DELTA, BEFORE ANY DISPLAY ROUNDING. It rejects a
+  // persistence-round-trip artifact (an unrounded live "now" vs a rounded, reloaded "prior" — the
+  // same shape as the T-family's delta-sign gates, trajectory/prev-now.ts) — a fact about floating-
+  // point noise, never about how many decimals the card happens to print at.
+  const rawDelta = cur.subtotal - prior.ownership;
+  if (Math.abs(rawDelta) <= TRAJECTORY_DELTA_EPSILON) return null; // no real movement
+
+  const round = (x: number) => roundToPrecision(x, displayPrecision);
+  const deltaPp = round(rawDelta);
+  const priorSubtotal = round(prior.ownership);
+  const currentSubtotal = round(cur.subtotal);
+
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). D3/D4's movementFloor is declared
+  // but not an enforced firing gate (gateType "none"), so a real, epsilon-cleared delta this small
+  // (e.g. a raw +0.03pp move at 1dp) can still round to an invisible one. Refuse to fire on a move
+  // the card would show as "78 to 78" — the exact defect this whole precision pass exists to close.
+  if (priorSubtotal === currentSubtotal) return null;
 
   const sh = shareholdingDeltas(ctx);
   const changed = anyChanged(sh);
@@ -159,9 +180,9 @@ export function ownershipMove(ctx: FiringContext): OwnershipMove | null {
 
   return {
     deltaPp,
-    priorSubtotal: r2(prior.ownership),
-    currentSubtotal: r2(cur.subtotal),
-    strong: Math.abs(deltaPp) >= OWNERSHIP_STRONG_MOVE_PP,
+    priorSubtotal,
+    currentSubtotal,
+    strong: Math.abs(deltaPp) >= strongCutPp,
     cause: changed ? "shareholding_changed" : flow ? "flow_activity" : "undetermined",
     shareholding: changed ? sh : null,
     flow,

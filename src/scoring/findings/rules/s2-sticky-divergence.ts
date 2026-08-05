@@ -30,15 +30,30 @@
 // ⚠ Contiguity is deliberate. Walking backwards and counting only the qualifying readings would let a
 // gap that closed and re-opened read as continuously sustained, which is the opposite of sticky.
 
-import { scoredPair, GAP_MATERIAL, gapTier, severityForTier, TIER_WORD } from "../divergence/bands.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
+import { scoredPair, gapTier, severityForTier, TIER_WORD } from "../divergence/bands.js";
 import { seriesWithCurrent } from "../trajectory/view.js";
+import { roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** §Part 3 S2 — the material floor, and the minimum consecutive readings ("more than one"). */
-export const S2_GAP_MIN = GAP_MATERIAL; // 12
-export const S2_MIN_READINGS = 2;
+const ENTRY = STOCK_FINDINGS.divergence_S2_sticky_divergence;
+const FACTS = ENTRY.facts;
 
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** §Part 3 S2 — the material floor, read from S2's OWN record.
+ *  ★ THE ONE RECORD WHERE THIS FLOOR IS EVIDENCED RATHER THAN INHERITED: the stickiness that
+ *  establishes 12 was measured on exactly this pair (Foundation ↔ Momentum). Every other pattern's
+ *  gapFloor carries the same number across from here. */
+export const S2_GAP_MIN = FACTS.gapFloor; // 12
+/** ★ THE SUSTAIN LEG IS NOW HOMED, read from `FACTS.sustainReadings` — "more than one reading" is a
+ *  run-length requirement with no home in `legs`, `gapFloor` or `movementFloor`; it is the field
+ *  `sustainReadings` was added for. S2 is the only pattern in either family that has one. */
+export const S2_MIN_READINGS = FACTS.sustainReadings; // 2
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. S2 has no
+ *  temporal prior/now pair on its OWN reading (the gap is a single-snapshot fact; the sustain walk
+ *  operates on the RAW series, not the rounded display value), so no distinctAtPrecision gate applies
+ *  here — nothing in S2's firing condition could become invisible at display precision. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleS2: FireRule = (ctx) => {
   const f = ctx.current.pillars.foundation;
@@ -68,7 +83,7 @@ export const ruleS2: FireRule = (ctx) => {
 
   return {
     kind: "pattern",
-    key: "divergence_S2_sticky_divergence",
+    key: ENTRY.key,
     // A state with NO return claim → the context register, whatever the gap's size.
     severity: "low",
     // Neither good nor bad: it is the persistence that is the fact. F2 sets the precedent for a
@@ -81,9 +96,9 @@ export const ruleS2: FireRule = (ctx) => {
     evidence: {
       card: "S2",
       name: "Sticky Divergence",
-      foundation: r1(foundation),
-      momentum: r1(momentum),
-      gapPp: r1(gap),
+      foundation: round(foundation),
+      momentum: round(momentum),
+      gapPp: round(gap),
       tier,
       tierWord: TIER_WORD[tier],
       gapMin: S2_GAP_MIN,

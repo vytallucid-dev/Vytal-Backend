@@ -23,27 +23,39 @@
 //
 // ── ⚠ Δ IS THE TRIGGER, NEVER THE SEVERITY (Part 4 · R1) ─────────────────────────────────────────
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { compositePrevNow } from "../trajectory/prev-now.js";
 import { TIER_ALWAYS_DISPLAY, trajectorySeverity } from "../trajectory/regime-tier.js";
 import { CALIBRATION_NOTE } from "../trajectory/view.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-export const T2_PREV_MIN = 70;   // the high base
-export const T2_MIN_FALL = -6;   // §1.2 material trajectory event
+/** ★ THE RECORD, NOT A RE-TYPED STRING — see d1-price-ahead-quality.ts for the full note. */
+const ENTRY = STOCK_FINDINGS.trajectory_B_T2_deterioration_high_base;
+const FACTS = ENTRY.facts;
 
-const KEY = "trajectory_B_T2_deterioration_high_base";
-const r1 = (x: number) => Math.round(x * 10) / 10;
+export const T2_PREV_MIN = FACTS.evidencedTier;   // 70 — the high base
+/** ★ THE SIGN IS THE PATTERN'S, NOT THE RECORD'S. `movementFloor` declares the MAGNITUDE a move must
+ *  reach (6, the same §1.2 event threshold T1 uses); which direction counts is what makes T2 the
+ *  mirror of T1, and that belongs in the rule, not in a signed number in the catalogue. */
+export const T2_MIN_FALL = -FACTS.movementFloor; // -6
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleT2: FireRule = (ctx) => {
   const c = compositePrevNow(ctx);
   if (!c) return null;
   if (c.prev < T2_PREV_MIN) return null;    // not from a high base
   if (c.delta > T2_MIN_FALL) return null;   // drift, not a trajectory event
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). Defensive here — see T1's note; the
+  // mirror threshold is the same magnitude, same distance above the rounding granularity.
+  if (!distinctAtPrecision(c.prev, c.now, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: KEY,
-    severity: trajectorySeverity(KEY), // ★ R1 — cannot see c.delta
+    key: ENTRY.key,
+    severity: trajectorySeverity(ENTRY.key), // ★ R1 — cannot see c.delta
     direction: "negative",
     polarity: "negative",
     temporalClass: "EVENT",
@@ -52,9 +64,9 @@ export const ruleT2: FireRule = (ctx) => {
     evidence: {
       card: "T2",
       name: "Deterioration from a High Base",
-      compositePrior: r1(c.prev),
-      compositeNow: r1(c.now),
-      movePp: r1(c.delta),
+      compositePrior: round(c.prev),
+      compositeNow: round(c.now),
+      movePp: round(c.delta),
       prevMin: T2_PREV_MIN,
       minFall: T2_MIN_FALL,
       isMovePattern: true,

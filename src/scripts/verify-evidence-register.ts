@@ -39,6 +39,20 @@
 //   OUT    guardrail `explanation:` — operator/audit text, not reader copy; it legitimately names
 //          outcomes and thresholds. Scoping is exact where an allowlist needs upkeep forever.
 //
+// ── ⚠ COVERAGE, TAUGHT TO READ verdicts.ts ────────────────────────────────────────────────────────
+// §1's coverage check used to assume every registered rule's sentence lived IN THE RULE FILE — true
+// when this gate was built, false since Stage 3 centralised the D/S/T families' sentences into
+// scoring/findings/verdicts.ts, keyed by the finding key each rule now reads from the catalogue
+// (`key: ENTRY.key`). A D/S/T rule that composes no `verdict:`/`verbatim:` of its own is not a
+// coverage gap; its sentence moved one file over. §1 now checks THERE before failing.
+//
+// ⚠ DELIBERATELY NOT MERGED INTO THE SHARED `sentences` ARRAY. §2/§3/§4's register scans keep running
+// over rule-file sentences only, exactly as before — verdicts.ts is a DIFFERENT, ALREADY-VERIFIED
+// render layer (verify-verdicts.ts is its gate), and folding its text into this scan would silently
+// widen what §2–§4 assert without anyone deciding they should. §1's coverage question ("does a
+// sentence exist for this rule") and §2–§4's register question ("is a rule-authored sentence clean")
+// are answered from two different sources on purpose.
+//
 //   npx tsx src/scripts/verify-evidence-register.ts
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { readFileSync, readdirSync } from "fs";
@@ -141,6 +155,61 @@ function sentencesIn(path: string): Sentence[] {
   return out;
 }
 
+/** A rule's own finding key, read the same way it reads it at runtime: `STOCK_FINDINGS.<key>` member
+ *  access (the compile-time catalogue binding every D/S/T rule now uses). null for a rule with no
+ *  such access — the pre-binding shape, where `sentencesIn` already finds its sentence directly. */
+function keyOfRuleFile(path: string): string | null {
+  const src = readFileSync(path, "utf8");
+  const m = /\bSTOCK_FINDINGS\.([A-Za-z_$][\w$]*)/.exec(src);
+  return m ? m[1] : null;
+}
+
+/**
+ * Does this finding key resolve a sentence in verdicts.ts? Reads the file as TEXT — same discipline as
+ * sentencesIn() — rather than importing verdicts.ts as a module, so this gate stays a pure text scan
+ * with no runtime coupling to the render layer's shape.
+ *
+ * ── ⚠ THE SPAN IS BRACE-BALANCED, NOT KEY-TO-NEXT-KEY, AND THAT CHANGED FOR A REASON ─────────────
+ * The original heuristic ran from the key to the next `identifier:` line. That was correct while every
+ * entry was a flat one-liner. The D/S/T sentences now live in `PATTERN_CLAUSES`, whose entries are
+ * NESTED objects (`key: (ev) => ({ observation: \`…\`, size: \`…\` })`) — so the "next identifier:"
+ * was `observation:`, the span collapsed to `(ev) => ({`, and all sixteen D/S/T rules reported as
+ * having no sentence anywhere. The gate was right that something had moved and wrong about where to.
+ *
+ * Balancing brackets finds the entry's true extent regardless of how deeply the sentence is nested,
+ * which is a property of the language rather than of the current formatting — so the next reshuffle
+ * of this table does not fail the gate again.
+ */
+function hasVerdictsSentence(key: string): boolean {
+  const src = readFileSync("src/scoring/findings/verdicts.ts", "utf8");
+  // A key may appear in more than one table (the clause table AND the projection map). ANY occurrence
+  // that resolves a template literal counts — the question is "does a sentence exist for this key".
+  const re = new RegExp(`^[ \\t]*${key}\\s*:`, "gm");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    let i = m.index + m[0].length;
+    let depth = 0;
+    let span = "";
+    for (; i < src.length; i++) {
+      const c = src[i];
+      if (c === "(" || c === "{" || c === "[") depth++;
+      else if (c === ")" || c === "}" || c === "]") {
+        if (depth === 0) break; // closed the enclosing object — entry ends here
+        depth--;
+      } else if (c === "," && depth === 0) break; // end of this entry
+      span += c;
+    }
+    // ⚠ A PLAIN STRING COUNTS, NOT ONLY A TEMPLATE LITERAL. This used to test `span.includes("\`")`,
+    //   which was right only while every verdict interpolated a number. Once the figures were stripped
+    //   from the D/T copy most of those sentences became ordinary double-quoted strings, and eleven
+    //   registered rules were reported as yielding NO sentence when each had simply stopped needing an
+    //   interpolation. The question this function asks is "does a sentence exist for this key" — the
+    //   quote style is not part of that question.
+    if (span.includes("`") || span.includes('"')) return true;
+  }
+  return false;
+}
+
 async function main() {
   const registered = registeredRuleFiles();
   const files = [
@@ -154,10 +223,20 @@ async function main() {
   console.log(`  rule files on disk: ${onDisk} · REGISTERED (scanned): ${registered.length}  + the ownership persist path (R1)`);
   console.log(`  assertive sentences extracted: ${sentences.length}  (Family N: ${sentences.filter((s) => s.isFamilyN).length})`);
   const missed = registered.filter((f) => !sentences.some((s) => s.base === `${f}.ts`));
+  // ★ CENTRALISED SENTENCES — see the header. A rule that composes nothing of its own is a real miss
+  // ONLY if its key ALSO resolves nothing in verdicts.ts; otherwise the sentence moved, not vanished.
+  const stillMissed = missed.filter((f) => {
+    const key = keyOfRuleFile(`${RULES_DIR}/${f}.ts`);
+    return !key || !hasVerdictsSentence(key);
+  });
+  const centralised = missed.filter((f) => !stillMissed.includes(f));
+  if (centralised.length) {
+    console.log(`  sentence lives in verdicts.ts, not the rule file (Stage 3 centralisation): ${centralised.join(", ")}`);
+  }
   ok(
-    "every registered rule yielded at least one sentence (the extractor is not silently skipping files)",
-    missed.length === 0,
-    missed.join(",") || `${registered.length}/${registered.length}`,
+    "every registered rule yielded at least one sentence, in its own file OR in verdicts.ts (the extractor is not silently skipping files)",
+    stillMissed.length === 0,
+    stillMissed.join(",") || `${registered.length}/${registered.length}`,
   );
 
   rule("2 · UNIVERSAL REGISTER — promotional adjectives, banned in every family");

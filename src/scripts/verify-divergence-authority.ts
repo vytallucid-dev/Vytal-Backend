@@ -149,7 +149,7 @@ if (!probe) {
   const stored2dp = storedAbs.toFixed(2);
   const stored1dp = storedAbs.toFixed(1);
 
-  console.log(`  probe: ${probe.symbol}   ① storedScalar = ${view?.verdict?.divergence.storedScalar}   ② gap = ${view?.verdict?.divergence.gap}`);
+  console.log(`  probe: ${probe.symbol}   ① storedScalar = ${view?.verdict?.divergence.storedScalar}   ② spread = ${view?.verdict?.divergence.spread}`);
   console.log(`  fact block: ${block.length} chars`);
   for (const line of block.split("\n").filter((l) => /divergence/i.test(l))) console.log(`     ${line.trim()}`);
 

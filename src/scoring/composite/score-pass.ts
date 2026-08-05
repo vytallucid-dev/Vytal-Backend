@@ -64,7 +64,9 @@ import { runFindingsDetailed, type DeclinedCheck } from "../findings/engine.js";
 import { getRegimeForPeerGroup } from "../regime/regime.service.js";
 import { REGIME_EVIDENCE_KEY, toStamp } from "../regime/regime.js";
 import { opmSeriesFromQuarters, pillarMapOf } from "../findings/context.js";
-import { persistFindings } from "../findings/persist.js";
+import { persistFindings, persistNotCovered, type NotCoveredWriteRow } from "../findings/persist.js";
+import { notCoveredFirings, type NotCoveredFiring, type SubjectReadings as NcSubjectReadings } from "../findings/not-covered-eval.js";
+import { notCoveredPatternKey } from "../../catalogue/not-covered.js";
 import { loadTrajectorySeries } from "../findings/trajectory/load-series.js";
 import { loadBandTypicalProfiles } from "../findings/composition/band-typical.js";
 import { applyPgDampening, type DampenReport } from "../findings/dampen.js";
@@ -138,6 +140,15 @@ export interface MemberComputed {
   /** PG-level pond heat (File 1 §5 mask) — same value for every member of the PG (inherited).
    *  Stamped onto the member's snapshot by persistMember. undefined for legacy callers. */
   pondHeat?: PondHeat;
+  /** §NOT-COVERED — configurations tested and not shipped that matched THIS member's current/prior
+   *  readings, from the shared match engine (findings/not-covered-eval.ts). Present only with
+   *  withFindings; NEVER a FiredFinding and never merged into `.findings` — see persist.ts's
+   *  `persistNotCovered` for why this is a wholly separate write. */
+  notCoveredFirings?: NotCoveredFiring[];
+  /** The write-ready rows for `notCoveredFirings` above — evidence assembled (pillar values, the
+   *  triggering gap/crossing, period, and a best-effort regime-at-fire stamp). Built once, after the
+   *  regime lookup, so persistMember only ever writes a fully-assembled row. */
+  notCoveredWriteRows?: NotCoveredWriteRow[];
 }
 /** PG-level peer cross-section μ/σ/N for ONE F/M metric — captured from the same
  *  scoreMetricCrossSection output that produces each member's L2 (so the persisted
@@ -492,6 +503,31 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       });
       m.findings.push(...lens.escalated);
       m.lensAudit = lens.audit;
+
+      // ── §NOT-COVERED (measured, never a claim) ─────────────────────────────────────
+      // Same match engine the read layer uses (findings/not-covered-eval.ts), run over the SAME
+      // current/prior readings a real finding would read — inert-0 guarded the same way
+      // (`state !== "scored"` ⇒ null, never the persisted 0). `fctx.priorSnapshots` is already
+      // head-of-chain per period (loadTrajectorySeries above), so this needs no second query.
+      const pv = (p: Pillar): number | null =>
+        fctx.current.pillars[p].state === "scored" ? fctx.current.pillars[p].subtotal : null;
+      const ncNow: NcSubjectReadings = {
+        composite: fctx.current.composite,
+        foundation: pv("foundation"), momentum: pv("momentum"), market: pv("market"), ownership: pv("ownership"),
+      };
+      const priorTP = fctx.priorSnapshots.length ? fctx.priorSnapshots[fctx.priorSnapshots.length - 1] : null;
+      const ncPrior: NcSubjectReadings | null = priorTP
+        ? { composite: priorTP.composite, foundation: priorTP.foundation, momentum: priorTP.momentum, market: priorTP.market, ownership: priorTP.ownership }
+        : null;
+      m.notCoveredFirings = notCoveredFirings(ncNow, ncPrior);
+      // Evidence assembled NOW (period + the raw triggering numbers), regime stamped in the SAME
+      // best-effort pass real findings use, below — never gated on it: a regime-lookup failure must
+      // not silently drop the row, only the regime stamp on it (matches the real-findings contract).
+      m.notCoveredWriteRows = m.notCoveredFirings.map((f): NotCoveredWriteRow => ({
+        id: f.id,
+        patternKey: notCoveredPatternKey(f.id),
+        evidence: { values: f.values, trigger: f.triggerDetail, periodKey, reason: f.reason },
+      }));
     }
     // ── ★ FIRE-TIME REGIME STAMP (post-fire, pre-dampen, pre-persist) ──────────────
     // The regime that PREVAILED WHEN THESE FIRED, written into evidence under
@@ -515,7 +551,11 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
           return ev != null && (ev.regimeTier !== undefined || ev.regimeConditionalCopy !== undefined);
         }),
       );
-      if (needsRegime) {
+      // ★ NOT-COVERED rows ALWAYS want the stamp (unlike real findings, which self-select on a
+      // declared field) — every persisted not-covered row carries "period + regime at fire time" by
+      // the task's own requirement, not conditionally.
+      const needsNcRegime = members.some((m) => m.notCoveredWriteRows && m.notCoveredWriteRows.length > 0);
+      if (needsRegime || needsNcRegime) {
         const view = await getRegimeForPeerGroup(pgRow.id, { asOf });
         const stamp = toStamp(view);
         for (const m of members) {
@@ -525,10 +565,15 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
               ev[REGIME_EVIDENCE_KEY] = stamp;
             }
           }
+          for (const row of m.notCoveredWriteRows ?? []) {
+            (row.evidence as Record<string, unknown>)[REGIME_EVIDENCE_KEY] = stamp;
+          }
         }
       }
     } catch {
-      // swallow — the phase is context, never a precondition for a score.
+      // swallow — the phase is context, never a precondition for a score. `notCoveredWriteRows` was
+      // already assembled above (period + trigger + values), so a lookup failure here costs only the
+      // regime stamp, not the row itself — same degrade-not-drop contract as real findings.
     }
 
     // ── PG-WIDE DAMPENING (post-fire, pre-persist) ─────────────────────────────────
@@ -857,6 +902,14 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   // with it. Runs only when the findings hook attached a set (computePgScores withFindings).
   if (opts.writeFindings && m.findings && m.findings.length) {
     await persistFindings(db, snap.id, m.symbol, asOf, m.findings);
+  }
+
+  // ── §NOT-COVERED PERSIST — SAME gate, DELIBERATELY SEPARATE write (persist.ts's
+  // persistNotCovered, never persistFindings — see that function's header for why). These rows
+  // version WITH the snapshot exactly like real findings do; nothing downstream treats them as one
+  // unless a read boundary forgets its `isNotCoveredKey`/`dropNotCoveredPatterns` guard.
+  if (opts.writeFindings && m.notCoveredWriteRows && m.notCoveredWriteRows.length) {
+    await persistNotCovered(db, snap.id, m.symbol, asOf, m.notCoveredWriteRows);
   }
 
   // ── LAYER-1 AUDIT PERSIST — post-snapshot (the FK ordering in gate.ts §ordering) ──

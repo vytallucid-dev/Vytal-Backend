@@ -32,16 +32,23 @@
 // sector is running and the name is most fully priced." D6 therefore carries regime-split evidence
 // and regime-conditional copy, and — like every divergence pattern — is displayed in every phase.
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { scoredPair } from "../divergence/bands.js";
-import { NATIVE_ZONES } from "../thresholds.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** §Part 2 D6 — Foundation's native strong mark. */
-export const D6_FOUNDATION_MIN = NATIVE_ZONES.foundation.strong; // 72
-/** §Part 2 D6 — Momentum's native strong mark; the level being crossed DOWN through. */
-export const D6_MOMENTUM_CROSS = NATIVE_ZONES.momentum.strong; // 75
+const ENTRY = STOCK_FINDINGS.divergence_D6_quality_rolling_over;
+const FACTS = ENTRY.facts;
 
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** §Part 2 D6 — Foundation's native strong mark, now homed in `FACTS.legs` (the crossing boundary
+ *  itself stays on `evidencedTier`; `legs` carries both current-value conditions in full). */
+export const D6_FOUNDATION_MIN = FACTS.legs.find((l) => l.pillar === "foundation")!.value; // 72
+/** §Part 2 D6 — the level being crossed DOWN through, read from the record. Momentum's native strong
+ *  mark; the record declares it so this rule is not a second home for the number. */
+export const D6_MOMENTUM_CROSS = FACTS.evidencedTier; // 75
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleD6: FireRule = (ctx) => {
   const f = ctx.current.pillars.foundation;
@@ -58,10 +65,15 @@ export const ruleD6: FireRule = (ctx) => {
   const prior = ctx.priorSnapshots[ctx.priorSnapshots.length - 1];
   if (!prior.momentumScored || prior.momentum === null) return null;
   if (prior.momentum < D6_MOMENTUM_CROSS) return null; // was already below — not a crossing
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). D6 has NO minimum-margin floor on the
+  // crossing itself (unlike D5's +5 movement floor) — a real, epsilon-cleared crossing can still round
+  // to the same displayed Momentum on both sides. Refuse to fire on a move the card would show as
+  // "75 to 75."
+  if (!distinctAtPrecision(prior.momentum, momentum, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: "divergence_D6_quality_rolling_over",
+    key: ENTRY.key,
     severity: "high",
     direction: "negative",
     polarity: "negative",
@@ -71,14 +83,14 @@ export const ruleD6: FireRule = (ctx) => {
     evidence: {
       card: "D6",
       name: "Quality Rolling Over",
-      foundation: r1(foundation),
-      momentum: r1(momentum),
-      momentumPrior: r1(prior.momentum),
-      momentumFallPp: r1(prior.momentum - momentum),
+      foundation: round(foundation),
+      momentum: round(momentum),
+      momentumPrior: round(prior.momentum),
+      momentumFallPp: round(prior.momentum - momentum),
       crossedBelow: D6_MOMENTUM_CROSS,
       foundationMin: D6_FOUNDATION_MIN,
       // context only — deliberately NOT tiered on the §1.2 gap scale (see the header)
-      gapPp: r1(foundation - momentum),
+      gapPp: round(foundation - momentum),
       gapTierApplies: false,
       isCrossing: true,
       evidencedForwardPct: -3.4,

@@ -13,12 +13,12 @@
 
 import { seriesWithCurrent, priceGap, CALIBRATION_NOTE } from "../trajectory/view.js";
 import { K2_NOTABLE, K2_WIDE } from "../thresholds.js";
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
 export const C_WIDEN_PP = 8; // gap rose ≥ 8pp from its recent low ⇒ "widening" — FLAG: provisional
 const WINDOW = 4;            // look back up to 4 snapshots for the recent low
 
-export const ruleCOverTime: FireRule = (ctx) => {
+export const ruleCOverTime: RetiredRule = (ctx) => {
   const series = seriesWithCurrent(ctx);
   const recent = series.slice(-WINDOW).map(priceGap).filter((g): g is number => g !== null);
   if (recent.length < 2) return null;

@@ -33,11 +33,16 @@ const rule = (s: string) => console.log("\n" + "═".repeat(100) + "\n" + s + "\
 const EMITTED = STOCK_FINDING_KEYS.filter((k) => STOCK_FINDINGS[k].status !== "synthesised");
 
 // ── the adversarial evidence: a name that DISAGREES, and for R1 no name at all ────────────────────
+//
+// ⚠ trajectory_B_deterioration and divergence_C1_price_ahead are GONE — retired keys removed from the
+// catalogue in the C/G-divergence and B/D/I-trajectory rebuild waves (catalogue/retired-findings.ts).
+// A retired key is absent from STOCK_FINDINGS, so `findingName(k) === STOCK_FINDINGS[k].name` throws
+// rather than fails: there is no `STOCK_FINDINGS[k]` to read `.name` off. Contesting a key that can
+// never reach this gate's inputs again proves nothing about the live vocabulary — removed, not
+// replaced; the two live keys below still carry the adversarial test.
 const STALE_NAME: Record<string, string> = {
   composition_F1_atypical: "Composition (atypical-for-band)",
   foundation_N3_deleveraging: "Deleveraging",
-  trajectory_B_deterioration: "Deterioration from a high base",
-  divergence_C1_price_ahead: "Price ahead of fundamentals",
 };
 
 function evidenceFor(key: string): Record<string, unknown> {

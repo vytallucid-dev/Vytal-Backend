@@ -20,7 +20,7 @@
 // the copy can say that, and severity comes from trajectorySeverity() which cannot see the delta.
 //
 // ── NATIVE PILLAR ZONE ────────────────────────────────────────────────────────────────────────────
-// 60 is Foundation's OWN weak mark (NATIVE_ZONES.foundation.weak), never a composite band. §1.2's
+// 60 is Foundation's OWN weak mark, declared on T5's record, never a composite band. §1.2's
 // prohibition is live here: borrowing a composite value for a pillar flipped T6's sign.
 //
 // ── ★ NOT EPSILON-GATED, AND VERIFIED THAT IT SHOULDN'T BE ────────────────────────────────────────
@@ -33,28 +33,36 @@
 //
 // ── REGIME · TIER 3 (magnitude caveat) ────────────────────────────────────────────────────────────
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { pillarPrevNow } from "../trajectory/prev-now.js";
 import { TIER_MAGNITUDE_CAVEAT, trajectorySeverity } from "../trajectory/regime-tier.js";
 import { CALIBRATION_NOTE } from "../trajectory/view.js";
-import { NATIVE_ZONES } from "../thresholds.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** Foundation's NATIVE weak mark — never the composite's. */
-export const T5_FOUNDATION_WEAK = NATIVE_ZONES.foundation.weak; // 60
+/** ★ THE RECORD, NOT A RE-TYPED STRING — see d1-price-ahead-quality.ts for the full note. */
+const ENTRY = STOCK_FINDINGS.trajectory_D_T5_foundation_out_of_weak;
+const FACTS = ENTRY.facts;
 
-const KEY = "trajectory_D_T5_foundation_out_of_weak";
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** Foundation's NATIVE weak mark — never the composite's. Declared on T5's own record. */
+export const T5_FOUNDATION_WEAK = FACTS.evidencedTier; // 60
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleT5: FireRule = (ctx) => {
   const f = pillarPrevNow(ctx, "foundation");
   if (!f) return null;
   if (f.prev >= T5_FOUNDATION_WEAK) return null; // was not weak
   if (f.now < T5_FOUNDATION_WEAK) return null;   // has not crossed up
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). REAL effect — T5 is a crossing with
+  // no minimum-margin floor of its own, same shape as T3/T4/T6.
+  if (!distinctAtPrecision(f.prev, f.now, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: KEY,
-    severity: trajectorySeverity(KEY), // ★ R1 — cannot see f.delta
+    key: ENTRY.key,
+    severity: trajectorySeverity(ENTRY.key), // ★ R1 — cannot see f.delta
     direction: "positive",
     polarity: "positive",
     temporalClass: "EVENT",
@@ -63,9 +71,9 @@ export const ruleT5: FireRule = (ctx) => {
     evidence: {
       card: "T5",
       name: "Foundation Growing Out of the Weak Zone",
-      foundationPrior: r1(f.prev),
-      foundationNow: r1(f.now),
-      movePp: r1(f.delta),
+      foundationPrior: round(f.prev),
+      foundationNow: round(f.now),
+      movePp: round(f.delta),
       crossedAbove: T5_FOUNDATION_WEAK,
       isCrossing: true,
       priorPeriod: f.priorPeriodKey,

@@ -3,26 +3,32 @@
 // D5 · LAGGARD CATCHING UP — Momentum converging toward a strong Foundation.
 // Vytal_Divergence_Tool_Spec Part 2, D5. Display-only · magnitude null · nothing rescores.
 //
-//     (Foundation − Momentum) ≥ 8  AND  ΔMomentum ≥ +5          ← spec trigger
-//     …but see the BAND CONFLICT below: the gap leg is enforced at ≥ 12.
+//     (Foundation − Momentum) ≥ 8  AND  ΔMomentum ≥ +5          ← spec trigger, enforced AS STATED
 //
 // A fundamentally sound business whose trajectory had fallen behind is now turning up. The weak
 // pillar is converging TOWARD the strong one — and the direction of convergence is the whole point.
 //
-// ── ★ SPEC-INTERNAL CONFLICT, RESOLVED PER THE OWNER'S RULING — REPORTED, NOT SILENT ──────────────
-// D5's stated gap leg is (F − M) ≥ 8. §1.1's band table says 8–11 is MINOR — "a gap exists but
-// carries no demonstrated meaning. Do not surface." Those two cannot both hold: a D5 firing on a
-// 9-point gap surfaces a gap the same document says must never be surfaced.
-// The owner's ruling is explicit — "Nothing in the 8–11 band may fire" — so the gap leg is enforced
-// at GAP_MATERIAL (12), not 8. This NARROWS D5 relative to the literal trigger; it never widens it.
-// ⚠ Consequence worth knowing: the n=5 population that produced D5's +17.7% was selected on ≥8, so
-// the fired set here is a SUBSET of the measured one. Flagged in the build report.
+// ── ★ RULING 1 — MEASURED BEATS TRANSFERRED ───────────────────────────────────────────────────────
+// D5's gap leg is (F − M) ≥ 8, and the n=5 population that produced +17.7% was SELECTED at that floor
+// — 8 is not a guess, it is where the evidence starts. §1.1's "8–11 is MINOR, do not surface" is the
+// UNIVERSAL default for patterns with no measurement of their own at that distance; D5 has one, so the
+// universal default does not apply to it. A previous build composed `Math.max(8, 12)` to "resolve" the
+// apparent conflict — which silently let the TRANSFERRED number (12, inherited by every OTHER pattern
+// from Foundation↔Momentum's stickiness test) override D5's own MEASURED number. That inverted the
+// rule it was trying to honour. D5 fires at 8, enforced directly, no composition.
+//
+// ── ★ THE UNIVERSAL §1.2 TIER DOES NOT GATE D5 EITHER ─────────────────────────────────────────────
+// `gapTier()` (divergence/bands.ts) labels 12+ as material/stretched/extreme and returns null below
+// that — correct for every OTHER gap-basis pattern, and WRONG here if treated as a second, hidden
+// floor: D5's own evidence starts at 8, inside the band the universal tier calls "minor". A null tier
+// on a firing D5 (gap 8–11) is a real, honest outcome — the universal severity-gradient has no word
+// for this gap — not a rejection. `tier`/`tierWord` are carried through as nullable; never gated on.
 //
 // ── THE MIRROR IS THE PATTERN ─────────────────────────────────────────────────────────────────────
 // "The identical Momentum rise against a WEAK Foundation (the pillars widening apart instead)
 // performed markedly worse: −3.8%, 27% positive in normal phases (n=11). Same trigger, opposite
 // outcome, decided by which pillar it is moving toward."
-// The (F − M) ≥ 12 leg already selects the convergence case by construction — Foundation above
+// The (F − M) ≥ 8 leg already selects the convergence case by construction — Foundation above
 // Momentum means a Momentum rise CLOSES the gap. The mirror (Foundation below) cannot satisfy it. The
 // contrast is carried in evidence so the copy can teach it rather than leaving it implicit.
 //
@@ -33,15 +39,22 @@
 // "This has now appeared in FOUR separate tests, which is why it survives scrutiny, but it remains a
 // directional hypothesis rather than a proven edge."
 
-import { scoredPair, GAP_MATERIAL, gapTier, TIER_WORD } from "../divergence/bands.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
+import { scoredPair, gapTier, TIER_WORD } from "../divergence/bands.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** ⚠ The spec says 8; §1.1 forbids 8–11. Enforced at the material floor — see the header. */
-export const D5_GAP_MIN = GAP_MATERIAL; // 12, NOT the spec's literal 8
-/** §Part 2 D5 — the Momentum improvement leg, unchanged from the spec. */
-export const D5_MOMENTUM_RISE_MIN = 5;
+const ENTRY = STOCK_FINDINGS.divergence_D5_laggard_catching_up;
+const FACTS = ENTRY.facts;
 
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** §Part 2 D5 — D5's OWN enforced floor (Ruling 1). No composition against the universal
+ *  MATERIAL_GAP_FLOOR: this pattern's own evidence is the authority on where it starts. */
+export const D5_GAP_MIN = FACTS.gapFloor; // 8
+/** §Part 2 D5 — the Momentum improvement leg, read from the record's movement floor. */
+export const D5_MOMENTUM_RISE_MIN = FACTS.movementFloor; // 5
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleD5: FireRule = (ctx) => {
   const f = ctx.current.pillars.foundation;
@@ -51,9 +64,10 @@ export const ruleD5: FireRule = (ctx) => {
   const foundation = p.a, momentum = p.b;
 
   const gap = foundation - momentum;
-  if (gap < D5_GAP_MIN) return null; // ★ 12, not 8 — the 8–11 minor band never surfaces
+  if (gap < D5_GAP_MIN) return null; // ★ 8 — D5's own evidenced floor (Ruling 1)
+  // ★ NOT A GATE. The universal §1.2 tier has no word for gap ∈ [8, 12) — that is expected here, not
+  // a rejection. See the header: this is the second place the old code silently re-imposed 12.
   const tier = gapTier(gap);
-  if (!tier) return null;
 
   // ΔMomentum needs a prior reading. No prior ⇒ we cannot check, which is NOT the same as false.
   if (ctx.priorSnapshots.length === 0) return null;
@@ -62,10 +76,14 @@ export const ruleD5: FireRule = (ctx) => {
 
   const dMomentum = momentum - prior.momentum;
   if (dMomentum < D5_MOMENTUM_RISE_MIN) return null;
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). Already guaranteed here by the +5
+  // movement floor, far above the rounding granularity — asserted rather than assumed, in case the
+  // floor is ever recalibrated.
+  if (!distinctAtPrecision(prior.momentum, momentum, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: "divergence_D5_laggard_catching_up",
+    key: ENTRY.key,
     // Constructive convergence → `recovery` maps to the rec accent.
     severity: "recovery",
     direction: "positive",
@@ -76,16 +94,17 @@ export const ruleD5: FireRule = (ctx) => {
     evidence: {
       card: "D5",
       name: "Laggard Catching Up",
-      foundation: r1(foundation),
-      momentum: r1(momentum),
-      momentumPrior: r1(prior.momentum),
-      momentumRisePp: r1(dMomentum),
-      gapPp: r1(gap),
+      foundation: round(foundation),
+      momentum: round(momentum),
+      momentumPrior: round(prior.momentum),
+      momentumRisePp: round(dMomentum),
+      gapPp: round(gap),
+      // GapTier | null — null when the gap sits in [8, 12), below the universal tier's floor but at
+      // or above D5's own. The badge simply doesn't render for those, same as it already does for
+      // D3/D4/D6/D7's movement/crossing patterns with no standing-gap tier to report.
       tier,
-      tierWord: TIER_WORD[tier],
+      tierWord: tier ? TIER_WORD[tier] : null,
       gapMin: D5_GAP_MIN,
-      gapMinSpecLiteral: 8,
-      gapMinNarrowedByBandRule: true, // §1.1 8–11 suppression — see the header
       riseMin: D5_MOMENTUM_RISE_MIN,
       convergingToward: "foundation",
       // the mirror — same trigger, opposite outcome

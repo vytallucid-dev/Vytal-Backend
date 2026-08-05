@@ -26,16 +26,23 @@
 // Same reasoning: the trigger is a crossing (below 54 from ≥54), and the F−M gap at fire time is
 // incidental to it. `gapPp` is context; no tier is claimed; the 8–11 suppression does not gate it.
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { scoredPair } from "../divergence/bands.js";
-import { NATIVE_ZONES } from "../thresholds.js";
+import { distinctAtPrecision, roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** §Part 2 D7 — Momentum's native WEAK mark; the level being crossed DOWN through. */
-export const D7_MOMENTUM_CROSS = NATIVE_ZONES.momentum.weak; // 54
-/** §Part 2 D7 — Foundation's native weak mark; the base must be at or above it. */
-export const D7_FOUNDATION_MIN = NATIVE_ZONES.foundation.weak; // 60
+const ENTRY = STOCK_FINDINGS.divergence_D7_trajectory_breaking_base_holds;
+const FACTS = ENTRY.facts;
 
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** §Part 2 D7 — the level being crossed DOWN through, read from the record (Momentum's native weak
+ *  mark). */
+export const D7_MOMENTUM_CROSS = FACTS.evidencedTier; // 54
+/** §Part 2 D7 — Foundation's native weak mark; the base must be at or above it, now homed in
+ *  `FACTS.legs` — see the same note on D6. */
+export const D7_FOUNDATION_MIN = FACTS.legs.find((l) => l.pillar === "foundation")!.value; // 60
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleD7: FireRule = (ctx) => {
   const f = ctx.current.pillars.foundation;
@@ -52,10 +59,13 @@ export const ruleD7: FireRule = (ctx) => {
   const prior = ctx.priorSnapshots[ctx.priorSnapshots.length - 1];
   if (!prior.momentumScored || prior.momentum === null) return null;
   if (prior.momentum < D7_MOMENTUM_CROSS) return null; // was already weak — not a break
+  // ★ THE DISPLAY-PRECISION GATE ("Ruling 3 on T9" — format.ts). D7 has NO minimum-margin floor on the
+  // crossing itself — see d6-quality-rolling-over.ts's identical note.
+  if (!distinctAtPrecision(prior.momentum, momentum, FACTS.displayPrecision)) return null;
 
   return {
     kind: "pattern",
-    key: "divergence_D7_trajectory_breaking_base_holds",
+    key: ENTRY.key,
     // Early warning, n=10 — investigate register, not alarm.
     severity: "medium",
     direction: "negative",
@@ -66,13 +76,13 @@ export const ruleD7: FireRule = (ctx) => {
     evidence: {
       card: "D7",
       name: "Trajectory Breaking While the Base Holds",
-      foundation: r1(foundation),
-      momentum: r1(momentum),
-      momentumPrior: r1(prior.momentum),
-      momentumFallPp: r1(prior.momentum - momentum),
+      foundation: round(foundation),
+      momentum: round(momentum),
+      momentumPrior: round(prior.momentum),
+      momentumFallPp: round(prior.momentum - momentum),
       crossedBelow: D7_MOMENTUM_CROSS,
       foundationMin: D7_FOUNDATION_MIN,
-      gapPp: r1(foundation - momentum),
+      gapPp: round(foundation - momentum),
       gapTierApplies: false,
       isCrossing: true,
       evidencedForwardPct: -2.9,

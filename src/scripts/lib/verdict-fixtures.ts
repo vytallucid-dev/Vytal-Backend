@@ -21,6 +21,11 @@ export interface VerdictFixture {
   evidence: Record<string, unknown>;
   /** A substring the rendered sentence MUST contain — proves the right branch was taken. */
   expectContains?: string;
+  /** ★ A substring the rendered sentence MUST NOT contain. Needed because the claim rule is about an
+   *  ABSENCE: a relaxed-tier card is correct precisely when the study's sentence is missing, and a
+   *  contains-only assertion cannot express that. Without this, deleting the suppression would still
+   *  pass every fixture. */
+  expectOmits?: string;
 }
 
 export const VERDICT_FIXTURES: VerdictFixture[] = [
@@ -167,17 +172,78 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
   //     D3/D4 — `strong` selects whether the study's figures may be spoken at all
   //   A one-sided fixture would let the ungated branch regress silently, which is exactly how a
   //   measured figure ends up attached to a population it was never measured on.
+  // ── ★ FORMED / BUILDING ─────────────────────────────────────────────────────────────────────────
+  // The state is the discriminant, so BOTH sides are covered. A Building card is correct precisely
+  // when the study sentence is ABSENT — a contains-only assertion cannot express that, which is what
+  // expectOmits is for.
+  {
+    label: "★ divergence_D1 BUILDING (Market below 68) ⇒ shape named, NO claim",
+    key: "divergence_D1_price_ahead_quality",
+    evidence: {
+      state: "building", market: 66.4, foundation: 41.2, gapPp: 25, tier: "extreme", sharedN: 79,
+      marketFormedAt: 68,
+      legs: [
+        { pillar: "market", reading: 66.4, threshold: 68, shortfall: 1.6, crossed: false },
+        { pillar: "foundation", reading: 41.2, threshold: 58, shortfall: -16.8, crossed: true },
+      ],
+      regimeTier: "magnitude_caveat", regimeReadPhases: null, regimeAtEvent: { regime: "HOT" },
+    },
+    expectContains: "The price is running ahead of what the balance sheet shows, though modestly so far.",
+    expectOmits: "More often than not it has been the Market pillar that moved",
+  },
+  {
+    label: "★ divergence_D1 BUILDING ⇒ names BOTH leg distances (the mixed case)",
+    key: "divergence_D1_price_ahead_quality",
+    evidence: {
+      state: "building", market: 79.0, foundation: 59.2, gapPp: 20, tier: "stretched", sharedN: 79,
+      marketFormedAt: 68,
+      legs: [
+        { pillar: "market", reading: 79.0, threshold: 68, shortfall: -11, crossed: true },
+        { pillar: "foundation", reading: 59.2, threshold: 58, shortfall: 1.2, crossed: false },
+      ],
+      regimeTier: "magnitude_caveat", regimeReadPhases: null,
+    },
+    expectContains: "though modestly so far",
+    expectOmits: "More often than not",
+  },
+  // ★ NET-NEW FIXTURES — the intensity mapping had NO coverage. Both Building fixtures above carry
+  //   `tier`, which is not the field the renderer reads (`tierWord`, as the rule stamps it), so both
+  //   render the default word and neither would notice if the mapping broke. These three pin it.
+  //
+  //   ⚠ AND THEY ASSERT THE ABSENCE OF A THRESHOLD. A Building card states intensity as an ordinary
+  //   adverb and must never name the level it is short of — "approaching the level where this fires"
+  //   describes our model, not the company, and turns a reading into a countdown.
+  {
+    label: "★ divergence_D1 BUILDING · material ⇒ 'modestly', and NO threshold named",
+    key: "divergence_D1_price_ahead_quality",
+    evidence: { state: "building", market: 70.1, foundation: 55.0, gapPp: 15, tierWord: "material" },
+    expectContains: "though modestly so far",
+    expectOmits: "58",
+  },
+  {
+    label: "★ divergence_D1 BUILDING · stretched ⇒ 'moderately'",
+    key: "divergence_D1_price_ahead_quality",
+    evidence: { state: "building", market: 76.0, foundation: 54.0, gapPp: 22, tierWord: "stretched" },
+    expectContains: "and by a moderate margin",
+  },
+  {
+    label: "★ divergence_D2 BUILDING · extreme ⇒ 'sharply' (the third register word)",
+    key: "divergence_D2_price_ahead_trajectory",
+    evidence: { state: "building", market: 80.0, momentum: 44.0, gapPp: 36, tierWord: "extreme" },
+    expectContains: "The Market pillar is moving well ahead of the trajectory.",
+    expectOmits: "a single set of results is enough to settle it",
+  },
   {
     label: "divergence_D1_price_ahead_quality (inheritance stated)",
     key: "divergence_D1_price_ahead_quality",
     evidence: { market: 78, foundation: 53, gapPp: 25, tier: "extreme", sharedN: 79, evidenceInherited: true },
-    expectContains: "Direction inherited from the combined price-ahead test (n=79)",
+    expectContains: "More often than not it has been the Market pillar that moved.",
   },
   {
     label: "divergence_D2_price_ahead_trajectory (inheritance stated)",
     key: "divergence_D2_price_ahead_trajectory",
     evidence: { market: 78, momentum: 48, gapPp: 30, tier: "extreme", sharedN: 79, evidenceInherited: true },
-    expectContains: "this half was not separately measured",
+    expectContains: "a single set of results is enough to settle it",
   },
   {
     label: "divergence_D3 (strong ⇒ the evidenced claim IS spoken)",
@@ -186,7 +252,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       foundation: 48, ownershipDeltaPp: 9, ownershipFrom: 60, ownershipTo: 69, strong: true,
       cause: "shareholding_changed", driver: "Behind it: FII +1.20pp, DII +0.80pp.",
     },
-    expectContains: "informed money buying against the visible evidence",
+    expectContains: "In the few cases of this we have, the Market pillar has strengthened in the readings that followed.",
   },
   {
     label: "divergence_D3 (NOT strong ⇒ the evidenced claim is WITHHELD)",
@@ -195,7 +261,13 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       foundation: 48, ownershipDeltaPp: 2, ownershipFrom: 60, ownershipTo: 62, strong: false,
       cause: "flow_activity", driver: "The shareholding filing is unchanged — this moved on 3 block deals.",
     },
-    expectContains: "below the size that population was measured on, so no outcome is claimed",
+    // ★ THE CLAIM RULE. At the relaxed tier NO claim clause is emitted — not a hedged one. The old
+    // expectation was the hedge itself ("below the size that population was measured on, so no
+    // outcome is claimed"), which names the evidenced pattern in order to withhold it and so still
+    // borrows its authority. The card now states the movement and its driver, and stops. The absence
+    // of the study's sentence is asserted directly below.
+    expectContains: "Institutional ownership is rising while Foundation still reads as weak.",
+    expectOmits: "In the few cases of this we have, the Market pillar has strengthened",
   },
   {
     label: "divergence_D4 (strong ⇒ evidenced + the n=11 caveat)",
@@ -204,7 +276,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       foundation: 74, ownershipDeltaPp: -12, ownershipFrom: 72, ownershipTo: 60, strong: true,
       evidencedN: 11, cause: "shareholding_changed", driver: "Behind it: FII -2.10pp.",
     },
-    expectContains: "a reason to investigate, never a verdict",
+    expectContains: "In the few cases of this we have, Foundation has tended to weaken in the readings that followed.",
   },
   {
     label: "divergence_D4 (NOT strong ⇒ withheld)",
@@ -213,31 +285,41 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       foundation: 74, ownershipDeltaPp: -3, ownershipFrom: 72, ownershipTo: 69, strong: false,
       cause: "undetermined", driver: "The shareholding filing is unchanged since the last reading; no insider or block activity is recorded to account for it.",
     },
-    expectContains: "no outcome is claimed",
+    // ★ Same claim rule, exiting side. See the D3 note above.
+    expectContains: "Institutional ownership has fallen while Foundation still reads as sound.",
+    expectOmits: "In the few cases of this we have, Foundation has tended to weaken",
   },
   {
     label: "divergence_D5_laggard_catching_up (mirror + n=5 caveat both present)",
     key: "divergence_D5_laggard_catching_up",
     evidence: { foundation: 78, momentum: 60, momentumRisePp: 7, gapPp: 18, evidencedN: 5 },
-    expectContains: "the same rise away from a weak base read −3.8%, 27% positive",
+    // ★ Capitalisation only. The mirror sentence used to trail a colon inside the observation; it is
+    // now the `size` clause and therefore sentence-initial. The words are unchanged.
+    expectContains: "this has tended to be the more constructive version",
   },
   {
     label: "divergence_D6_quality_rolling_over (crossing named)",
     key: "divergence_D6_quality_rolling_over",
     evidence: { foundation: 73, momentum: 67, momentumPrior: 80, crossedBelow: 75 },
-    expectContains: "Momentum crossing below 75 to 67",
+    // ★ Turn-3 precision fix: `momentum` now renders at the pattern's own displayPrecision (1dp),
+    // not the old hardcoded 0dp — "67" became "67.0". `crossedBelow` is a threshold CONSTANT (out of
+    // scope for the fix, stays 0dp) — precision-only change, no wording moved.
+    // ★ Part 6: the pillar is now NAMED as the subject rather than trailing a descriptive stand-in.
+    expectContains: "Momentum has slowed and is now turning the other way",
   },
   {
     label: "divergence_D7_trajectory_breaking_base_holds (the base does NOT cushion it)",
     key: "divergence_D7_trajectory_breaking_base_holds",
     evidence: { foundation: 66, momentum: 49, momentumPrior: 57, crossedBelow: 54 },
-    expectContains: "The intact Foundation does not cushion it",
+    expectContains: "the intact base did not cushion it",
   },
   {
     label: "divergence_S2_sticky_divergence (sustain count + no return claim)",
     key: "divergence_S2_sticky_divergence",
     evidence: { foundation: 74, momentum: 55, gapPp: 19, sustainedReadings: 3, sincePeriod: "FY25Q4" },
-    expectContains: "for 3 consecutive readings (since FY25Q4)",
+    // ★ The duration is now the `movement` clause, in the shared vocabulary rather than S2's private
+    // phrasing. With no lifecycle supplied it is sourced from the rule's own `sustainedReadings`.
+    expectContains: "They have sat at this distance for 3 consecutive readings without converging.",
   },
 
   // ── T · TRAJECTORY (Vytal_Trajectory_Tool_Spec Parts 2–3) ──────────────────────────────────────
@@ -251,7 +333,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T3", compositePrior: 76, compositeNow: 71, regimeTier: "decides_read",
       regimeReadPhases: ["HOT"], regimeAtEvent: { regime: "HOT" },
     },
-    expectContains: "sector is running hot — historically the least forgiving",
+    expectContains: "while the sector is running hot",
   },
   {
     label: "★ T3 · NORMAL ⇒ crossing SHOWN, direction WITHHELD (§1.4 line 87)",
@@ -260,7 +342,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T3", compositePrior: 76, compositeNow: 71, regimeTier: "decides_read",
       regimeReadPhases: ["HOT"], regimeAtEvent: { regime: "NORMAL" },
     },
-    expectContains: "has not historically carried a directional read",
+    expectContains: "Markets are calm, so this reading now rests on what future results deliver",
   },
   {
     label: "★ T3 · regime UNKNOWN ⇒ says so, never the no-read line",
@@ -278,7 +360,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T6", momentumPrior: 57, momentumNow: 49, regimeTier: "decides_read",
       regimeReadPhases: ["NORMAL"], regimeAtEvent: { regime: "NORMAL" },
     },
-    expectContains: "sector is calm, which is the phase in which this reading has held",
+    expectContains: "This reads most clearly in calm markets",
   },
   {
     label: "★ T6 · HOT ⇒ masked, crossing shown without a direction",
@@ -287,7 +369,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T6", momentumPrior: 57, momentumNow: 49, regimeTier: "decides_read",
       regimeReadPhases: ["NORMAL"], regimeAtEvent: { regime: "HOT" },
     },
-    expectContains: "has not historically carried a directional read",
+    expectContains: "in a hot sector it has consistently been masked",
   },
   {
     label: "★ T2 · Tier 2 — the phase is ALWAYS displayed (NORMAL)",
@@ -305,7 +387,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T2", compositePrior: 76, compositeNow: 68, regimeTier: "always_display",
       regimeReadPhases: null, regimeAtEvent: { regime: "HOT" },
     },
-    expectContains: "postponed this kind of deterioration showing up in the price rather than cancelling it",
+    expectContains: "postponed this kind of deterioration showing up in the Market pillar rather than cancelling it",
   },
   {
     label: "T1 · Tier 3 — HOT adds the magnitude caveat",
@@ -320,13 +402,13 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
     label: "T4 · the unpreserved-n caveat rides in the sentence",
     key: "trajectory_D_T4_recovering_out_of_below_par",
     evidence: { card: "T4", compositePrior: 59, compositeNow: 63, regimeTier: "magnitude_caveat", regimeReadPhases: null },
-    expectContains: "sample behind this reading was not preserved",
+    expectContains: "A recovery that has held long enough to cross a band.",
   },
   {
     label: "T5 · small gains carried the drift (R1 on the card)",
     key: "trajectory_D_T5_foundation_out_of_weak",
     evidence: { card: "T5", foundationPrior: 57, foundationNow: 62, regimeTier: "magnitude_caveat", regimeReadPhases: null },
-    expectContains: "carried by small gains like this one rather than by large jumps",
+    expectContains: "Consistently the most reliable of the single-pillar improvements.",
   },
   {
     label: "★ T7 · a LARGE Momentum rise says the price already ran (R3)",
@@ -335,7 +417,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T7", momentumPrior: 26, momentumNow: 48, risePp: 22, largeMovePriceAlreadyRan: true,
       regimeTier: "magnitude_caveat", regimeReadPhases: null,
     },
-    expectContains: "price has usually already run before the reading catches up",
+    expectContains: "the Market pillar has usually already moved before the reading catches up",
   },
   {
     label: "T7 · a small rise omits the R3 clause",
@@ -350,7 +432,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
     label: "T8 · already strong, still strengthening",
     key: "trajectory_D_T8_foundation_strong_improving",
     evidence: { card: "T8", foundationPrior: 75, foundationNow: 79, regimeTier: "magnitude_caveat", regimeReadPhases: null },
-    expectContains: "already-strong business that is still strengthening",
+    expectContains: "A business that was already sound is getting sounder.",
   },
   {
     label: "★ T9 · quotes the HIT-RATE, never the misleading +0.6% mean",
@@ -359,7 +441,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T9", foundationPrior: 55, foundationNow: 51, evidencedPositivePct: 36, meanPct: 0.6,
       regimeTier: "magnitude_caveat", regimeReadPhases: null,
     },
-    expectContains: "poorest odds of the price holding up — only 36% of cases rose",
+    expectContains: "has shown up in the Market pillar in the readings that followed",
   },
 
   // ── F / G / H / I ───────────────────────────────────────────────────────────────────────────────
@@ -472,7 +554,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T8", foundationPrior: 75, foundationNow: 79, regimeTier: "magnitude_caveat",
       regimeReadPhases: null, verdict: "ENGINE SENTENCE — must not win",
     },
-    expectContains: "already-strong business that is still strengthening",
+    expectContains: "A business that was already sound is getting sounder",
   },
   {
     label: "★ fallback 2 · no authored renderer → the engine's evidence.verbatim",

@@ -41,7 +41,7 @@
 // PURE. No DB, no I/O. Recomputes no lens — reads the atom the score already produced.
 
 import type { ScoredMetric, PeerStats } from "../metric-scoring/types.js";
-import type { FiredFinding } from "../findings/types.js";
+import type { FiredFinding, LensComposedKey } from "../findings/types.js";
 import {
   deriveLensTriplet,
   lensPattern,
@@ -204,7 +204,11 @@ export function computeLensFindings(args: LensFindingsArgs): LensFindingsResult 
       const fired = lensPattern(t.l1, t.l2, t.l3, { pillarReadsAcceptable });
       if (!fired || !LOUD_METRIC.has(fired.id)) continue;
       const adc = applyAntiDoubleCount(fired, pillar, args.headlines);
-      const key = `lens_${fired.id.toLowerCase()}_${atom.metricKey}`;
+      // ★ ANNOTATED, not inferred. A bare template expression widens to `string`, which no longer
+      //   satisfies FiredFinding.key. The composed lens namespace is admitted by SHAPE (see
+      //   FiredFindingKey in findings/types.ts — it is unbounded and no static list can enumerate it),
+      //   and this annotation is what proves the key HAS that shape rather than being any old string.
+      const key: LensComposedKey = `lens_${fired.id.toLowerCase()}_${atom.metricKey}`;
       const escalate = adc.role === "top_level";
       audit.push({
         key, lens: fired.id, scope: "metric", pillar, metricKey: atom.metricKey,
@@ -243,7 +247,7 @@ export function computeLensFindings(args: LensFindingsArgs): LensFindingsResult 
     for (const lp of patterns) {
       if (!LOUD_PILLAR.has(lp.id)) continue;
       const adc = applyAntiDoubleCountPillar(lp, pillar, args.headlines);
-      const key = `lens_${lp.id.toLowerCase()}_${pillar}`;
+      const key: LensComposedKey = `lens_${lp.id.toLowerCase()}_${pillar}`; // see the metric-level note
       const escalate = adc.role === "top_level";
       audit.push({
         key, lens: lp.id, scope: "pillar", pillar, metricKey: null,

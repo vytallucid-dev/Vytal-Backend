@@ -6,6 +6,9 @@
 //               Family-N static fields, the guardrail entries (shape + generated consequence/status),
 //               and the two boundary maps a consumer needs to resolve a key the registries do not
 //               carry (a composed lens key, or a key that reaches a payload before its copy lands).
+//               For a D/S/T pattern's `facts`: ONLY `pillarPair` / `basis` / `displayPrecision` —
+//               display geometry a chart needs (which pillars to draw, what shape the trigger is, how
+//               many decimals to print). See the narrowing note beside `servedFacts` below.
 //
 //   NOT SERVED  VERDICTS. They are (evidence) => string functions — not JSON, and meaningless without
 //               the instance they bind to. They ride the finding ROWS on the per-stock responses
@@ -28,6 +31,7 @@ import { GUARDRAIL_SIGNATURES } from "./guardrail-signatures.js";
 import { LENS_FACES } from "./lens-faces.js";
 import { PHS_FINDINGS } from "./phs-findings.js";
 import { FAMILY_DOESNT_MEAN, LENS_DOESNT_MEAN, STOCK_FINDINGS } from "./stock-findings.js";
+import type { ServedPatternFacts } from "./pattern-facts.js";
 import type { RegistryId } from "./types.js";
 
 /** The registries a caller may address. */
@@ -57,8 +61,49 @@ const boundaries = (): BoundaryMaps => ({
   lens: { ...LENS_DOESNT_MEAN },
 });
 
+/**
+ * ★ `facts` IS NARROWED, NOT STRIPPED — AND WHICH FIELDS SURVIVE IS A SECURITY DECISION.
+ *
+ * StockFindingEntry.facts carries the pattern-defining THRESHOLDS — 54, 60, 72, 74, 75, every leg
+ * value, every movementFloor/gapFloor, the regime map, the measured evidence stats — which ARE the
+ * nativeZone bounds and the scoring bars this document's stated boundary forbids serving ("nothing
+ * served could be reverse-engineered into a metric bar, a pillar weight, a nativeZone bound or a peer
+ * formula", asserted by verify-catalogue-endpoint.ts §4). Those stay engine-side only.
+ *
+ * `pillarPair`, `basis` and `displayPrecision` are DISPLAY GEOMETRY, not scoring bars: which pillars a
+ * chart draws, what shape the trigger is (a gap/movement/crossing, not a value), how many decimals to
+ * print. A reading surface (the divergence/trajectory tool charts) needs exactly these three and none
+ * of the thresholds, which is the whole reason pattern-facts.ts declares `ServedPatternFacts` as a
+ * named `Pick` rather than leaving this module to enumerate the safe fields inline — the SET of what
+ * is safe to serve is declared once, beside the facts themselves, not re-decided here.
+ *
+ * ⚠ The §4 scans read STRING values; `pillarPair`/`basis` are strings and ARE swept into that scan
+ * (proven clean — see verify-catalogue-endpoint.ts). `displayPrecision` is a number and is invisible
+ * to a string scan regardless, which is a property of the walk, not a reason to trust it blindly for
+ * a future field — anything added to `ServedPatternFacts` must be re-verified against §4, same as any
+ * other served field.
+ *
+ * Rest-spread preserves insertion order and `facts` is appended last by the assembler, so a stock
+ * finding with no pattern facts (`facts: null`) still serves `facts: null` here, unchanged from a
+ * strip — only a pattern-bearing entry's `facts` object now carries these three fields instead of
+ * being entirely absent.
+ */
+export const servedFacts = (facts: unknown): ServedPatternFacts | null => {
+  if (!facts || typeof facts !== "object") return null;
+  const f = facts as Record<string, unknown>;
+  return { pillarPair: f.pillarPair, basis: f.basis, displayPrecision: f.displayPrecision } as ServedPatternFacts;
+};
+
+const withNarrowedFacts = (): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(STOCK_FINDINGS).map(([key, entry]) => {
+      const { facts, ...rest } = entry;
+      return [key, { ...rest, facts: servedFacts(facts) }];
+    }),
+  );
+
 const REGISTRY_SOURCE: Record<ServedRegistry, () => Record<string, unknown>> = {
-  stock_finding: () => STOCK_FINDINGS as unknown as Record<string, unknown>,
+  stock_finding: withNarrowedFacts,
   lens_face: () => LENS_FACES as unknown as Record<string, unknown>,
   phs_finding: () => PHS_FINDINGS as unknown as Record<string, unknown>,
   guardrail_signature: () => GUARDRAIL_SIGNATURES as unknown as Record<string, unknown>,

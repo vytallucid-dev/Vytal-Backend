@@ -26,11 +26,16 @@
 // reaches its tool by being named correctly, and cannot reach the wrong one.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
+import { severityWeight } from "../../catalogue/divergence.js";
 import { prisma } from "../../db/prisma.js";
 import { getUniverseRows, type LeanSnap } from "./universe-rows.cache.js";
 import { renderVerdict } from "../findings/verdicts.js";
 import { alignedState, S1_NAME, S1_VERDICT, S1_DESCRIPTION, type AlignedState } from "../findings/divergence/aligned.js";
 import { dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+// ★ NOT-COVERED SUPPRESSION — a persisted `notcovered_*` row falls into family "E" by `familyOf`'s
+//   catch-all (it matches none of the D/S/T prefix tests), which happens NOT to be tool-facing today
+//   — but that is `familyOf`'s coincidence, not a guarantee. Guarded explicitly rather than relied on.
+import { dropNotCoveredPatterns } from "../../catalogue/not-covered.js";
 import { forTool, type ToolId } from "../../catalogue/tool-families.js";
 import { findingName, findingDescription, doesntMean } from "../../catalogue/index.js";
 import type { SectorRef } from "./stocks-list.types.js";
@@ -114,20 +119,34 @@ const scored = (v: number, w: number): number | null => (w > 0 ? v : null);
 //   measured findings. Phase 3 enforced this backend-side via trajectorySeverity()'s arity; this is
 //   the same law at the ranking layer.
 
-const SEVERITY_RANK: Readonly<Record<string, number>> = {
-  critical: 0, red: 1, high: 2, amber: 3, recovery: 4, green: 5, medium: 6, low: 7,
-};
-const sevRank = (s: string | null): number => SEVERITY_RANK[(s ?? "").toLowerCase()] ?? 9;
+// ★ SEVERITY_RANK IS GONE — it was a fourth transcription of the catalogue's own `severityWeight`
+//   (catalogue/divergence.ts), which is total over all eight tokens. A local copy of an ordering is
+//   the kind of duplicate that stays correct until someone adds a ninth token to one of them.
+const sevRank = (s: string | null): number => severityWeight(s);
 
-/** The largest |gapPp| a stock's divergence findings carry — the tension the landing ranks on. */
-function maxGap(findings: ToolFinding[]): number {
-  let g = 0;
+/**
+ * ★ THE TENSION THE DIVERGENCE LANDING RANKS ON — the best §1.2 TIER a stock's findings carry.
+ *
+ * ⚠ `maxGap()` IS GONE, AND IT WAS NOT MERELY A DUPLICATE — IT WAS READING A FIELD MOST PATTERNS DO
+ * NOT HAVE. It scraped `evidence.gapPp` and defaulted anything without it to 0, so every CROSSING
+ * (D6/D7) and every MOVEMENT (D3/D4) pattern sorted to the bottom of the divergence landing
+ * regardless of how severe it was — a stock whose Quality was rolling over ranked below one with a
+ * mild standing gap, because only gap-basis patterns write that key.
+ *
+ * The tier word is what §1.2 actually grades tension on, the rule stamps it, and it is NULL exactly
+ * where no severity gradient applies. Ranking on it means "no tier" is an honest position in the
+ * order rather than a fabricated zero.
+ */
+const TIER_ORDER: Readonly<Record<string, number>> = { extreme: 0, stretched: 1, material: 2 };
+function tensionRank(findings: ToolFinding[]): number {
+  let best = 9;
   for (const f of findings) {
-    const ev = f.evidence as { gapPp?: unknown } | null;
-    const v = ev && typeof ev.gapPp === "number" ? Math.abs(ev.gapPp) : 0;
-    if (v > g) g = v;
+    const ev = f.evidence as { tierWord?: unknown } | null;
+    const w = ev && typeof ev.tierWord === "string" ? ev.tierWord : "";
+    const r = TIER_ORDER[w] ?? 8; // untiered (crossing/movement) — after every tiered gap, not at 0
+    if (r < best) best = r;
   }
-  return g;
+  return best;
 }
 
 /**
@@ -150,9 +169,9 @@ export async function buildToolScan(tool: ToolId): Promise<ToolScanItem[]> {
       })
     : [];
 
-  // ★ Retirement suppression, then tool separation. Both by predicate, neither by list.
+  // ★ Retirement + not-covered suppression, then tool separation. All three by predicate, none by list.
   const bySnap = new Map<string, typeof patterns>();
-  for (const p of dropRetiredPatterns(patterns)) {
+  for (const p of dropNotCoveredPatterns(dropRetiredPatterns(patterns))) {
     const arr = bySnap.get(p.snapshotId) ?? [];
     arr.push(p);
     bySnap.set(p.snapshotId, arr);
@@ -208,7 +227,7 @@ export async function buildToolScan(tool: ToolId): Promise<ToolScanItem[]> {
     items.sort(
       (a, b) =>
         (b.findings.length ? 1 : 0) - (a.findings.length ? 1 : 0) ||
-        maxGap(b.findings) - maxGap(a.findings) ||
+        tensionRank(a.findings) - tensionRank(b.findings) ||
         a.symbol.localeCompare(b.symbol),
     );
   } else {

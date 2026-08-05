@@ -34,11 +34,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { N_FAMILY_COPY, N_FAMILY_DOESNT_MEAN, type NFamilyKey } from "./n-family-copy.js";
+import { PATTERN_FACTS, PATTERN_KEYS, type PatternFacts, type PatternKey } from "./pattern-facts.js";
 import type {
   FindingConcern,
   FindingFamily,
   KeyStatus,
-  Registry,
   StockFindingEntry,
 } from "./types.js";
 
@@ -86,9 +86,12 @@ export const STOCK_FINDING_KEYS = [
   "composition_F1_atypical",
   "trajectory_F2_composition_shift",
   "ownership_H_block_events",
-  // C · the divergence family (Vytal_Divergence_Tool_Spec Parts 2–3). Seven patterns + one state.
-  //   S1 (Aligned) is deliberately NOT here: it is the neutral control the TOOL renders, not a card
-  //   stamped on every quiet stock — see findings/divergence/bands.ts for why.
+  // C · the divergence family (Vytal_Divergence_Tool_Spec Parts 2–3). Seven patterns + two states.
+  //   ★ S1 (Aligned) IS HERE (Ruling 3 — S1 is a measured state driving the divergence headline, not
+  //   a fact with no home). It carries status "never_emitted": a real entry with real copy and real
+  //   facts that no rule and no read-layer composition ever produces as a fired finding — the tool
+  //   reads it directly (findings/divergence/aligned.ts). See types.ts's KeyStatus for the full note.
+  "divergence_S1_aligned",
   "divergence_D1_price_ahead_quality",
   "divergence_D2_price_ahead_trajectory",
   "divergence_D3_ownership_building_weak_foundation",
@@ -122,6 +125,36 @@ export const STOCK_FINDING_KEYS = [
 
 export type StockFindingKey = (typeof STOCK_FINDING_KEYS)[number];
 
+/**
+ * ★ PatternKey ⊂ StockFindingKey, PROVED. A facts record for a key the vocabulary does not carry is a
+ * compile error here — the two modules cannot drift into declaring facts for a pattern that can never
+ * arrive on a payload. (The other direction is intentionally open: a finding without pattern facts is
+ * the normal case for families A, E, F, H and N.)
+ */
+const _PATTERN_KEYS_ARE_CATALOGUED: readonly StockFindingKey[] = PATTERN_KEYS;
+void _PATTERN_KEYS_ARE_CATALOGUED;
+
+/**
+ * ★ THE REGISTRY TYPE, NARROWED PER KEY — this is where §3's compile-time binding actually lands.
+ *
+ * `key` carries its own LITERAL type, so a rule writing `key: ENTRY.key` emits a key that is provably
+ * in the vocabulary and provably the one it looked up. And `facts` resolves through PATTERN_FACTS'
+ * own inferred shape, so:
+ *
+ *   STOCK_FINDINGS.divergence_S2_sticky_divergence.facts.gapFloor   →  number   (no null-check)
+ *   STOCK_FINDINGS.divergence_D6_quality_rolling_over.facts.gapFloor →  null    (unusable as a number)
+ *   STOCK_FINDINGS.ownership_R1_pledge.facts                        →  null    (not dereferenceable)
+ *
+ * A generic consumer that only knows `StockFindingEntry` still sees `PatternFacts | null`; the
+ * narrowing is for the rules, which are the only callers that need a threshold rather than a fact.
+ */
+export type StockFindingRegistry = {
+  readonly [K in StockFindingKey]: Omit<StockFindingEntry, "key" | "facts"> & {
+    readonly key: K;
+    readonly facts: K extends PatternKey ? (typeof PATTERN_FACTS)[K] : null;
+  };
+};
+
 // ── per-family "doesn't mean" interpretive boundary (File 1 §5, verbatim) ──────────────────────────
 // TOTAL BY CONSTRUCTION (amendment §2): every family MUST carry a boundary line, so this is a total
 // Record<FindingFamily, …> — a missing family is a COMPILE error, not a runtime blank. Family N's line
@@ -130,7 +163,11 @@ export const FAMILY_DOESNT_MEAN: Readonly<Record<FindingFamily, string>> = {
   A: "a hard risk/quality warning to investigate — not a prediction the stock will fall.",
   B: "review your thesis, not sell — an early risk read, not a price call.",
   C: "you read the state, you can't time the resolution — divergences are sticky; the bill is due, never that it's due today.",
-  D: "a coincident health inflection worth investigating — not a buy, not a guaranteed continuation; strongest read against a calm pond.",
+  // ⚠ "worth investigating" REMOVED (the advisory ban). It is an instruction in descriptive clothing —
+  //   a reader told a condition is worth investigating has been told to act, whether or not a verb was
+  //   used. The line now states what the reading IS and what it is not, which is the whole job of a
+  //   boundary. Caught by verify-copy-register.ts, not by review.
+  D: "a coincident health inflection — not a buy, not a guaranteed continuation; strongest read against a calm pond.",
   E: "a condition to look at — not a trade signal.",
   F: "a place to investigate, not a re-rate signal.",
   G: "the move isn't over, and which way it resolved depends on which pillar moved — not buy/sell.",
@@ -511,6 +548,20 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
   // spec gates them (D1/D2's shared n=79 inheritance, D3/D4's ±8 register, D5's n=5 caveat).
   // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+  // S1 · Aligned — No Tension — ★ NEVER EMITTED. The study's neutral CONTROL (−0.1%, 49% positive,
+  //     n=226), read directly by the divergence tool (findings/divergence/aligned.ts) and never
+  //     persisted as a fired finding. No custom doesntMean: inherits family C's mandatory line like
+  //     every other divergence entry — S1 is a divergence-tool reading like the rest, and authoring a
+  //     bespoke boundary line was not asked for and is not needed to give it a real catalogue home.
+  divergence_S1_aligned: {
+    name: "Aligned — No Tension",
+    description:
+      "The market's view and the business's condition agree. Nothing is unresolved. This is a genuinely useful reading, not an empty one — most of a screening tool's value is telling you where you do not need to look.",
+    family: "C",
+    concern: "trajectory",
+    status: "never_emitted",
+  },
+
   // D1 · Price Ahead of Quality — Market vs Foundation, the re-rating story
   divergence_D1_price_ahead_quality: {
     name: "Price Ahead of Quality",
@@ -650,7 +701,9 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
  * mandatory line), so every served entry carries a non-empty boundary with no resolution left to the
  * consumer.
  */
-export const STOCK_FINDINGS: Registry<StockFindingKey, StockFindingEntry> = Object.freeze(
+const FACTS_BY_KEY: Readonly<Record<string, PatternFacts | undefined>> = PATTERN_FACTS;
+
+export const STOCK_FINDINGS: StockFindingRegistry = Object.freeze(
   Object.fromEntries(
     STOCK_FINDING_KEYS.map((key) => {
       const c = COPY[key];
@@ -663,10 +716,15 @@ export const STOCK_FINDINGS: Registry<StockFindingKey, StockFindingEntry> = Obje
         concern: c.concern,
         status: c.status,
         doesntMean: c.doesntMean ?? FAMILY_DOESNT_MEAN[c.family],
+        // ⚠ LAST, deliberately. serialise.ts strips this field to build the wire document, and the
+        // document's hash (the ETag, and the version the frontend fallback is pinned to) is taken
+        // over JSON with insertion order intact — so a field appended and then removed leaves the
+        // served bytes byte-identical to before this build.
+        facts: FACTS_BY_KEY[key] ?? null,
       };
       return [key, entry];
     }),
-  ) as Record<StockFindingKey, StockFindingEntry>,
+  ) as StockFindingRegistry,
 );
 
 // ── resolvers · the contract the frontend's four functions are repointed at (Stage 5) ──────────────

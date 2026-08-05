@@ -22,15 +22,29 @@
 // ahead" is the exact failure §5C's consolidation exists to prevent, which is why
 // catalogue/divergence.ts's sub-type set is repointed at D1+D2.
 
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 import { scoredPair, gapTier, severityForTier, TIER_WORD } from "../divergence/bands.js";
-import { D1_D2_SHARED_N } from "./d1-price-ahead-quality.js";
+import { priceAheadShape, legAbove, legBelow } from "../divergence/pattern-state.js";
+import { MARKET_ELEVATED_FLOOR } from "../../../catalogue/pattern-facts.js";
+import { roundToPrecision } from "../format.js";
 import type { FireRule } from "../types.js";
 
-/** §Part 2 D2 — the two absolute levels. */
-export const D2_MARKET_MIN = 74;
-export const D2_MOMENTUM_MAX = 58;
+const ENTRY = STOCK_FINDINGS.divergence_D2_price_ahead_trajectory;
+const FACTS = ENTRY.facts;
 
-const r1 = (x: number) => Math.round(x * 10) / 10;
+/** ★ THE **FORMED** THRESHOLD FOR THE MARKET LEG — 68. See D1's note; same configuration. */
+export const D2_MARKET_FORMED_AT = FACTS.legs.find((l) => l.pillar === "market")!.value; // 68
+/** Market's native strong mark — an intensity within Formed, carried by severity. Never a gate. */
+export const D2_MARKET_NATIVE_STRONG = FACTS.evidencedTier; // 74
+/** ★ Second leg, now homed in `FACTS.legs` — see the same note on D1. */
+export const D2_MOMENTUM_MAX = FACTS.legs.find((l) => l.pillar === "momentum")!.value; // 58
+/** The shared n=79 configuration. ★ Read from D2's OWN record, not imported from D1's rule.
+ *  Duplication in DATA is correct — each record states its own value, so a future split of the two
+ *  halves is an edit to one record rather than a silent change to both. Duplication in LOGIC is not. */
+const D1_D2_SHARED_N = FACTS.evidenceStats.n; // 79
+
+/** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
+const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
 
 export const ruleD2: FireRule = (ctx) => {
   const m = ctx.current.pillars.momentum;
@@ -39,16 +53,27 @@ export const ruleD2: FireRule = (ctx) => {
   if (!p) return null;
   const market = p.a, momentum = p.b;
 
-  if (market < D2_MARKET_MIN) return null;
-  if (momentum >= D2_MOMENTUM_MAX) return null;
+  // ★ THE SHAPE TEST — see d1-price-ahead-quality.ts for the full note.
+  const shape = priceAheadShape({
+    high: market,
+    low: momentum,
+    gapFloor: FACTS.gapFloor,
+    highElevatedAbove: MARKET_ELEVATED_FLOOR,
+    highFormedAt: D2_MARKET_FORMED_AT,
+    lowFormedBelow: D2_MOMENTUM_MAX,
+  });
+  if (shape.state === "absent") return null;
 
-  const gap = market - momentum;
+  const gap = shape.gap;
   const tier = gapTier(gap);
   if (!tier) return null; // §1.1 — unreachable by construction, asserted not assumed
 
+  const marketLeg = legAbove("market", round(market), D2_MARKET_FORMED_AT);
+  const momentumLeg = legBelow("momentum", round(momentum), D2_MOMENTUM_MAX);
+
   return {
     kind: "pattern",
-    key: "divergence_D2_price_ahead_trajectory",
+    key: ENTRY.key,
     severity: severityForTier(tier),
     direction: "negative",
     polarity: "negative",
@@ -58,12 +83,17 @@ export const ruleD2: FireRule = (ctx) => {
     evidence: {
       card: "D2",
       name: "Price Ahead of Trajectory",
-      market: r1(market),
-      momentum: r1(momentum),
-      gapPp: r1(gap),
+      market: round(market),
+      momentum: round(momentum),
+      gapPp: round(gap),
       tier,
       tierWord: TIER_WORD[tier],
-      marketMin: D2_MARKET_MIN,
+      // ★ THE STATE — formed | building. Absent never reaches here (the rule returned null).
+      state: shape.state,
+      // ★ EACH LEG’S DISTANCE FROM ITS OWN THRESHOLD. Stated, not tested — this is what Building
+      //   copy names, and what makes the mixed case legible without a sentence characterising it.
+      legs: [marketLeg, momentumLeg],
+      marketFormedAt: D2_MARKET_FORMED_AT,
       momentumMax: D2_MOMENTUM_MAX,
       evidenceInherited: true,
       inheritedFrom: "combined price-ahead-of-fundamentals configuration (Market vs the combined fundamental average)",

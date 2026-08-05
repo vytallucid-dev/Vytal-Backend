@@ -72,17 +72,20 @@ export function composeDeterministicStockInsight(view: HealthSnapshotView): Dete
       return { text: `${cap(p.pillar)} scores ${n}.`, cites: [{ label: p.pillar.toUpperCase(), value: String(n) }] };
     });
 
-  // Tension: the divergence line when the facts flag a high/low pair.
+  // ★ TENSION — THE PAIR THE FIRED FINDING NAMES, or silence.
+  //
+  // ⚠ It used to be the widest scored pair, described as "strongest"/"weakest". That is a true
+  // sentence about the four pillars and a FALSE caption for the finding sitting beside it: on IOC the
+  // widest pair is Foundation↔Market while the standing finding is S2 about Foundation↔Momentum. No
+  // pair means no tension line — not a fallback to the extremes.
   let tension: ReadingPoint | null = null;
-  if (vd.divergence.high && vd.divergence.low) {
-    const hi = vd.divergence.high;
-    const lo = vd.divergence.low;
-    const spread = vd.divergence.flag === "wide" ? ", a wide spread" : "";
+  const dpair = vd.divergence.pair;
+  if (dpair) {
     tension = {
-      text: `Its strongest pillar is ${cap(hi.pillar)} at ${Math.round(hi.subtotal)} and its weakest is ${cap(lo.pillar)} at ${Math.round(lo.subtotal)}${spread}.`,
+      text: `${cap(dpair.high.pillar)} reads ${Math.round(dpair.high.subtotal)} against ${cap(dpair.low.pillar)} at ${Math.round(dpair.low.subtotal)} — the pair this finding is about.`,
       cites: [
-        { label: "Divergence highest pillar", value: String(Math.round(hi.subtotal)) },
-        { label: "Divergence lowest pillar", value: String(Math.round(lo.subtotal)) },
+        { label: `${cap(dpair.high.pillar)} subtotal`, value: String(Math.round(dpair.high.subtotal)) },
+        { label: `${cap(dpair.low.pillar)} subtotal`, value: String(Math.round(dpair.low.subtotal)) },
       ],
     };
   }
@@ -112,11 +115,12 @@ export function composeDeterministicFallback(view: HealthSnapshotView): string {
 
   if (vd.trajectoryMarker) parts.push(`The trajectory is ${vd.trajectoryMarker}.`);
 
-  if (vd.divergence.high && vd.divergence.low) {
-    const spread = vd.divergence.flag === "wide" ? ", a wide spread between the two" : "";
+  // Same rule as the point-composer above: the FIRED finding's own pair, or nothing.
+  if (vd.divergence.pair) {
+    const dp = vd.divergence.pair;
     parts.push(
-      `Its strongest pillar is ${cap(vd.divergence.high.pillar)} at ${Math.round(vd.divergence.high.subtotal)} ` +
-        `and its weakest is ${cap(vd.divergence.low.pillar)} at ${Math.round(vd.divergence.low.subtotal)}${spread}.`,
+      `${cap(dp.high.pillar)} reads ${Math.round(dp.high.subtotal)} against ${cap(dp.low.pillar)} ` +
+        `at ${Math.round(dp.low.subtotal)} — the pair this finding is about.`,
     );
   }
 

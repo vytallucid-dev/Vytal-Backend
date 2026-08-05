@@ -9,6 +9,7 @@
 // `null` with the key PRESENT — never omitted, never fabricated. The descriptor is
 // templated from real numbers (see scope-aggregate.describeScope).
 
+import type { DivergenceHeadline } from "./health-view.types.js";
 import type {
   LabelBand,
   PillarKey,
@@ -150,7 +151,8 @@ export interface PeerGroupMemberView {
   trajectoryMarker: TrajectoryMarker | null;
   trajectoryDelta: number | null;
   /** Spread across the member's SCORED pillars (same rule as the stock view). */
-  divergence: { flag: DivergenceFlag; gap: number };
+  /** ★ Ruling 3's state + S1's spread. Was `{flag, gap}` off the widest scored pair. */
+  divergence: { headline: DivergenceHeadline; spread: number | null };
   firedFlags: FiredFlag[];
   firedPatterns: FiredPattern[];
   /** C/D ownership flow-category state — read-projection of score_ownership_flows.category_state.

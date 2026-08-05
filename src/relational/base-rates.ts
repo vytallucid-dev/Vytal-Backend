@@ -29,6 +29,9 @@
 
 import { prisma } from "../db/prisma.js";
 import { retiredKeysSqlPredicate } from "../catalogue/retired-findings.js";
+// ★ NOT-COVERED SUPPRESSION (companion to boundary 7 of 9 below) — a persisted `notcovered_*` row
+//   would otherwise corrupt "fires on N of 95" with a configuration we explicitly refused to rank.
+import { notCoveredKeysSqlPredicate } from "../catalogue/not-covered.js";
 
 /** One key's incidence across the scored universe. */
 export interface BaseRate {
@@ -77,7 +80,7 @@ fired AS (
   --   precisely why suppression is not a Prisma client extension: an extension would silently miss
   --   this query and the base rate would keep quoting "fires on N of 95" for a retired pattern.
   --   The predicate is BUILT FROM the same catalogue array, never a copy of it.
-  WHERE ${retiredKeysSqlPredicate("p.pattern_key")}
+  WHERE ${retiredKeysSqlPredicate("p.pattern_key")} AND ${notCoveredKeysSqlPredicate("p.pattern_key")}
   GROUP BY p.pattern_key
 )
 SELECT f.pattern_key AS "patternKey",

@@ -10,11 +10,11 @@
 // exit-under-strength is owners stepping back beneath a holding floor.
 
 import { NATIVE_ZONES, K2_NOTABLE, K2_WIDE } from "../thresholds.js";
-import type { FireRule } from "../types.js";
+import type { RetiredRule } from "../types.js";
 
 const F_MID = NATIVE_ZONES.foundation.weak; // mid zone starts at the weak mark (60)
 
-export const ruleC2: FireRule = (ctx) => {
+export const ruleC2: RetiredRule = (ctx) => {
   const f = ctx.current.pillars.foundation, own = ctx.current.pillars.ownership;
   if (f.state !== "scored" || own.state !== "scored" || f.subtotal === null || own.subtotal === null) return null;
 

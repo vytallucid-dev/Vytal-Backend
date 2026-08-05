@@ -19,7 +19,7 @@
 //   npx tsx src/scripts/rescore-banking-pit.ts --write   → durable supersede + findings + post-commit verify
 
 import { prisma } from "../db/prisma.js";
-import { computePgScores, ensureScaffold, finalizeRun, persistMember, type PgRef, type MemberWriteResult, type Scaffold } from "../scoring/composite/score-pass.js";
+import { computePgScores, ensureScaffold, finalizeRun, persistMember, requireFindingsEvaluated, type PgRef, type MemberWriteResult, type Scaffold } from "../scoring/composite/score-pass.js";
 import { loadBankingCtx } from "../scoring/metrics/banking-load.js";
 import { resolveCasa } from "../scoring/metrics/banking-types.js";
 
@@ -224,12 +224,12 @@ async function main() {
       const doPersist = async (tx: any): Promise<MemberWriteResult[]> => {
         const sc = scaffold ?? await ensureScaffold(tx, computed.asOf, { runType: "quarterly", triggerType: "post_ingest" });
         const out: MemberWriteResult[] = [];
-        for (const m of computed.members) {
+        for (const m of requireFindingsEvaluated(computed)) {
           if (m.composite.state !== "scored" || m.composite.composite == null || !m.own || !m.market) {
             out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: -1 });
             continue;
           }
-          out.push(await persistMember(tx, m, sc, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats, { writeFindings: true }));
+          out.push(await persistMember(tx, m, sc, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats));
         }
         return out;
       };
@@ -407,9 +407,9 @@ async function main() {
     await prisma.$transaction(async (tx) => {
       const sc = await ensureScaffold(tx, recomputed.asOf, { runType: "quarterly", triggerType: "post_ingest" });
       const out: MemberWriteResult[] = [];
-      for (const m of recomputed.members) {
+      for (const m of requireFindingsEvaluated(recomputed)) {
         if (m.composite.state !== "scored" || m.composite.composite == null || !m.own || !m.market) continue;
-        out.push(await persistMember(tx, m, sc, recomputed.asOf, recomputed.peerGroupId, BANK_PGS[0].pgId, recomputed.industry, recomputed.peerStats, { writeFindings: true }));
+        out.push(await persistMember(tx, m, sc, recomputed.asOf, recomputed.peerGroupId, BANK_PGS[0].pgId, recomputed.industry, recomputed.peerStats));
       }
       idemResults = out;
       throw new Rollback();

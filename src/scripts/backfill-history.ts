@@ -18,7 +18,7 @@
 //   npx tsx src/scripts/backfill-history.ts --commit   (writes)
 
 import { prisma } from "../db/prisma.js";
-import { computePgScores, ensureScaffold, finalizeRun, persistMember, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
+import { computePgScores, ensureScaffold, finalizeRun, persistMember, requireFindingsEvaluated, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
 
 const COMMIT = process.argv.includes("--commit");
 // --resume reuses the most recent ScoringRun (keeps the whole backfill under ONE run
@@ -116,7 +116,7 @@ async function main() {
 
       const writeOne = async (tx: any) => {
         const out: { action: string; r1: boolean; composite: number | null }[] = [];
-        for (const m of computed.members) {
+        for (const m of requireFindingsEvaluated(computed)) {
           // SKIP any already-existing (stock, periodKey) — protects FY26Q4 & re-runs (append-only).
           const exists = await tx.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: "quarterly", periodKey: pk }, select: { id: true } });
           if (exists) { out.push({ action: "skipped_existing", r1: false, composite: null }); continue; }
@@ -127,7 +127,7 @@ async function main() {
           // can't be persisted with a real Ownership pillar → record as no_snapshot, never
           // fabricate one. (persistMember would otherwise throw and abort the PG.)
           if (!m.own || !m.market) { out.push({ action: "no_snapshot", r1: false, composite: null }); continue; }
-          const res: MemberWriteResult = await persistMember(tx, m, scaffold!, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats, { writeFindings: true });
+          const res: MemberWriteResult = await persistMember(tx, m, scaffold!, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats);
           out.push({ action: res.action, r1: res.r1Written, composite: res.composite });
         }
         return out;

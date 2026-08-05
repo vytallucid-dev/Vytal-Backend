@@ -10,7 +10,7 @@
 // (PG10/11/12/14) ARE in this commit (now full-4-pillar-scoreable).
 
 import { prisma } from "../db/prisma.js";
-import { computePgScores, ensureScaffold, finalizeRun, persistMember, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
+import { computePgScores, ensureScaffold, finalizeRun, persistMember, requireFindingsEvaluated, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
 import { snapshotInputsFingerprint } from "../scoring/composite/persist.js";
 
 const PGS: PgRef[] = [
@@ -52,10 +52,13 @@ async function main() {
   const noSnap: string[] = [];
 
   for (const ref of PGS) {
-    const pg = await computePgScores(ref);
+    // ★ withFindings: this script COMMITS snapshots, and a committed snapshot carries its own
+    //   findings + not-covered rows or it is a blank head. It used to run without the hook, which
+    //   is how ~495 manual_api snapshots came to carry no evaluation at all.
+    const pg = await computePgScores(ref, { withFindings: true });
     const results = await prisma.$transaction(async (tx) => {
       const out: MemberWriteResult[] = [];
-      for (const m of pg.members) out.push(await persistMember(tx as any, m, scaffold, pg.asOf, pg.peerGroupId, ref.pgId, "non_financial", pg.peerStats));
+      for (const m of requireFindingsEvaluated(pg)) out.push(await persistMember(tx as any, m, scaffold, pg.asOf, pg.peerGroupId, ref.pgId, "non_financial", pg.peerStats));
       return out;
     }, { timeout: 120000, maxWait: 20000 });
 

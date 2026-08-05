@@ -10,7 +10,7 @@
 //   idempotent on inputsFingerprint). industryPath="banking"; PG6 uses inherited PG5 bars.
 
 import { prisma } from "../db/prisma.js";
-import { computePgScores, ensureScaffold, finalizeRun, persistMember, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
+import { computePgScores, ensureScaffold, finalizeRun, persistMember, requireFindingsEvaluated, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
 import { snapshotInputsFingerprint } from "../scoring/composite/persist.js";
 
 const COMMIT = process.argv.includes("--commit");
@@ -93,10 +93,11 @@ async function main() {
   const r1Stocks: string[] = []; const noSnap: string[] = [];
 
   for (const ref of [PG5, PG6]) {
-    const pg = await computePgScores(ref); // DB roster (PG5 now reconciled)
+    // ★ withFindings: a committed snapshot carries its own findings, or it is a blank head.
+    const pg = await computePgScores(ref, { withFindings: true }); // DB roster (PG5 now reconciled)
     const results = await prisma.$transaction(async (tx) => {
       const out: MemberWriteResult[] = [];
-      for (const m of pg.members) out.push(await persistMember(tx as any, m, scaffold, pg.asOf, pg.peerGroupId, ref.pgId, pg.industry, pg.peerStats));
+      for (const m of requireFindingsEvaluated(pg)) out.push(await persistMember(tx as any, m, scaffold, pg.asOf, pg.peerGroupId, ref.pgId, pg.industry, pg.peerStats));
       return out;
     }, { timeout: 120000, maxWait: 20000 });
 

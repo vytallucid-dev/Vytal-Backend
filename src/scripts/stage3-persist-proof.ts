@@ -9,7 +9,7 @@
 // GATE: this proof must pass before Stage 4 commits all 11 for real.
 
 import { prisma } from "../db/prisma.js";
-import { computePgScores, ensureScaffold, persistMember, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
+import { computePgScores, ensureScaffold, persistMember, requireFindingsEvaluated, type PgRef, type EvaluatedMember, type MemberWriteResult } from "../scoring/composite/score-pass.js";
 
 const PGS: PgRef[] = [
   { pgId: "PG9", seedKey: "pg9_metals", pgName: "Large-Cap Metals & Mining" },
@@ -33,7 +33,10 @@ async function main() {
 
   // Compute both PGs read-only (the dry-run values we must reproduce on read-back).
   const computed: { ref: PgRef; pg: Awaited<ReturnType<typeof computePgScores>> }[] = [];
-  for (const ref of PGS) computed.push({ ref, pg: await computePgScores(ref) });
+  // withFindings is REQUIRED for any pass that will be persisted — this proof writes (then rolls
+  // back) real snapshots, so it must exercise the same evaluation the live path does. Without it
+  // persistMember below would not compile: it accepts only an EvaluatedMember.
+  for (const ref of PGS) computed.push({ ref, pg: await computePgScores(ref, { withFindings: true }) });
 
   const checks: { name: string; ok: boolean; detail: string }[] = [];
   let insideCounts: any = null;
@@ -46,7 +49,7 @@ async function main() {
 
       // ── WRITE both PGs ──
       for (const { ref, pg } of computed) {
-        for (const m of pg.members) {
+        for (const m of requireFindingsEvaluated(pg)) {
           const r = await persistMember(tx as any, m, sc, pg.asOf, pg.peerGroupId, ref.pgId);
           results.set(m.symbol, r);
         }
@@ -60,6 +63,7 @@ async function main() {
 
       // helper: latest snapshot for a stock
       const allMembers = computed.flatMap((c) => c.pg.members);
+
       const snapFor = async (symbol: string) => {
         const m = allMembers.find((x) => x.symbol === symbol)!;
         return tx.scoreSnapshot.findFirst({ where: { stockId: m.stockId }, orderBy: { version: "desc" } });
@@ -107,7 +111,7 @@ async function main() {
 
       // ── (4) SKIP-IDENTICAL — re-write TATASTEEL within the same tx ──
       {
-        const m = computed[0].pg.members.find((x) => x.symbol === "TATASTEEL")!;
+        const m = requireFindingsEvaluated(computed[0].pg).find((x) => x.symbol === "TATASTEEL") as EvaluatedMember;
         const snapCountBefore = await tx.scoreSnapshot.count();
         const again = await persistMember(tx as any, m, await (async () => {
           // reuse the same scaffold by reading the in-tx run/spec/mapping

@@ -29,7 +29,7 @@
 import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../../db/prisma.js";
 import {
-  computePgScores, ensureScaffold, finalizeRun, persistMember,
+  computePgScores, ensureScaffold, finalizeRun, persistMember, requireFindingsEvaluated,
   type PgRef, type Scaffold, type MemberWriteResult, type PgComputed,
 } from "../composite/score-pass.js";
 import { pgRefsForSymbols } from "../composite/pg-registry.js";
@@ -137,7 +137,10 @@ export async function computePgPeriod(ref: PgRef, periodKey: string, mode: "pit"
  *  findings on. Mirrors handlePgRescore / the batch persist loop. */
 export async function persistPgPeriod(db: Db, computed: PgComputed, pgId: string, scaffold: Scaffold): Promise<MemberWriteResult[]> {
   const out: MemberWriteResult[] = [];
-  for (const m of computed.members) {
+  // Narrowing gate: computePgPeriod always computes withFindings, and this asserts it rather than
+  // trusting it. Shared by BOTH cascades (CASA/banking here, the general fill cascade via
+  // general-cascade.ts), so one check covers two job types and every period-step they walk.
+  for (const m of requireFindingsEvaluated(computed)) {
     if (m.composite.state !== "scored" || m.composite.composite == null || !m.own || !m.market) {
       out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: -1 });
       continue;
@@ -146,7 +149,7 @@ export async function persistPgPeriod(db: Db, computed: PgComputed, pgId: string
     // leg is history-blocked (computePgScores refuses to screen a point-in-time pass),
     // so this stamps guardrail_screened=false — a positive "we ran and did not screen",
     // not NULL "we don't know". Nothing is written to score_guardrail_events (ran=false).
-    out.push(await persistMember(db, m, scaffold, computed.asOf, computed.peerGroupId, pgId, computed.industry, computed.peerStats, { writeFindings: true, writeGuardrail: true, guardrail: computed.guardrail }));
+    out.push(await persistMember(db, m, scaffold, computed.asOf, computed.peerGroupId, pgId, computed.industry, computed.peerStats, { writeGuardrail: true, guardrail: computed.guardrail }));
   }
   return out;
 }

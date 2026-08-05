@@ -29,6 +29,7 @@ import {
   ensureScaffold,
   finalizeRun,
   persistMember,
+  requireFindingsEvaluated,
   type PgRef,
   type MemberWriteResult,
 } from "../../scoring/composite/score-pass.js";
@@ -169,7 +170,12 @@ export async function handlePgRescore(
         triggerType: "post_ingest",
       });
       const out: MemberWriteResult[] = [];
-      for (const m of pg.members) {
+      // THE DAILY PATH IS THE ONE THAT BROKE. A price move supersedes v(n) → v(n+1) and the fired
+      // set FKs the version, so a head written here without its findings re-evaluated serves nothing
+      // — which is what blanked GLENMARK's card. requireFindingsEvaluated is the narrowing gate:
+      // persistMember accepts only what it returns, so this loop cannot compile against a pass that
+      // did not run the rules (the withFindings:true above), let alone ship one.
+      for (const m of requireFindingsEvaluated(pg)) {
         out.push(
           await persistMember(
             tx as any,
@@ -180,12 +186,9 @@ export async function handlePgRescore(
             ref.pgId,
             pg.industry,
             pg.peerStats,
-            // writeFindings: gate flipped (Stage F/G) — a created/superseded snapshot persists its findings.
             // guardrail: carried so every snapshot this LIVE path writes records whether Layer-1 ran.
-            //   While computePgScores runs without withGuardrail (today) this stamps
-            //   guardrail_screened=false — "we ran the pass and did not screen" — rather than NULL.
-            //   writeGuardrail stays OFF until go-live; flipping BOTH is the Stage-4 change.
-            { writeFindings: true, writeGuardrail: true, guardrail: pg.guardrail },
+            //   Stamps guardrail_screened true/false — a positive fact — rather than NULL.
+            { writeGuardrail: true, guardrail: pg.guardrail },
           ),
         );
       }

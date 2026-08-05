@@ -20,6 +20,7 @@
 // consistently — which is what trajectory rules need — but the read layer should know the
 // series is current-calibration, not as-of-period bars. Surfaced in each rule's evidence.
 
+import { Prisma } from "../../../generated/prisma/client.js";
 import { prisma } from "../../../db/prisma.js";
 import type { TrajectoryPoint } from "../types.js";
 import type { LabelBand } from "../../composite/types.js";
@@ -62,26 +63,76 @@ export function headOfChainByPeriod<T extends { periodKey: string; version: numb
   return head;
 }
 
+/** One already-collapsed head row, as Postgres returns it (snake_case, numerics as strings). */
+interface HeadRow {
+  period_key: string;
+  as_of_date: Date;
+  version: number;
+  composite: unknown;
+  label_band: string;
+  foundation_subtotal: unknown;
+  momentum_subtotal: unknown;
+  market_subtotal: unknown;
+  ownership_subtotal: unknown;
+  w_foundation: unknown;
+  w_momentum: unknown;
+  w_market: unknown;
+  w_ownership: unknown;
+}
+
 /**
  * Load a stock's prior-snapshot trajectory (oldest→newest), head-of-chain, STRICTLY before
  * `currentPeriodKey`, and ≤ `cutoff` when set. Excludes the current + future periods.
+ *
+ * ── ★ WHY THIS IS RAW SQL AND NOT `distinct: ["periodKey"]` ──────────────────────────────────────
+ * The collapse used to happen in JS: fetch every version, keep the max per period. That read the
+ * WHOLE supersede chain to use ~7 rows of it — GLENMARK returns 46 rows for 6 useful ones — and the
+ * ratio grows with every trading day, because the daily Market pass appends a version per stock that
+ * moved. Some (stock, period) pairs are already at version 41.
+ *
+ * Prisma's `distinct` does NOT fix this, and it looks like it does, which is the trap. Verified
+ * against Prisma 7.7: `distinct: ["periodKey"]` with `orderBy: [{periodKey}, {version: "desc"}]`
+ * emits NO distinct clause at all —
+ *     SELECT … FROM score_snapshots WHERE … ORDER BY period_key ASC, version DESC OFFSET $3
+ * — and dedupes inside the query engine. The JS-visible count drops to 6 while all 46 rows still
+ * cross the wire, so the only cost that matters is unchanged. DISTINCT ON is therefore written out
+ * by hand, where Postgres can actually apply it.
+ *
+ * IDENTICAL OUTPUT BY CONSTRUCTION: `DISTINCT ON (period_key) … ORDER BY period_key, version DESC`
+ * selects the max-version row per period — the same row `headOfChainByPeriod` picks. The collapse
+ * below is KEPT rather than dropped: it still applies `strictlyBefore` (the point-in-time rule), and
+ * it is idempotent on input that is already one row per period, so it remains the single home for
+ * the reduction for every caller that still hands it a full chain.
  */
 export async function loadTrajectorySeries(
   stockId: string,
   currentPeriodKey: string,
   cutoff: Date | null,
 ): Promise<TrajectoryPoint[]> {
-  const rows = await prisma.scoreSnapshot.findMany({
-    where: { stockId, snapshotType: "quarterly", ...(cutoff ? { asOfDate: { lte: cutoff } } : {}) },
-    select: {
-      periodKey: true, asOfDate: true, version: true, composite: true, labelBand: true,
-      foundationSubtotal: true, momentumSubtotal: true, marketSubtotal: true, ownershipSubtotal: true,
-      wFoundation: true, wMomentum: true, wMarket: true, wOwnership: true,
-    },
-  });
+  const raw = await prisma.$queryRaw<HeadRow[]>`
+    SELECT DISTINCT ON (period_key)
+           period_key, as_of_date, version, composite, label_band::text AS label_band,
+           foundation_subtotal, momentum_subtotal, market_subtotal, ownership_subtotal,
+           w_foundation, w_momentum, w_market, w_ownership
+    FROM score_snapshots
+    WHERE stock_id = ${stockId}
+      AND snapshot_type = 'quarterly'::"SnapshotType"
+      ${cutoff ? Prisma.sql`AND as_of_date <= ${cutoff}` : Prisma.empty}
+    ORDER BY period_key, version DESC`;
+
+  // Back to the camelCase shape the collapse + mapper expect. `version` arrives as a JS number
+  // (integer column); the numerics stay unconverted and go through `num` below exactly as before.
+  const rows = raw.map((r) => ({
+    periodKey: r.period_key, asOfDate: r.as_of_date, version: r.version,
+    composite: r.composite, labelBand: r.label_band,
+    foundationSubtotal: r.foundation_subtotal, momentumSubtotal: r.momentum_subtotal,
+    marketSubtotal: r.market_subtotal, ownershipSubtotal: r.ownership_subtotal,
+    wFoundation: r.w_foundation, wMomentum: r.w_momentum, wMarket: r.w_market, wOwnership: r.w_ownership,
+  }));
 
   // Head-of-chain per period = max version; exclude current + future periods. ★ ONE HOME — the same
   // reduction the lifecycle resolver runs, extracted above rather than kept as two inline copies.
+  // Now a no-op on the max-version pick (SQL already did it) and load-bearing on `strictlyBefore`.
   const headByPeriod = headOfChainByPeriod(rows, { strictlyBefore: currentPeriodKey });
 
   return [...headByPeriod.values()]

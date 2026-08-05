@@ -18,11 +18,20 @@
 import { createHash } from "node:crypto";
 import { prisma } from "../../db/prisma.js";
 import { Prisma } from "../../generated/prisma/client.js"; // DbNull sentinel for the nullable Json column
-import { bandMappingJson, BAND_MAPPING_VERSION } from "./label.js";
+import { BAND_MAPPING_VERSION } from "./label.js";
 import type { CompositeResult, Pillar } from "./types.js";
 
 export const COMPOSITE_SPEC_VERSION = "2026.1";
 const d4 = (x: number) => Math.round(x * 1e4) / 1e4;
+
+/** The three witness columns, as the row mapper needs them. score-pass.ts's `FindingsEvaluation`
+ *  extends this with the fields only the ASSERTION reads (which version was evaluated), keeping the
+ *  row mapper free of any dependency on the findings engine. */
+export interface SnapshotFindingsEval {
+  evaluatedAt: Date;
+  firedCount: number;
+  notCoveredCount: number;
+}
 
 export interface CompositeWriteContext {
   peerGroupId: string;
@@ -76,6 +85,12 @@ export function toScoreSnapshotRow(
      *  events means "screened, nothing fired" — the distinction presence-of-events
      *  cannot express. Never normalise the three states together. */
     guardrailScreened?: boolean;
+    /** ★ THE FINDINGS-EVALUATION WITNESS. The stamp score-pass.ts's findings hook attached to the
+     *  member being persisted, proving the §2/§5 rule set + not-covered engine ran against THIS
+     *  composite. REQUIRED for a durable write — score_snapshots_findings_evaluated_ck rejects the
+     *  INSERT without it — and deliberately typed optional here ONLY so the dry-run planner below
+     *  (which writes nothing and has no member to evaluate) can still shape a row for display. */
+    findingsEval?: SnapshotFindingsEval;
   },
 ) {
   if (r.state !== "scored" || r.composite === null || r.labelBand === null) throw new Error("toScoreSnapshotRow: composite is unavailable — no snapshot row is written");
@@ -125,6 +140,18 @@ export function toScoreSnapshotRow(
     // persists as SQL NULL ("we don't know whether this was screened"), never as false
     // ("we know it wasn't"). A nullable Boolean takes a bare null, unlike Json.
     guardrailScreened: ctx.guardrailScreened === undefined ? null : ctx.guardrailScreened,
+    // ── ★ THE FINDINGS-EVALUATION WITNESS ────────────────────────────────────────────────────────
+    // A snapshot version and the evaluation of its findings are ONE fact, so they are ONE INSERT.
+    // Counting score_patterns afterwards cannot substitute: zero rows is ambiguous between "the
+    // rules ran and nothing fired" and "the rules never ran against this version", and it is the
+    // second that renders as a blank card claiming the model found nothing.
+    //
+    // Absent ⇒ NULL, and the NOT VALID check constraint refuses the row. That is the intended
+    // outcome: an un-evaluated snapshot must fail loudly, never commit quietly. Only the dry-run
+    // planner reaches here without a stamp, and it writes nothing.
+    findingsEvaluatedAt: ctx.findingsEval?.evaluatedAt ?? null,
+    findingsFiredCount: ctx.findingsEval?.firedCount ?? null,
+    notCoveredCount: ctx.findingsEval?.notCoveredCount ?? null,
   };
 }
 
@@ -153,7 +180,7 @@ export interface CompositeWritePlan {
   stockId: string;
   periodKey: string;
   state: "scored" | "unavailable";
-  action: "created" | "skipped_identical" | "would_create" | "would_skip_identical" | "no_snapshot_composite_unavailable";
+  action: "would_create" | "would_skip_identical" | "no_snapshot_composite_unavailable";
   inputsFingerprint: string | null;
   snapshotRow: ReturnType<typeof toScoreSnapshotRow> | null;
   r1: { willWrite: boolean; deferred: boolean; flagKey: string } | null;
@@ -161,16 +188,33 @@ export interface CompositeWritePlan {
 }
 
 /**
- * Plan (dry-run) or commit (real) the snapshot write for one composite.
+ * PLAN the snapshot write for one composite. READ-ONLY — this function writes nothing.
  *
- * ⚠ The LIVE commit path is persistMember() in score-pass.ts, NOT this. writeComposite
- * is used ONLY by the dry-run diagnostic scripts/composite-check.ts (dryRun:true). Its
- * real-write branch below is NOT supersede-aware (it looks up version:1 and creates a
- * version-1 row without chaining version/supersedesId), so committing a CHANGED
- * composite through here would collide on @@unique([…,version]). Do NOT wire this into
- * a live path without porting persistMember's live-version chaining first.
+ * ★ IT USED TO HAVE A REAL-WRITE BRANCH, AND THAT BRANCH IS GONE ON PURPOSE.
+ *
+ * It was the SECOND `scoreSnapshot.create` in the codebase, and it could not satisfy the
+ * snapshot-has-findings invariant: it takes a bare CompositeResult, which carries no evaluated
+ * findings and no member context from which to evaluate them, so every row it committed was an
+ * un-evaluated head by construction. It was also never supersede-aware (it looked up version:1 and
+ * created a version-1 row without chaining version/supersedesId), so committing a CHANGED composite
+ * through it would collide on @@unique([…,version]) anyway.
+ *
+ * Its only caller has always passed dryRun:true (scripts/composite-check.ts), so deleting the branch
+ * removes a live-write capability nothing used, and leaves persistMember() in score-pass.ts as the
+ * SINGLE place a ScoreSnapshot row is created. That singularity is what makes the invariant
+ * enforceable: one statement to guard, not a set that grows.
+ *
+ * `ctx.dryRun` is retained and asserted rather than dropped, so an existing caller that passes
+ * dryRun:false gets a clear error instead of silently believing it committed.
  */
 export async function writeComposite(r: CompositeResult, ctx: CompositeWriteContext): Promise<CompositeWritePlan> {
+  if (!ctx.dryRun) {
+    throw new Error(
+      "writeComposite: PLAN-ONLY. Its real-write branch was removed — it could not evaluate findings " +
+      "for the row it created, so it could only ever produce un-evaluated heads. The single snapshot " +
+      "write path is persistMember() in score-pass.ts; route commits through a scoring pass.",
+    );
+  }
   const notes: string[] = [];
 
   // Unavailable composite → NO snapshot. Recorded, never fabricated.
@@ -191,8 +235,8 @@ export async function writeComposite(r: CompositeResult, ctx: CompositeWriteCont
   });
   const identical = existingSnap?.inputsFingerprint === fingerprint;
 
-  // ── DRY-RUN: plan only ──
-  if (ctx.dryRun) {
+  // ── PLAN (the only mode) ──
+  {
     const snapshotRow = toScoreSnapshotRow(r, {
       runId: ctx.runId ?? "(dry-run run)",
       specVersionId: existingSpec?.id ?? "(would create spec)",
@@ -220,38 +264,4 @@ export async function writeComposite(r: CompositeResult, ctx: CompositeWriteCont
       notes,
     };
   }
-
-  // ── REAL WRITE ──
-  if (existingSnap && identical) {
-    notes.push("snapshot with identical fingerprint exists → skip");
-    return { symbol: r.symbol, stockId: r.stockId, periodKey: r.periodKey, state: "scored", action: "skipped_identical", inputsFingerprint: fingerprint, snapshotRow: null, r1: null, notes };
-  }
-
-  // Real mode requires resolved pillar FKs.
-  for (const p of ["foundation", "momentum", "market", "ownership"] as Pillar[]) {
-    if (!ctx.pillarScoreIds[p]) throw new Error(`writeComposite: pillar FK '${p}' unresolved — pillar layers must write their PillarScore first`);
-  }
-
-  const written = await prisma.$transaction(async (tx) => {
-    const spec = existingSpec ?? (await tx.scoringSpecVersion.create({ data: { version: COMPOSITE_SPEC_VERSION, effectiveFrom: ctx.asOfDate, notes: "Composite + 4-pillar snapshot assembly." }, select: { id: true } }));
-    const mapping = existingMapping ?? (await tx.bandMappingVersion.create({ data: { version: BAND_MAPPING_VERSION, mapping: bandMappingJson(), effectiveFrom: ctx.asOfDate }, select: { id: true } }));
-    let runId = ctx.runId;
-    if (!runId) {
-      const run = await tx.scoringRun.create({ data: { runType: r.snapshotType, triggerType: "manual_api", specVersionId: spec.id, asOfDate: ctx.asOfDate, status: "running", startedAt: ctx.asOfDate }, select: { id: true } });
-      runId = run.id;
-    }
-    const row = toScoreSnapshotRow(r, {
-      runId, specVersionId: spec.id, bandMappingVersionId: mapping.id,
-      peerGroupId: ctx.peerGroupId, barPath: ctx.barPath, industryPath: ctx.industryPath,
-      pillarScoreIds: ctx.pillarScoreIds as Record<Pillar, string>,
-    });
-    const snap = await tx.scoreSnapshot.create({ data: row, select: { id: true } });
-    if (r1Fired) {
-      await tx.redFlag.create({ data: toR1RedFlagRow(snap.id, r, ctx.r1?.triggeringValues ?? null) });
-    }
-    return { snapshotId: snap.id, runId };
-  });
-
-  notes.push(`wrote ScoreSnapshot ${written.snapshotId} (run ${written.runId})${r1Fired ? " + R1 red flag" : ""}`);
-  return { symbol: r.symbol, stockId: r.stockId, periodKey: r.periodKey, state: "scored", action: "created", inputsFingerprint: fingerprint, snapshotRow: null, r1: r1Fired ? { willWrite: true, deferred: false, flagKey: "ownership_R1_pledge" } : null, notes };
 }

@@ -2491,6 +2491,30 @@ model ScoreSnapshot {
   // matters (no events = clean, or = never ran). That is why this is a column. Never collapse NULL.
   guardrailScreened Boolean? @map("guardrail_screened")
 
+  // ── ★ THE FINDINGS-EVALUATION WITNESS (the snapshot-has-findings invariant) ────────────────────
+  // "The §2/§5 rule set + the not-covered match engine RAN against THIS version, and produced N / M
+  // rows." Written in the same INSERT as the snapshot, from the in-memory evaluation stamp that
+  // score-pass.ts's findings hook attaches to the member it evaluated.
+  //
+  // WHY A COLUMN AND NOT A COUNT OF score_patterns: absence of pattern rows is ambiguous in exactly
+  // the way that matters. A head with no rows is either "the rules ran and nothing fired" (a true
+  // reading the card should state) or "the rules never ran against this version" (a blank card that
+  // silently asserts the first). That ambiguity is the GLENMARK defect: a price moved, a new head
+  // was written, and its findings stayed on the superseded version — the head served nothing, and a
+  // user read that as "the model found nothing". Only a positive witness separates the two.
+  //
+  //   · NULL  — written before this column existed. "We do not know whether this was evaluated."
+  //             Grandfathered by the NOT VALID check constraint; unreachable for new rows.
+  //   · set, findingsFiredCount = 0 — EVALUATED, genuinely nothing fired. An honest empty.
+  //   · set, findingsFiredCount > 0 — evaluated, and score_patterns/score_red_flags carry the set.
+  //
+  // STRUCTURAL: score_snapshots_findings_evaluated_ck (added NOT VALID, so legacy rows keep their
+  // NULLs) rejects any INSERT that leaves these unset. A future write path that skips the findings
+  // pass fails at the database, not silently — even if it never goes through persistMember.
+  findingsEvaluatedAt DateTime? @map("findings_evaluated_at")
+  findingsFiredCount  Int?      @map("findings_fired_count")
+  notCoveredCount     Int?      @map("not_covered_count")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   stock              Stock              @relation(fields: [stockId], references: [id], onDelete: Cascade)

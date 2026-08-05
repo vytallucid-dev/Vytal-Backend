@@ -11,8 +11,8 @@
 //
 // SCOPE (operator decision: "no re-scan now"): the CURRENT live heads only. Historical
 // periods are NOT re-scanned — the wiring makes lens-patterns light up automatically on
-// future rescores (pg_rescore.handler runs computePgScores withFindings + persistMember
-// writeFindings) as deeper history arrives.
+// future rescores (pg_rescore.handler runs computePgScores withFindings, and persistMember
+// now writes the fired set unconditionally on every created snapshot) as deeper history arrives.
 //
 // ADDITIVE-ONLY: this script persists ONLY the lens_* findings (the R/P stream is already
 // committed and is OUT OF SCOPE for S3). Legacy score_patterns / score_red_flags /

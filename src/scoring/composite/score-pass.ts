@@ -56,7 +56,7 @@ import { FLOW_BAND_VERSION } from "../ownership/flow-bands.js";
 import { fullInputsFingerprint, buildOwnershipScoreData, buildFlowCategoryRows, FLOW_BAND_CUTS } from "../ownership/persist.js";
 import { assembleComposite } from "./composite.js";
 import { bandMappingJson, BAND_MAPPING_VERSION } from "./label.js";
-import { COMPOSITE_SPEC_VERSION, snapshotInputsFingerprint, toScoreSnapshotRow, toR1RedFlagRow } from "./persist.js";
+import { COMPOSITE_SPEC_VERSION, snapshotInputsFingerprint, toScoreSnapshotRow, toR1RedFlagRow, type SnapshotFindingsEval } from "./persist.js";
 import type { CompositeResult, Pillar, PillarInput } from "./types.js";
 // §2/§5 findings engine — the fire-and-persist contract. Hook runs AFTER composite
 // assembly (reads the assembled pillars/composite/trajectory), emitting fired findings.
@@ -126,8 +126,9 @@ export interface MemberComputed {
   own: OwnershipResult | null;
   composite: CompositeResult;
   /** §2/§5 fired findings — present only when computePgScores ran with withFindings.
-   *  undefined ⇒ the findings hook did not run (legacy/committed callers). Includes the
-   *  LOUD lens-patterns (LM3/LM7/LP2/LP5) as members of the same stream (§5.2). */
+   *  undefined ⇒ the findings hook did not run, and such a member CANNOT be persisted (see
+   *  `findingsEval` below). Includes the LOUD lens-patterns (LM3/LM7/LP2/LP5) as members of the
+   *  same stream (§5.2). An EMPTY array is a real, persistable result: rules ran, nothing fired. */
   findings?: FiredFinding[];
   /** Three-Lens escalation audit — every LOUD lens-pattern that FIRED (escalated or
    *  demoted to supporting-detail by anti-double-count). Transparency record for the
@@ -149,6 +150,69 @@ export interface MemberComputed {
    *  triggering gap/crossing, period, and a best-effort regime-at-fire stamp). Built once, after the
    *  regime lookup, so persistMember only ever writes a fully-assembled row. */
   notCoveredWriteRows?: NotCoveredWriteRow[];
+  /** ★ THE EVALUATION STAMP — the proof persistMember demands before it will create a snapshot.
+   *  Set by the findings hook, at the END of the pass (post-dampen, post-regime-stamp), for every
+   *  member the hook considered — INCLUDING an unscored one, which is stamped `skippedUnscored`
+   *  because "no rules could run" is itself an evaluation outcome, not an omission.
+   *
+   *  `undefined` means the hook never ran for this member. That is NOT "nothing fired" and must
+   *  never be read as it — see requireFindingsEvaluated / assertEvaluatedAgainst below. */
+  findingsEval?: FindingsEvaluation;
+}
+
+/** The per-member record that the §2/§5 rule set + the not-covered match engine RAN, and what they
+ *  produced. Extends the three witness columns the snapshot row carries (SnapshotFindingsEval) with
+ *  the two fields only the assertion reads — the identity of the composite that was evaluated. */
+export interface FindingsEvaluation extends SnapshotFindingsEval {
+  /** The period the rules ran for. */
+  periodKey: string;
+  /** ★ snapshotInputsFingerprint of the composite the rules ran AGAINST. persistMember re-derives
+   *  this from the composite it is about to persist and refuses the write on a mismatch — which is
+   *  the invariant stated literally: findings evaluated against THAT version, not merely evaluated
+   *  at some point. A stamp carried over from a stale MemberComputed cannot pass. */
+  inputsFingerprint: string;
+  /** true ⇒ the composite was not scored, so no rule was evaluable and no snapshot will be written.
+   *  Distinct from firedCount 0 (rules ran across a scored composite; nothing fired). */
+  skippedUnscored: boolean;
+  /** Declined checks (§Phase 2) — length only; the rows themselves stay on `notEvaluable`. */
+  declinedCount: number;
+}
+
+/** A member the findings hook HAS evaluated. persistMember accepts nothing else, so a caller that
+ *  never ran the hook fails at `tsc`, not in production against a live head. Obtainable only from
+ *  requireFindingsEvaluated() — there is no cast-free way to fabricate one. */
+export type EvaluatedMember = MemberComputed & { findingsEval: FindingsEvaluation };
+
+/** Thrown when a snapshot write is attempted for a member the findings pass never evaluated. */
+export class SnapshotFindingsNotEvaluatedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SnapshotFindingsNotEvaluatedError";
+  }
+}
+
+/**
+ * ★ THE NARROWING GATE. Returns this pass's members as EvaluatedMembers, or throws.
+ *
+ * Every persist loop calls this once and iterates the result. Two things follow from that, and both
+ * are the point:
+ *   · a caller that forgot `withFindings: true` cannot reach persistMember — the types stop it at
+ *     compile time, and if it casts past them this throws before any write; and
+ *   · the check is per-PASS, not per-member, so it costs one comparison per persist loop rather
+ *     than noise at every call site.
+ */
+export function requireFindingsEvaluated(pg: PgComputed): EvaluatedMember[] {
+  const missing = pg.members.filter((m) => !m.findingsEval).map((m) => m.symbol);
+  if (missing.length) {
+    throw new SnapshotFindingsNotEvaluatedError(
+      `requireFindingsEvaluated: ${pg.ref.pgId}/${pg.periodKey} — the findings pass did not run for ` +
+      `${missing.length}/${pg.members.length} member(s) [${missing.slice(0, 6).join(", ")}${missing.length > 6 ? ", …" : ""}]. ` +
+      `A ScoreSnapshot may not be written without its findings + not-covered rows evaluated against it: ` +
+      `the fired set FKs the snapshot version, so a head written without one serves nothing, and a blank ` +
+      `card reads to a user as "the model found nothing". Call computePgScores(ref, { withFindings: true }).`,
+    );
+  }
+  return pg.members as EvaluatedMember[];
 }
 /** PG-level peer cross-section μ/σ/N for ONE F/M metric — captured from the same
  *  scoreMetricCrossSection output that produces each member's L2 (so the persisted
@@ -191,9 +255,13 @@ export interface ComputeOpts {
   pointInTime?: { quarterEnd: Date; expectPeriodKey: string };
   /** §2/§5 FINDINGS HOOK. When true, after composite assembly each member's FiringContext
    *  is built and the rule set is run; the fired findings are attached to MemberComputed
-   *  .findings (PURE — no writes here). Default false so existing committed callers are
-   *  byte-identical until the full rule set is validated + the live path opts in. The
-   *  PERSIST of findings is separately gated (persistMember opts.writeFindings). */
+   *  .findings and the evaluation is stamped on .findingsEval (PURE — no writes here).
+   *
+   *  ★ REQUIRED FOR ANY PASS THAT WILL BE PERSISTED. It stays default-false because the majority of
+   *  callers are read-only diagnostics that neither need findings nor should pay for them — but a
+   *  pass computed WITHOUT it can no longer reach persistMember: the stamp is missing, so
+   *  requireFindingsEvaluated throws and the EvaluatedMember type is unobtainable. The old failure
+   *  mode (compute without it, persist anyway, ship a head with no findings) is unreachable. */
   withFindings?: boolean;
   /** Optional rule-set OVERRIDE for the findings hook (default: the full ALL_RULES registry).
    *  Purely a verification seam — lets a proof run the SAME live pass with and without a rule
@@ -447,8 +515,9 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   // The seam File 1's engine hooks: AFTER composite assembly. For each SCORED member,
   // assemble the FiringContext from its just-built composite + raw series and run the
   // rule set; attach the fired set to m.findings. raws and members are index-aligned
-  // (members = raws.map), so raws[i] is members[i]'s raw inputs. Persisting the findings
-  // is separately gated (persistMember opts.writeFindings) — nothing is written here.
+  // (members = raws.map), so raws[i] is members[i]'s raw inputs. Nothing is written here — but the
+  // stamp this block leaves on m.findingsEval is what persistMember later demands as proof, so a
+  // pass that skips this block cannot produce a snapshot at all.
   if (opts.withFindings) {
     // Each member's sector class (gates §2 Line 2 + F1). The Sector.sectorClass column is
     // seeded from the ratified map; null only for an unmapped sector (none in the DB today).
@@ -582,6 +651,31 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     // red flags never dampen). The denominator is the scored members.
     const scoredSets = members.filter((m) => m.composite.state === "scored" && m.findings).map((m) => m.findings!);
     dampenReport = applyPgDampening(scoredSets);
+
+    // ── ★ THE EVALUATION STAMP (last thing the hook does, for exactly that reason) ────────────────
+    // Stamped AFTER dampening and after the fire-time regime stamp, so `firedCount` is the count of
+    // what will actually be persisted rather than a pre-dampen figure that drifts from the rows.
+    //
+    // Stamped for EVERY member the hook considered, including an unscored one: "the composite was
+    // not scored, so no rule was evaluable" is an evaluation outcome. Leaving it unstamped would
+    // make an unscored member indistinguishable from a member the hook never saw, which is the exact
+    // conflation this stamp exists to prevent.
+    //
+    // The fingerprint is taken from the SAME composite persistMember will fingerprint, so the
+    // assertion there is comparing like with like — a stamp cannot be inherited by a later version.
+    const evaluatedAt = new Date();
+    for (const m of members) {
+      const unscored = m.composite.state !== "scored" || m.composite.composite === null;
+      m.findingsEval = {
+        evaluatedAt,
+        periodKey,
+        inputsFingerprint: unscored ? "" : snapshotInputsFingerprint(m.composite),
+        firedCount: m.findings?.length ?? 0,
+        notCoveredCount: m.notCoveredWriteRows?.length ?? 0,
+        declinedCount: m.notEvaluable?.length ?? 0,
+        skippedUnscored: unscored,
+      };
+    }
   }
 
   return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members, peerStats: peerStatsCaps, dampenReport, guardrail: gate };
@@ -812,7 +906,66 @@ async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: strin
   return { id: created.id, r1Fired, r1Triggering: r1TriggeringValues };
 }
 
-export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string, industryPath: IndustryType = "non_financial", peerStats: PeerStatsCapture[] = [], opts: { writeFindings?: boolean; writeGuardrail?: boolean; guardrail?: ScoringGateResult } = {}): Promise<MemberWriteResult> {
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ THE SNAPSHOT-HAS-FINDINGS INVARIANT LIVES HERE, AT THE PERSISTENCE BOUNDARY.
+//
+// ── THE DEFECT ────────────────────────────────────────────────────────────────────────────────────
+// score_patterns and score_red_flags FK a snapshot ID, so a fired set belongs to ONE version. When a
+// rescore supersedes v(n) → v(n+1), the prior set stays on v(n) and the new head serves whatever THIS
+// run attached to it. Attaching nothing is therefore not "no findings" — it is a head that lost them.
+// GLENMARK went blank exactly this way: a price moved, a new head was written, its patterns stayed
+// behind. The daily Market pass writes ~93 new versions a trading day, so any write path that can
+// skip the evaluation reproduces this for whichever stocks moved, every single day. A blank card
+// reads to a user as "the model found nothing", which is a false statement.
+//
+// ── WHY THE FIX IS HERE AND NOT IN THE CALLERS ────────────────────────────────────────────────────
+// The evaluation used to be opt-in twice over: computePgScores({ withFindings }) to run it, and
+// persistMember({ writeFindings }) to persist it, BOTH defaulting false. Every caller that wanted a
+// correct head had to remember both, and three did not. Fixing those three would have left the flags
+// in place, which means leaving the defect in place for caller number ten. If a snapshot CAN be
+// written without findings, that capability is the defect — so it is removed rather than avoided.
+//
+// `writeFindings` is gone. persistFindings + persistNotCovered now run unconditionally on the created
+// path, and the only remaining question is whether the evaluation happened at all. Three guards, in
+// increasing distance from the mistake:
+//   ① TYPE      persistMember accepts only an EvaluatedMember. A caller that never ran the hook
+//               fails at `tsc` — the build gate — not in production against a live head.
+//   ② RUNTIME   assertEvaluatedAgainst below, immediately before scoreSnapshot.create, re-checks the
+//               stamp AND that it was produced for THIS version's fingerprint. A cast past ① or a
+//               stale MemberComputed carried across periods dies here, before any row is inserted.
+//   ③ STORAGE   score_snapshots_findings_evaluated_ck rejects an INSERT with a NULL witness. That one
+//               is for the write path nobody has written yet — it does not go through this function.
+//
+// ── ZERO FINDINGS IS NOT THE SAME AS NEVER EVALUATED ──────────────────────────────────────────────
+// A scored member with an empty fired set is legitimate and common; it persists with
+// findings_evaluated_at set and findings_fired_count = 0 — an honest empty, and the read layer can
+// say so. A member the hook never saw has a NULL witness and cannot be committed at all. The two are
+// never normalised together, at any layer.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** ② The runtime half of the invariant. Throws unless this member's evaluation exists AND was
+ *  produced against the exact composite about to be persisted. */
+function assertEvaluatedAgainst(m: MemberComputed, fingerprint: string, periodKey: string): FindingsEvaluation {
+  const ev = m.findingsEval;
+  if (!ev) {
+    throw new SnapshotFindingsNotEvaluatedError(
+      `persistMember(${m.symbol}/${periodKey}): refusing to create a ScoreSnapshot — the findings pass ` +
+      `never ran for this member. Its fired set would belong to the SUPERSEDED version and this head ` +
+      `would serve nothing. Compute with computePgScores(ref, { withFindings: true }).`,
+    );
+  }
+  if (ev.inputsFingerprint !== fingerprint) {
+    throw new SnapshotFindingsNotEvaluatedError(
+      `persistMember(${m.symbol}/${periodKey}): the findings evaluation on this member was produced ` +
+      `against a DIFFERENT composite (stamped ${ev.periodKey}/${ev.inputsFingerprint.slice(0, 12)}…, ` +
+      `persisting ${periodKey}/${fingerprint.slice(0, 12)}…). Findings must be evaluated against the ` +
+      `version they are attached to; re-run the pass for this period rather than reusing a computed member.`,
+    );
+  }
+  return ev;
+}
+
+export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, asOf: Date, peerGroupId: string, barPath: string, industryPath: IndustryType = "non_financial", peerStats: PeerStatsCapture[] = [], opts: { writeGuardrail?: boolean; guardrail?: ScoringGateResult } = {}): Promise<MemberWriteResult> {
   // ── LAYER-1 AUDIT, DECOUPLED FROM SCORE MOVEMENT ────────────────────────────────
   // Writes this member's detections keyed (stockId, snapshotKey, signatureKey), with
   // snapshotId set ONLY when this run created one. Called on EVERY exit path below —
@@ -886,7 +1039,13 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
   // caller that never considered the gate, so leave undefined → SQL NULL ("unknown").
   // false here is a positive fact ("we ran the pass and deliberately did not screen"),
   // which is why it must not be conflated with the NULL case.
-  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null, notEvaluable: m.notEvaluable, guardrailScreened: opts.guardrail ? opts.guardrail.ran : undefined });
+  // ② THE ASSERTION — last statement before the row exists. Everything above this line is
+  // reversible bookkeeping (get-or-created pillars, idempotent by fingerprint); the INSERT below is
+  // what creates a head users read. So the proof is demanded here, against `fp` — the fingerprint of
+  // the very composite being written — rather than anywhere earlier where it could go stale.
+  const findingsEval = assertEvaluatedAgainst(m, fp, m.composite.periodKey);
+
+  const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null, notEvaluable: m.notEvaluable, guardrailScreened: opts.guardrail ? opts.guardrail.ran : undefined, findingsEval });
   if (liveSnap) { snapRow.version = liveSnap.version + 1; snapRow.supersedesId = liveSnap.id; } // append-only supersede: chain from the live (highest) version → v1→v2→v3…
 
   const snap = await db.scoreSnapshot.create({ data: snapRow, select: { id: true } });
@@ -896,19 +1055,26 @@ export async function persistMember(db: Db, m: MemberComputed, sc: Scaffold, asO
     r1Written = true;
   }
 
-  // §2/§5 FINDINGS PERSIST — gated (default OFF; nothing durable until the catalog is
-  // validated + a rescore stage opts in). Writes only the NEW rules' findings (R6/P11/C1
-  // …); R1 keeps its dedicated write above. Findings FK this fresh snapshot — they version
-  // with it. Runs only when the findings hook attached a set (computePgScores withFindings).
-  if (opts.writeFindings && m.findings && m.findings.length) {
+  // ── §2/§5 FINDINGS PERSIST — UNCONDITIONAL, and that is the fix ────────────────────────────────
+  // This used to sit behind opts.writeFindings (default OFF). A caller that created a snapshot and
+  // forgot the flag produced a head whose findings stayed on the version it superseded — the whole
+  // defect, in one boolean. There is no flag now: reaching this line means a snapshot was just
+  // created, and a snapshot's findings are written with it or the write does not happen at all.
+  //
+  // Writes the NEW rules' findings (R6/P11/C1 …); R1 keeps its dedicated write above. Findings FK
+  // this fresh snapshot — they version with it. An empty set writes nothing and is CORRECT: the
+  // witness column already records that the evaluation ran, so "evaluated, nothing fired" is
+  // readable from the head itself and is never inferred from the absence of rows.
+  if (m.findings && m.findings.length) {
     await persistFindings(db, snap.id, m.symbol, asOf, m.findings);
   }
 
-  // ── §NOT-COVERED PERSIST — SAME gate, DELIBERATELY SEPARATE write (persist.ts's
+  // ── §NOT-COVERED PERSIST — same unconditional contract, DELIBERATELY SEPARATE write (persist.ts's
   // persistNotCovered, never persistFindings — see that function's header for why). These rows
   // version WITH the snapshot exactly like real findings do; nothing downstream treats them as one
-  // unless a read boundary forgets its `isNotCoveredKey`/`dropNotCoveredPatterns` guard.
-  if (opts.writeFindings && m.notCoveredWriteRows && m.notCoveredWriteRows.length) {
+  // unless a read boundary forgets its `isNotCoveredKey`/`dropNotCoveredPatterns` guard. Same
+  // exposure, same fix: a not-covered registry left on the superseded version is a measurement lost.
+  if (m.notCoveredWriteRows && m.notCoveredWriteRows.length) {
     await persistNotCovered(db, snap.id, m.symbol, asOf, m.notCoveredWriteRows);
   }
 

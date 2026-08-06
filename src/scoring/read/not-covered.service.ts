@@ -48,6 +48,9 @@ export interface NotCoveredPair {
  */
 export interface NotCoveredNote {
   id: NotCoveredId;
+  /** Which spec this configuration came from, and therefore which tool may show it — NC1/NC2 are
+   *  divergence, NC3–NC10 are trajectory. Served so a consumer filters on DATA, never on the id. */
+  tool: "divergence" | "trajectory";
   reason: NotCoveredReason;
   /** The pillars involved and their values. NO gap, NO ordering, NO magnitude — see `pair` for the
    *  chart-facing form of the same numbers. */
@@ -80,6 +83,7 @@ export function notCoveredFor(now: SubjectReadings, prior: SubjectReadings | nul
     }));
     return {
       id: f.id,
+      tool: rec.tool,
       reason: f.reason,
       readings,
       pair: pairFor(rec.subjects, f.values),

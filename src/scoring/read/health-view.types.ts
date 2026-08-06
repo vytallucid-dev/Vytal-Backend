@@ -715,8 +715,10 @@ export interface FindingsSection {
    * They are a separate array, not a flag on a row in the firing set, so a consumer cannot render one
    * as current by forgetting to check a boolean. Each carries its own `lifecycle` with `state:
    * "ended"`, how many periods ago it ended, and — for a gap-basis divergence — whether it converged
-   * or collapsed. Bounded to `RECENTLY_ENDED_WINDOW_PERIODS` (4) periods; retired keys are excluded
-   * at source, because a rule we withdrew is not a divergence that resolved.
+   * or collapsed. Bounded to `RECENTLY_ENDED_WINDOW`: those that CLOSED IN the live fiscal quarter,
+   * compared against one universe-wide quarter rather than counted off each stock's own head (see
+   * that constant for the drift that replaced). Retired keys are excluded at source, because a rule
+   * we withdrew is not a divergence that resolved.
    *
    * ⚠ `null` ≠ `[]`. `[]` is a resolved answer — lifecycles were computed and nothing ended in the
    * window. `null` says this surface DID NOT RESOLVE them at all: the watchlist is a list view over

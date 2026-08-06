@@ -121,6 +121,15 @@ export type NotCoveredTrigger =
 
 export interface NotCoveredRecord {
   readonly id: NotCoveredId;
+  /**
+   * ★ WHICH SPEC THIS CAME FROM — and therefore which tool may ever show it. NC1/NC2 are Divergence
+   * spec Part 4; NC3–NC10 are Trajectory spec Part 5. This was previously undeclared on the wire, so
+   * both tools rendered every note: HDFCBANK's NC1 (a Foundation-vs-Market divergence configuration)
+   * showed up in the Trajectory pattern switcher, which has no divergence axis to put it on. The split
+   * is DATA, read here — never inferred from the id on a consuming surface (an id is an opaque token,
+   * not "NC1..NC2 are divergence" folk knowledge a frontend would have to keep in sync by hand).
+   */
+  readonly tool: "divergence" | "trajectory";
   /** The pillars (or composite) involved — what the note reports values for. */
   readonly subjects: readonly PatternSubject[];
   readonly trigger: NotCoveredTrigger;
@@ -146,11 +155,12 @@ export const NOT_COVERED_SILENT_LINE =
 
 const rec = (
   id: NotCoveredId,
+  tool: NotCoveredRecord["tool"],
   subjects: readonly PatternSubject[],
   trigger: NotCoveredTrigger,
   reason: NotCoveredReason,
   copy: string,
-): NotCoveredRecord => ({ id, subjects, trigger, reason, copy, evidenceBasis: "tested_not_shipped" });
+): NotCoveredRecord => ({ id, tool, subjects, trigger, reason, copy, evidenceBasis: "tested_not_shipped" });
 
 const cross = (subject: PatternSubject, direction: "down" | "up", mark: number): NotCoveredTrigger => ({
   kind: "crossing", subject, direction, mark,
@@ -182,12 +192,12 @@ export const NOT_COVERED_AUTHORITATIVE_TABLE: readonly {
 /** ⚠ COPY IS VERBATIM AS RULED. Do not rewrite, re-punctuate or "tighten" any of it. */
 export const NOT_COVERED: Readonly<Record<NotCoveredId, NotCoveredRecord>> = Object.freeze({
   // ── Divergence spec, Part 4 ────────────────────────────────────────────────────────────────────
-  NC1: rec("NC1", ["foundation", "market"],
+  NC1: rec("NC1", "divergence", ["foundation", "market"],
     { kind: "levels", legs: [{ subject: "foundation", op: ">=", value: 72 }, { subject: "market", op: "<=", value: 50 }] },
     "evidence_conflicted",
     "The balance sheet reads as strong while the market is paying as though it does not. Something is being priced that the accounts do not show — a sector-wide de-rating, a concern outside what these four pillars measure, or a price simply behind the business. The model cannot tell which."),
 
-  NC2: rec("NC2", ["foundation", "momentum"],
+  NC2: rec("NC2", "divergence", ["foundation", "momentum"],
     { kind: "level_and_move", level: { subject: "foundation", op: ">=", value: 68 }, move: { subject: "momentum", op: "<=", value: -5 } },
     "superseded_by_D6",
     "The balance sheet is intact and the trajectory has softened. Movement of this size within the ordinary range is closer to quarter-to-quarter variation than to a change in the business's direction."),
@@ -196,28 +206,28 @@ export const NOT_COVERED: Readonly<Record<NotCoveredId, NotCoveredRecord>> = Obj
   // ⚠ NC3/NC4 AND NC5/NC6 SHARE A BODY BY DESIGN — each pair is the same mechanism at two different
   //   marks, and the mechanism is what the note is about. Two near-identical rewrites of one sentence
   //   would be two things to keep in step for no reader-visible gain.
-  NC3: rec("NC3", ["composite"], cross("composite", "down", 68), "bull_masked",
+  NC3: rec("NC3", "trajectory", ["composite"], cross("composite", "down", 68), "bull_masked",
     "The overall reading has moved down a band. This reading is built from results already published, so it registers a change the business has already been through — it records that something happened, not that something is coming."),
 
-  NC4: rec("NC4", ["composite"], cross("composite", "down", 62), "bull_masked",
+  NC4: rec("NC4", "trajectory", ["composite"], cross("composite", "down", 62), "bull_masked",
     "The overall reading has moved down a band. This reading is built from results already published, so it registers a change the business has already been through — it records that something happened, not that something is coming."),
 
-  NC5: rec("NC5", ["foundation"], cross("foundation", "down", 60), "bull_masked",
+  NC5: rec("NC5", "trajectory", ["foundation"], cross("foundation", "down", 60), "bull_masked",
     "The balance-sheet reading has fallen below its weak mark. Foundation is drawn from annual and quarterly statements, so it moves slowly — the crossing marks when the accounts confirmed the change, not when the change began."),
 
-  NC6: rec("NC6", ["foundation"], cross("foundation", "down", 72), "bull_masked",
+  NC6: rec("NC6", "trajectory", ["foundation"], cross("foundation", "down", 72), "bull_masked",
     "The balance-sheet reading has fallen below its strong mark. Foundation is drawn from annual and quarterly statements, so it moves slowly — the crossing marks when the accounts confirmed the change, not when the change began."),
 
-  NC7: rec("NC7", ["composite"], cross("composite", "up", 74), "regime_driven",
+  NC7: rec("NC7", "trajectory", ["composite"], cross("composite", "up", 74), "regime_driven",
     "The overall reading has reached the top band. That band describes a business in excellent health whose strength the market has generally already recognised — it confirms a condition rather than marking an opening."),
 
-  NC8: rec("NC8", ["momentum"], cross("momentum", "up", 54), "superseded_by_T7",
+  NC8: rec("NC8", "trajectory", ["momentum"], cross("momentum", "up", 54), "superseded_by_T7",
     "The trajectory has climbed out of weak territory into the ordinary range. The crossing marks the exit from weakness; it says nothing about how far the recovery extends."),
 
-  NC9: rec("NC9", ["momentum"], cross("momentum", "down", 75), "indistinguishable",
+  NC9: rec("NC9", "trajectory", ["momentum"], cross("momentum", "down", 75), "indistinguishable",
     "An unusually strong trajectory has come back toward normal. Momentum is the widest-ranging of the four pillars and spends little time above this level, so a fall from it usually reflects normalisation rather than deterioration."),
 
-  NC10: rec("NC10", ["foundation"], cross("foundation", "up", 72), "outlier_driven",
+  NC10: rec("NC10", "trajectory", ["foundation"], cross("foundation", "up", 72), "outlier_driven",
     "The balance-sheet reading has reached its strong zone. The accounts have caught up with a business that was most likely already improving before this registered."),
 });
 

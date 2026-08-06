@@ -63,6 +63,7 @@
 
 import { prisma } from "../../db/prisma.js";
 import { headOfChainByPeriod, periodOrdinal } from "../findings/trajectory/load-series.js";
+import { getLiveQuarter } from "./live-quarter.js";
 import { roundToPrecision } from "../findings/format.js";
 import { isResolved, typeResolution, type Resolution } from "../findings/divergence/resolution.js";
 import { isRetiredFinding } from "../../catalogue/retired-findings.js";
@@ -88,14 +89,32 @@ import type { Pillar } from "../composite/types.js";
 export const LIFECYCLE_DIRECTION_DEADBAND = 1.0;
 
 /**
- * ★ THE RECENTLY-ENDED WINDOW, DECLARED. Four quarters — one year. An ended finding older than this
- * is history, not context, and a tool surface that showed it beside today's firing set would be
- * competing with the reader's own sense of what is current.
+ * ★ THE RECENTLY-ENDED WINDOW, DECLARED: THE CURRENT FISCAL QUARTER, AND NOTHING BEHIND IT.
  *
- * Stated as a number of PERIODS in the stock's own scored sequence, not as calendar time: a stock
- * with a gap in its coverage should not have an ending age out faster than one without.
+ * A pattern shows a closed card when the quarter it CLOSED IN is the live quarter. One quarter older
+ * and it does not show at all.
+ *
+ * ── ★ WHAT THIS REPLACED, AND WHY IT WAS WRONG TWICE ─────────────────────────────────────────────
+ * The bound used to be `RECENTLY_ENDED_WINDOW_PERIODS = 4` — a count of positions in the stock's own
+ * scored sequence. Two defects, and the second is the one that mattered:
+ *
+ *   1. FOUR PERIODS IS A YEAR OF HISTORY in a card whose whole job is recent context. A divergence
+ *      that closed last spring competed on screen with the set standing today.
+ *
+ *   2. A COUNT IS NOT A WINDOW. `endedPeriodsAgo` is measured from THE STOCK'S OWN head, so a stock
+ *      sitting at FY26Q4 counted back from FY26Q4 while its neighbour at FY27Q1 counted back from
+ *      FY27Q1. The two saw different spans of calendar time under one label, and nothing on the card
+ *      disclosed it. A stale stock's window silently drifted with it.
+ *
+ * So the test is now a FISCAL COMPARISON against one universe-wide quarter (see live-quarter.ts),
+ * never arithmetic on a per-stock index. `endedPeriodsAgo` survives on the lifecycle as the
+ * descriptive fact it always was — it no longer decides what is shown.
+ *
+ * ⚠ DISPLAY ONLY. Nothing is deleted and no rule is re-run. score_patterns stays append-only and the
+ * full history behind every one of these cards remains queryable exactly as before; this bounds what
+ * a surface offers, not what the database holds.
  */
-export const RECENTLY_ENDED_WINDOW_PERIODS = 4;
+export const RECENTLY_ENDED_WINDOW = "current_fiscal_quarter" as const;
 
 // ── the shape of a lifecycle — ★ DECLARED IN finding-lifecycle.types.ts (pure), re-exported here so
 //    every existing importer of this service keeps working. See that file for why they moved.
@@ -243,7 +262,8 @@ export interface LifecycleResult {
   /** Lifecycle for every key FIRING at the current head, keyed by patternKey. */
   firing: Map<string, FindingLifecycle>;
   /** Keys that fired in a prior period's head and are absent from the current one, newest ending
-   *  first, bounded to {@link RECENTLY_ENDED_WINDOW_PERIODS}. Retired keys are never here. */
+   *  first, bounded to {@link RECENTLY_ENDED_WINDOW} — i.e. those that closed IN the live fiscal
+   *  quarter. Retired keys are never here. */
   recentlyEnded: EndedFinding[];
 }
 
@@ -292,6 +312,16 @@ export async function resolveFindingLifecycles(
   const currentIndex = callerIndex >= 0 ? callerIndex : periodsAsc.length - 1;
   const currentPeriod = periodsAsc[currentIndex];
   const currentHead = headSnapByPeriod.get(currentPeriod)!;
+
+  // ★ THE RECENTLY-ENDED WINDOW'S ANCHOR — ONE QUARTER FOR THE WHOLE UNIVERSE (see the constant).
+  //   ⚠ FALLBACK IS THIS STOCK'S OWN HEAD, NOT "hide everything". A null here means the live quarter
+  //   could not be resolved, which is ignorance, not evidence that nothing closed recently — and
+  //   suppressing every card on a transient query error would render that ignorance as an all-clear.
+  //   Falling back to the stock's head keeps the card honest for the overwhelmingly common case where
+  //   the stock IS on the live quarter, and degrades to a per-stock window only while the lookup is
+  //   down.
+  const liveQuarter = (await getLiveQuarter()) ?? currentPeriod;
+  const liveOrdinal = periodOrdinal(liveQuarter);
 
   const patRows: PatRow[] = await prisma.scorePattern.findMany({
     where: { snapshotId: { in: snaps.map((s) => s.id) } },
@@ -394,11 +424,34 @@ export async function resolveFindingLifecycles(
     };
 
     if (isFiring) firing.set(key, lc);
-    else if (lc.endedPeriodsAgo <= RECENTLY_ENDED_WINDOW_PERIODS) ended.push({ patternKey: key, lifecycle: lc });
+    // ★ THE WINDOW: did this close IN the live fiscal quarter? A FISCAL COMPARISON, never a count of
+    //   the stock's own periods — see RECENTLY_ENDED_WINDOW for the two defects that replaced.
+    else if (closedInQuarter(periodsAsc, lastIdx, liveOrdinal)) ended.push({ patternKey: key, lifecycle: lc });
   }
 
   ended.sort((a, b) => a.lifecycle.endedPeriodsAgo - b.lifecycle.endedPeriodsAgo);
   return { firing, recentlyEnded: ended };
+}
+
+/**
+ * Did a pattern last seen at `periodsAsc[lastIdx]` CLOSE in the quarter at `liveOrdinal`?
+ *
+ * ── ★ THE CLOSING QUARTER IS THE FIRST PERIOD IT WAS ABSENT, NOT THE LAST ONE IT FIRED ───────────
+ * A pattern standing through FY26Q4 and gone at FY27Q1 closed IN FY27Q1 — that is the reading a
+ * closed card is reporting. Comparing `lastSeen` to the live quarter instead would be off by exactly
+ * one period and would show nothing at all in the normal case, since a pattern still firing in the
+ * live quarter is not ended.
+ *
+ * The next period comes from THIS STOCK'S OWN scored sequence, so a coverage gap is handled by
+ * construction: a stock that skipped FY26Q4 entirely and resumed at FY27Q1 closed the pattern at
+ * FY27Q1, which is where the reader would look for it. Nothing is interpolated into the gap.
+ *
+ * `lastIdx` is always < currentIndex for an ended pattern, so the successor exists; the bounds check
+ * is a guard against a future caller, not a live case.
+ */
+function closedInQuarter(periodsAsc: readonly string[], lastIdx: number, liveOrdinal: number): boolean {
+  const closingPeriod = periodsAsc[lastIdx + 1];
+  return closingPeriod !== undefined && periodOrdinal(closingPeriod) === liveOrdinal;
 }
 
 function usesMarketClock(facts: { pillarPair: readonly string[] } | null): boolean {

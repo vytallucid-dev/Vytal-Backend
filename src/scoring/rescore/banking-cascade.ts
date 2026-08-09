@@ -142,7 +142,7 @@ export async function persistPgPeriod(db: Db, computed: PgComputed, pgId: string
   // general-cascade.ts), so one check covers two job types and every period-step they walk.
   for (const m of requireFindingsEvaluated(computed)) {
     if (m.composite.state !== "scored" || m.composite.composite == null || !m.own || !m.market) {
-      out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: -1 });
+      out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", pillarIds: {}, guardrailEventsWritten: -1 });
       continue;
     }
     // guardrail: carried so the snapshot records WHY it is unscreened. A cascade PIT

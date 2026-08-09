@@ -36,6 +36,7 @@ import { buildFundamentalsView } from "../scoring/read/fundamentals-view.service
 import type { Basis } from "../scoring/read/fundamentals-view.types.js";
 import { buildOverviewView } from "../scoring/read/overview-view.service.js";
 import { buildPriceView } from "../scoring/read/price-view.service.js";
+import { buildPeerComparisonView } from "../scoring/read/peer-comparison.service.js";
 
 export const getScoredStocks = async (_req: Request, res: Response) => {
   try {
@@ -214,5 +215,26 @@ export const getStockPrice = async (req: Request, res: Response) => {
   } catch (err) {
     console.error("[stocks/:symbol/price] error:", err);
     return res.status(500).json({ message: "Failed to build price view" });
+  }
+};
+
+// GET /api/stocks/:symbol/peer-comparison → PeerComparisonView (the stock's 1-month move
+// vs its PEER GROUP's benchmark index, and vs its peer group's average 1-month move).
+// Returned DIRECTLY (no envelope). 404 when the symbol is unknown; a stock with no peer
+// group assignment returns hasPeerGroup=false (honest-empty), NOT a 404.
+export const getStockPeerComparison = async (req: Request, res: Response) => {
+  try {
+    const symbol = String(req.params.symbol ?? "").toUpperCase().trim();
+    if (!symbol) {
+      return res.status(400).json({ message: "symbol is required" });
+    }
+    const view = await buildPeerComparisonView(symbol);
+    if (!view) {
+      return res.status(404).json({ message: `Stock ${symbol} not found in universe` });
+    }
+    return res.json(view);
+  } catch (err) {
+    console.error("[stocks/:symbol/peer-comparison] error:", err);
+    return res.status(500).json({ message: "Failed to build peer comparison view" });
   }
 };

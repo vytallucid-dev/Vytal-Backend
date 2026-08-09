@@ -510,6 +510,9 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       // ★ THIS member's own period, not xs.periodKey (the plurality LABEL). See the field's
       //   comment in universe-view.types.ts — the mixed cross-section is the whole reason.
       periodKey: currentLeanByStock.get(s.stockId)?.periodKey ?? xs.periodKey,
+      // …and the day that reading was written. Same reasoning, one step finer: on a surface that
+      // genuinely mixes quarters, "which quarter" and "how old" are two different questions.
+      asOfDate: ymd(currentLeanByStock.get(s.stockId)?.asOfDate ?? xs.asOfDate),
     });
 
     scopeMembers.push({

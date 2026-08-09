@@ -20,7 +20,7 @@
 
 import { createHash } from "node:crypto";
 import { computeBaseline, type BaselineResult } from "./baseline.js";
-import { computePledging, type PledgingResult } from "./pledging.js";
+import { computePledging, r1TriggeringValues, R1_SEVERITY, type PledgingResult } from "./pledging.js";
 import {
   computeProlongedFii,
   computeR2,
@@ -116,47 +116,24 @@ export function computePrimaryOwnership(
 
   const redFlags: DeferredRedFlag[] = [];
   if (pledging.r1Breach) {
-    // ── THE AUTHORED VERDICT (§1.6) ──────────────────────────────────────────────────────────────
-    // Every other red flag ships a reader-facing `verdict` in its triggeringValues; R1 shipped only
-    // `reasons`, which are ENGINEER-facing diagnostic strings ("pledgeRatio 62.30% > 50% of promoter
-    // holding"). Downstream surfaces that render a finding by its own claim therefore had nothing to
-    // render and fell back to a generic line — "A red flag is standing on this stock." was the emptiest
-    // sentence on the live card, and it appeared on every ASHOKLEY render for every reader.
+    // ★ THE DUAL WRITE IS GONE (step 4) AND THIS IS NO LONGER A ROW-IN-WAITING. R1 is a registered
+    // FILING rule (findings/rules/r1-pledging.ts) writing to stock_findings for all 504 stocks, and
+    // the three consumers that kept score_red_flags alive — alerts, the alert vocabulary and the
+    // portfolio's PS1 — read that table now. score-pass.ts writes no red-flag row at all.
     //
-    // Composed from the SAME values already in triggeringValues — no new computation, no re-derivation.
-    // Two shapes, because R1 has two independent breach paths and the honest sentence differs:
-    //   · level breach  — the ratio itself is above our declared 50% line
-    //   · velocity breach — the ratio jumped ≥10pp in a single quarter (may still be under 50%)
-    // Both may hold; the level statement leads because it is the standing condition.
-    const ratio = pledging.pledgeRatioQ;
-    const rise = pledging.qoqRisePp;
-    const levelBreach = ratio !== null && ratio > 50;
-    const riseBreach = rise !== null && rise >= 10;
-    const parts: string[] = [];
-    if (levelBreach) {
-      parts.push(`${ratio!.toFixed(1)}% of the promoter holding is pledged — above the 50% level at which we mark pledging as critical`);
-    }
-    if (riseBreach) {
-      parts.push(
-        levelBreach
-          ? `and it rose ${rise!.toFixed(1)}pp in a single quarter`
-          : `promoter pledging rose ${rise!.toFixed(1)}pp in a single quarter — at or above the 10pp single-quarter move at which we mark it as critical`,
-      );
-    }
-    const verdict = `Promoter pledging — ${parts.join(" ")}.`;
-
+    // What this entry still does is carry the Ownership pillar's OWN observation to
+    // ownership/persist.ts, which records it on the OwnershipScore row (r1Fired +
+    // r1TriggeringValues). That is the pillar's record of what the pillar saw, keyed to the pillar,
+    // and it is a different thing from the finding — which is why it survives the finding moving out.
+    //
+    // ★ THE PILLAR NEVER AUTHORS THE FINDING. Both this and the rule compose from the SAME builders in
+    // pledging.ts, so they cannot disagree on the verdict, the triggering values or the severity. The
+    // Ownership pillar also keeps CONSUMING pledge data for its ladder nudge above — untouched.
     redFlags.push({
       flagKey: "ownership_R1_pledge",
-      severity: "critical", // File 1 §5A: red flags are severity Critical (kept in sync with the DB-write site in composite/persist.ts)
+      severity: R1_SEVERITY, // File 1 §5A: red flags are severity Critical
       tier: "auto",
-      triggeringValues: {
-        pledgeRatioQ: pledging.pledgeRatioQ,
-        pledgeRatioQ1: pledging.pledgeRatioQ1,
-        qoqRisePp: pledging.qoqRisePp,
-        thresholdPct: 50,
-        thresholdQoqRisePp: 10,
-        verdict, // the reader-facing claim, in the same key every other finding uses
-      },
+      triggeringValues: r1TriggeringValues(pledging),
       reasons: pledging.r1Reasons,
       persistenceDeferred: true,
     });

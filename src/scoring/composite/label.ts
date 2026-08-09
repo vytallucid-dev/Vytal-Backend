@@ -46,6 +46,50 @@ export function labelFor(composite: number): BandDef {
   return LABEL_BAND_MAP[0];
 }
 
+// ═══ ★★ DISPLAY ROUNDING THAT CANNOT CONTRADICT THE BAND BESIDE IT ═══════════════════════════════
+//
+// The platform shows health scores WHOLE (the frontend's lib/format#roundScore is its one rounding
+// place). Naive rounding is safe everywhere a score appears alone, and unsafe wherever it appears
+// NEXT TO ITS BAND — because the cut points are published on the methodology page, so a reader can
+// derive the band from the number they are shown.
+//
+// MEASURED over all 582 quarterly snapshots: `Math.round` lands in a different band than the stored
+// one on 35 — 6.01%, one in sixteen. NTPC FY26Q4 is 67.74, stored Steady; rounded it is 68, and the
+// published cut says 68 and above is Healthy. The card would print "68 · Steady".
+//
+// ⚠ THIS IS NOT AN ARTEFACT OF ROUNDING TO WHOLE. One decimal has the same defect, more rarely:
+// MANKIND FY26Q1 is 67.95, prints "68.0", reads as Healthy. Precision was never the fix; AGREEMENT is.
+//
+// THE RULE: the displayed score never leaves its own band. Round to nearest; if that crosses the cut,
+// step to the nearest whole number still inside the stored band. The display moves by at most one
+// point, which a reader cannot check — where the alternative moves the BAND, which they can.
+//
+// ⚠ THE STORED BAND IS THE AUTHORITY, NOT labelFor(). A snapshot is pinned to the band mapping in
+// force when it was written. If the mapping has since moved, no whole number inside today's map will
+// agree with the stored band, and the honest answer is to stop rounding and print the figure as it
+// is — never to bend the number or the label into agreement.
+//
+// ⚠ IT LIVES HERE, BESIDE THE MAP. Two callers need it (the brief's health section and the reader's
+// own position section) and both must round identically; a copy in either would be a second opinion
+// about where a band begins.
+
+/** The whole number to SHOW for a composite, or null when none agrees with the stored band. */
+export function bandSafeScore(composite: number, storedBand: string): number | null {
+  const band = LABEL_BAND_MAP.find((b) => b.band === storedBand);
+  if (!band) return null;
+  const inBand = (v: number): boolean => v >= band.min && (band.max === null || v < band.max);
+  for (const v of [Math.round(composite), Math.floor(composite), Math.ceil(composite)]) {
+    if (inBand(v)) return v;
+  }
+  return null;
+}
+
+/** A composite as a reader sees it — whole where that agrees with its band, one decimal otherwise. */
+export function scoreDisplay(composite: number, storedBand: string): string {
+  const v = bandSafeScore(composite, storedBand);
+  return v === null ? composite.toFixed(1) : String(v);
+}
+
 /** The mapping serialized for BandMappingVersion.mapping (Json). */
 export function bandMappingJson(): Record<string, { label: string; colour: string; range: [number | null, number | null] }> {
   const out: Record<string, { label: string; colour: string; range: [number | null, number | null] }> = {};

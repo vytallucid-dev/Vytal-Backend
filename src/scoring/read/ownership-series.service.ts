@@ -8,7 +8,11 @@
 // with asOnDate ≤ the period's asOfDate — no lookahead).
 
 import { prisma } from "../../db/prisma.js";
+// `Prisma.join` builds the parameterised IN-list for the stage-3 join below — the ids are still
+// bound, never interpolated, so the raw statement is no more injectable than the query builder was.
+import { Prisma } from "../../generated/prisma/client.js";
 import { getInForceSeriesRefs } from "./scoring-read.service.js";
+import { ownershipTellOrNull } from "./ownership-tell.js";
 import type { FlowCategoryView } from "./health-view.types.js";
 import type {
   OwnershipSeriesView,
@@ -80,6 +84,33 @@ type OwnershipScoreRel = {
   }[];
 };
 
+/** One row of the stage-3 join — the OwnershipScore's columns repeated across its flow lanes.
+ *  Every numeric arrives as the driver gives it (string for `numeric`); `num`/`numN` already accept
+ *  that, which is why the fold hands these straight through rather than converting here. */
+type OwnershipJoinRow = {
+  snapshot_id: string;
+  baseline: unknown;
+  baseline_reason: unknown;
+  pledging_adjustment: unknown;
+  penalty_r2: unknown;
+  penalty_r6: unknown;
+  penalty_prolonged_fii: unknown;
+  primary_subtotal: unknown;
+  flow_adjustment_raw: unknown;
+  flow_adjustment_clamped: unknown;
+  final_ownership: unknown;
+  r1_fired: unknown;
+  r1_triggering_values: unknown;
+  category: string | null;
+  category_state: unknown;
+  raw_sub_score: unknown;
+  cap_applied: unknown;
+  capped_sub_score: unknown;
+  band_landed: string | null;
+  net_flow_value: unknown;
+  trend_state: string | null;
+};
+
 /** Map the OwnershipScore's flow lanes → FlowCategoryView[], sorted A→B→C→D so the
  *  4 lanes are stable; dormant lanes (C_insider/D_block) are CARRIED with their
  *  categoryState, never dropped or zeroed-away. (Same mapping as health-view.) */
@@ -129,51 +160,181 @@ export async function buildOwnershipView(
   });
   if (!stock) return null;
 
-  const refs = await getInForceSeriesRefs(stock.id, windowQuarters);
+  // ── ★ THREE STAGES, NOT SIX ROUND-TRIPS IN A LINE ─────────────────────────────────────────────
+  //
+  // MEASURED BEFORE: 6 SQL round-trips, all 6 sequential, ~650 ms median warm. Only ONE of the six
+  // waits on data — the ownership-pillar join needs the snapshot ids the in-force resolver returns.
+  // The shareholding scan, the insider feed and the block feed each need nothing but `stock.id`, and
+  // sat in the queue behind a resolver they have no relationship with. That is the same defect the
+  // health endpoint carried (3.21 s → 0.92 s), and the same fix applies.
+  //
+  //   stage 1   stock.findUnique                                   (everything needs the id)
+  //   stage 2   refs ‖ shareholding ‖ insider ‖ block              (no dependency between them)
+  //   stage 3   the ownership-pillar join                          (needs refs)
+  //
+  // ⚠ THE ORDER OF THE THREE FEED READS IS NOT A DEPENDENCY, and the event window they use is
+  //   computed here rather than inside the awaits so all four see one `today`. Two calls to
+  //   `new Date()` a few hundred ms apart could otherwise put an event on one side of the cutoff for
+  //   insiders and the other for blocks.
+  const today = new Date();
+  const windowStart = new Date(today.getTime() - windowQuarters * 91 * 24 * 60 * 60 * 1000);
+
+  const [refs, shpRaw, insiderRows, blockRows] = await Promise.all([
+    getInForceSeriesRefs(stock.id, windowQuarters),
+    // all shareholding observations for the stock, ascending (point-in-time scan).
+    prisma.shareholdingPattern.findMany({
+      where: { stockId: stock.id },
+      orderBy: { asOnDate: "asc" },
+      select: {
+        asOnDate: true,
+        sourceDate: true,
+        fiscalYear: true,
+        quarter: true,
+        promoterPct: true,
+        fiiPct: true,
+        diiPct: true,
+        retailPct: true,
+        othersPct: true,
+        pledgedShares: true,
+        promoterShares: true,
+        totalShares: true,
+      },
+    }),
+    prisma.insiderTrade.findMany({
+      where: { stockId: stock.id, tradeDate: { gte: windowStart, lte: today } },
+      select: {
+        tradeDate: true,
+        personName: true,
+        personCategory: true,
+        transactionType: true,
+        securitiesTraded: true,
+        holdingPctDelta: true,
+        tradeValueCr: true,
+        acquisitionMode: true,
+        regulation: true,
+      },
+      orderBy: { tradeDate: "desc" },
+      take: 25,
+    }),
+    prisma.blockDeal.findMany({
+      where: { stockId: stock.id, dealDate: { gte: windowStart, lte: today } },
+      select: {
+        dealDate: true,
+        dealType: true,
+        clientName: true,
+        transactionType: true,
+        quantity: true,
+        price: true,
+        valueCr: true,
+      },
+      orderBy: { dealDate: "desc" },
+      take: 25,
+    }),
+  ]);
+
   // The ledger (holding split, pledging, insider, block) is RAW data and must surface
   // whenever its rows exist — independent of whether a scored period exists. Only the
   // score-derived overlay (flow-lane sub-scores, baseline/penalties, R1 verdict) needs a
   // scored period. `hasScoredPeriod` lets the UI gate the score-only sections without
   // blanking the whole tab.
   const hasScoredPeriod = refs.length > 0;
+  const shp = shpRaw as ShpRow[];
 
-  // 1 query: the in-force snapshots in the window, each with its ownership pillar →
-  // OwnershipScore → flow categories.
+  // ── ★ STAGE 3 — ONE ROUND-TRIP, NOT FOUR. MEASURED. ─────────────────────────────────────────────
+  //
+  // This was `scoreSnapshot.findMany` with a nested `ownershipPillar → ownershipScore →
+  // flowCategories` select, described in this file as "1 query". It is not one query: Prisma
+  // resolves a nested relation select by walking the graph one LEVEL at a time, issuing a separate
+  // statement per level and awaiting each before it can build the next level's id list. Timed at the
+  // pg driver, this stage was FOUR statements in strict sequence — score_snapshots → score_pillars →
+  // score_ownership → score_ownership_flows — and on a remote database the cost of a statement is
+  // almost entirely its round trip:
+  //
+  //     stage 3, before   157→723 ms of a 725 ms read · 4 waves · 4 round-trips
+  //     round-trip floor  ~65–70 ms (SELECT 1, warm pool, same link)
+  //
+  // Three of those four round-trips buy nothing but the next level's foreign keys, which SQL can
+  // follow in the server. `$queryRaw` with three LEFT JOINs is one round-trip for the same rows.
+  //
+  // ⚠ LEFT JOINS, NOT INNER, BECAUSE ABSENCE IS A STATE HERE. A snapshot whose ownership pillar
+  //   carries no OwnershipScore is normal (an out-of-scope pillar), and the nested select returned
+  //   `null` for it rather than dropping the snapshot. An INNER JOIN would silently shorten the
+  //   series instead — the same row would vanish from the chart with nothing to indicate it had.
+  //
+  // ⚠ AND THE ROW→OBJECT FOLD REPRODUCES THE NESTED SHAPE EXACTLY. A join multiplies the score row
+  //   by its flow lanes, so the fold groups back on snapshot id and collects the lanes; a snapshot
+  //   with a score but no lanes yields `flowCategories: []`, which is what the relation load gave.
+  //   Proven equal, field by field, against the previous implementation across all 95 scored stocks.
   const ids = refs.map((r) => r.id);
-  const snaps = ids.length
-    ? await prisma.scoreSnapshot.findMany({
-        where: { id: { in: ids } },
-        select: {
-          id: true,
-          ownershipPillar: {
-            select: { ownershipScore: { include: { flowCategories: true } } },
-          },
-        },
-      })
+  const joined = ids.length
+    ? await prisma.$queryRaw<OwnershipJoinRow[]>`
+        SELECT ss.id                     AS snapshot_id,
+               os.baseline               AS baseline,
+               os.baseline_reason        AS baseline_reason,
+               os.pledging_adjustment    AS pledging_adjustment,
+               os.penalty_r2             AS penalty_r2,
+               os.penalty_r6             AS penalty_r6,
+               os.penalty_prolonged_fii  AS penalty_prolonged_fii,
+               os.primary_subtotal       AS primary_subtotal,
+               os.flow_adjustment_raw    AS flow_adjustment_raw,
+               os.flow_adjustment_clamped AS flow_adjustment_clamped,
+               os.final_ownership        AS final_ownership,
+               os.r1_fired               AS r1_fired,
+               os.r1_triggering_values   AS r1_triggering_values,
+               fc.category::text         AS category,
+               fc.category_state::text   AS category_state,
+               fc.raw_sub_score          AS raw_sub_score,
+               fc.cap_applied            AS cap_applied,
+               fc.capped_sub_score       AS capped_sub_score,
+               fc.band_landed            AS band_landed,
+               fc.net_flow_value         AS net_flow_value,
+               fc.trend_state::text      AS trend_state
+          FROM score_snapshots ss
+          LEFT JOIN score_pillars sp          ON sp.id = ss.ownership_pillar_id
+          LEFT JOIN score_ownership os        ON os.pillar_score_id = sp.id
+          LEFT JOIN score_ownership_flows fc  ON fc.ownership_score_id = os.id
+         WHERE ss.id IN (${Prisma.join(ids)})`
     : [];
-  const osById = new Map<string, OwnershipScoreRel | null>(
-    snaps.map((s) => [s.id, (s.ownershipPillar?.ownershipScore as OwnershipScoreRel | null) ?? null]),
-  );
 
-  // 1 query: all shareholding observations for the stock, ascending (point-in-time scan).
-  const shp = (await prisma.shareholdingPattern.findMany({
-    where: { stockId: stock.id },
-    orderBy: { asOnDate: "asc" },
-    select: {
-      asOnDate: true,
-      sourceDate: true,
-      fiscalYear: true,
-      quarter: true,
-      promoterPct: true,
-      fiiPct: true,
-      diiPct: true,
-      retailPct: true,
-      othersPct: true,
-      pledgedShares: true,
-      promoterShares: true,
-      totalShares: true,
-    },
-  })) as ShpRow[];
+  const osById = new Map<string, OwnershipScoreRel | null>();
+  for (const r of joined) {
+    if (r.baseline === null) {
+      // the snapshot resolved, its ownership score did not — exactly the nested select's `null`.
+      if (!osById.has(r.snapshot_id)) osById.set(r.snapshot_id, null);
+      continue;
+    }
+    let os = osById.get(r.snapshot_id) ?? null;
+    if (!os) {
+      os = {
+        baseline: r.baseline,
+        baselineReason: r.baseline_reason as string,
+        pledgingAdjustment: r.pledging_adjustment,
+        penaltyR2: r.penalty_r2,
+        penaltyR6: r.penalty_r6,
+        penaltyProlongedFii: r.penalty_prolonged_fii,
+        primarySubtotal: r.primary_subtotal,
+        flowAdjustmentRaw: r.flow_adjustment_raw,
+        flowAdjustmentClamped: r.flow_adjustment_clamped,
+        finalOwnership: r.final_ownership,
+        r1Fired: r.r1_fired as boolean,
+        r1TriggeringValues: r.r1_triggering_values,
+        flowCategories: [],
+      };
+      osById.set(r.snapshot_id, os);
+    }
+    if (r.category !== null) {
+      os.flowCategories.push({
+        category: r.category,
+        categoryState: r.category_state as string,
+        rawSubScore: r.raw_sub_score,
+        capApplied: r.cap_applied,
+        cappedSubScore: r.capped_sub_score,
+        bandLanded: r.band_landed,
+        netFlowValue: r.net_flow_value,
+        trendState: r.trend_state,
+      });
+    }
+  }
 
   // one ShareholdingPattern row → the canonical holding split (pure raw data).
   const rowHolding = (r: ShpRow): OwnershipHolding => {
@@ -238,41 +399,7 @@ export async function buildOwnershipView(
       }));
 
   // ── raw insider + block events (window-aware, newest-first, capped at 25) ──────────
-  const today = new Date();
-  const windowStart = new Date(today.getTime() - windowQuarters * 91 * 24 * 60 * 60 * 1000);
-
-  const insiderRows = await prisma.insiderTrade.findMany({
-    where: { stockId: stock.id, tradeDate: { gte: windowStart, lte: today } },
-    select: {
-      tradeDate: true,
-      personName: true,
-      personCategory: true,
-      transactionType: true,
-      securitiesTraded: true,
-      holdingPctDelta: true,
-      tradeValueCr: true,
-      acquisitionMode: true,
-      regulation: true,
-    },
-    orderBy: { tradeDate: "desc" },
-    take: 25,
-  });
-
-  const blockRows = await prisma.blockDeal.findMany({
-    where: { stockId: stock.id, dealDate: { gte: windowStart, lte: today } },
-    select: {
-      dealDate: true,
-      dealType: true,
-      clientName: true,
-      transactionType: true,
-      quantity: true,
-      price: true,
-      valueCr: true,
-    },
-    orderBy: { dealDate: "desc" },
-    take: 25,
-  });
-
+  // Both were fetched in stage 2 above, alongside the shareholding scan they never depended on.
   const insider: InsiderEvent[] = insiderRows.map((r) => ({
     tradeDate: r.tradeDate ? ymd(r.tradeDate) : null,
     personName: r.personName,
@@ -362,10 +489,34 @@ export async function buildOwnershipView(
           }
         : null;
 
+  // ── THE TELL — the same classifier the landing scan ranks by, on the same inputs ────────────
+  // The scan reads the two NEWEST shareholding rows for the stock plus the latest snapshot's
+  // r1Fired; `shp` here is the same table, ascending, so its last two rows are those same two rows
+  // and `current.r1Fired` is that same flag. Identical inputs, one function — see ownership-tell.ts.
+  //
+  // ⚠ Deltas are LATEST-vs-PRIOR FILING, deliberately NOT the window deltas the page's hero reads.
+  //   They are two different questions ("what did the register just do" vs "what did it do across
+  //   the window"), and the tell has always been the first one.
+  const tellCur = shp.length ? shp[shp.length - 1] : null;
+  const tellPrev = shp.length >= 2 ? shp[shp.length - 2] : null;
+  const instOf = (r: ShpRow): number => (numN(r.fiiPct) ?? 0) + (numN(r.diiPct) ?? 0);
+  const tell = tellCur
+    ? ownershipTellOrNull(
+        current?.r1Fired ?? false,
+        pledgeRatios(tellCur.pledgedShares, tellCur.promoterShares, tellCur.totalShares)
+          .pledgedPctOfPromoter,
+        tellPrev != null,
+        tellPrev ? round2(instOf(tellCur) - instOf(tellPrev)) : null,
+        tellPrev ? round2((numN(tellCur.fiiPct) ?? 0) - (numN(tellPrev.fiiPct) ?? 0)) : null,
+        tellPrev ? round2((numN(tellCur.diiPct) ?? 0) - (numN(tellPrev.diiPct) ?? 0)) : null,
+      )
+    : null;
+
   return {
     symbol: stock.symbol,
     name: stock.name,
     windowQuarters,
+    tell,
     // `scored` keeps its original meaning — a scored period exists (was series-presence
     // back when series was built only from scored refs). `hasScoredPeriod` is the explicit
     // alias the UI gates the score-only sections on, decoupled from ledger-data presence.

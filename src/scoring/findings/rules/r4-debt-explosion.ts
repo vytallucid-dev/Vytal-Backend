@@ -13,7 +13,7 @@
 // The findings hook passes empty annualFundamentals for banks, so this returns null there;
 // the explicit industry guard documents the intent.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
 
 export const R4_DE_THRESHOLD = 3.0; // 3× (ratio, not percent)
@@ -27,8 +27,8 @@ function deRatio(r: FoundationAnnual): number | null {
   return debt / nw;
 }
 
-export const ruleR4: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // non-financials only (File 1)
+export const ruleR4: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // non-financials only (File 1) — D/E is not a leverage read for a lender
   const f = ctx.annualFundamentals;
   if (f.length < 2) return notEvaluable("insufficient_annual_history"); // ⚠ Phase 2: need history to assert "first time"
 

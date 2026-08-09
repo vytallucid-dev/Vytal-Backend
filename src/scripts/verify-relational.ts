@@ -11,6 +11,7 @@ import { composeRelationalState } from "../relational/service.js";
 import { anonymousContext } from "../relational/reader-context.js";
 import { scanAssembled, scanStrength } from "../relational/copy.js";
 import type { ReaderContext, ObjectState, ObjectFinding, ReaderHolding } from "../relational/types.js";
+import { EMPTY_FILING_ECHO } from "../relational/constants.js";
 
 let pass = 0;
 let fail = 0;
@@ -144,7 +145,7 @@ function heldContext(attention: ReaderContext["attention"], hasFund = true): Rea
     // ⇒ the SHARE path fires. Universe base rate is supplied by the fixture snapshot in the UE tests.
     // §Phase 7 — an evaluable delta: MEDIUM_NEG is newly standing since the last look.
     delta: { evaluable: true, since: daysAgo(10), sinceLabel: "July 2026", lastSeenGeneration: "snap-acme-0", newSnapshotSinceLastLook: true, newlyStandingKeys: ["foundation_C1_divergence"], clearedKeys: [], lastSeenBand: "healthy" },
-    echo: { scoredHoldingsCount: 6, byPatternKey: new Map([["foundation_C1_divergence", ["Acme Industries", "Beta Foods", "Gamma Pharma"]]]) },
+    echo: { scoredHoldingsCount: 6, byPatternKey: new Map([["foundation_C1_divergence", ["Acme Industries", "Beta Foods", "Gamma Pharma"]]]), filing: EMPTY_FILING_ECHO() },
     neighbourhood: {
       pgWeightPct: 33,
       pgHeld: [
@@ -181,7 +182,7 @@ function strangerContext(): ReaderContext {
     attention: { hasHistory: false, firstViewedAt: null, lastViewedAt: null, viewCount: 0, viewCountTrailing30d: 0, lastViewedSnapshotGeneration: null },
     // §Phase 7 — no last look ⇒ NOT EVALUABLE, never "nothing new".
     delta: { evaluable: false, since: null, sinceLabel: null, lastSeenGeneration: null, newSnapshotSinceLastLook: false, newlyStandingKeys: [], clearedKeys: [], lastSeenBand: null },
-    echo: { scoredHoldingsCount: 4, byPatternKey: new Map() },
+    echo: { scoredHoldingsCount: 4, byPatternKey: new Map(), filing: EMPTY_FILING_ECHO() },
     // The stranger holds NOTHING in this pond and nothing in its sector — so UN1/UN2/UN7 all stay
     // silent and UO4 ("nothing connects") is the honest resolution. This is the UO4 path's fixture.
     neighbourhood: { pgWeightPct: 0, pgHeld: [], pgSize: 9, sectorWeightPct: 0, sectorHeldCount: 0 },

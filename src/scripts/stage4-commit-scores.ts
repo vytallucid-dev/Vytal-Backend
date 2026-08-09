@@ -47,8 +47,8 @@ async function main() {
   console.log(`  ${"PG".padEnd(5)} ${"scored".padEnd(7)} composite range   bands & per-stock`);
   console.log(`  ${"─".repeat(5)} ${"─".repeat(7)} ${"─".repeat(16)} ${"─".repeat(60)}`);
 
-  let totalScored = 0, totalSkipped = 0, totalNoSnap = 0, totalR1 = 0;
-  const r1Stocks: string[] = [];
+  let totalScored = 0, totalSkipped = 0, totalNoSnap = 0;
+
   const noSnap: string[] = [];
 
   for (const ref of PGS) {
@@ -67,11 +67,11 @@ async function main() {
     const noSnapHere = results.filter((r) => r.action === "unavailable_no_snapshot");
     const comps = created.map((r) => r.composite!).filter((x) => x != null);
     totalScored += created.length; totalSkipped += skipped.length; totalNoSnap += noSnapHere.length;
-    for (const r of created) { if (r.r1Written) { totalR1++; r1Stocks.push(`${r.symbol}(${ref.pgId})`); } }
+
     for (const r of noSnapHere) noSnap.push(`${r.symbol}(${ref.pgId})`);
 
     const range = comps.length ? `${f(Math.min(...comps))}–${f(Math.max(...comps))}` : "—";
-    const perStock = results.map((r) => r.action === "created" ? `${r.symbol} ${f(r.composite)}/${r.band}${r.marketState !== "scored" ? "*" : ""}${r.r1Written ? "⚑R1" : ""}` : `${r.symbol}:${r.action === "skipped_identical" ? "skip" : "no-snap"}`).join("  ");
+    const perStock = results.map((r) => r.action === "created" ? `${r.symbol} ${f(r.composite)}/${r.band}${r.marketState !== "scored" ? "*" : ""}` : `${r.symbol}:${r.action === "skipped_identical" ? "skip" : "no-snap"}`).join("  ");
     console.log(`  ${ref.pgId.padEnd(5)} ${`${created.length}/${pg.members.length}`.padEnd(7)} ${range.padEnd(16)} ${perStock}`);
   }
 
@@ -81,7 +81,8 @@ async function main() {
   const after = await tableCounts();
   console.log(`\n  post-commit counts: ${JSON.stringify(after)}`);
   console.log(`  committed: ${totalScored} Health Scores | ${totalSkipped} skipped-identical | ${totalNoSnap} no-snapshot (composite unavailable)`);
-  console.log(`  R1 red flags written (${totalR1}): ${r1Stocks.join(", ") || "none"}`);
+  // R1 red flags are no longer written by the scoring pass (step 4) — R1 is a filing rule and
+  // writes to stock_findings for all 504 stocks, scored or not.
   if (noSnap.length) console.log(`  no-snapshot (composite unavailable, recorded — not scored): ${noSnap.join(", ")}`);
 
   // Idempotency: recompute one committed stock's snapshot fingerprint; it must equal the

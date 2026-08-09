@@ -2,15 +2,18 @@
 // ─────────────────────────────────────────────────────────────
 // Full news ingestion pipeline:
 //   Phase 1 — Fetch & insert (fast, runs daily)
-//   Phase 2 — Extract content (slower, runs after insert)
+//   Phase 2 — Extract content (PDF only, and currently switched off)
 //
-// Phase 1: Insert all news items immediately with extractionStatus
-//   = "pending" for items that need content extraction.
+// Phase 1: Insert all news items immediately. `extractionStatus` is
+//   EXTRACTION_DECLINED for press rows always, and for filings unless
+//   CONTENT_EXTRACTION_ENABLED is on — nothing writes "pending" while
+//   there is no worker scheduled to drain it.
 //
-// Phase 2: Extraction worker picks up "pending" items and:
-//   - NSE PDFs: fetch PDF → extract text via pdf-parse
-//   - Free articles: fetch URL → scrape body via cheerio
-//   - Paywalled: use RSS snippet (already stored as summary)
+// Phase 2: The extraction worker handles NSE PDFs via pdf-parse. There is
+//   no article path: the scraper and its cheerio dependency were deleted on
+//   2026-08-09 (0 successes in 23,150 attempts; the stored URL resolves to
+//   Google's JS shell; three target publishers ban Anthropic's crawler by
+//   name). See the header of content-extractor.ts before adding one back.
 //
 // The two-phase approach means daily fetch is fast (~2-4 min for
 // 100 stocks) and extraction runs asynchronously after insert.
@@ -21,7 +24,8 @@ import {
   type NseAnnouncement,
 } from "./nse-announcements.js";
 import { fetchGoogleNews, type GoogleNewsItem } from "./google-news.js";
-import { extractPdfText, extractArticleText } from "./content-extractor.js";
+import { extractPdfText, EXTRACTION_DECLINED } from "./content-extractor.js";
+import { pressDedupeKey } from "./dedupe-key.js";
 import { prisma } from "../../db/prisma.js";
 import { nseClient } from "../../lib/client.js";
 import { reportIngestionError } from "../shared/ingestion-error.js";
@@ -88,7 +92,7 @@ async function insertNseAnnouncement(
         sourceType: "nse_announcement",
         sourceId: ann.sourceId,
         headline: ann.headline,
-        summary: ann.summary, // attchmntText excerpt (always stored)
+        summary: ann.summary, // attchmntText excerpt — REAL content, the best field in this table
         contentText: null, // filled by extraction worker
         contentSource: ann.shouldExtract ? "pending" : null,
         contentTokens: null,
@@ -98,7 +102,10 @@ async function insertNseAnnouncement(
         externalUrl: null,
         isHighImpact: ann.isHighImpact,
         publishedAt: ann.publishedAt,
-        extractionStatus: ann.shouldExtract ? "pending" : "not_applicable",
+        // ★ "pending" ONLY when a worker actually exists to drain it. `shouldExtract` is false whenever
+        //   CONTENT_EXTRACTION_ENABLED is false, so this resolves to EXTRACTION_DECLINED and the queue
+        //   cannot refill — see the master switch in content-extractor.ts.
+        extractionStatus: ann.shouldExtract ? "pending" : EXTRACTION_DECLINED,
         extractionAttempts: 0,
       },
     });
@@ -117,22 +124,23 @@ async function insertGoogleNewsItem(
   item: GoogleNewsItem,
 ): Promise<"inserted" | "skipped"> {
   try {
-    // For paywalled sources: use RSS snippet as contentText immediately
-    // (no extraction needed — snippet is the best we'll ever get)
-    const isPaywalled = !item.shouldScrape;
-    const contentText = isPaywalled ? item.summary : null;
-    const contentSource = isPaywalled
-      ? item.summary
-        ? "rss_snippet"
-        : null
-      : item.shouldScrape
-        ? "pending"
-        : null;
-    const extractionStatus = isPaywalled
-      ? "skipped"
-      : item.shouldScrape
-        ? "pending"
-        : "not_applicable";
+    // ── ★ THERE IS NO EXTRACTION BRANCH LEFT FOR PRESS ROWS, AND THAT IS THE POINT ─────────────────
+    //
+    // These three values used to be conditional on `item.shouldScrape`. Both the field and the article
+    // scraper behind it were DELETED on 2026-08-09 (0 successes in 23,150 attempts; the stored URL
+    // resolves to Google's JS shell; three target publishers ban Anthropic's crawler by name — see the
+    // header of content-extractor.ts). So a press row is now unconditionally "we are not extracting
+    // this", and there is no path that can write "pending" again.
+    //
+    // ⚠ AND `contentText` IS ALWAYS NULL HERE, WHICH FIXES A SEPARATE DEFECT. The old paywall branch
+    // copied `summary` into `contentText` and labelled it "rss_snippet" — but on a press row `summary`
+    // IS "{headline} {publisher}", so that wrote a HEADLINE into the field named content and presented
+    // it as an extracted body: 1,281 rows, every one byte-identical to `summary`, and the source of the
+    // "Full text available" badge that promised an article body for a headline. Those rows are cleared.
+    // An honest null beats a labelled copy.
+    const contentText = null;
+    const contentSource = null;
+    const extractionStatus = EXTRACTION_DECLINED;
 
     await prisma.stockNews.create({
       data: {
@@ -140,15 +148,21 @@ async function insertGoogleNewsItem(
         symbol,
         sourceType: "google_news",
         sourceId: item.sourceId,
+        // ★ THE REAL DEDUPE. sourceId is Google's GUID and it DRIFTS — the same article returns with a
+        //   new one, so (stockId, sourceId) never collides and the duplicate is stored. This key is
+        //   (published_at, normalised headline prefix); a P2002 on it is caught below and reported as
+        //   "skipped", exactly like a sourceId collision. See dedupe-key.ts for the calibration.
+        dedupeKey: pressDedupeKey(item.headline, item.publishedAt),
         headline: item.headline,
         summary: item.summary, // RSS snippet (always stored)
-        contentText, // filled immediately for paywalled
+        contentText, // always null at insert — only a real extraction may fill it
         contentSource,
-        contentTokens: contentText ? Math.round(contentText.length / 4) : null,
-        category: item.sourceName, // publication name
+        contentTokens: null, // a token estimate of nothing is not 0, it is unknown
+        category: item.sourceName, // publication DISPLAY name ("The Economic Times") — not a domain
         subcategory: null,
         pdfUrl: null,
-        externalUrl: item.externalUrl, // always stored
+        externalUrl: item.externalUrl, // the Google redirect, always stored (never resolves to the article)
+        publisherDomain: item.publisherDomain, // the publisher's real host, for the host screen
         isHighImpact: item.isHighImpact,
         publishedAt: item.publishedAt,
         extractionStatus,
@@ -435,7 +449,9 @@ export async function runDailyGoogleNewsIngest(
             );
             if (result === "inserted") {
               inserted++;
-              if (item.shouldScrape) pendingExtraction++;
+              // No `pendingExtraction++` — press rows are never queued for extraction. The article
+              // scraper is deleted, so the counter stays 0 and runDailyNewsIngest does not invoke the
+              // worker for press. Filings still increment their own counter, gated by the flag.
             } else {
               skipped++;
             }
@@ -605,12 +621,13 @@ export async function runContentExtractionWorker(
     try {
       let result;
 
+      // ★ PDF ONLY. The `google_news` branch that called extractArticleText is DELETED along with the
+      // scraper (see content-extractor.ts's header). A press row reaching this worker — which it cannot,
+      // since nothing writes "pending" for press any more — now falls to the "nothing to extract" arm
+      // below and is marked declined, rather than being handed a scraper that returns Google's chrome.
       if (item.sourceType === "nse_announcement" && item.pdfUrl) {
         // Extract PDF text
         result = await extractPdfText(item.pdfUrl, signal);
-      } else if (item.sourceType === "google_news" && item.externalUrl) {
-        // Scrape article or use RSS snippet
-        result = await extractArticleText(item.externalUrl, item.summary, signal);
       } else {
         // Nothing to extract
         await prisma.stockNews.update({
@@ -642,15 +659,17 @@ export async function runContentExtractionWorker(
         await prisma.stockNews.update({
           where: { id: item.id },
           data: {
-            extractionStatus: result.source === "failed" ? "failed" : "skipped",
+            extractionStatus: result.source === "failed" ? "failed" : EXTRACTION_DECLINED,
             extractionAttempts: { increment: 1 },
             extractionError: result.error ?? null,
-            // Even if extraction failed, store RSS snippet if available
-            contentText: item.summary ?? null,
-            contentSource: item.summary ? "rss_snippet" : null,
-            contentTokens: item.summary
-              ? Math.round(item.summary.length / 4)
-              : null,
+            // ⚠ NO "STORE THE RSS SNIPPET AS A FALLBACK". There is no RSS snippet: on a google_news row
+            // `summary` is "{headline} {publisher}". This branch used to copy it into `contentText` and
+            // label it "rss_snippet", which is how 1,281 rows came to hold a headline in a field named
+            // content. A failed extraction leaves contentText NULL — the honest record of "we have no
+            // body for this item". `summary` is still on the row for anyone who wants it.
+            contentText: null,
+            contentSource: null,
+            contentTokens: null,
           },
         });
         failed++;

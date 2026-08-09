@@ -25,11 +25,11 @@
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
 import { computeCategoryB } from "../../ownership/flow.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { notEvaluable, type FilingRule } from "../types.js";
 
 export const N5_MIN_MOVE_PP = 0.5; // each of FII / DII must rise ≥ 0.5pp (P4-symmetric)
 
-export const ruleN5: FireRule = (ctx) => {
+export const ruleN5: FilingRule = (ctx) => {
   const rows = ctx.shareholding;
   if (rows.length < 2) return notEvaluable("insufficient_shareholding_history");
 

@@ -1,18 +1,51 @@
-// ─────────────────────────────────────────────────────────────
-// Extracts full text content from:
-//   1. NSE PDF attachments (via pdf-parse)
-//   2. News article pages (via cheerio HTML parsing)
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// CONTENT EXTRACTION — NSE PDF ATTACHMENTS. THAT IS THE WHOLE SURFACE.
 //
-// Called after a news item is inserted, before AI processing.
+// ★★★ THERE WAS A SECOND HALF AND IT WAS DELETED ON 2026-08-09. DO NOT RESTORE IT. ★★★
 //
-// Dependencies:
-//   npm install pdf-parse cheerio
-//   npm install -D @types/pdf-parse @types/cheerio
-// ─────────────────────────────────────────────────────────────
+// This file used to also scrape NEWS ARTICLE BODIES (`extractArticleText`, `parseArticleBody`,
+// `cleanArticleText`, `PAYWALLED_DOMAINS`, `FREE_DOMAINS`, `getDomain`, `isPaywalled`,
+// `shouldScrapeArticle`, and a cheerio dependency). It is gone, and its absence is a CONCLUSION, not an
+// omission — a future reader must not "finish the missing half".
+//
+// FOUR INDEPENDENT REASONS, EACH MEASURED:
+//
+//  1. IT NEVER WORKED ONCE. `content_source = 'article_scraped'`: 0 rows out of 23,150 eligible items.
+//     Not "low yield" — zero, across the entire history of the table.
+//
+//  2. THE STORED URL DOES NOT RESOLVE TO AN ARTICLE. `external_url` is a news.google.com redirect, and
+//     Google stopped 302-ing it to the publisher. Followed live with a browser UA: HTTP 200, final URL
+//     still news.google.com, body ~600 KB of Google's own JS shell. The scraper's last-resort selector
+//     is `$("body").text()`, so a re-enabled worker would have stored GOOGLE'S CHROME labelled
+//     "article_scraped" — a fabricated body, indistinguishable downstream from a real one.
+//
+//  3. THE TARGET PUBLISHERS FORBID IT BY NAME. Checked live against the FREE_DOMAINS list this file
+//     itself shipped: cnbctv18.com and thehindubusinessline.com both `Disallow: /` for **ClaudeBot**
+//     and **Claude-Web** (thehindubusinessline also for **Anthropic-ai**), alongside GPTBot, CCBot,
+//     Google-Extended and PerplexityBot. moneycontrol.com bans GPTBot, CCBot and ChatGPT-User. Scraping
+//     them as model input is a stated-terms violation, and the deleted code sent a Chrome User-Agent,
+//     which would have made it evasion of a stated prohibition rather than a grey area.
+//
+//  4. THERE IS NOTHING TO RECOVER ANYWAY. Google News RSS carries no snippet — `<description>` is an
+//     anchor tag plus a font tag, so stripped it is "{headline} {publisher}". The old paywall branch
+//     copied that into `contentText` and labelled it "rss_snippet", which is how 1,281 rows came to
+//     hold a headline in a field named content. Those have been cleared.
+//
+// ── ⚠ THE PDF HALF STAYS, AND IT IS DELIBERATELY UNREACHABLE ─────────────────────────────────────
+// `extractPdfText` WORKS: 278 filings already carry genuinely parsed text, nsearchives.nseindia.com
+// needs no session or cookie (unlike the rest of NSE), the PDFs have a real text layer, and a 356 KB
+// filing fetches and parses in ~80 ms. It is a statutory disclosure the company is required to publish
+// — no publisher terms, no paywall, no crawler ban. It is the foundation of the queued
+// filing-summaries build, so deleting it would mean rebuilding it.
+//
+// It is held behind CONTENT_EXTRACTION_ENABLED = false (below), and re-enabling is deliberately TWO
+// edits: that flag AND a cron entry in lib/scheduler.ts.
+//
+// Dependencies: pdf-parse only. cheerio went with the article half.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import https from "https";
 import { createRequire } from "module";
-import * as cheerio from "cheerio";
 
 const require = createRequire(import.meta.url);
 
@@ -20,54 +53,20 @@ const require = createRequire(import.meta.url);
 
 export interface ExtractionResult {
   text: string | null;
+  /**
+   * ⚠ "article_scraped" IS RETAINED IN THIS UNION AND NOTHING PRODUCES IT. It stays because
+   * `stock_news.content_source` is a free-text column and the value must remain READABLE if it ever
+   * appears in an old row — not because anything may write it again. See the header.
+   * "rss_snippet" is likewise historical: those rows have been cleared and nothing writes it now.
+   */
   source: "pdf_extracted" | "article_scraped" | "rss_snippet" | "failed";
   tokenEstimate: number;
   error?: string;
 }
 
-// ── Paywalled sources — use RSS snippet instead of scraping ───
-
-const PAYWALLED_DOMAINS = new Set([
-  "economictimes.indiatimes.com",
-  "livemint.com",
-  "business-standard.com",
-  "financialexpress.com", // partial paywall
-  "wsj.com",
-  "ft.com",
-  "bloomberg.com",
-]);
-
-// ── Free sources — scrape article body ───────────────────────
-
-const FREE_DOMAINS = new Set([
-  "ndtvprofit.com",
-  "ndtv.com",
-  "thehindubusinessline.com",
-  "thehindu.com",
-  "reuters.com",
-  "businesstoday.in",
-  "zeebiz.com",
-  "cnbctv18.com",
-  "moneycontrol.com", // mostly free
-  "indiainfoline.com",
-  "equitypandit.com",
-  "goodreturns.in",
-]);
-
-function getDomain(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
-}
-
-function isPaywalled(url: string): boolean {
-  const domain = getDomain(url);
-  return PAYWALLED_DOMAINS.has(domain);
-}
-
 // ── HTTP fetch (buffer) ───────────────────────────────────────
+// Shared with nothing now — the PDF path is its only caller. Kept as its own function because the
+// retry/redirect/timeout behaviour is the fiddly part and inlining it into extractPdfText would bury it.
 
 function fetchBuffer(url: string, timeoutMs = 15000, signal?: AbortSignal): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -178,122 +177,6 @@ function cleanPdfText(raw: string): string {
     .slice(0, 8000); // cap at ~2000 tokens — enough for AI context
 }
 
-// ── Article text extraction ───────────────────────────────────
-// Uses cheerio to parse HTML and extract article body content.
-// Removes navigation, ads, footers, related articles sections.
-// Falls back gracefully for sites with unusual structure.
-
-export async function extractArticleText(
-  articleUrl: string,
-  rssFallback: string | null,
-  signal?: AbortSignal,
-): Promise<ExtractionResult> {
-  const domain = getDomain(articleUrl);
-
-  // Paywalled — use RSS snippet
-  if (isPaywalled(articleUrl)) {
-    return {
-      text: rssFallback ?? null,
-      source: "rss_snippet",
-      tokenEstimate: rssFallback ? Math.round(rssFallback.length / 4) : 0,
-    };
-  }
-
-  try {
-    const buffer = await fetchBuffer(articleUrl, 15000, signal);
-    const html = buffer.toString("utf-8");
-    const text = parseArticleBody(html, domain);
-
-    if (!text || text.length < 100) {
-      // Scraping got too little — fall back to RSS snippet
-      return {
-        text: rssFallback ?? null,
-        source: rssFallback ? "rss_snippet" : "failed",
-        tokenEstimate: rssFallback ? Math.round(rssFallback.length / 4) : 0,
-        error: "Article body too short after scraping",
-      };
-    }
-
-    return {
-      text: text.slice(0, 6000), // cap at ~1500 tokens
-      source: "article_scraped",
-      tokenEstimate: Math.round(Math.min(text.length, 6000) / 4),
-    };
-  } catch (e) {
-    // Any fetch/parse error — fall back to RSS snippet
-    return {
-      text: rssFallback ?? null,
-      source: rssFallback ? "rss_snippet" : "failed",
-      tokenEstimate: rssFallback ? Math.round(rssFallback.length / 4) : 0,
-      error: (e as Error).message,
-    };
-  }
-}
-
-/** Parse article body from HTML using cheerio */
-function parseArticleBody(html: string, domain: string): string {
-  const $ = cheerio.load(html);
-
-  // Remove noise elements
-  $(
-    "script, style, nav, header, footer, aside, " +
-      ".advertisement, .ads, .social-share, .related-articles, " +
-      ".newsletter-signup, .comments, .sidebar, " +
-      '[class*="subscribe"], [class*="paywall"], [class*="modal"], ' +
-      '[id*="cookie"], [class*="cookie"]',
-  ).remove();
-
-  // Try domain-specific selectors first for best extraction
-  const domainSelectors: Record<string, string> = {
-    "ndtvprofit.com": "article .article__body, .story-content",
-    "ndtv.com": "article .story__content, .ins_storybody",
-    "thehindubusinessline.com": "article .article-body, .storyline",
-    "thehindu.com": "article .article-body-content",
-    "reuters.com": 'article [class*="article-body"], .StandardArticleBody_body',
-    "businesstoday.in": ".story-content, .article-body",
-    "zeebiz.com": ".article-body, .storyDetail",
-    "cnbctv18.com": ".article-body, .articleContent",
-    "moneycontrol.com": "#article-content, .article-desc",
-  };
-
-  const specificSelector = domainSelectors[domain];
-  if (specificSelector) {
-    const specificText = $(specificSelector).text();
-    if (specificText.length > 200) {
-      return cleanArticleText(specificText);
-    }
-  }
-
-  // Generic fallbacks in order of preference
-  const genericSelectors = [
-    "article",
-    '[itemprop="articleBody"]',
-    ".article-body",
-    ".article-content",
-    ".story-content",
-    ".post-content",
-    ".entry-content",
-    "main",
-  ];
-
-  for (const sel of genericSelectors) {
-    const text = $(sel).text();
-    if (text.length > 200) {
-      return cleanArticleText(text);
-    }
-  }
-
-  // Last resort: body text
-  return cleanArticleText($("body").text());
-}
-
-function cleanArticleText(raw: string): string {
-  return raw
-    .replace(/\s+/g, " ")
-    .replace(/\n{2,}/g, "\n")
-    .trim();
-}
-
 // ── High-impact category check ────────────────────────────────
 // Determines whether a news item warrants PDF extraction
 
@@ -319,19 +202,46 @@ const PDF_EXTRACTION_CATEGORIES = new Set([
   "trading window",
 ]);
 
+// ══ ★★★ THE MASTER SWITCH — THE CAUSE, NOT THE SYMPTOM ════════════════════════════════════════════
+//
+// Content extraction has been OFF since 2026-07-26, when `news-extraction-worker` was removed from
+// lib/scheduler.ts. Nothing consumes `contentText`, and the publishers worth scraping ban AI crawlers
+// by name (cnbctv18.com and thehindubusinessline.com Disallow ClaudeBot and Claude-Web explicitly).
+//
+// ⚠ BUT THE INGEST KEPT WRITING `extraction_status: "pending"`, so the queue refilled itself. The
+// scheduler comment records that the 6,544 rows pending at switch-off were re-marked "skipped"
+// PRECISELY so nothing would infer work that will never happen — and two weeks of ingest put 15,805
+// rows back. Re-marking the rows again without closing this door would repeat that exactly.
+//
+// This flag is the door. While it is false:
+//   · no row is ever written with status "pending" — see the insert functions in ingest-news.ts;
+//   · `pendingExtraction` counters stay 0, so runDailyNewsIngest does not invoke the worker inline;
+//   · the worker, its job type, its dispatcher entry and its admin trigger ALL still work, so a
+//     one-off manual run remains possible. Nothing is deleted.
+//
+// RE-ENABLING IS TWO EDITS, DELIBERATELY: flip this flag AND re-add the cron entry in scheduler.ts.
+// One without the other is a half-state — a scheduled worker with an empty queue, or a filling queue
+// with no worker. Rows written while it was off are "skipped" and will NOT be picked up; that is the
+// same intended behaviour the 2026-07-26 note describes, and stock_news prunes at 90 days anyway.
+export const CONTENT_EXTRACTION_ENABLED = false;
+
+/**
+ * The honest `extraction_status` for a row we are choosing not to extract. "skipped" is the value the
+ * worker itself writes when it declines, and it is what the 2026-07-26 re-marking used — one value,
+ * one meaning, rather than a second synonym for the same decision.
+ */
+export const EXTRACTION_DECLINED = "skipped" as const;
+
 export function shouldExtractPdf(
   category: string | null,
   isHighImpact: boolean,
 ): boolean {
+  if (!CONTENT_EXTRACTION_ENABLED) return false;
   if (!isHighImpact) return false;
   if (!category) return isHighImpact; // if high impact but no category, still extract
   return PDF_EXTRACTION_CATEGORIES.has(category.toLowerCase());
 }
 
-export function shouldScrapeArticle(externalUrl: string | null): boolean {
-  if (!externalUrl) return false;
-  if (isPaywalled(externalUrl)) return false;
-  const domain = getDomain(externalUrl);
-  // Only scrape domains we know work well
-  return FREE_DOMAINS.has(domain) || !PAYWALLED_DOMAINS.has(domain);
-}
+// ⚠ `shouldScrapeArticle` WAS HERE AND IS DELETED. Nothing decides whether to scrape an article,
+// because nothing scrapes articles — see the four reasons in the file header. Press rows are inserted
+// with extraction_status = EXTRACTION_DECLINED unconditionally; there is no branch left to take.

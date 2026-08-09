@@ -17,7 +17,7 @@
 // over-engineer where the structure already guards. This is inherently far less one-off-
 // sensitive than the quarterly OPM P11 reads.)
 
-import { notEvaluable, type FireRule, type FiringContext } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule, type FilingContext } from "../types.js";
 import type { MomentumQuarter } from "../../metrics/types.js";
 
 export const R5_IC_THRESHOLD = 1.5;   // < 1.5×
@@ -49,9 +49,9 @@ function ttmIC(rows: MomentumQuarter[], i: number): TtmResult {
   return { ok: true, ic: (sumPbt + sumInt) / sumInt }; // = ΣEBIT / Σinterest
 }
 
-export const ruleR5: FireRule = (ctx: FiringContext) => {
+export const ruleR5: FilingRule = (ctx: FilingContext) => {
   // Scope decision, not a data gap — stays not_fired (see R3's banking note).
-  if (ctx.industry === "banking") return null;
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // interest is a lender/insurer cost of goods — coverage is undefined
   const rows = [...ctx.quarterlyResults].sort((a, b) => a.qOrdinal - b.qOrdinal);
   // ⚠ MIGRATED (Phase 2): the depth gate is a declined check, not a false one.
   if (rows.length < R5_MIN_CONSECUTIVE + 3) return notEvaluable("insufficient_quarters"); // need 5 quarters

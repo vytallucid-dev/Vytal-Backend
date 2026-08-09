@@ -3,6 +3,7 @@
 import { composeRelationalState } from "../relational/service.js";
 import { anonymousContext } from "../relational/reader-context.js";
 import type { ReaderContext, ObjectState, ObjectFinding, ReaderHolding } from "../relational/types.js";
+import { EMPTY_FILING_ECHO } from "../relational/constants.js";
 
 const NOW = new Date("2026-07-25T12:00:00.000Z");
 const daysAgo = (n: number) => new Date(NOW.getTime() - n * 86400000);
@@ -27,7 +28,7 @@ const held = (attn: ReaderContext["attention"]): ReaderContext => ({
   identity: { userId: "u1", isAuthenticated: true, aiLevel: "balanced" }, heldThisObject: true,
   book: { exists: true, accountCount: 2, scoredHoldingsCount: 6, totalHoldingsCount: 7, unscoredHoldingsCount: 1, totalValue: 1_000_000, typicalPositionValue: 90000, holdings: [acme(), ...others("Consumer")], hasFundHoldings: true, lookThroughAvailable: false, phsComposite: 68, phsBand: "Steady" },
   watchlist: { exists: false, count: 0, thisAddedAt: null, peersInPeerGroup: [] }, attention: attn,
-  echo: { scoredHoldingsCount: 6, byPatternKey: new Map() },
+  echo: { scoredHoldingsCount: 6, byPatternKey: new Map(), filing: EMPTY_FILING_ECHO() },
   delta: { evaluable: false, since: null, sinceLabel: null, lastSeenGeneration: null, newSnapshotSinceLastLook: false, newlyStandingKeys: [], clearedKeys: [], lastSeenBand: null },
   neighbourhood: { pgWeightPct: 33, pgHeld: [{ stockId: "stk-acme", symbol: "ACME", name: "Acme Industries", isThisObject: true }, { stockId: "stk-d", symbol: "DELTA", name: "Delta Cement", isThisObject: false }], pgSize: 9, sectorWeightPct: 33, sectorHeldCount: 2 },
 });
@@ -35,7 +36,7 @@ const stranger = (): ReaderContext => ({
   identity: { userId: "u2", isAuthenticated: true, aiLevel: "balanced" }, heldThisObject: false,
   book: { exists: true, accountCount: 1, scoredHoldingsCount: 4, totalHoldingsCount: 4, unscoredHoldingsCount: 0, totalValue: 400000, typicalPositionValue: 85000, holdings: others("Consumer"), hasFundHoldings: false, lookThroughAvailable: false, phsComposite: 60, phsBand: "Steady" },
   watchlist: { exists: false, count: 0, thisAddedAt: null, peersInPeerGroup: [] }, attention: { hasHistory: false, firstViewedAt: null, lastViewedAt: null, viewCount: 0, viewCountTrailing30d: 0, lastViewedSnapshotGeneration: null },
-  echo: { scoredHoldingsCount: 4, byPatternKey: new Map() },
+  echo: { scoredHoldingsCount: 4, byPatternKey: new Map(), filing: EMPTY_FILING_ECHO() },
   delta: { evaluable: false, since: null, sinceLabel: null, lastSeenGeneration: null, newSnapshotSinceLastLook: false, newlyStandingKeys: [], clearedKeys: [], lastSeenBand: null },
   neighbourhood: { pgWeightPct: 0, pgHeld: [], pgSize: 9, sectorWeightPct: 0, sectorHeldCount: 0 },
 });

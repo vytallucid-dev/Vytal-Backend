@@ -32,9 +32,9 @@ import type {
   ScoredStockListItem,
   UniverseStockListItem,
   OwnershipScanItem,
-  OwnershipTell,
   SectorRef,
 } from "./stocks-list.types.js";
+import { ownershipTell, OWNERSHIP_TELL_TIER } from "./ownership-tell.js";
 
 const num = (d: unknown): number =>
   d == null
@@ -193,42 +193,11 @@ export async function buildToolScan(
 // The tell ranks by what's worth a look: R1 pledge breach > high pledging >
 // institutions distributing > accumulating > rotating > flat. Pledge is derived from
 // share counts (% of promoter holding); institutional flow from FII+DII deltas.
-
-const PLEDGE_HIGH = 20; // % of promoter holding pledged → "high pledging" tell
-const INST_EPS = 1.5; // pp change in FII+DII over a period that counts as a real move
-
-function ownershipTell(
-  r1Fired: boolean,
-  pledgePct: number | null,
-  instDelta: number | null,
-  fiiDelta: number | null,
-  diiDelta: number | null,
-): OwnershipTell {
-  if (r1Fired) return "pledge_r1";
-  if (pledgePct != null && pledgePct >= PLEDGE_HIGH) return "pledge_high";
-  if (instDelta != null) {
-    if (instDelta <= -INST_EPS) return "distribution";
-    if (instDelta >= INST_EPS) return "accumulation";
-    // net-flat institutional share but FII/DII moved opposite → a rotation
-    if (
-      fiiDelta != null &&
-      diiDelta != null &&
-      Math.abs(fiiDelta) >= INST_EPS &&
-      Math.sign(fiiDelta) !== Math.sign(diiDelta)
-    )
-      return "rotation";
-  }
-  return "flat";
-}
-
-const ownershipTier: Record<OwnershipTell, number> = {
-  pledge_r1: 5,
-  pledge_high: 4,
-  distribution: 3,
-  accumulation: 2,
-  rotation: 1,
-  flat: 0,
-};
+//
+// ★ THE CLASSIFIER MOVED TO read/ownership-tell.ts — unchanged, thresholds and tier order
+//   included. It is now shared with the PER-STOCK ownership read (ownership-series.service.ts), so
+//   the landing card and the stock page can no longer label the same stock differently. This scan's
+//   behaviour is byte-identical to before the move.
 
 // one shareholding observation, lean, for the scan's delta + spark math.
 // fiiPct/diiPct are Prisma Decimals → ALWAYS convert with numN before arithmetic
@@ -359,7 +328,7 @@ async function buildOwnershipScan(): Promise<OwnershipScanItem[]> {
 
   items.sort(
     (a, b) =>
-      ownershipTier[b.tell] - ownershipTier[a.tell] ||
+      OWNERSHIP_TELL_TIER[b.tell] - OWNERSHIP_TELL_TIER[a.tell] ||
       Math.abs(b.instDelta ?? 0) - Math.abs(a.instDelta ?? 0) ||
       (b.pledgedPctOfPromoter ?? 0) - (a.pledgedPctOfPromoter ?? 0) ||
       a.symbol.localeCompare(b.symbol),

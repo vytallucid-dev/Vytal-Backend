@@ -33,10 +33,17 @@
 // front of a reader. It evaporates on process restart and is persisted nowhere.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
+// ── C26 · TOP-LINE LABELS COME FROM THE GLOSS CATALOGUE ────────────────────────────────────────
+// `metricGloss(TOP_LINE_KEY[family]).label` is now the ONE source of the reader-facing name for a
+// family's top line, on every surface. Two surfaces disagreeing about what to call one number is
+// exactly the class src/catalogue exists to fix — and the plainer words win, because this card is
+// written for someone who has never read a statement: "Premiums kept" says what "Net premium"
+// only names. Banking and the two non-financial families are unchanged; life and general
+// insurance move.
+import { metricGloss } from "../../catalogue/quarter-metrics.js";
 import { prisma } from "../../db/prisma.js";
 import { toNum, round } from "./fundamentals-normalize.js";
 import { buildScoredStocksList } from "./stocks-list.service.js";
-import { readVerdict } from "../../insight/quarter-brief/verdict.js";
 import type { ReportedResultItem, UpcomingResultItem } from "./results-list.types.js";
 
 const ymd = (d: Date): string => d.toISOString().slice(0, 10);
@@ -111,7 +118,7 @@ async function fetchNonFinancial(): Promise<RawReported[]> {
     industryType: "non_financial",
     quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
     resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.revenue), revenueLabel: "Revenue",
+    revenue: money(q.revenue), revenueLabel: metricGloss("revenue").label,
     revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.profitYoy), profitQoq: pctPass(q.profitQoq),
     margin: pctPass(q.operatingMargin), marginLabel: "Op margin", netMargin: pctPass(q.netMargin),
@@ -135,7 +142,7 @@ async function fetchBanking(): Promise<RawReported[]> {
     industryType: "banking",
     quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
     resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.nii), revenueLabel: "Net interest income",
+    revenue: money(q.nii), revenueLabel: metricGloss("netInterestIncome").label,
     revenueYoy: pctPass(q.niiYoy), revenueQoq: pctPass(q.niiQoq),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
@@ -159,7 +166,7 @@ async function fetchNbfc(): Promise<RawReported[]> {
     industryType: "nbfc",
     quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
     resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.revenue), revenueLabel: "Revenue",
+    revenue: money(q.revenue), revenueLabel: metricGloss("revenue").label,
     revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
@@ -183,7 +190,7 @@ async function fetchLifeInsurance(): Promise<RawReported[]> {
     industryType: "life_insurance",
     quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
     resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.netPremiumIncome), revenueLabel: "Net premium",
+    revenue: money(q.netPremiumIncome), revenueLabel: metricGloss("netPremiumIncome").label,
     revenueYoy: pctPass(q.premiumYoy), revenueQoq: pctPass(q.premiumQoq),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
@@ -207,7 +214,7 @@ async function fetchGeneralInsurance(): Promise<RawReported[]> {
     industryType: "general_insurance",
     quarter: q.quarter, fiscalYear: q.fiscalYear, reportDate: q.reportDate, filingDate: q.filingDate,
     resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.grossPremiumsWritten), revenueLabel: "Gross premium",
+    revenue: money(q.grossPremiumsWritten), revenueLabel: metricGloss("grossPremiumsWritten").label,
     revenueYoy: pctPass(q.gpwYoy), revenueQoq: pctPass(q.gpwQoq),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     margin: pctPass(q.netMargin), marginLabel: "Net margin", netMargin: pctPass(q.netMargin),
@@ -262,27 +269,24 @@ async function loadReported(): Promise<ReportedResultItem[]> {
   // Honest extras — health score (only scored stocks) + a real earnings_analysis headline
   // (only stocks that have one). Both keyed by symbol/stockId, null otherwise. Scores ride the
   // universe-rows cache, so this is a Map build, not a second universe read.
-  const [scored, summaries] = await Promise.all([
+  const [scored] = await Promise.all([
     buildScoredStocksList(),
     // ⚠ PERIOD-KEYED. This previously fetched every earnings_analysis row universe-wide with NO period
     // filter and took the newest per stock — so a brief written for one quarter would have been
     // attached to whatever quarter the feed happened to show. Keyed on the full period identity now,
     // and only `live` rows: a stale brief is hidden, not shown.
-    prisma.quarterBrief.findMany({
-      where: { status: "live" },
-      select: { stockId: true, quarter: true, fiscalYear: true, resultType: true, verdictKey: true, verdictLabel: true },
-    }),
   ]);
 
   const scoreBySymbol = new Map(scored.map((s) => [s.symbol, s.composite]));
-  const briefKey = (stockId: string, q: string, fy: string, rt: string) => `${stockId}|${q}|${fy}|${rt}`;
-  // ⚠ A brief can exist with NO verdict (MMTC). The stored sentinel is resolved here so the feed never
-  // hands the card an empty string to render an empty badge frame from — see verdict.ts's note.
-  const verdictByPeriod = new Map<string, string>();
-  for (const s of summaries) {
-    const v = readVerdict(s.verdictKey, s.verdictLabel);
-    if (v) verdictByPeriod.set(briefKey(s.stockId, s.quarter, s.fiscalYear, s.resultType), v.label);
-  }
+  // ── ⚠ THE FEED DELIBERATELY CARRIES NO VERDICT (Stage 2). ─────────────────────────────────────
+  // It used to ship `quarterBriefVerdict` and the grid rendered it as a chip beside HealthChip.
+  // That was correct while the verdict was COMPUTED — verdict.ts derived it from a written ruleset and
+  // the chip was reporting a computed fact. It is no longer: the redesign hands the verdict to the
+  // model as an input fact and the model WRITES the takeaway, so a label on a grid, inches from a
+  // coloured health band, would read as a second computed rating and would not be one.
+  // The verdict still exists, still comes from verdict.ts, and still renders INSIDE the card where its
+  // qualifier travels with it. It does not ride the feed. Do not add it back without moving the
+  // qualifier too — a bare label on a grid is the exact claim this feature does not make.
 
   return latest
     .map((r) => ({
@@ -308,7 +312,6 @@ async function loadReported(): Promise<ReportedResultItem[]> {
       netMargin: r.netMargin,
       xbrlUrl: r.xbrlUrl,
       healthScore: scoreBySymbol.get(r.symbol) ?? null,
-      quarterBriefVerdict: verdictByPeriod.get(briefKey(r.stockId, r.quarter, r.fiscalYear, r.resultType)) ?? null,
     }))
     .sort(byFilingDesc);
 }

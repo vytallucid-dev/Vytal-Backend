@@ -21,7 +21,7 @@
 // finding; moves no score.
 
 import { annualExceptionalLatest } from "../guards/annual-exceptional.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
 
 export const N1_MIN_YEARS = 3;      // ≥3 consecutive annual periods
@@ -44,8 +44,8 @@ function trailingCashBackedRun(sortedAsc: FoundationAnnual[]) {
   return { years: detail.length, detail };
 }
 
-export const ruleN1: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of P7)
+export const ruleN1: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of P7)
   const f = ctx.annualFundamentals;
   if (f.length < N1_MIN_YEARS) return notEvaluable("insufficient_annual_history");
 

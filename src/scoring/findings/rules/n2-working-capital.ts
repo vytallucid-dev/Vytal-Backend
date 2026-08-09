@@ -18,7 +18,7 @@
 //
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
 
 export const N2_UNDERPACE_PP = 15;       // revenue growth − receivables growth ≥ 15pp (P8-symmetric)
@@ -54,8 +54,8 @@ function trailingDisciplineRun(sortedAsc: FoundationAnnual[]) {
   return { years: detail.length, detail };
 }
 
-export const ruleN2: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of P8)
+export const ruleN2: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of P8)
   const f = ctx.annualFundamentals;
   if (f.length < N2_MIN_YEARS + 1) return notEvaluable("insufficient_annual_history"); // 2 periods need 3 rows
 

@@ -117,6 +117,30 @@ function build(): string {
  *  which the provider reports loudly rather than rendering two vocabularies at once. */
 export const GENERATED_FROM_VERSION = ${JSON.stringify(CATALOGUE_DOCUMENT.version)};
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ THE CLOSED KEY VOCABULARY, AS A TYPE — the frontend mirror of the backend's \`StockFindingKey\`.
+//
+// ── WHY A TYPE AND NOT JUST THE MAPS ABOVE ────────────────────────────────────────────────────────
+// The frontend does not only LOOK UP keys, it NAMES them: prefix tests in classify.ts, one renderer
+// per key in verdicts.ts, hand-written key lists on screener and briefing surfaces. Every one of
+// those was a bare \`string\`, so retiring a rule backend-side left the frontend still naming it —
+// and a name that matches nothing fails SILENTLY. It does not throw, it just never fires: a mask
+// that never masks, a caveat that never appears, a screener row nobody can select. Exactly the
+// class that shipped \`divergence_C1_price_ahead\` (retired in the C/G rebuild) as a live constant in
+// the hot-pond mask, where it sat unreachable and unnoticed.
+//
+// Annotating those references \`StockFindingKey\` converts that silence into a compile error the next
+// time this file regenerates without the key. Retirement becomes a build break in the repo that
+// still names it — which is the only moment anyone is actually looking.
+//
+// ⚠ THIS IS THE VOCABULARY, NOT THE LOOKUP TYPE. The resolvers keep taking \`string\`: they must stay
+// callable with keys that are legitimately outside this union — the runtime-composed \`lens_*\` keys
+// (unbounded by construction, see catalogue/lens-faces.ts) and any key from a backend newer than
+// this bundle. Narrowing the lookups would trade a silent miss for a false compile error.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+export type StockFindingKey =
+${[...STOCK_FINDING_KEYS].sort().map((k) => `  | ${JSON.stringify(k)}`).join("\n")};
+
 /** key → display name. */
 export const GEN_FINDING_NAMES: Record<string, string> = ${stable(names)};
 

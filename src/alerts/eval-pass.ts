@@ -29,6 +29,12 @@ import { dropRetiredFlags, dropRetiredPatterns } from "../catalogue/retired-find
 //   finding present on this snapshot" for whatever DOES reach this loop, which is the load-bearing
 //   half of the retirement comment above (evaluation, not just display).
 import { dropNotCoveredPatterns } from "../catalogue/not-covered.js";
+// ★ CHANNEL SUPPRESSION + THE FILING CHANNEL'S OWN "NEWLY APPEARED" (step 4). The 22 filing keys are
+//   no longer written to score_patterns / score_red_flags, so a snapshot row carrying one is FROZEN —
+//   diffing two snapshots for it can only ever say "unchanged", forever. They come from
+//   stock_findings now, where the pass records the transition explicitly. See filing/read.ts.
+import { dropFilingFlags, dropFilingPatterns } from "../filing/channel.js";
+import { readNewlyStandingFilingKeys } from "../filing/read.js";
 import {
   priceConditionTrue,
   bandConditionTrue,
@@ -44,8 +50,14 @@ export interface StockReading {
   band: LabelBand | null;
   /** whether the stock has a latest snapshot at all (⇔ scored). */
   scored: boolean;
-  /** finding keys present on the latest snapshot but NOT on the prior one (patterns ∪
-   *  red-flags). Empty when unscored or when there is no prior snapshot to diff against. */
+  /**
+   * Finding keys that NEWLY APPEARED, from both channels:
+   *   SCORE   — on the latest snapshot and not on the prior one (patterns ∪ red-flags, filing keys
+   *             excluded — those are frozen there and cannot transition).
+   *   FILING  — a current stock_findings row that is fired + newly_standing AND has a strictly-older
+   *             period on record. Available whether or not the stock has ever been scored.
+   * Empty when neither channel has a prior observation to establish "wasn't there before".
+   */
   newFindingKeys: Set<string>;
 }
 
@@ -91,13 +103,14 @@ export interface AlertsEvalResult {
  * Bulk-read the current reading for a set of stocks (no N+1). Fixed handful of queries
  * regardless of how many stocks are in play:
  *   stock_prices (close) · score_snapshots (latest+prior per stock, for band + finding
- *   diff) · score_patterns + score_red_flags (finding keys on those snapshots).
+ *   diff) · score_patterns + score_red_flags (finding keys on those snapshots) ·
+ *   stock_findings (the filing channel's own transitions, keyed on stock, no snapshot).
  */
 export async function assembleReadings(stockIds: string[]): Promise<Map<string, StockReading>> {
   const out = new Map<string, StockReading>();
   if (stockIds.length === 0) return out;
 
-  const [prices, snapshots] = await Promise.all([
+  const [prices, snapshots, newFilingKeys] = await Promise.all([
     prisma.stockPrice.findMany({
       where: { stockId: { in: stockIds } },
       select: { stockId: true, price: true },
@@ -109,6 +122,10 @@ export async function assembleReadings(stockIds: string[]): Promise<Map<string, 
       orderBy: [{ asOfDate: "desc" }, { version: "desc" }],
       select: { id: true, stockId: true, labelBand: true },
     }),
+    // ★ ROOTED AT STOCK, NOT AT SNAPSHOT — so it resolves for the 409 unscored stocks too. What it
+    //   returns for them cannot fire an alert today (see the `scored` gate in `reduce`), and that gate
+    //   is a decision, not an oversight: it is named in the step-4 report rather than changed here.
+    readNewlyStandingFilingKeys(stockIds),
   ]);
 
   const closeBy = new Map<string, number>();
@@ -150,8 +167,14 @@ export async function assembleReadings(stockIds: string[]): Promise<Map<string, 
   //   existing user alert on a retired key must stop EVALUATING, not just stop rendering. Without
   //   this, a stale snapshot still carrying a retired key would keep the alert in its "fired" state
   //   forever — and a `clears` alert would never clear.
-  for (const p of dropNotCoveredPatterns(dropRetiredPatterns(patterns))) add(p.snapshotId, p.patternKey);
-  for (const f of dropRetiredFlags(redFlags)) add(f.snapshotId, f.flagKey);
+  // ★ CHANNEL SUPPRESSION (boundary added in step 4). A filing key on a snapshot is a FROZEN row: the
+  //   scoring pass stopped writing these in step 2, so the same key sits on the latest snapshot and on
+  //   the prior one and the diff below can only ever report "not new" — permanently, for every stock.
+  //   Worse, on the day a stock finally rescores the key vanishes from the latest snapshot and, if it
+  //   ever reappeared, would read as newly appeared for reasons that are about our rescore cadence
+  //   rather than about the company. These keys are supplied by the filing channel instead.
+  for (const p of dropFilingPatterns(dropNotCoveredPatterns(dropRetiredPatterns(patterns)))) add(p.snapshotId, p.patternKey);
+  for (const f of dropFilingFlags(dropRetiredFlags(redFlags))) add(f.snapshotId, f.flagKey);
 
   for (const stockId of stockIds) {
     const snaps = snapsByStock.get(stockId) ?? [];
@@ -165,6 +188,11 @@ export async function assembleReadings(stockIds: string[]): Promise<Map<string, 
       // establish "wasn't on the prior one" → treat as no new findings (conservative).
       if (prior) newFindingKeys = new Set([...latestKeys].filter((k) => !priorKeys.has(k)));
     }
+    // ★ THE FILING CHANNEL'S OWN TRANSITIONS, UNIONED IN. Same meaning ("this was not standing at the
+    //   previous observation and is standing now"), computed by the pass against the previous FILING
+    //   PERIOD rather than the previous snapshot — which is the right comparison for a statement about
+    //   a filing, and the only one available for a stock that has no snapshots to diff.
+    for (const k of newFilingKeys.get(stockId) ?? []) newFindingKeys.add(k);
     out.set(stockId, {
       close: closeBy.get(stockId) ?? null,
       band: latest ? latest.band : null,
@@ -209,7 +237,25 @@ function reduce(a: AlertRow, reading: StockReading | undefined): Reduced {
       return { kind: "cond", conditionTrue, snapshotValue: reading.band };
     }
     case "finding": {
-      if (!reading || !reading.scored) return { kind: "skip", status: "skipped_unscored" };
+      // ★ THE `scored` GATE IS GONE (step 5), AND WHAT REPLACED IT IS NARROWER THAN IT LOOKS.
+      //
+      // The gate said: only a stock with a snapshot may fire a finding alert. That was true of the
+      // data until step 2 — every finding was written against a snapshot, so an unscored stock had
+      // nothing to fire on and the skip was honest. It stopped being true when the filing pass began
+      // writing to stock_findings for all 504, and from then on the gate was refusing to tell a reader
+      // about a pledge crisis it had already recorded. The alertable population goes 95 → 504.
+      //
+      // ⚠ WHAT STILL GUARDS THIS IS THE PRIOR-PERIOD TEST, NOT THE SCORE. `newFindingKeys` counts a
+      // filing finding as newly appeared only when the (stock, rule) pair has a strictly-older period
+      // on record and that period did not fire — the exact analogue of the score channel's "with no
+      // prior snapshot we cannot establish 'wasn't on the prior one'". A first observation is not a
+      // transition, so opening this gate cannot flush a backlog: today the pass has run one period per
+      // grain, every fired row is a first observation, and the newly-appeared set is empty for all 504.
+      // What opens is the FUTURE — the next filing that changes a rule's verdict.
+      //
+      // The remaining skip is now about the reading itself, not about the score: no reading at all
+      // (a stock this pass could not resolve) is still not evaluable.
+      if (!reading) return { kind: "skip", status: "skipped_unscored" };
       const conditionTrue = findingConditionTrue(a.findingKey, reading.newFindingKeys);
       // Record WHAT fired: the specific key, or the newly-appeared set for an "any" alert.
       const snapshotValue = a.findingKey ?? [...reading.newFindingKeys].sort().join(",");

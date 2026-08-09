@@ -108,11 +108,43 @@ export interface ReaderDelta {
 /** §Phase 6 — the reader's book-wide fired-finding census, for the UE (echo) family. ONE indexed query
  *  over the in-force snapshots of the reader's scored holdings — never per-holding fan-out (§5.7). */
 export interface ReaderEcho {
-  /** Scored holdings folded into this census — the observedShare DENOMINATOR. */
+  /** Scored holdings folded into this census — the observedShare DENOMINATOR for SCORE keys. */
   scoredHoldingsCount: number;
   /** patternKey → the reader's holdings (display names) whose in-force snapshot carries that key.
-   *  Names, never symbols or ids, so an echo claim can list them without a lookup (§0.9). */
+   *  Names, never symbols or ids, so an echo claim can list them without a lookup (§0.9).
+   *  ⚠ SCORE KEYS ONLY as of step 5 — filing keys live in `filing` below, with their own denominator. */
   byPatternKey: Map<string, string[]>;
+  /** ★ THE FILING CHANNEL'S HALF OF THE SAME RATIO (step 5). See {@link ReaderFilingEcho}. */
+  filing: ReaderFilingEcho;
+}
+
+/**
+ * §Phase 6 · step 5 — the filing channel's book census.
+ *
+ * ★ WHY THIS IS A SECOND CENSUS AND NOT MORE ENTRIES IN `byPatternKey`.
+ * The echo's whole arithmetic is `lift = observedShare / expectedShare`. Step 5 moved a filing key's
+ * expectedShare onto the population in which its RULE evaluated. If observedShare stayed on the
+ * scored-holdings denominator, lift would divide a share of one population by a share of another and
+ * the multiple would mean nothing — worse than before the split, because before it at least compared
+ * two numbers drawn from the same frozen basis.
+ *
+ * So both halves move together. A filing key's book share is `holdings where the rule fired` over
+ * `holdings where the rule EVALUATED` — the same fired/not_fired distinction the universe side uses,
+ * for the same reason: a holding whose rule declined is not a clean observation of that holding.
+ *
+ * ★ AND IT REACHES HOLDINGS WITH NO SNAPSHOT. The old census joined score_patterns to a head
+ * snapshot, so an unscored holding contributed to neither numerator nor denominator. A book holding
+ * 360ONE at 90% promoter pledge counted zero holdings showing pledging.
+ */
+export interface ReaderFilingEcho {
+  /** ruleKey → the reader's holdings (display names) whose CURRENT filing row for that rule is fired. */
+  byRuleKey: Map<string, string[]>;
+  /** ruleKey → how many of the reader's holdings that rule EVALUATED on (fired + not_fired). The
+   *  observedShare DENOMINATOR for that key. Absent ⇒ the rule evaluated on none of them. */
+  evaluatedByRuleKey: Map<string, number>;
+  /** Holdings with at least one evaluated filing row — the family's minimum-book gate for filing
+   *  keys, standing in for `scoredHoldingsCount`. */
+  coveredHoldingsCount: number;
 }
 
 /** §Phase 4 — the reader's exposure to THIS object's neighbourhood (peer group + sector). Resolved

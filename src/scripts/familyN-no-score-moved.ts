@@ -18,10 +18,32 @@
 
 import { prisma } from "../db/prisma.js";
 import { computePgScores, type PgRef } from "../scoring/composite/score-pass.js";
-import { ALL_RULES, FAMILY_N_RULES } from "../scoring/findings/engine.js";
+import { FILING_RULES, SCORING_RULES } from "../scoring/findings/engine.js";
+import { ruleN1 } from "../scoring/findings/rules/n1-cash-backed-earnings.js";
+import { ruleN2 } from "../scoring/findings/rules/n2-working-capital.js";
+import { ruleN3 } from "../scoring/findings/rules/n3-deleveraging.js";
+import { ruleN4 } from "../scoring/findings/rules/n4-coverage-strengthening.js";
+import { ruleN5 } from "../scoring/findings/rules/n5-dual-institutional-build.js";
+import { ruleN6 } from "../scoring/findings/rules/n6-promoter-accumulation.js";
+import { ruleN7 } from "../scoring/findings/rules/n7-pledge-release.js";
 import type { FiredFinding } from "../scoring/findings/types.js";
 
-const NON_N_RULES = ALL_RULES.filter((r) => !FAMILY_N_RULES.includes(r));
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ⚠ SUPERSEDED BY CONSTRUCTION (filing-pass step 2), AND KEPT AS THE PROOF OF THAT.
+//
+// This script's original claim was "adding Family N moves nothing", proved by an in-process A/B over
+// computePgScores with and without the N rules. As of step 2 Family N does not run in computePgScores
+// at all — it moved to the stock-keyed FILING pass with the other 20 filed-data rules — so the A/B
+// below now compares a pass against itself and would report a vacuous ✅.
+//
+// Rather than delete it or let it lie, the assertion is inverted into the fact that now matters:
+// Family N is ABSENT from SCORING_RULES and PRESENT in FILING_RULES. If someone re-registers an N
+// rule in the scoring pass, this fails. The A/B still runs underneath and must still show zero
+// movement — which it now does trivially, and the summary says so rather than claiming a proof it is
+// no longer making.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+const N_RULES = [ruleN1, ruleN2, ruleN3, ruleN4, ruleN5, ruleN6, ruleN7];
+const NON_N_RULES = SCORING_RULES.filter((r) => !N_RULES.includes(r as never));
 const isN = (f: FiredFinding) => /_N[1-7]_/.test(f.key);
 
 const PGS: PgRef[] = [
@@ -41,6 +63,15 @@ const scoreFp = (m: { composite: { composite: number | null; labelBand: unknown;
 
 async function main() {
   console.log("════ FAMILY-N NO-SCORE-MOVED (read-only, in-process A/B on identical live data) ════\n");
+
+  // ★ THE ASSERTION THAT NOW CARRIES THE WEIGHT — see the note above NON_N_RULES.
+  console.log("── 0 · REGISTRY ──");
+  const inScoring = N_RULES.filter((r) => SCORING_RULES.includes(r as never)).length;
+  const inFiling = N_RULES.filter((r) => FILING_RULES.includes(r)).length;
+  console.log(`  ${inScoring === 0 ? "✅" : "❌"} Family N absent from SCORING_RULES (${inScoring}/7 present)`);
+  console.log(`  ${inFiling === 7 ? "✅" : "❌"} Family N present in FILING_RULES (${inFiling}/7)`);
+  if (inScoring !== 0 || inFiling !== 7) { await prisma.$disconnect(); process.exit(1); }
+  console.log("  ↳ the A/B below is therefore TRIVIALLY identical — N no longer runs in this pass.\n");
   let members = 0, scoreIdentical = 0, scoreMoved = 0, existingIdentical = 0, existingMoved = 0, nAdded = 0;
   const movedSamples: string[] = [];
   const nByKey = new Map<string, number>();
@@ -91,8 +122,9 @@ async function main() {
   console.log(`  new N pattern rows: ${nAdded}`);
   [...nByKey.entries()].sort().forEach(([k, c]) => console.log(`     ${k}  ×${c}`));
 
-  const clean = scoreMoved === 0 && existingMoved === 0;
-  console.log(`\n════ VERDICT: ${clean ? "✅ NO SCORE MOVED — composite, pillar subtotals, and every existing finding are byte-identical with/without Family N; N is purely additive" : "❌ SOMETHING MOVED — see samples above"} ════`);
+  const clean = scoreMoved === 0 && existingMoved === 0 && nAdded === 0;
+  if (nAdded > 0) console.log(`   ↳ ${nAdded} Family-N finding(s) fired INSIDE computePgScores — N must no longer run there at all.`);
+  console.log(`\n════ VERDICT: ${clean ? "✅ Family N is OUT of the scoring pass — it fires nothing here, and nothing else moved" : "❌ SOMETHING MOVED — see samples above"} ════`);
   await prisma.$disconnect();
   process.exit(clean ? 0 : 1);
 }

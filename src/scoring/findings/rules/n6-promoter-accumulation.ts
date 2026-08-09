@@ -27,12 +27,12 @@
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
 import { isPriorQuarterGap } from "../../ownership/dilution.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { notEvaluable, type FilingRule } from "../types.js";
 
 export const N6_MIN_QUARTERS = 2;      // ≥2 consecutive quarters of rising count
 export const N6_MIN_CUMULATIVE_PP = 1.0; // cumulative promoter-% rise ≥ 1.0pp (materiality)
 
-export const ruleN6: FireRule = (ctx) => {
+export const ruleN6: FilingRule = (ctx) => {
   const rows = ctx.shareholding;
   if (rows.length < N6_MIN_QUARTERS + 1) return notEvaluable("insufficient_shareholding_history");
 

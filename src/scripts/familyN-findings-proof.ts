@@ -24,7 +24,11 @@ import { ruleN5 } from "../scoring/findings/rules/n5-dual-institutional-build.js
 import { ruleN6 } from "../scoring/findings/rules/n6-promoter-accumulation.js";
 import { ruleN7 } from "../scoring/findings/rules/n7-pledge-release.js";
 import { ruleP1 } from "../scoring/findings/rules/p1-clean-rotation.js";
-import { ALL_RULES, FAMILY_N_RULES, runFindings } from "../scoring/findings/engine.js";
+// Family N moved to the FILING pass with the other 20 filed-data rules (step 2). Registration is
+// still MANDATORY — an unregistered rule never fires (the P2/P3 lesson) — the registry it must be
+// in is simply the filing one now.
+import { FILING_RULES, runFilingRules, type FilingRuleOutcome } from "../scoring/findings/engine.js";
+import type { FilingRule } from "../scoring/findings/types.js";
 import { isNotEvaluable, type FiringContext, type RuleResult, type FiredFinding } from "../scoring/findings/types.js";
 import type { FoundationAnnual, MomentumQuarter } from "../scoring/metrics/types.js";
 import type { OwnershipQuarter } from "../scoring/ownership/types.js";
@@ -92,9 +96,10 @@ console.log("════════ FAMILY-N PROOF (pure fixtures, no DB) ═�
 
 // ═══════════════════ 1 · REGISTRATION + CONTRACT ═══════════════════
 console.log("── 1 · registration + rule-property contract ──");
-ok(FAMILY_N_RULES.length === 7, `FAMILY_N_RULES has 7 rules (${FAMILY_N_RULES.length})`);
+const N_RULES: FilingRule[] = [ruleN1, ruleN2, ruleN3, ruleN4, ruleN5, ruleN6, ruleN7];
+ok(N_RULES.length === 7, `Family N has 7 rules (${N_RULES.length})`);
 for (const [name, r] of Object.entries({ ruleN1, ruleN2, ruleN3, ruleN4, ruleN5, ruleN6, ruleN7 })) {
-  ok(ALL_RULES.includes(r as never), `${name} present in ALL_RULES`);
+  ok(FILING_RULES.includes(r), `${name} present in FILING_RULES`);
 }
 
 // ═══════════════════ 2 · POSITIVE FIRES + §3 EVIDENCE KEYS + PROPERTIES ═══════════════════
@@ -260,9 +265,13 @@ console.log("\n── 7 · N is purely additive: existing findings byte-identica
     shareholding: [oq(0, { fiiPct: 10.0, diiPct: 10.0, promoterPct: 50 }), oq(1, { fiiPct: 9.8, diiPct: 11.5, promoterPct: 50 })],
     annualFundamentals: N1_OK.annualFundamentals,
   });
-  const nonNRules = ALL_RULES.filter((r) => !FAMILY_N_RULES.includes(r));
-  const withN = runFindings(combined, ALL_RULES);
-  const withoutN = runFindings(combined, nonNRules);
+  // Both runs go through the FILING runner now, and its outcome list carries not_fired/
+  // not_evaluable too — the A/B still compares only the FIRED sets, which is what "purely
+  // additive" was ever a claim about.
+  const firedOf = (os: FilingRuleOutcome[]) => os.filter((o) => o.state === "fired").map((o) => o.finding!);
+  const nonNRules = FILING_RULES.filter((r) => !N_RULES.includes(r));
+  const withN = firedOf(runFilingRules(combined, FILING_RULES));
+  const withoutN = firedOf(runFilingRules(combined, nonNRules));
   const isN = (f: FiredFinding) => /_N[1-7]_/.test(f.key);
   const nonNfromFull = withN.filter((f) => !isN(f));
   ok(withN.some(isN), `Family-N findings ARE produced (additive)  [${withN.filter(isN).map((f) => f.key).join(", ")}]`);

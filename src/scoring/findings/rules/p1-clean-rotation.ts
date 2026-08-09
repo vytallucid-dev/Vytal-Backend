@@ -7,9 +7,9 @@
 // the §5 card and the ownership-pillar Flow score never disagree on whether B1 fired.
 
 import { computeCategoryB } from "../../ownership/flow.js";
-import type { FireRule } from "../types.js";
+import type { FilingRule } from "../types.js";
 
-export const ruleP1: FireRule = (ctx) => {
+export const ruleP1: FilingRule = (ctx) => {
   const rows = ctx.shareholding;
   if (rows.length < 2) return null;
   const b = computeCategoryB(rows, rows.length - 1);

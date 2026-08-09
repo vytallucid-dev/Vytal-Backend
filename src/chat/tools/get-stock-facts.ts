@@ -93,7 +93,7 @@ function renderLean(v: HealthSnapshotView): string {
   }
 
   L.push("Pillars (each its own 0–100 subtotal; the four combine with Vytal's proprietary internal weights, which are NOT disclosed):");
-  for (const p of v.pillars) {
+  for (const p of v.pillars ?? []) {  // null only under a projection this caller never requests
     L.push(`  · ${cap(p.pillar)}: ${isNum(p.subtotal) ? scoreStr(p.subtotal) : NA} (state: ${p.state})`);
   }
 

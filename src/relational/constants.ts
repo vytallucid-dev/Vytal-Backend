@@ -59,3 +59,17 @@ export const OVERFLOW_ENABLED = true; // expand-to-full-standing-set
 //      UE_MIN_BOOK 4 · UE_MIN_LIFT 2.0 · UE_MIN_COUNT 2 · UE_HIGH_BOOK_SHARE 0.50 · UE_SHARE_MIN_COUNT 3
 //      UE_ENVIRONMENTAL_BASE_RATE 0.30 · UE_FAMILY_MIN_COUNT 3
 //      UD_NEWS_HORIZON_DAYS 14 · UD_MIN_GAP_FOR_FUNDAMENTAL_DELTA 1 · UD_EVENT_HORIZON_DAYS 90
+
+// ── The empty filing census (§Phase 6 · step 5) ──────────────────────────────────────────────────────
+// A ReaderEcho now carries TWO censuses, one per population. This is the honest-empty for the filing
+// half: no rule evaluated on any holding, so no filing echo can fire and none is claimed.
+//
+// Exported rather than re-literalled because every fixture that builds a ReaderEcho needs it, and a
+// fixture that quietly invented its own shape would be asserting against a census the resolver never
+// produces. Also the failure path in resolveFilingEcho — a filing-census failure must not take the
+// score half of the family down with it.
+export const EMPTY_FILING_ECHO = (): {
+  byRuleKey: Map<string, string[]>;
+  evaluatedByRuleKey: Map<string, number>;
+  coveredHoldingsCount: number;
+} => ({ byRuleKey: new Map(), evaluatedByRuleKey: new Map(), coveredHoldingsCount: 0 });

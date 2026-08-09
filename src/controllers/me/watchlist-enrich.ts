@@ -7,7 +7,16 @@
 //   stock_prices · score_snapshots (+redFlags +patterns) · market_cap_tier_snapshot ·
 //   score_pillars · score_metrics
 // — then mapped to a per-stock view. READ-ONLY: health / band / tier / findings are
-// READ, never recomputed. The three-lens verdicts REUSE the exported lens-pattern
+// READ, never recomputed.
+//
+// ── ★ TWO FINDING CHANNELS, AND THE UNSCORED PIN NOW HAS ONE ─────────────────────────────────────
+// `findings` is score-derived and gated on the head snapshot: an unscored pin gets empty arrays,
+// which is correct for that channel and was ALSO the whole of what the row said. `filingFindings` is
+// the second channel — what the company FILED — and it is present on every pin. Empty arrays on an
+// unscored row read to a user as "nothing wrong here"; that row now carries either real filing
+// findings or `filingFindings.coverage.quietNote` saying which checks ran and which could not.
+//
+// The three-lens verdicts REUSE the exported lens-pattern
 // derivations (deriveLensTriplet / lensPattern / lensPillarPattern / verdict composers)
 // applied in-memory over the bulk-fetched metric rows — scoring is consumed, never
 // touched. Honest-empty: an unscored pin returns price + "not scored yet", never a
@@ -19,6 +28,8 @@
 // standing-reconciled read lives on the per-stock health page.
 // ═══════════════════════════════════════════════════════════════════════
 import { prisma } from "../../db/prisma.js";
+// ★ THE FILING CHANNEL — rooted at stock, so an UNSCORED pin is no longer a row of empty arrays.
+import { readFilingFindings, type FilingFindingsSection } from "../../filing/read.js";
 import {
   deriveLensTriplet,
   lensPattern as computeLensPattern,
@@ -35,6 +46,7 @@ import type { FindingsSection, RedFlagView, PatternView } from "../../scoring/re
 import { renderVerdict } from "../../scoring/findings/verdicts.js";
 import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
 import { dropNotCoveredPatterns } from "../../catalogue/not-covered.js";
+import { dropFilingFlags, dropFilingPatterns } from "../../filing/channel.js";
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v));
 const numN = (v: unknown): number | null => (v == null ? null : Number(v));
@@ -230,6 +242,18 @@ export interface EnrichedWatchlistEntry {
   // adding `verdict` here would otherwise have meant adding it twice and hoping both stayed in step.
   // Now there is one row type, and the watchlist gets every future field for free.
   findings: FindingsSection;
+  /**
+   * ★ FILING findings — the second channel, present on EVERY pin including the unscored ones.
+   *
+   * `findings` above is score-derived: on an unscored pin it is empty arrays, which is honest for
+   * that channel and used to be the entire content of the row. This carries what the company FILED,
+   * plus `coverage.quietNote` — the line that distinguishes "we checked and it is clean" from "we
+   * could not check" from "we hold no filings", none of which an empty array can say.
+   *
+   * Never merged into `findings`: the two are drawn from different populations (504 vs 95) and step 5
+   * gives them different base rates.
+   */
+  filingFindings: FilingFindingsSection | null;
   // three-lens verdicts (digest; honest-empty when unscored / nothing fired)
   threeLens: ThreeLensDigest;
 }
@@ -245,7 +269,7 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
   const stockIds = rows.map((r) => r.stockId);
 
   // ── bulk read layer: price, latest snapshot (id + pillars), tier ──
-  const [prices, snapshots, tiers] = await Promise.all([
+  const [prices, snapshots, tiers, filingBy] = await Promise.all([
     prisma.stockPrice.findMany({
       where: { stockId: { in: stockIds } },
       select: { stockId: true, price: true, prevClose: true, dayChangePct: true, priceDate: true },
@@ -269,6 +293,9 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
       orderBy: { asOfDate: "desc" },
       select: { stockId: true, tier: true, marketCap: true },
     }),
+    // ★ ROOTED AT STOCK, NOT AT THE SNAPSHOT. One more bulk read alongside the others — no N+1, and
+    //   an unscored pin resolves it exactly as a scored one does.
+    readFilingFindings(stockIds),
   ]);
 
   const priceBy = new Map(prices.map((p) => [p.stockId, p]));
@@ -377,6 +404,17 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
     // findings + three-lens (only for a scored snapshot; else honest-empty)
     const rf = snap ? redBySnap.get(snap.id) ?? [] : [];
     const pt = snap ? patBySnap.get(snap.id) ?? [] : [];
+    // ★ CHANNEL SUPPRESSION (filing/channel.ts) — the RENDERED sets only. `filingFindings` on this
+    //   same row already carries the 22 filing keys, from the filing's own period, so serving them
+    //   here as well puts the same finding on one watchlist row twice.
+    //
+    // ⚠ APPLIED HERE AND NOT AT `redBySnap` / `patBySnap`, WHICH IS WHERE THE RETIREMENT FILTER SITS.
+    //   Those maps also feed `firedHeadlines` → buildLensDigest's anti-double-count. A retired
+    //   headline must stop suppressing a live lens read (it is no longer a claim); a filing headline
+    //   must KEEP suppressing it (it is still a claim, still on this row, just from the other
+    //   channel). Filtering at the grouping step would surface lens reads that are correctly hidden.
+    const rfShown = dropFilingFlags(rf);
+    const ptShown = dropFilingPatterns(pt);
     const firedHeadlines: FiredHeadline[] = pt.map((p) => {
       const ev = p.evidence as { leg?: string } | null;
       return { patternKey: p.patternKey, leg: ev?.leg ?? null };
@@ -429,7 +467,7 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
           ? ((currentPrice - pinnedPrice) / pinnedPrice) * 100
           : null,
       findings: {
-        redFlags: rf.map((f) => ({
+        redFlags: rfShown.map((f) => ({
           flagKey: f.flagKey,
           severity: f.severity,
           tier: f.tier as RedFlagView["tier"],
@@ -437,7 +475,7 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
           guardrailEventId: f.guardrailEventId ?? null,
           verdict: renderVerdict(f.flagKey, f.triggeringValues ?? null),
         })),
-        patterns: pt.map((p) => ({
+        patterns: ptShown.map((p) => ({
           patternKey: p.patternKey,
           direction: p.direction,
           severity: p.severity,
@@ -473,6 +511,14 @@ export async function enrichWatchlist(rows: WatchlistRow[]): Promise<EnrichedWat
         quietNote: null,
         crossTool: [],
       },
+      // ★ THE SECOND CHANNEL, ON EVERY ROW. Separate from `findings` above and never merged into it:
+      //   that one is score-derived and empty on an unscored pin, this one is filing-derived and real
+      //   on all 504 stocks. `coverage.quietNote` is what a row renders when `fired` is empty, so the
+      //   list can distinguish "checked, clean" from "could not check" from "no filings held".
+      //
+      //   ⚠ Unlike the digest above, this is NOT trimmed for the list view: it is one indexed read
+      //   for the whole page and carries no per-stock lifecycle walk, so there is nothing to defer.
+      filingFindings: filingBy.get(r.stockId) ?? null,
       threeLens,
     };
   });

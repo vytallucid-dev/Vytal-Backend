@@ -11,13 +11,13 @@
 // points shown, which also matches the spec's printed minimum "[OPM₁] → [OPM₂] → …".
 // FLAG: confirm N with File 1; raise to 3 once deeper OPM history is ingested.
 
-import { notEvaluable, type FireRule, type QuarterlyOpmPoint } from "../types.js";
+import { notEvaluable, type FilingRule, type QuarterlyOpmPoint } from "../types.js";
 import { latestQuarterDistorted } from "../guards/exceptional-opm.js";
 
 export const P11_MIN_DECLINES = 2;
 export const P11_MAGNITUDE = -8; // §5E Red
 
-export const ruleP11: FireRule = (ctx) => {
+export const ruleP11: FilingRule = (ctx) => {
   const series = ctx.quarterlyOpm;
   if (!series) return notEvaluable("opm_unavailable"); // ⚠ Phase 2
   if (series.length < P11_MIN_DECLINES + 1) return notEvaluable("insufficient_quarters"); // ⚠ Phase 2

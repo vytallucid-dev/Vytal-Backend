@@ -366,10 +366,14 @@ function describeMiss(base: string, m: MissReason): string {
 
 async function main() {
   const registered = registeredRuleFiles();
-  const files = [
-    ...registered.map((f) => `${RULES_DIR}/${f}.ts`),
-    "src/scoring/ownership/primary.ts", // R1 — written by the persist path, not a FireRule
-  ];
+  // ⚠ THE R1 SPECIAL CASE IS GONE, AND ITS ABSENCE IS THE POINT. This list used to append
+  // scoring/ownership/primary.ts, because R1 was the one catalogued finding with no rule file — it
+  // was composed inside the Ownership pillar and written by the composite persist path. As of the
+  // filing-pass build R1 is rules/r1-pledging.ts, registered like everything else, so it is found by
+  // `registeredRuleFiles()` and needs no exemption here. (Its authored verdict now lives in
+  // ownership/pledging.ts, shared by the rule and the temporary dual-write; the rule file is where
+  // the KEY is declared, which is what this scan resolves a renderer by.)
+  const files = registered.map((f) => `${RULES_DIR}/${f}.ts`);
 
   const sentences: Sentence[] = [];
   const misses: string[] = [];

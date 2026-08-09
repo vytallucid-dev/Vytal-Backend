@@ -364,7 +364,10 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
       "them. state=unavailable_redistributed means the pillar could not be scored this period and its " +
       "weight was spread across the pillars that could; describe that qualitatively, never with a number.)",
   );
-  for (const p of view.pillars) {
+  // ⚠ `?? []` COVERS THE PROJECTION, NOT A MISSING SECTION. This call site never asks for one, so
+  //   the array is always there; the fallback exists because `pillars` is nullable on the type now
+  //   (null = not requested — see HealthSnapshotView.omitted), and grounding must not narrow by cast.
+  for (const p of view.pillars ?? []) {
     // nativeZone MARKS WITHHELD — the numeric [lower,upper] are per-PG pillar-zone thresholds (constant per
     // peer group, harvestable across stocks). The model explains from the categorical POSITION ("above its
     // native zone"), never the marks, so only `position` is rendered.

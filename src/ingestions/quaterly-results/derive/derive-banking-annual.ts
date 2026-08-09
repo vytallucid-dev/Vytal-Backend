@@ -21,6 +21,14 @@
 // stores them). Their derived consumers ARE here: pcr (from nnpa/gnpa absolute)
 // and tier1Ratio (= cet1 + at1).
 //
+// ⚠⚠ TWO OF THE FIGURES DERIVED IN THIS FILE ARE KNOWN-WRONG ON REAL ROWS, AND BOTH ARE ON RECORD:
+//   · PB-2 tier1Ratio         — built on a mis-parsed additional-tier-1; AXISBANK FY27Q1 derives 29.99%
+//   · PB-3 bookValuePerShare  — divides by a share count from face_value_share, which KOTAKBANK FY25
+//                               stores as its paid-up capital, so the ratio comes out as net worth
+// See xbrl/parser-backlog.ts for the evidence, the containment each currently has downstream, and
+// what a fix requires. ⚠ NEITHER CONTAINMENT MAY BE REMOVED BEFORE THE AFFECTED FILINGS ARE
+// RE-INGESTED — fixing the parse does not fix rows already stored.
+//
 // FLAG (CN-8, not carried): the ingester had dead code `niiPrior` (always null,
 // never used) — omitted, it has no effect on any output.
 // ─────────────────────────────────────────────────────────────

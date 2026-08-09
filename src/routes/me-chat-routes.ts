@@ -9,6 +9,7 @@ import { Router } from "express";
 import {
   openOrResumeSession,
   sendMessage,
+  editMessage,
   listSessions,
   getSession,
   renameSession,
@@ -31,5 +32,9 @@ meChatRouter.get("/chat/sessions", listSessions);
 // — a non-owner or unknown id touches nothing → 404. Deleting cascades the session's messages.
 meChatRouter.get("/chat/sessions/:id", getSession);
 meChatRouter.post("/chat/sessions/:id/messages", sendMessage);
+// Rewrite one of the reader's own messages: the turns after it are DELETED and a fresh reply generated.
+// 409 write_effects_unacknowledged when a confirmed write sits in that tail and the client has not shown
+// the reader that deleting it will not undo it (see the handler).
+meChatRouter.patch("/chat/sessions/:id/messages/:messageId", editMessage);
 meChatRouter.patch("/chat/sessions/:id", renameSession);
 meChatRouter.delete("/chat/sessions/:id", deleteSession);

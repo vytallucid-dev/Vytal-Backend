@@ -113,6 +113,25 @@ export interface AiToolResult {
   id?: string;
   name: string;
   response: Record<string, unknown>;
+  /**
+   * ★ SIDE-EFFECT PROVENANCE — PERSISTED, AND DELIBERATELY NOT SENT TO THE MODEL.
+   *
+   * The semantic domains this one tool call actually CHANGED in the reader's data (the caller's
+   * `ChangeDomain` vocabulary — "watchlist" | "alerts" | "reminders" | "portfolio" | "profile").
+   * Set only by a tool that really wrote something; absent on every read.
+   *
+   * ⚠ WHY IT LIVES BESIDE `response` RATHER THAN INSIDE IT. An adapter maps a tool result to the
+   * provider by reading `name`, `response` and `id` — nothing else (see gemini.ts toGeminiContents).
+   * So a field HERE rides along into the persisted `chat_messages.tool_payload` and never reaches the
+   * model, which is exactly what is wanted: this is a fact about the reader's database, not context
+   * for the next generation, and putting it in `response` would put it in the prompt forever.
+   *
+   * That persistence is the point. `ToolContext.effects` answers "what changed in THIS request", which
+   * is gone the moment the response is written; this answers "what did that turn change" for any later
+   * reader of the transcript — the client recovering a reply it never received, and the edit preflight
+   * that has to warn about writes it is about to orphan.
+   */
+  effects?: readonly string[];
 }
 
 // ── Requests / results ───────────────────────────────────────────────────
@@ -150,6 +169,24 @@ export interface AiGenerateStructuredRequest extends AiGenerateRequest {
   jsonSchema?: Record<string, unknown>;
 }
 
+/**
+ * ★ WHY MALFORMED JSON IS A RESULT AND NOT A THROW.
+ *
+ * A network failure and a model writing something unparseable are different operational facts, and
+ * `generateStructured` used to collapse both into `throw new Error(...)`. A caller could then only
+ * report "provider_error" for both — which is the blank_output mistake exactly: two distinct signals
+ * sharing one name, so neither has a signature you can find in a log.
+ *
+ * ⚠ AND THERE IS A THIRD FACT HIDING INSIDE THE SECOND. Truncated output is not invalid JSON that the
+ * model chose to write; it is valid JSON we cut off mid-string, and it PRESENTS as a parse failure.
+ * The only thing that separates them is `finishReason`, which the provider has always returned and
+ * nothing has ever read. It is carried on BOTH arms, because a caller deciding whether to retry needs
+ * it in exactly the case where parsing failed.
+ */
+export type AiStructuredResult<T> =
+  | { ok: true; data: T; usage: TokenUsage; finishReason: string | null }
+  | { ok: false; reason: "unparseable"; raw: string; usage: TokenUsage; finishReason: string | null };
+
 // ── The interface every adapter implements ───────────────────────────────
 export interface AiProvider {
   /** Free-form text generation. When `req.tools` is supplied the model may answer with tool
@@ -157,11 +194,11 @@ export interface AiProvider {
    *  "". Throws (contextual message) on any provider failure. */
   generate(req: AiGenerateRequest): Promise<AiGenerateResult>;
 
-  /** JSON generation — returns parsed data + usage. Throws if the provider fails or
-   *  the model does not return valid JSON. */
+  /** JSON generation. THROWS on a provider failure; a model that returns unparseable text is
+   *  DATA, not an exception — see AiStructuredResult. */
   generateStructured<T>(
     req: AiGenerateStructuredRequest,
-  ): Promise<{ data: T; usage: TokenUsage }>;
+  ): Promise<AiStructuredResult<T>>;
 
   /** Cheap liveness / key-validity check. Resolves true if the provider is reachable
    *  and configured, false otherwise. Never throws. */

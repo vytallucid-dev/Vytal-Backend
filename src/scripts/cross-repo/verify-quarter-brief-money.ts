@@ -28,7 +28,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { money, MONEY_RULE } from "../../insight/quarter-brief/format.js";
+import { money, moneyIn, MONEY_RULE } from "../../insight/quarter-brief/format.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BACKEND_ROOT = resolve(HERE, "..", "..", "..");
@@ -99,6 +99,36 @@ if (failures === 0) pass(`${CORPUS.length} values render identically to the card
 const subCrore = money(0.4);
 if (subCrore !== "₹40 lakh") fail(`sub-crore should render as lakh, got "${subCrore}"`);
 else pass(`sub-crore renders as "${subCrore}" (deliberate divergence — the card would say "₹0 crore")`);
+
+// ═══ 3 · ★ THE TWO CANONICAL ZERO TOKENS, AND THE FRONTEND THAT MATCHES THEM ═══════════════════
+//
+// ⚠ THE FRONTEND NOW READS THESE STRINGS. `QuarterBriefCard.tsx`'s `NIL_VALUES` matches them exactly
+// to render a nothing-figure at reduced weight — a debt-free company's "Total borrowings: nil" was
+// shouting as loudly as ₹5,58,356 crore. That match is only safe while the tokens are FIXED, and
+// they live in this repo, so this is where they are pinned.
+//
+// ★ THE ALTERNATIVE WAS A `nil` FIELD ON THE PAYLOAD, AND IT WOULD HAVE DONE NOTHING FOR MONTHS:
+// `factsFingerprint` hashes the fact text, which a new schema field does not change, so every one of
+// the ~900 stored briefs would keep rendering at full weight until a universe regeneration. Matching
+// a canonical token works on every stored card immediately. This gate is what makes that safe rather
+// than fragile — change either string below and the build tells you which renderer to change with it.
+console.log("\n3 · THE ZERO TOKENS (the frontend matches these EXACTLY — see NIL_VALUES)");
+const NIL_TOKENS: [string, string][] = [
+  ["moneyIn(level, 0)", moneyIn("level", 0)],
+  ["moneyIn(flow, 0)", moneyIn("flow", 0)],
+  ["moneyIn(reserveMove, 0)", moneyIn("reserveMove", 0)],
+];
+for (const [what, got] of NIL_TOKENS) {
+  if (got !== "nil") fail(`${what} = "${got}" — the frontend matches the literal "nil"`);
+}
+if (money(0) !== "₹0 crore") fail(`money(0) = "${money(0)}" — the frontend matches the literal "₹0 crore"`);
+if (failures === 0) {
+  pass(`a zero renders as "nil" in all three money senses and as "₹0 crore" on a quarterly line`);
+  // ⚠ AND THE NEGATIVE CONTROL. A gate that only checks the two literals would still pass if `money`
+  // started returning "nil" for everything, which would grey out the whole card.
+  if (money(1) === "₹0 crore" || money(1) === "nil") fail("a NON-zero figure renders as a zero token");
+  else pass("…and a non-zero figure renders as neither (the match cannot over-fire)");
+}
 
 console.log("\n" + "─".repeat(96));
 if (failures > 0) {

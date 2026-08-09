@@ -101,7 +101,19 @@ export async function writeQuarterBrief(
   }
 
   const data = {
-    content: res.text,
+    // ★ STAGE 5 — `content` NOW HOLDS THE SERIALISED BriefPayload, NOT PROSE.
+    //
+    // ⚠ ONE COLUMN, TWO ERAS, AND THE CUTOVER WAS A PURGE. The alternative was a second `payload
+    // Json?` column beside a prose `content`, which would leave two authorities on "what is a brief"
+    // and a nullable one at that — every reader then has to decide which to trust on a row that has
+    // both. Instead the meaning of the column moved, and every row written before the move was
+    // DELETED (scripts/purge-quarter-briefs.ts, 2026-08-09, 908 rows). Not marked stale: stale means
+    // "coming back", and with generation off nothing would ever have restored them.
+    //
+    // ⚠ THE ORDERING, IF THIS EVER HAPPENS AGAIN: deploy the read path, clear the old rows, THEN flip
+    // BRIEF_ENQUEUE_ON_INGEST. Reversed, generation writes against a read path still serving the old
+    // shape. The full reasoning lives at the flag itself, in ingestions/quaterly-results/scan.ts.
+    content: JSON.stringify(res.payload),
     // The sentinel, not a literal — see verdict.ts's note. Read back through `readVerdict`.
     verdictKey: block.verdict?.key ?? VERDICT_NONE,
     verdictLabel: block.verdict?.label ?? "",

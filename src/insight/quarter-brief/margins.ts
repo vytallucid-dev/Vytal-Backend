@@ -12,6 +12,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { marginPct, fractionToPct, combinedRatioPlain } from "./format.js";
+// ⚠ THE REASON STRING ONLY. This module still takes `MarginRow` and not a family quarter — the whole
+// point of the split is that its build gate can assert on four synthetic numbers — and importing a
+// constant does not change that. What it does change is that the metric line and the margin series can
+// no longer word the same withholding two ways; see the constant's own note.
+import { PROFIT_EXCEEDS_REVENUE_REASON } from "./manifest.js";
 import type { Family, MarginSeries, MarginsSection } from "./types.js";
 
 /** The minimum a margin series needs from a quarter. QRow satisfies this structurally. */
@@ -79,10 +84,7 @@ function marginSeries(
     // quarter was too small", which is false for IDEA — ₹11,332 crore of revenue against ₹51,970 crore
     // of profit. Revenue is not small there; profit simply dwarfs it. A reason that is wrong about the
     // company is worse than no reason.
-    return {
-      suppressed:
-        "profit this quarter was far larger than revenue, so a margin would not describe anything real",
-    };
+    return { suppressed: PROFIT_EXCEEDS_REVENUE_REASON };
   }
 
   const points = raw.map((p) => ({ ...p, display: marginPct(p.value) }));
@@ -109,17 +111,56 @@ function marginSeries(
   // briefs trains the reader to skip the one that matters. A round trip is worth saying only when the
   // swing is BOTH material in itself AND large relative to where the line actually ended up.
   const swing = hi.value - lo.value;
-  const roundTripped = points.length >= 3 && swing >= MARGIN_FLOOR_PP * 2 && swing >= Math.abs(delta) * 2;
+  // ⚠⚠ AND THE ROUND-TRIP CLAUSE IS THE ONE PLACE A HISTORICAL POINT GETS PRINTED, SO IT CARRIES THE
+  // MEANING CHECK TOO — FOUND BY RENDERING TTML. The check above runs on the LATEST point, which is
+  // right: a series whose current value is a division artifact is withheld whole. But TTML's earlier
+  // quarters carry a 268.8% operating margin — the same artifact, one quarter back — and the round-trip
+  // clause happily printed it: "rising, though it moved between 35.8% and 268.8% in between." The card
+  // above it shows 43.6%, and the file's own bound calls anything past 100% not a margin at all.
+  //
+  // ⚠ THE SERIES ITSELF IS DELIBERATELY LEFT ALONE. Dropping the offending POINT would change the
+  // endpoints, therefore the direction, therefore verdictMarginDirection, therefore the badge on cards
+  // this build has no business moving. Suppressing only the CLAUSE removes the one sentence that
+  // prints the figure and changes nothing else — which is the whole difference between a prose fix and
+  // a scoring change.
+  const extremesMeaningful = Math.abs(lo.value) <= maxAbs && Math.abs(hi.value) <= maxAbs;
+  const roundTripped =
+    points.length >= 3 && extremesMeaningful && swing >= MARGIN_FLOOR_PP * 2 && swing >= Math.abs(delta) * 2;
 
+  // ── ★★ FOUR FACTS, FOUR SENTENCES (2a) ─────────────────────────────────────────────────────────
+  //
+  // ⚠ THE MOST-RENDERED STACKED SENTENCE IN THE FEATURE — 327 of 918 margin sentences across the
+  // universe, 35.6%, the worst rate of any source. It read:
+  //
+  //     "Operating margin was 20.1% this quarter, from 18.9% 4 quarters back — rising, though it
+  //      moved between 11.4% and 20.1% in between."
+  //
+  // Twenty-two words, active, subject in the first two — and FOUR facts behind a comma, an em dash
+  // and a "though". A reader who has never read a statement has to hold "20.1%" while decoding
+  // "from 18.9% 4 quarters back", then work out that "rising" is the verdict on the pair, then take
+  // a qualifier on the verdict. Length was never the problem; STACKING was. Each fact is now its own
+  // short sentence, in the order a reader needs them: where it is, where it was, which way that is,
+  // and whether the path was straight.
+  //
+  // The direction still LEADS the round-trip note. Replacing the direction with the range made the
+  // range the headline on ~46% of stocks, which buries the ordinary reading most of them deserve.
+  const lower = label.toLowerCase();
   const stem =
     points.length < 2
-      ? `${label} was ${newest.display} this quarter. One quarter on file — no direction yet.`
-      : // The direction ALWAYS leads; the round-trip note is ADDITIVE. Replacing the direction with
-        // the range made the range the headline on ~46% of stocks, which buries the ordinary reading
-        // most of them deserve. Both facts are true and the reader needs them in that order.
-        `${label} was ${newest.display} this quarter, from ${oldest.display} ` +
-        `${points.length} quarters back — ${direction}` +
-        (roundTripped ? `, though it moved between ${lo.display} and ${hi.display} in between.` : ".");
+      ? `${label} was ${newest.display} this quarter. Only one quarter is on file, so there is no ` +
+        `direction to report yet.`
+      : [
+          `${label} was ${newest.display} this quarter.`,
+          `It was ${oldest.display} ${points.length} quarters back.`,
+          // ⚠ "SINCE THEN", NOT "ACROSS THOSE N QUARTERS" — the count is already in the sentence
+          // above, and the model welded the two into "rising across the last 4 quarters from 18.3%
+          // 4 quarters back" on HDFCBANK's re-render. Anaphora survives recomposition; a repeated
+          // count does not.
+          `The ${lower} has been ${direction} since then.`,
+          ...(roundTripped
+            ? [`It did not move in a straight line: along the way it ranged between ${lo.display} and ${hi.display}.`]
+            : []),
+        ].join(" ");
 
   // For a lowerIsBetter series the direction word alone is actively misleading — "rising" sounds like
   // improvement and means the opposite. The consequence is appended HERE, into the one string the

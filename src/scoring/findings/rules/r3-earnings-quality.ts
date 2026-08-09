@@ -17,14 +17,14 @@
 // universe-wide until deeper annual history lands. Implemented faithfully (returns null on
 // insufficient depth) — a needs-data outcome, not a silent gap.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 
 export const R3_MIN_CONSECUTIVE = 4;
 
-export const ruleR3: FireRule = (ctx) => {
+export const ruleR3: FilingRule = (ctx) => {
   // NOT a data gap — a SCOPE decision. Cash-flow earnings quality is a non-financial read and is not
   // defined for a bank, so this is "does not apply", which is not_fired. Stays `null` deliberately.
-  if (ctx.industry === "banking") return null;
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // banking · nbfc · life/general insurance — OCF-vs-NP does not transfer
   const f = ctx.annualFundamentals;
   // ⚠ MIGRATED (Phase 2): was a bare `null`, which collapsed "we could not check" into "we checked and
   // it is false". This is the DEPTH GATE — the check never ran — so it is not_evaluable with its reason.

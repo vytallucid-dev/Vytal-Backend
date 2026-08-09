@@ -9,7 +9,7 @@
 // receivables base is material (≥ MIN_RECV_TO_REV of revenue, so a tiny-base % blip can't
 // fire). Annual data; non-financials (banks carry empty annualFundamentals).
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
 
 export const RECV_OUTPACE_PP = 15; // receivables YoY growth − revenue YoY growth ≥ 15pp — FLAG: confirm with File 1
@@ -24,8 +24,8 @@ const recv = (r: FoundationAnnual): number | null => {
   return (c ?? 0) + (nc ?? 0);
 };
 
-export const ruleP8: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null;
+export const ruleP8: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // a financial's asset is a loan book, not customer credit
   const f = ctx.annualFundamentals;
   if (f.length < 2) return notEvaluable("insufficient_annual_history"); // ⚠ Phase 2: depth gate, not a false
   const latest = f[f.length - 1], prior = f[f.length - 2];

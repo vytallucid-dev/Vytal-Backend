@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────
 
 import type { JobContext } from "./context.js";
+import { handleFilingRecompute, handleFilingRollingDaily, handleFilingBackfill } from "./handlers/filing-pass.handler.js";
 import { handleDealsBackfill } from "./handlers/deals-backfill.handler.js";
 import { handleEventsBackfill } from "./handlers/events-backfill.handler.js";
 import { handleInsiderTradesBackfill } from "./handlers/insider-trades-backfill.handler.js";
@@ -93,6 +94,9 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.MF_ANALYTICS_DAILY]: handleMfAnalyticsDaily,
   [JobTypes.INSTRUMENT_CORPORATE_ACTIONS]: handleInstrumentCorporateActions,
   [JobTypes.DEALS_DAILY_INGEST]: handleDealsDailyIngest,
+  [JobTypes.FILING_RECOMPUTE]: handleFilingRecompute,
+  [JobTypes.FILING_ROLLING_DAILY]: handleFilingRollingDaily,
+  [JobTypes.FILING_BACKFILL]: handleFilingBackfill,
   [JobTypes.EVENTS_WEEKLY_INGEST]: handleEventsWeeklyIngest,
   [JobTypes.EVENTS_DAILY_REFRESH]: handleEventsDailyRefresh,
   [JobTypes.SHAREHOLDING_QUARTERLY]: handleShareholdingQuarterly,

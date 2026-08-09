@@ -210,7 +210,12 @@ export function makeToolExecutorFor(ctx: ToolContext): (call: AiToolCall) => Pro
     if (!tool) return { ...base, response: { error: `Unknown tool "${call.name}".` } };
     try {
       const result = await tool.handler(call.args, ctx);
-      return result.ok ? { ...base, response: { output: result.content } } : { ...base, response: { error: result.error } };
+      // `effects` is forwarded onto the RESULT, not folded into `response` — it is persisted with the
+      // tool turn and must never become prompt content (AiToolResult.effects). Spread only when the tool
+      // actually declared one, so a read's persisted payload is byte-identical to what it was before.
+      return result.ok
+        ? { ...base, response: { output: result.content }, ...(result.effects?.length ? { effects: result.effects } : {}) }
+        : { ...base, response: { error: result.error } };
     } catch (e) {
       return { ...base, response: { error: `Tool "${call.name}" failed: ${(e as Error).message}` } };
     }

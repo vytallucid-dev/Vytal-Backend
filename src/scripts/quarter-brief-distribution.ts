@@ -111,7 +111,9 @@ async function main(): Promise<void> {
 
   // ── margin-path honesty ───────────────────────────────────────────────────────────────────────
   const roundTripped = results.filter((r) =>
-    r.block?.margins?.series.some((s) => /though it moved between/.test(s.directionDisplay)),
+    // ⚠ TRACKS margins.ts's WORDING. The round-trip note became its own sentence when the stem was
+    // unstacked (2a); this matches the phrase that now carries it.
+    r.block?.margins?.series.some((s) => /did not move in a straight line/.test(s.directionDisplay)),
   ).length;
   const withMargins = results.filter((r) => r.block?.margins).length;
   console.log(`\n  stocks carrying a round-trip note: ${roundTripped} of ${withMargins} with margins`);

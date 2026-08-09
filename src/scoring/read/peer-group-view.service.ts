@@ -23,6 +23,7 @@ import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-f
 import { dropNotCoveredPatterns } from "../../catalogue/not-covered.js";
 import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
 import { getSnapshotSeries } from "./scoring-read.service.js";
+import { getPeerGroupMembers } from "./peer-group-lookup.js";
 import {
   computeScopeAggregate,
   describeScope,
@@ -47,8 +48,19 @@ import type {
   PeerGroupFieldLensVerdict,
   PeerGroupMover,
   BandDistribution,
+  UnscoredPondMembers,
+  UnscoredPondMember,
 } from "./peer-group-view.types.js";
+// ★ THE FILING CHANNEL — keyed on STOCK, which is what lets a pond say something about the members
+//   that have no snapshot. See buildUnscoredMembers.
+import { readFilingFindings } from "../../filing/read.js";
 import type { LensRead } from "./health-view.types.js";
+// The three-lens separation section — the metric-level lens findings, re-cut by metric.
+import { buildLensSeparation, SEPARATION_DOESNT_MEAN, type LensSeparationRow } from "./lens-separation.js";
+// ★ THE COMPOSED KEY → FACE TRANSFORM, IMPORTED, NEVER RE-DERIVED. `lens_lm7_CASA` → "LM7" lives in
+//   exactly one place (catalogue/lens-faces.ts §1e) and a second regex here is how the partition and
+//   the census start disagreeing about what a lens key is.
+import { faceIdOfLensKey } from "../../catalogue/lens-faces.js";
 // THE shared lens primitive (used verbatim by the stock read — NOT reimplemented here).
 import { deriveLensTriplet } from "../lens-patterns/lens-states.js";
 import { lensPattern as computeLensPattern } from "../lens-patterns/lens-pattern.js";
@@ -112,6 +124,18 @@ function reachOf(n: number, m: number): PathologyReach {
   return "cluster";
 }
 
+// Dominant display state across a pattern's firing members: dampened wins (a PG-wide dampening marks
+// every member), else pending only when ALL are pending, else active.
+// ★ HOISTED TO MODULE SCOPE (step 5) so the unscored-member census uses the SAME reduction as the
+//   scored one — two copies of this would be two ways for a pond page to describe the same state.
+function dominantState(states: string[]): "active" | "pending_data_integration" | "dampened" {
+  return states.some((s) => s === "dampened")
+    ? "dampened"
+    : states.length > 0 && states.every((s) => s === "pending_data_integration")
+      ? "pending_data_integration"
+      : "active";
+}
+
 // A lean snapshot row used for the in-force reduction.
 interface LeanSnap {
   id: string;
@@ -125,12 +149,19 @@ interface LeanSnap {
 /** Reduce a pond's raw snapshot rows to the current cross-section:
  *  per (stock, period) keep MAX(version); per stock keep the latest period; then
  *  the pond's current period = the latest asOfDate seen. Members whose latest period
- *  is older are returned separately (lagging) — never folded into the cross-section. */
+ *  is older are returned separately (lagging) — never folded into the cross-section.
+ *
+ *  ★ THE EXCLUSION IS THE CORRECTNESS GUARANTEE, and it is what lets the Health tab state its period
+ *  once for the whole table. `current` is filtered on an EXACT periodKey match, so the composite, the
+ *  ranking, the band mix, the dispersion, the pathology census and every metric distribution are
+ *  computed over one quarter — a peer comparison that mixed FY27Q1 with FY26Q4 rows would be
+ *  comparing two different things. `lagging` carries the members that fall out, with their own period
+ *  and as-of date, so the drop is DISCLOSED rather than silent. */
 function resolveCrossSection(rows: LeanSnap[]): {
   periodKey: string;
   asOfDate: Date;
   current: LeanSnap[]; // in-force snapshot per member AT the current period
-  lagging: { symbol: string; latestPeriod: string }[];
+  lagging: { stockId: string; symbol: string; latestPeriod: string; asOfDate: Date }[];
 } | null {
   if (rows.length === 0) return null;
 
@@ -159,7 +190,7 @@ function resolveCrossSection(rows: LeanSnap[]): {
   const current = all.filter((r) => r.periodKey === periodKey);
   const lagging = all
     .filter((r) => r.periodKey !== periodKey)
-    .map((r) => ({ symbol: r.symbol, latestPeriod: r.periodKey }))
+    .map((r) => ({ stockId: r.stockId, symbol: r.symbol, latestPeriod: r.periodKey, asOfDate: r.asOfDate }))
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
   return { periodKey, asOfDate: maxAsOf, current, lagging };
 }
@@ -324,6 +355,69 @@ function loadFullCrossSection(ids: string[]) {
 }
 
 /**
+ * ★ THE UNSCORED MEMBERS' OWN SECTION (step 5) — separately denominated, never merged upward.
+ *
+ * The pond's other aggregates are cross-sections of composites: a member without one cannot enter
+ * them without changing what they mean. This block answers the different question those aggregates
+ * cannot — "what do we know about the members that have no reading?" — from the filing channel, which
+ * is keyed on the stock and therefore resolves for exactly those members.
+ *
+ * The census here is built from the same `PathologyCensusItem` shape as `pathology`, and carries
+ * `outOf = count` (the unscored roster) on every row. The reach thresholds are the pond's own, which
+ * is right: reach is a share of a stated denominator, and the denominator is stated.
+ */
+async function buildUnscoredMembers(
+  notScored: { stockId: string; symbol: string; name: string }[],
+): Promise<UnscoredPondMembers> {
+  if (notScored.length === 0) {
+    return { count: 0, covered: 0, members: [], unscoredPathology: [] };
+  }
+  const filingBy = await readFilingFindings(notScored.map((m) => m.stockId));
+
+  const members: UnscoredPondMember[] = notScored.map((m) => {
+    const filing = filingBy.get(m.stockId) ?? null;
+    // A section with nothing evaluated is not a section — the stock has filed nothing we hold, and
+    // `evaluated: 0` with its own quiet line already says so on the stock page. Here the honest shape
+    // is null, so `covered` below can count what we actually have rather than what we returned.
+    return { symbol: m.symbol, name: m.name, filing: filing && filing.coverage.evaluated > 0 ? filing : null };
+  });
+
+  const acc = new Map<string, { kind: "red_flag" | "pattern"; severity: string | null; members: { symbol: string; sev: string | null }[]; states: string[] }>();
+  for (const m of members) {
+    for (const f of m.filing?.fired ?? []) {
+      const e = acc.get(f.ruleKey) ?? { kind: f.kind === "red flag" ? ("red_flag" as const) : ("pattern" as const), severity: f.severity, members: [], states: [] };
+      e.members.push({ symbol: m.symbol, sev: f.severity });
+      e.states.push(f.displayState ?? "active");
+      if (severityRank(f.severity) < severityRank(e.severity)) e.severity = f.severity;
+      acc.set(f.ruleKey, e);
+    }
+  }
+  const M = notScored.length;
+  const unscoredPathology: PathologyCensusItem[] = [...acc.entries()]
+    .map(([key, v]): PathologyCensusItem => ({
+      kind: v.kind,
+      key,
+      severity: v.severity,
+      memberCount: v.members.length,
+      outOf: M,
+      members: v.members
+        .sort((a, b) => severityRank(a.sev) - severityRank(b.sev) || a.symbol.localeCompare(b.symbol))
+        .map((x) => x.symbol),
+      reach: reachOf(v.members.length, M),
+      displayState: dominantState(v.states),
+    }))
+    .sort(
+      (a, b) =>
+        (a.kind === b.kind ? 0 : a.kind === "red_flag" ? -1 : 1) ||
+        severityRank(a.severity) - severityRank(b.severity) ||
+        b.memberCount - a.memberCount ||
+        a.key.localeCompare(b.key),
+    );
+
+  return { count: M, covered: members.filter((m) => m.filing !== null).length, members, unscoredPathology };
+}
+
+/**
  * The full aggregate for one pond. Returns null only when the peer group id is
  * unknown (controller → 404). An existing-but-unscored pond returns a `scored:false`
  * shell (identity populated, every snapshot section null/empty).
@@ -353,11 +447,28 @@ export async function buildPeerGroupHealthView(
     memberCount: pg.stockCount,
   };
 
-  const leanRows = await prisma.scoreSnapshot.findMany({
-    where: { peerGroupId: pgId, snapshotType: "quarterly" },
-    select: { id: true, stockId: true, symbol: true, periodKey: true, version: true, asOfDate: true },
-  });
+  // ★ THE ROSTER IS READ ALONGSIDE THE SNAPSHOTS, so "has no reading at all" can be a state rather
+  //   than an inference from `scoredCount < memberCount` — which conflates it with "has an older
+  //   reading". `getPeerGroupMembers` is the existing named read; nothing new is queried twice.
+  const [leanRows, roster] = await Promise.all([
+    prisma.scoreSnapshot.findMany({
+      where: { peerGroupId: pgId, snapshotType: "quarterly" },
+      select: { id: true, stockId: true, symbol: true, periodKey: true, version: true, asOfDate: true },
+    }),
+    getPeerGroupMembers(pgId),
+  ]);
   const xs = resolveCrossSection(leanRows);
+
+  const snapshottedIds = new Set(leanRows.map((r) => r.stockId));
+  const notScoredRoster = roster
+    .filter((m) => !snapshottedIds.has(m.stockId))
+    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+  const rosterNotScored = notScoredRoster.map((m) => ({ symbol: m.symbol, name: m.name }));
+
+  // ★ THE UNSCORED HALF OF THE POND (step 5). One indexed read over stock_findings for the members
+  //   that have no snapshot — rooted at STOCK, which is the whole reason it can resolve for them at
+  //   all. Skipped entirely when the roster is fully scored, which is the case on 13 of the 23 ponds.
+  const unscoredMembers = await buildUnscoredMembers(notScoredRoster);
 
   // ── unscored pond shell ──
   if (!xs) {
@@ -367,7 +478,17 @@ export async function buildPeerGroupHealthView(
       aggregate: null,
       members: [],
       notAtCurrentPeriod: [],
+      // Every roster member is unscored here by construction — the pond has no snapshots at all.
+      rosterNotScored,
+      // ★ AND THIS IS THE BRANCH WHERE IT MATTERS MOST. All ten unscored ponds land here, and until
+      //   now this shell was the entire page for them: a name, a member count, and a list of tickers.
+      unscoredMembers,
       pathology: [],
+      // ⚠ NOT the empty-state sentence. An unscored pond has no readings at all, so "no metric
+      //   separates this group" would be a finding we have not earned; `buildLensSeparation([], 0)`
+      //   would compose exactly that. The shape is present with no blocks and no sentence, and the
+      //   detail page never renders this branch's tab body anyway.
+      lensSeparation: { blocks: [], emptySentence: null, doesntMean: SEPARATION_DOESNT_MEAN },
       metricDistributions: [],
       movers: { risers: [], slippers: [] },
     };
@@ -379,7 +500,9 @@ export async function buildPeerGroupHealthView(
   const [fullSnaps, stocks, peerStatsRows] = await Promise.all([
     loadFullCrossSection(crossIds),
     prisma.stock.findMany({
-      where: { id: { in: stockIds } },
+      // The lagging members' ids ride along so the older-reading disclosure can name a COMPANY and
+      // not only a ticker — one read, not a second one for four rows.
+      where: { id: { in: [...stockIds, ...xs.lagging.map((l) => l.stockId)] } },
       select: { id: true, name: true, industryType: true },
     }),
     prisma.peerStatsSnapshot.findMany({
@@ -406,14 +529,6 @@ export async function buildPeerGroupHealthView(
   type Acc = { severity: string | null; members: { symbol: string; sev: string | null }[]; states: string[] };
   const flagAcc = new Map<string, Acc>();
   const patternAcc = new Map<string, Acc>();
-  // Dominant display state across a pattern's firing members: dampened wins (a PG-wide
-  // dampening marks every member), else pending only when ALL are pending, else active.
-  const dominantState = (states: string[]): "active" | "pending_data_integration" | "dampened" =>
-    states.some((s) => s === "dampened")
-      ? "dampened"
-      : states.length > 0 && states.every((s) => s === "pending_data_integration")
-        ? "pending_data_integration"
-        : "active";
 
   // trajectory series per member (also powers movers) — reuse the shared resolver.
   const series2 = await Promise.all(
@@ -466,6 +581,11 @@ export async function buildPeerGroupHealthView(
     memberViews.push({
       symbol: s.symbol,
       name: nameById.get(s.stockId) ?? s.symbol,
+      // ★ THE ROW'S OWN QUARTER AND AS-OF. Equal across the cross-section by construction (see
+      //   `resolveCrossSection`), which is what lets the table state it once — but stated per row so
+      //   the renderer measures the uniformity instead of assuming it.
+      periodKey: s.periodKey,
+      asOfDate: ymd(s.asOfDate),
       composite: round2(num(s.composite)),
       labelBand: s.labelBand as LabelBand,
       pillars,
@@ -532,11 +652,46 @@ export async function buildPeerGroupHealthView(
           b.memberCount - a.memberCount ||
           a.key.localeCompare(b.key),
       );
-  const pathology = [...buildCensus(flagAcc, "red_flag"), ...buildCensus(patternAcc, "pattern")];
+  const fullCensus = [...buildCensus(flagAcc, "red_flag"), ...buildCensus(patternAcc, "pattern")];
 
   // ── metric distributions + per-member lens projection + field-verdict rollup ──
   const { distributions: metricDistributions, fieldLensVerdicts } =
     buildMetricDistributions(fullSnaps, peerByMetric);
+
+  // ── ★ THE LENS PARTITION ────────────────────────────────────────────────────
+  //
+  // METRIC-level lens rows (`lens_lm*_<metricKey>`) leave the census for `lensSeparation`, where the
+  // same members are grouped by the metric instead of by the finding. They are not in both places:
+  // the block says everything the row said and more, so keeping both printed one fact twice.
+  //
+  // PILLAR-level lens rows (`lens_lp*_<pillar>`) STAY. They name no metric, so no block can head
+  // them, and removing them to make the family tidy would delete findings the page shows today
+  // (three LP2 and one LP5 across the scored ponds) with nothing taking their place.
+  //
+  // ⚠ THE PILLAR COMES FROM THE DISTRIBUTIONS, NOT FROM THE CENSUS ROW. `score_patterns` carries no
+  //   pillar column, and the composed key's suffix is the metric code alone — so the join is
+  //   metricKey → the bucket the distribution builder already keyed by pillar. Total by construction:
+  //   a lens finding can only fire on a metric that HAS a scored row, which is exactly the set
+  //   `buildMetricDistributions` buckets. A key that somehow missed it is dropped from the section
+  //   rather than served under a guessed pillar, and stays visible in the census.
+  const pillarOfMetric = new Map(metricDistributions.map((d) => [d.metricKey, d.pillar]));
+  const lensRows: LensSeparationRow[] = [];
+  const pathology: PathologyCensusItem[] = [];
+  for (const item of fullCensus) {
+    const face = faceIdOfLensKey(item.key);
+    if (!face || !face.startsWith("LM")) {
+      pathology.push(item);
+      continue;
+    }
+    const metricKey = item.key.slice(`lens_${face.toLowerCase()}_`.length);
+    const pillar = pillarOfMetric.get(metricKey);
+    if (!pillar) {
+      pathology.push(item);
+      continue;
+    }
+    lensRows.push({ face, metricKey, pillar, members: item.members });
+  }
+  const lensSeparation = buildLensSeparation(lensRows, M);
 
   // ── movers (risers/slippers) where ≥2 periods exist ──
   const moverRows: PeerGroupMover[] = [];
@@ -616,8 +771,16 @@ export async function buildPeerGroupHealthView(
       fieldLensVerdicts,
     },
     members: memberViews,
-    notAtCurrentPeriod: xs.lagging,
+    notAtCurrentPeriod: xs.lagging.map((l) => ({
+      symbol: l.symbol,
+      name: nameById.get(l.stockId) ?? l.symbol,
+      latestPeriod: l.latestPeriod,
+      asOfDate: ymd(l.asOfDate),
+    })),
+    rosterNotScored,
+    unscoredMembers,
     pathology,
+    lensSeparation,
     metricDistributions,
     movers: { risers, slippers },
   };

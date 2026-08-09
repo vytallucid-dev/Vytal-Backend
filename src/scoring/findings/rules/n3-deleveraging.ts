@@ -21,7 +21,7 @@
 //
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import { netWorthFrom, type FoundationAnnual } from "../../metrics/types.js";
 
 export const N3_MIN_YEARS = 3;        // ≥3 consecutive annual declines
@@ -30,8 +30,8 @@ export const N3_MIN_REL_DECLINE = 0.25; // … OR ≥ 25% relative
 
 const debtOf = (r: FoundationAnnual): number => (r.borrowingsCurrent ?? 0) + (r.borrowingsNoncurrent ?? 0);
 
-export const ruleN3: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of R4)
+export const ruleN3: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of R4)
   const f = ctx.annualFundamentals;
   if (f.length < N3_MIN_YEARS + 1) return notEvaluable("insufficient_annual_history"); // 3 declines need 4 rows
 

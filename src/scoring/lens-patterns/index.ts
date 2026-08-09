@@ -8,4 +8,5 @@ export * from "./types.js";
 export * from "./catalog.js";
 export * from "./lens-states.js";
 export * from "./lens-pattern.js";
+export * from "./field-side.js";
 export * from "./no-forward-guard.js";

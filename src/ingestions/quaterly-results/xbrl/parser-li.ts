@@ -1,5 +1,12 @@
 // File: src/ingestions/quaterly-results/xbrl/parser-li.ts (NEW)
 
+// ⚠⚠ PB-1 — THE PERSISTENCY RATIOS PARSED HERE ARE WRONG FOR ONE ISSUER, ON EVERY ROW.
+// SBILIFE's five persistency ratios land at roughly one hundredth of their filed value (0.0084 for a
+// ~85% figure), on the quarterly AND the annual table. The distribution is bimodal with an empty gap
+// between 0.10 and 0.40, which is what identifies it as a scale fault rather than a small number.
+// Contained downstream by a display bound in insight/quarter-brief/manifest.ts, which WITHHOLDS the
+// metric for that issuer and says so in the card's gaps. See xbrl/parser-backlog.ts.
+
 import { extractNumber } from "./extract.js";
 import {
   BALANCE_SHEET_CONTEXT,

@@ -62,6 +62,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { prisma } from "../../db/prisma.js";
+// ★ THE SHARED PER-STOCK SNAPSHOT READ — this module used to issue its own `score_snapshots` scan for
+//   the SAME (stockId, snapshotType) the health view had already read twice. See that function's
+//   header for the measurement and for the read-only contract on its result.
+import { snapshotRowsForStock } from "./scoring-read.service.js";
 import { headOfChainByPeriod, periodOrdinal } from "../findings/trajectory/load-series.js";
 import { getLiveQuarter } from "./live-quarter.js";
 import { roundToPrecision } from "../findings/format.js";
@@ -286,14 +290,9 @@ export async function resolveFindingLifecycles(
   stockId: string,
   currentPeriodKey?: string,
 ): Promise<LifecycleResult> {
-  const snapRowsRaw = await prisma.scoreSnapshot.findMany({
-    where: { stockId, snapshotType: "quarterly" },
-    select: {
-      id: true, periodKey: true, version: true, asOfDate: true, composite: true,
-      foundationSubtotal: true, momentumSubtotal: true, marketSubtotal: true, ownershipSubtotal: true,
-      wFoundation: true, wMomentum: true, wMarket: true, wOwnership: true,
-    },
-  });
+  // ⚠ READ-ONLY — this array is shared with the two other readers of the same row set when a memo
+  //   scope is open. The `.map` below builds fresh SnapRows, which is what keeps that safe.
+  const snapRowsRaw = await snapshotRowsForStock(stockId, "quarterly");
   if (snapRowsRaw.length === 0) return { firing: new Map(), recentlyEnded: [] };
 
   const snaps: SnapRow[] = snapRowsRaw.map((r) => ({

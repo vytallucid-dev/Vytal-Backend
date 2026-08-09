@@ -226,7 +226,7 @@ async function main() {
         const out: MemberWriteResult[] = [];
         for (const m of requireFindingsEvaluated(computed)) {
           if (m.composite.state !== "scored" || m.composite.composite == null || !m.own || !m.market) {
-            out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: -1 });
+            out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", pillarIds: {}, guardrailEventsWritten: -1 });
             continue;
           }
           out.push(await persistMember(tx, m, sc, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats));

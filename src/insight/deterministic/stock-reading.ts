@@ -63,7 +63,7 @@ export function composeDeterministicStockInsight(view: HealthSnapshotView): Dete
   };
 
   // Drivers: the top pillars by subtotal, one fixed-template sentence each (2–3).
-  const drivers: ReadingPoint[] = [...view.pillars]
+  const drivers: ReadingPoint[] = [...(view.pillars ?? [])]
     .filter((p) => Number.isFinite(p.subtotal))
     .sort((a, b) => b.subtotal - a.subtotal)
     .slice(0, 3)
@@ -125,7 +125,7 @@ export function composeDeterministicFallback(view: HealthSnapshotView): string {
   }
 
   // The fired lens sentences — verbatim, catalog-derived, already proven non-advisory.
-  for (const p of view.pillars) {
+  for (const p of view.pillars ?? []) {
     for (const lp of p.lensPillarPatterns ?? []) if (lp.verdict) parts.push(lp.verdict);
     for (const m of p.metrics ?? []) if (m.lensPattern?.verdict) parts.push(m.lensPattern.verdict);
   }

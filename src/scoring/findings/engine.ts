@@ -1,11 +1,35 @@
 // File: src/scoring/findings/engine.ts
 //
-// THE rule registry + runner. A findings pass = run every registered rule against one
-// member's FiringContext and collect the fired set. Pure. Later stages append the
-// remaining ~21 rules to STAGE_A_RULES (or a fuller registry) — the runner is unchanged.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE RULE REGISTRIES + RUNNER. There are now TWO registries, and which one a rule is in is the
+// architectural statement, not a build-order accident.
+//
+// GOVERNING PRINCIPLE: a finding about a FILING belongs to the stock; a finding about a SCORE belongs
+// to the snapshot.
+//
+//   FILING_RULES  (22) — read nothing but filed data (shareholding, annual fundamentals, quarterly
+//                        results, insider transactions, block deals). Run by the STOCK-KEYED filing
+//                        pass (src/filing) on all 504 active stocks, triggered by ingestion. They
+//                        are typed {@link FilingRule}, so one that reaches for `ctx.current` does not
+//                        compile.
+//   SCORING_RULES (21) — genuinely about the score: they read the composite, the band, a pillar
+//                        subtotal or the prior-snapshot series. Run by the PEER-GROUP-KEYED scoring
+//                        pass (computePgScores) on the 95 scored stocks, daily.
+//
+// ⚠ `ALL_RULES` IS GONE, DELIBERATELY. It was the scoring pass's default rule set and, once 22 of the
+// 43 rules stopped running there, its name would have been a lie — the single most misleading thing
+// a registry can be called. Every call site now names the pass it means.
+//
+// P5 and P10 look like filing rules (they read the insider feed) and are NOT: P5 gates on
+// `composite < 62` and P10 on `market < 74`, and that gate IS the rule's premise. Insider selling
+// without distress is just insider selling. They stay in SCORING_RULES with their gates intact.
 
-import type { FireRule, FiringContext, FiredFinding } from "./types.js";
+import type { FilingRule, FireRule, FilingContext, FiringContext, FiredFinding, RuleResult } from "./types.js";
 import { isNotEvaluable } from "./types.js";
+// R1 — a rule file as of the filing-pass build. It was previously computed inside the Ownership
+// pillar and written as a RedFlag by the composite persist path, which meant a pledging fact could
+// only exist for a stock that had been scored. See rules/r1-pledging.ts.
+import { ruleR1 } from "./rules/r1-pledging.js";
 import { ruleR6 } from "./rules/r6-distribution.js";
 import { ruleP11 } from "./rules/p11-margin-compression.js";
 import { ruleR2 } from "./rules/r2-promoter-exit.js";
@@ -59,37 +83,68 @@ import { ruleT7 } from "./rules/t7-momentum-improving-while-weak.js";
 import { ruleT8 } from "./rules/t8-foundation-strong-improving.js";
 import { ruleT9 } from "./rules/t9-foundation-weak-declining.js";
 
-/** Stage-A proven set: one red flag (R6), one single-snapshot pattern (P11), one
- *  divergence (C1) — one rule per major class, proved the contract end-to-end. */
-export const STAGE_A_RULES: FireRule[] = [ruleR6, ruleP11];
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// REGISTRY 1 · FILING_RULES — the 22 that read nothing but filed data.
+//
+// These moved OUT of the scoring pass. Nothing about them was ever peer-group-shaped: R2 asks whether
+// promoter holding fell between two shareholding filings, R3 whether net profit outran operating cash
+// for four years, N5 whether FII and DII both built. Every one of those is true of the company and its
+// filing, and stays true whether or not the stock has a peer group with five comparable members,
+// committed bars, and a composite that survived. 355 of 504 stocks have no peer group and never will.
+//
+// ★ THEY ARE TYPED `FilingRule`, WHICH IS THE ENFORCEMENT. FilingContext carries no composite, no
+// band, no pillars and no prior snapshots (see findings/types.ts), so a rule that drifts into reading
+// the score fails `tsc` rather than failing quietly on the 409 stocks that have none.
+//
+// GROUPED BY THE FILING THEY READ, because that grouping is what the filing pass keys its rows on —
+// see filing/registry.ts, which is the single table naming each rule's catalogue key, kind and period
+// grain. The old STAGE_A…STAGE_E names were build order and carried no meaning worth preserving here.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
-/** Stage-B set: the clean, low-distortion-risk rules. R2/P1/P4 reuse the engine's proven
- *  ownership logic; R4/P8 read robust balance-sheet inputs.
- *  P2/P3 are RETIRED — consolidated into R6 (distribution) / R1 (pledging) per the firewall;
- *  their rule files remain (provisional triggers) but are NOT registered, so they never fire. */
-export const STAGE_B_RULES: FireRule[] = [ruleR2, ruleR4, ruleP1, ruleP4, ruleP8];
+/** SHAREHOLDING FILING (grain S) — the quarterly shareholding pattern.
+ *  R1 pledging · R2 promoter exit · R6 distribution · P1 clean rotation · P4 dual exit ·
+ *  N5 dual institutional build · N6 promoter accumulation · N7 pledge release. */
+export const SHAREHOLDING_RULES: FilingRule[] = [ruleR1, ruleR2, ruleR6, ruleP1, ruleP4, ruleN5, ruleN6, ruleN7];
 
-/** Stage-C set: the distortion-prone rules. R3 (≥4-consecutive) and R5 (TTM + ≥2-consecutive)
- *  are STRUCTURALLY self-guarding; P7 reuses the engine's ACTUAL b1/b2/b3 (annual grain fits);
- *  P12 reuses both the Stage-B OPM guard + annual b1 (positive-exceptional, residual gap
- *  flagged); P13 is TTM-smoothed (and data-depth-gated until ~9 quarters land). */
-export const STAGE_C_RULES: FireRule[] = [ruleR3, ruleP7, ruleR5, ruleP12, ruleP13];
+/** ANNUAL ACCOUNTS (grain A) — the fiscal-year fundamentals.
+ *  R3 earnings quality · R4 debt explosion · P7 accruals · P8 receivables ·
+ *  N1 cash-backed earnings · N2 working capital · N3 deleveraging. */
+export const ANNUAL_RULES: FilingRule[] = [ruleR3, ruleR4, ruleP7, ruleP8, ruleN1, ruleN2, ruleN3];
 
-/** Stage-D set: what remains of the original trajectory stage. B / D / I are RETIRED (see
- *  catalogue/retired-findings.ts — between them they fired five Part-5 EXCLUDED conditions under
- *  three keys), replaced by FAMILY_T_RULES below. F2 (mix shift vs last snapshot) is untouched. */
-export const STAGE_D_RULES: FireRule[] = [ruleF2];
+/** QUARTERLY RESULTS (grain Q) — the results filing.
+ *  R5 interest coverage · N4 coverage strengthening · P11 margin compression ·
+ *  P12 margin recovery · P13 revenue inflection. */
+export const QUARTERLY_RULES: FilingRule[] = [ruleR5, ruleN4, ruleP11, ruleP12, ruleP13];
 
-/** Stage-E set: feed-gated insider/block patterns (P5/P6/P10/H — ACTIVE, feed live) + F1
- *  (atypical-for-band). §2 risk-shape is NOT here — it is a read-layer computation
- *  (section2/risk-shape.ts), not a fired finding. */
-export const STAGE_E_RULES: FireRule[] = [ruleP5, ruleP6, ruleP10, ruleH, ruleF1];
+/** INSIDER + BLOCK-DEAL FEEDS (grain S — both anchor their window on the latest shareholding filing).
+ *  P6 insider conviction · H block/bulk events.
+ *  ⚠ P5 and P10 read the same feeds and are NOT here — see the header. */
+export const FEED_RULES: FilingRule[] = [ruleP6, ruleH];
 
-/** Family N (Notable) — the seven CONSTRUCTIVE twins (Amendment v1.0). Each is the positive
- *  mirror of a negative rule: N1↔P7, N2↔P8, N3↔R4, N4↔R5, N5↔P4, N6↔R2, N7↔R1. Display-only
- *  (green · magnitude null · polarity positive · temporalClass CONDITION). REGISTRATION IS
- *  MANDATORY — an unregistered rule never fires (the P2/P3 lesson); all seven go in ALL_RULES. */
-export const FAMILY_N_RULES: FireRule[] = [ruleN1, ruleN2, ruleN3, ruleN4, ruleN5, ruleN6, ruleN7];
+/** ★ THE FILING PASS'S REGISTRY. 22 rules, stock-keyed, no peer group, no snapshot. */
+export const FILING_RULES: FilingRule[] = [...SHAREHOLDING_RULES, ...ANNUAL_RULES, ...QUARTERLY_RULES, ...FEED_RULES];
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// REGISTRY 2 · SCORING_RULES — the 21 that are genuinely about the score.
+//
+// Each one reads the composite, the band, a pillar subtotal, or the prior-snapshot series. None can be
+// evaluated for a stock that has not been scored, and that is not a limitation to be engineered
+// around — it is what the finding is about.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Composition — F1 atypical-for-band (reads the band-typical profiles), F2 mix shift vs the last
+ *  snapshot. Both are statements about the SHAPE of a score. */
+export const COMPOSITION_RULES: FireRule[] = [ruleF1, ruleF2];
+
+/** SCORE-GATED insider/block patterns. Both read the same feeds the filing pass reads, and both are
+ *  gated on a score reading that is the rule's PREMISE, not decoration:
+ *    · P5 — insider selling on an ALREADY-WEAK name (composite < 62). Insider selling without
+ *      distress is just insider selling; the gate is what makes it a distress signal.
+ *    · P10 — promoter buying INTO WEAKNESS (Market < 74). Promoter buying into strength is not a
+ *      defense.
+ *  ⚠ Do not relax these gates and do not substitute anything for them to move the rules to the
+ *  filing pass. Without the gate they are different rules making a claim the evidence does not carry. */
+export const SCORE_GATED_FEED_RULES: FireRule[] = [ruleP5, ruleP10];
 
 /** Family C (Divergence) — two pillars disagreeing (Vytal_Divergence_Tool_Spec Parts 2–3).
  *  D1/D2 price ahead of quality / of trajectory (two halves of ONE n=79 configuration, so they
@@ -97,8 +152,7 @@ export const FAMILY_N_RULES: FireRule[] = [ruleN1, ruleN2, ruleN3, ruleN4, ruleN
  *  LANGUAGE, never whether they fire); D5 convergence toward the strong pillar; D6/D7 crossings,
  *  which require the prior reading; S2 a sustained state carrying no return claim.
  *  S1 (Aligned) is deliberately NOT a rule — it is the tool's neutral control, not a card stamped on
- *  every quiet stock. REGISTRATION IS MANDATORY — an unregistered rule never fires (the P2/P3
- *  lesson); all eight go in ALL_RULES. */
+ *  every quiet stock. */
 export const FAMILY_C_RULES: FireRule[] = [ruleD1, ruleD2, ruleD3, ruleD4, ruleD5, ruleD6, ruleD7, ruleS2];
 
 /** Family T (Trajectory) — ONE score moving along its own path (Vytal_Trajectory_Tool_Spec Parts
@@ -116,15 +170,19 @@ export const FAMILY_C_RULES: FireRule[] = [ruleD1, ruleD2, ruleD3, ruleD4, ruleD
  *  take it as a magnitude caveat. See trajectory/regime-tier.ts. */
 export const FAMILY_T_RULES: FireRule[] = [ruleT1, ruleT2, ruleT3, ruleT4, ruleT5, ruleT6, ruleT7, ruleT8, ruleT9];
 
-/** The full active catalog (ordering here is registry order, NOT File 1's §5 display
- *  ordering — that A→I sort is a read-layer concern). P9 stays UNBUILT (capex unavailable);
- *  P2/P3 are RETIRED (consolidated into R6/R1). */
-export const ALL_RULES: FireRule[] = [...STAGE_A_RULES, ...STAGE_B_RULES, ...STAGE_C_RULES, ...STAGE_D_RULES, ...STAGE_E_RULES, ...FAMILY_N_RULES, ...FAMILY_C_RULES, ...FAMILY_T_RULES];
+/** ★ THE SCORING PASS'S REGISTRY. 21 rules, peer-group-keyed, run daily on the 95 scored stocks.
+ *  P9 stays UNBUILT (capex unavailable); P2/P3 are RETIRED (consolidated into R6/R1). */
+export const SCORING_RULES: FireRule[] = [...COMPOSITION_RULES, ...SCORE_GATED_FEED_RULES, ...FAMILY_C_RULES, ...FAMILY_T_RULES];
+
+/** Every registered rule across BOTH passes — for tooling that must reason about the whole
+ *  vocabulary (catalogue reconciliation, rule-ref coverage). NOT a runnable set: the two passes
+ *  build different contexts and run on different universes. */
+export const EVERY_RULE: FireRule[] = [...FILING_RULES, ...SCORING_RULES];
 
 /** Run the rule set against a context; return the fired findings (order = registry
  *  order). A single throwing rule is isolated so it can never abort the others or the
  *  scoring pass (findings are best-effort — they never block a score write). */
-export function runFindings(ctx: FiringContext, rules: FireRule[] = ALL_RULES): FiredFinding[] {
+export function runFindings(ctx: FiringContext, rules: FireRule[] = SCORING_RULES): FiredFinding[] {
   const out: FiredFinding[] = [];
   for (const rule of rules) {
     try {
@@ -154,7 +212,7 @@ export function runFindings(ctx: FiringContext, rules: FireRule[] = ALL_RULES): 
 // degrades to "unknown_rule" rather than throwing — a diagnostic gap, never a broken scoring pass.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 export const RULE_REFS: ReadonlyMap<FireRule, string> = new Map<FireRule, string>([
-  [ruleR6, "R6"], [ruleP11, "P11"],
+  [ruleR1, "R1"], [ruleR6, "R6"], [ruleP11, "P11"],
   [ruleR2, "R2"], [ruleR4, "R4"], [ruleP1, "P1"], [ruleP4, "P4"], [ruleP8, "P8"],
   [ruleR3, "R3"], [ruleP7, "P7"], [ruleR5, "R5"], [ruleP12, "P12"], [ruleP13, "P13"],
   [ruleF2, "F2"],
@@ -184,7 +242,7 @@ export interface RunFindingsDetailed {
   fired: FiredFinding[];
   notEvaluable: DeclinedCheck[];
 }
-export function runFindingsDetailed(ctx: FiringContext, rules: FireRule[] = ALL_RULES): RunFindingsDetailed {
+export function runFindingsDetailed(ctx: FiringContext, rules: FireRule[] = SCORING_RULES): RunFindingsDetailed {
   const fired: FiredFinding[] = [];
   const notEval: DeclinedCheck[] = [];
   for (const rule of rules) {
@@ -197,4 +255,48 @@ export function runFindingsDetailed(ctx: FiringContext, rules: FireRule[] = ALL_
     }
   }
   return { fired, notEvaluable: notEval };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE FILING RUNNER — same isolation, a DIFFERENT return shape, and the difference is the point.
+//
+// `runFindingsDetailed` above returns { fired, notEvaluable } and DROPS not_fired entirely, because
+// the scoring pass persists findings against a snapshot and a snapshot with no R2 row means "R2 did
+// not fire". The filing pass cannot use that convention: it writes one row per rule per filing
+// period, and row ABSENCE there means "this rule has not been run for this period" — a third fact.
+//
+// So this returns EVERY rule's outcome, including the ones that ran and found nothing. "We checked
+// and it is clean" is a renderable statement and it has to survive the runner to be persisted.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** One rule's outcome on one stock. `state` is the three-valued fact; the payload arm that carries
+ *  detail depends on it (finding ⇔ fired, reason ⇔ not_evaluable). */
+export interface FilingRuleOutcome {
+  ruleRef: string;
+  state: "fired" | "not_fired" | "not_evaluable";
+  finding: FiredFinding | null;
+  reason: string | null;
+  /** True when the rule THREW. Recorded as not_evaluable with reason "rule_error" rather than
+   *  silently dropped — a rule crashing is a fact about our coverage, not about the company. */
+  errored: boolean;
+}
+
+/** Run the filing rule set over a filed-data context. Pure. A throwing rule is isolated exactly as in
+ *  the scoring runner, but here it lands as an explicit not_evaluable outcome instead of vanishing. */
+export function runFilingRules(ctx: FilingContext, rules: FilingRule[] = FILING_RULES): FilingRuleOutcome[] {
+  const out: FilingRuleOutcome[] = [];
+  for (const rule of rules) {
+    const ruleRef = ruleRefOf(rule);
+    let r: RuleResult;
+    try {
+      r = rule(ctx);
+    } catch {
+      out.push({ ruleRef, state: "not_evaluable", finding: null, reason: "rule_error", errored: true });
+      continue;
+    }
+    if (isNotEvaluable(r)) out.push({ ruleRef, state: "not_evaluable", finding: null, reason: r.reason, errored: false });
+    else if (r) out.push({ ruleRef, state: "fired", finding: r, reason: null, errored: false });
+    else out.push({ ruleRef, state: "not_fired", finding: null, reason: null, errored: false });
+  }
+  return out;
 }

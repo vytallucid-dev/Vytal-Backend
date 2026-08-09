@@ -35,6 +35,9 @@ import { describeDeclined, reasonPhrase } from "./coverage.js";
 import { plainClaimFor } from "./plain-claims.js";
 import { renderVerdict } from "../scoring/findings/verdicts.js";
 import { rateFor, type BaseRateSnapshot } from "./base-rates.js";
+// ★ WHICH POPULATION A KEY BELONGS TO (step 5) — projected from FILING_REGISTRY, so the echo's two
+//   sides and the base rates cannot disagree about where a key's numbers are drawn from.
+import { isFilingChannelKey } from "../filing/channel.js";
 import type {
   ReaderContext,
   ObjectState,
@@ -901,6 +904,10 @@ interface EchoResolution {
   observedShare: number;
   lift: number | null;
   names: string[];
+  /** ★ THE BOOK DENOMINATOR THIS RESOLUTION USED (step 5). Carried out rather than re-derived by the
+   *  builder: a score key's is the reader's scored holdings, a filing key's is the holdings that
+   *  rule EVALUATED on, and the claim has to render the one the share was actually computed against. */
+  bookDenominator: number;
 }
 
 function resolveEcho(
@@ -910,7 +917,26 @@ function resolveEcho(
 ): EchoResolution | null {
   const echo = ctx.echo;
   if (!echo) return null;
-  if (echo.scoredHoldingsCount < UE_MIN_BOOK) return null; // universal gate — cannot be stated honestly
+
+  // ★ ONE POPULATION PER KEY, ON BOTH SIDES OF THE RATIO (step 5).
+  //
+  // `lift` is observedShare / expectedShare. The base rates now draw a FILING key's expectedShare from
+  // the population its RULE evaluated in — not from the 95 we score — so the book share has to come
+  // from the matching population, or the multiple divides a share of one set by a share of another.
+  //
+  // The book denominator is per KEY, for the same reason it is per key on the universe side: a holding
+  // whose rule DECLINED is not a clean observation of that holding. A book of ten where R3 could only
+  // be evaluated on two is a book of TWO for R3, and rendering "1 of your 10" would count eight
+  // holdings we never checked as eight that came back clean.
+  const isFiling = isFilingChannelKey(finding.key);
+  const bookDenominator = isFiling
+    ? echo.filing.evaluatedByRuleKey.get(finding.key) ?? 0
+    : echo.scoredHoldingsCount;
+
+  // The universal gate, applied to the denominator the share is ACTUALLY computed against rather than
+  // to the scored count for both. A filing key on a book of three scored and eleven unscored holdings
+  // is stateable; a score key on the same book is not, and only a per-key basis can say both.
+  if (bookDenominator < UE_MIN_BOOK) return null;
 
   // ⚠ POSITIVE ECHO DOES NOT FIRE (§3.5.4 · Part IX·18 — a BOUNDARY decision, not a mechanic).
   //
@@ -944,11 +970,11 @@ function resolveEcho(
   // wearing a low base rate, and NO base-rate gate can detect it; only the class can.
   if (finding.temporalClass === "CLOCK_EVENT") return null;
 
-  const names = echo.byPatternKey.get(finding.key) ?? [];
+  const names = (isFiling ? echo.filing.byRuleKey.get(finding.key) : echo.byPatternKey.get(finding.key)) ?? [];
   const firedInBook = names.length;
   if (firedInBook === 0) return null;
 
-  const observedShare = firedInBook / echo.scoredHoldingsCount;
+  const observedShare = firedInBook / bookDenominator;
   const rate = rateFor(rates, finding.key);
   // lift is undefined when the universe rate is zero — the key fires in this book and nowhere else we
   // score. Treated as null (not Infinity): the SHARE path can still carry it, and a null lift renders
@@ -961,7 +987,7 @@ function resolveEcho(
 
   // The framing switch. NEVER a kill switch: both branches render.
   const entryId = rate.expectedShare >= UE_ENVIRONMENTAL_BASE_RATE ? "UE6" : "UE1";
-  return { entryId, firedInBook, observedShare, lift, names };
+  return { entryId, firedInBook, observedShare, lift, names, bookDenominator };
 }
 
 /** The echo entries for this object's findings. At most ONE per finding; UE1 and UE6 are mutually
@@ -978,7 +1004,18 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
     const claimLead = findingLead(f);
 
     // BOTH NUMBERS, ALWAYS — the reader's count and the universe's, each with its denominator.
-    const bookClause = `It's showing in ${res.firedInBook} of your ${ctx.echo.scoredHoldingsCount} scored holdings`;
+    //
+    // ⚠ THE NUMBERS ARE NOW PER-POPULATION; THE WORDS AROUND THEM ARE NOT, AND THAT IS A KNOWN,
+    //   DELIBERATE GAP. `bookDenominator` and `rate.universeCount` are whichever population this key
+    //   belongs to — that is arithmetic and it had to move with the split, because printing a
+    //   denominator the share was not divided by is simply a wrong number.
+    //
+    //   The PROSE has not moved with it. "your N scored holdings" and "the N stocks we score" are both
+    //   false for a filing key: its denominators are the holdings and the stocks in which that RULE
+    //   EVALUATED, which includes stocks we do not score and excludes stocks we do. Both strings are
+    //   listed in the step-5 copy report. Rewriting them is the copy pass's job, not this one's —
+    //   inventing replacement prose here would put an unreviewed sentence on a live reader surface.
+    const bookClause = `It's showing in ${res.firedInBook} of your ${res.bookDenominator} scored holdings`;
     const universeClause = `${rate.firedInUniverse} of the ${rate.universeCount} stocks we score${asOf}`;
 
     // ⚠ THE CLAIM IS OWNED ONCE (§4.5, extended — the library covers UE against PHS and against
@@ -1015,13 +1052,17 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
       },
       arithmetic: {
         firedInBook: res.firedInBook,
-        scoredHoldingsCount: ctx.echo.scoredHoldingsCount,
+        // ★ THE DENOMINATOR THE SHARE WAS COMPUTED AGAINST, and the population it came from. Both are
+        //   structured numbers a caller may render or check; `population` is what makes the pair
+        //   self-describing rather than requiring the reader to know which channel a key belongs to.
+        scoredHoldingsCount: res.bookDenominator,
+        population: rate.population,
         observedShare: Math.round(res.observedShare * 100) / 100,
         firedInUniverse: rate.firedInUniverse,
         universeCount: rate.universeCount,
         expectedShare: Math.round(rate.expectedShare * 100) / 100,
         lift: res.lift === null ? null : Math.round(res.lift * 100) / 100,
-        asOfDate: rates.asOfDate?.toISOString() ?? null,
+        asOfDate: (rate.population === "filing" ? rate.asOfDate : rates.asOfDate)?.toISOString() ?? null,
         // Internal, for `dropDuplicateEchoClaims` — the key this echo is about, and the arithmetic-only
         // form to swap in when that key's claim is already rendered by an ELEVATED slot above.
         __echoKey: f.key,
@@ -1193,7 +1234,13 @@ function buildUE5(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot 
   const anyEcho = obj.findings.some((f) => resolveEcho(ctx, f, rates) !== null);
   if (anyEcho) return null;
   // Does anything standing on this object repeat anywhere in the book at all?
-  const repeats = obj.findings.filter((f) => (echo.byPatternKey.get(f.key)?.length ?? 0) > 0).length;
+  // ★ BOTH CENSUSES (step 5). Filing keys left `byPatternKey` when the populations split, so a
+  //   single-census count here would have quietly stopped seeing them — and UE5's two branches are
+  //   "N other holdings show it" versus "nothing repeats", which is exactly the sentence that must not
+  //   silently become the second one because the key moved table.
+  const repeats = obj.findings.filter(
+    (f) => ((isFilingChannelKey(f.key) ? echo.filing.byRuleKey.get(f.key) : echo.byPatternKey.get(f.key))?.length ?? 0) > 0,
+  ).length;
   const claim =
     repeats > 0
       ? `Also showing in ${plural(repeats, "other holding")} of yours — about what the rest of the market would suggest.`
@@ -1343,7 +1390,8 @@ function buildUG9(obj: ObjectState): ResolvedEntry | null {
 // UG2 (provisional), UG3 (stale prices), UG4 (unresolved holdings), UG10 (data older than cadence) are
 // NOT BUILT — each lacks its input, and a stub that never fires reads as a built entry:
 //   · UG2 needs `coverage.provisional`. The derived coverage has no provisional state, because the
-//     column it would come from (StockScoringState) has zero rows and no writer (Phase 3).
+//     column it would come from (StockScoringState) had zero rows and no writer, and the table was
+//     dropped outright on 2026-08-09.
 //   · UG3 needs `priceFreshness`, which ObjectState does not carry — adding a price read to the
 //     read-critical path is out of this build's scope.
 //   · UG4 needs `book.unresolvedHoldingsCount` AND a plausible match between an unmatched broker row
@@ -1434,7 +1482,7 @@ export const SLICE_DEGRADATIONS: Degradation[] = [
   { prerequisite: "fund_look_through", effect: "look-through is unavailable — UH5 can never fire; UG5 now states the limit on the card rather than leaving it silent" },
   // §Phase 5 — the four UG entries whose INPUT does not exist. Each names the missing input, not a
   // vague deferral, so the next builder knows exactly what unblocks it.
-  { prerequisite: "provisional_coverage_flag", effect: "no provisional column is populated (StockScoringState has 0 rows) — UG2 cannot fire" },
+  { prerequisite: "provisional_coverage_flag", effect: "no provisional column exists (score_stock_states was dropped 2026-08-09; it never held a row) — UG2 cannot fire" },
   { prerequisite: "price_freshness", effect: "ObjectState carries no priceFreshness — UG3 (stale prices) cannot fire" },
   { prerequisite: "unresolved_holdings_detail", effect: "ReaderBook carries no unresolved-broker-row detail — UG4 cannot claim 'you may hold more than we can see'" },
   { prerequisite: "refresh_cadence", effect: "no expected-cadence definition is published per snapshot type — UG10 cannot judge staleness" },
@@ -1520,13 +1568,25 @@ export function buildEntries(
     cap,
     header,
     negatives: buildNegatives(ctx, obj, mode),
-    // §Phase 6 — the base-rate degradation is RUNTIME, not a slice constant: it is declared only when
-    // the aggregate genuinely failed for THIS request, and only for a reader who has a book to echo
-    // against. Declaring it unconditionally would be a false statement about our coverage.
-    degradations:
-      ctx.book?.exists && rates === null
-        ? [...SLICE_DEGRADATIONS, { prerequisite: "universe_base_rates", effect: "the base-rate aggregate did not resolve for this request — the UE echo family was dropped whole rather than rendered with a missing number" }]
-        : SLICE_DEGRADATIONS,
+    // §Phase 6 — the echo degradations are RUNTIME, not slice constants: each is declared only when
+    // that substrate genuinely failed for THIS request, and only for a reader who has a book to echo
+    // against. Declaring either unconditionally would be a false statement about our coverage.
+    //
+    // ⚠ UE STANDS ON TWO SUBSTRATES, AND BOTH MUST BE ABLE TO SAY SO. This used to test `rates` only,
+    //   which left the OTHER half — ctx.echo, the reader's own book census — able to fail while the
+    //   card reported full coverage: buildEcho/buildUE5/UN6 all return empty on a null census, so the
+    //   family vanished and the degradation list still read clean. That is what made the 2026-08-02
+    //   reader-context.ts census failure invisible for seven days rather than merely broken. A
+    //   dropped family must always be able to name the thing that dropped it.
+    degradations: [
+      ...SLICE_DEGRADATIONS,
+      ...(ctx.book?.exists && rates === null
+        ? [{ prerequisite: "universe_base_rates", effect: "the base-rate aggregate did not resolve for this request — the UE echo family was dropped whole rather than rendered with a missing number" }]
+        : []),
+      ...(ctx.book?.exists && ctx.echo === null
+        ? [{ prerequisite: "book_finding_census", effect: "the reader's book-wide fired-finding census did not resolve for this request — the UE echo family and UN6 (shared with your pond) were dropped whole rather than rendered against an incomplete book" }]
+        : []),
+    ],
   };
 }
 

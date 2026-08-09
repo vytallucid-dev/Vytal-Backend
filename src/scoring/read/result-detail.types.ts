@@ -10,6 +10,8 @@
 // commentary — absent data is stated, never invented.
 
 import type { FindingsSection, LabelBand } from "./health-view.types.js";
+import type { BriefPayload } from "../../insight/quarter-brief/schema.js";
+import type { PersonalSection } from "../../insight/quarter-brief/personal.js";
 
 /** One quarter, unified across families (topline is family-appropriate). */
 export interface ViewerQuarter {
@@ -75,16 +77,44 @@ export interface MarketReaction {
   expectedTradingDays: number;
 }
 
+/**
+ * ⚠ NO `sentiment` FIELD, AND IT IS NOT AN OMISSION (removed 2026-08-09).
+ *
+ * This read-model used to carry `stock_news.sentiment` straight through, and the Context tab
+ * rendered it — unlabelled, next to the source and date, guarded only by `sentiment &&`. Nothing
+ * has ever written the column (0 of 30,083 rows), so it never appeared; the day anything wrote one
+ * it would have shipped a verdict onto a reader's screen with no announcement and no review.
+ *
+ * The decision is "no sentiment", not "sentiment later" — see the header of
+ * Vytal-Frontend/components/stock-detail/news.tsx for the full reasoning. The short form: a chip is
+ * not text, so the guardrail's evaluative tier cannot see it, and that tier's `attributed` flag is
+ * the only thing that makes a verdict acceptable. A field bypasses the scanner rather than being
+ * exempted from it.
+ *
+ * The COLUMN survives (a licensed source with real article text could justify revisiting the
+ * question); the PATH to a renderer does not. Do not re-add the field here.
+ */
 export interface ViewerNews {
   id: string;
+  /**
+   * ★ SERVED SO THE VIEWER CAN BRANCH ON THE STREAM RATHER THAN GUESS FROM A LABEL.
+   * The two streams are not symmetric — on a filing, `headline` is a type bucket and `summary` is the
+   * real content; on a press item, `headline` is the article title and `summary` is that same headline
+   * with the publisher appended (zero information). A renderer MUST switch on this field. Sniffing
+   * `source === "NSE Announcement"` would be a string coincidence, and comparing `summary` to
+   * `headline` is the value test that already shipped the duplicate once.
+   */
+  sourceType: "nse_announcement" | "google_news";
   headline: string;
+  /** Filing: the real excerpt (hero). Press: "{headline} {publisher}" — never render it. */
   summary: string | null;
   source: string;
   category: string | null;
+  /** Press only: the publisher's real host from the RSS `<source url>`. Null on older rows. */
+  publisherDomain: string | null;
   publishedAt: string; // ISO
   url: string | null;
   pdfUrl: string | null;
-  sentiment: string | null;
 }
 
 /** The stored Quarter in Brief for the VIEWED period. `available:false` covers three states that are
@@ -92,7 +122,15 @@ export interface ViewerNews {
  *  A brief is whole or absent — there is no partial. */
 export interface ViewerAi {
   available: boolean;
-  content: string | null;
+  /**
+   * ★ STAGE 5 — THE STRUCTURED PAYLOAD, NOT PROSE. `null` whenever `available` is false, and also on
+   * a stored row that predates the schema and does not parse (defence in depth: the migration marks
+   * those stale so this path should never see one).
+   *
+   * The frontend renders FROM THIS. There is no second formatting layer and no per-card variance —
+   * one renderer over one shape, which is the point of the stage.
+   */
+  payload: BriefPayload | null;
   /** The COMPUTED verdict. Rendered as a badge; never written by the model. */
   verdictKey: string | null;
   verdictLabel: string | null;
@@ -100,6 +138,15 @@ export interface ViewerAi {
   scoredAsOf: string | null;
   modelVersion: string | null;
   generatedAt: string | null;
+  /**
+   * ⚠⚠ SECTION 3 — COMPUTED AT READ TIME, PER READER, AND NEVER STORED.
+   *
+   * It is NOT part of BriefPayload and never will be: personal.ts's header explains that a field on
+   * the stored shape is exactly how a reader's position accidentally reaches a model. It is merged
+   * onto the RESPONSE, after the payload has been read from the database, and it is null for every
+   * anonymous reader and for every reader who neither holds nor watches this stock.
+   */
+  personal: PersonalSection | null;
 }
 
 export interface ViewerCorpEvent {

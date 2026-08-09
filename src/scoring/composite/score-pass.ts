@@ -25,7 +25,12 @@
 
 import { Prisma } from "../../generated/prisma/client.js";
 import { prisma } from "../../db/prisma.js";
+import type { IndustryType as StockIndustryType } from "../../generated/prisma/client.js";
 import { loadFoundationStandalone, loadMomentumStandalone } from "../metrics/load.js";
+// ★ THE INDUSTRY-AWARE FILED-DATA RESOLVER — dispatches on Stock.industryType so a bank / NBFC /
+//   insurer's accounts come from the tables it actually files into, not from the non-financial ones
+//   it does not. Findings-path only; the scoring path above is untouched.
+import { loadFiledFinancials } from "../metrics/filed-load.js";
 import { loadBankingCtx } from "../metrics/banking-load.js";
 import { bankingSeriesForKey } from "../metrics/banking.js";
 import type { BankingCtx } from "../metrics/banking-types.js";
@@ -56,7 +61,7 @@ import { FLOW_BAND_VERSION } from "../ownership/flow-bands.js";
 import { fullInputsFingerprint, buildOwnershipScoreData, buildFlowCategoryRows, FLOW_BAND_CUTS } from "../ownership/persist.js";
 import { assembleComposite } from "./composite.js";
 import { bandMappingJson, BAND_MAPPING_VERSION } from "./label.js";
-import { COMPOSITE_SPEC_VERSION, snapshotInputsFingerprint, toScoreSnapshotRow, toR1RedFlagRow, type SnapshotFindingsEval } from "./persist.js";
+import { COMPOSITE_SPEC_VERSION, snapshotInputsFingerprint, toScoreSnapshotRow, type SnapshotFindingsEval } from "./persist.js";
 import type { CompositeResult, Pillar, PillarInput } from "./types.js";
 // §2/§5 findings engine — the fire-and-persist contract. Hook runs AFTER composite
 // assembly (reads the assembled pillars/composite/trajectory), emitting fired findings.
@@ -70,7 +75,7 @@ import { notCoveredPatternKey } from "../../catalogue/not-covered.js";
 import { loadTrajectorySeries } from "../findings/trajectory/load-series.js";
 import { loadBandTypicalProfiles } from "../findings/composition/band-typical.js";
 import { applyPgDampening, type DampenReport } from "../findings/dampen.js";
-import type { FiredFinding, FiringContext } from "../findings/types.js";
+import { isFinancialIndustry, type FiredFinding, type FiringContext } from "../findings/types.js";
 // §5 THREE-LENS escalation — the LOUD lens-patterns (LM3/LM7/LP2/LP5) join the fired
 // set as findings-stream members (databank §5.2). Quiet ones stay payload-only.
 import { computeLensFindings, type LensAuditRow } from "../lens-patterns/lens-findings.js";
@@ -300,7 +305,7 @@ export interface ComputeOpts {
 }
 
 export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promise<PgComputed> {
-  const pgRow = await prisma.peerGroup.findFirst({ where: { name: ref.pgName }, include: { stocks: { include: { stock: { select: { id: true, symbol: true } } } } } });
+  const pgRow = await prisma.peerGroup.findFirst({ where: { name: ref.pgName }, include: { stocks: { include: { stock: { select: { id: true, symbol: true, industryType: true } } } } } });
   if (!pgRow) throw new Error(`computePgScores: PG '${ref.pgName}' not found`);
 
   // POINT-IN-TIME cutoff (backfill) — restricts every raw input to ≤ quarterEnd.
@@ -334,13 +339,16 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   const industry: IndustryType = canonicalMetric(fKeys[0] ?? mKeys[0] ?? "")?.industry ?? "non_financial";
 
   // Member set: DB roster, or a non-destructive symbol override (resolved directly).
-  let memberStocks: { id: string; symbol: string }[];
+  // `industryType` is the STOCK's own classification and is carried from here so the filed-data
+  // resolver below can key on it — see the note at `filedAnnual` in `Raw`.
+  type MemberStock = { id: string; symbol: string; industryType: StockIndustryType };
+  let memberStocks: MemberStock[];
   if (opts.rosterOverride && opts.rosterOverride.length) {
-    const found = await prisma.stock.findMany({ where: { symbol: { in: opts.rosterOverride } }, select: { id: true, symbol: true } });
+    const found = await prisma.stock.findMany({ where: { symbol: { in: opts.rosterOverride } }, select: { id: true, symbol: true, industryType: true } });
     const bySym = new Map(found.map((s) => [s.symbol, s]));
-    memberStocks = opts.rosterOverride.map((sym) => bySym.get(sym)).filter((s): s is { id: string; symbol: string } => !!s);
+    memberStocks = opts.rosterOverride.map((sym) => bySym.get(sym)).filter((s): s is MemberStock => !!s);
   } else {
-    memberStocks = pgRow.stocks.map((sp) => ({ id: sp.stock.id, symbol: sp.stock.symbol }));
+    memberStocks = pgRow.stocks.map((sp) => ({ id: sp.stock.id, symbol: sp.stock.symbol, industryType: sp.stock.industryType }));
   }
 
   // Per-member: raw daily/ownership (universal) + the live metric values + an L3
@@ -350,16 +358,36 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     stockId: string; symbol: string; daily: DailyClose[]; own: OwnershipQuarter[];
     foundation: MetricValue[]; momentum: MetricValue[]; snapshotFy: string | null; snapshotQuarter: string | null;
     seriesFor: (key: string, pillar: "foundation" | "momentum") => number[];
-    /** Standalone quarterly rows (non-financial) — retained for the §5 findings hook
-     *  (P11/P12 read the OPM series). Empty for banks (OPM is not a banking metric). */
+    /** The STOCK's own industry classification (all five values) — distinct from the PG-level
+     *  `industry` path below, which only distinguishes the two bar sets that exist. */
+    stockIndustry: StockIndustryType;
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // ★ TWO SETS OF ROWS, AND THE SEPARATION IS LOAD-BEARING.
+    //
+    // `fRows` / `qRows` are the SCORING-PATH rows: the non-financial standalone tables, loaded on
+    // the PEER GROUP's industry path. They feed the guardrail gate (runScoringGate reads `fRows`,
+    // and an O2 suppression removes a value from the peer CROSS-SECTION — so these rows can move a
+    // SCORE). They are untouched by the filed-data work and must stay that way.
+    //
+    // `filedAnnual` / `filedQuarterly` are the FILING-PATH rows: resolved on the STOCK's own
+    // industryType by metrics/filed-load.ts, from whichever of the nine tables that industry
+    // actually files into. They feed the FiringContext and nothing else. For a non-financial stock
+    // they are the SAME rows as fRows/qRows (the resolver delegates to the same loaders), which is
+    // what makes this change provably score-neutral for the scored universe.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    /** Standalone quarterly rows (non-financial tables, PG-path). Empty for a banking PG. */
     qRows: MomentumQuarter[];
-    /** Standalone annual rows (non-financial) — §5 findings hook (R4 D/E history, P8
-     *  receivables). Empty for banks (these annual rules are non-financial). */
+    /** Standalone annual rows (non-financial tables, PG-path). Empty for a banking PG.
+     *  ⚠ ALSO THE GUARDRAIL GATE'S INPUT — see the block comment above. */
     fRows: FoundationAnnual[];
+    /** Filed ANNUAL accounts from the stock's own industry tables (§findings only). */
+    filedAnnual: FoundationAnnual[];
+    /** Filed QUARTERLY accounts from the stock's own industry tables (§findings only). */
+    filedQuarterly: MomentumQuarter[];
   }
   const raws: Raw[] = [];
   for (const ms of memberStocks) {
-    const id = ms.id, symbol = ms.symbol;
+    const id = ms.id, symbol = ms.symbol, stockIndustry = ms.industryType;
     const daily = (await prisma.dailyPrice.findMany({ where: { stockId: id, ...(cutoff ? { date: { lte: cutoff } } : {}) }, orderBy: { date: "asc" }, select: { date: true, close: true } })).map((d) => ({ date: d.date, close: Number(d.close) }));
     const sh = await prisma.shareholdingPattern.findMany({ where: { stockId: id, ...(cutoff ? { asOnDate: { lte: cutoff } } : {}) }, orderBy: { asOnDate: "asc" }, select: { asOnDate: true, quarter: true, fiscalYear: true, promoterShares: true, totalShares: true, pledgedShares: true, promoterPct: true, fiiPct: true, diiPct: true, retailPct: true } });
     const own: OwnershipQuarter[] = sh.map((r) => ({ asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear, promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares, promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct) }));
@@ -391,7 +419,27 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       snapshotQuarter = d.status === "computed" ? d.snapshotQuarter : null;
       seriesFor = (key, pillar) => seriesForKey(fRows, qRows, key, pillar);
     }
-    raws.push({ stockId: id, symbol, daily, own, foundation, momentum, snapshotFy, snapshotQuarter, seriesFor, qRows: qRowsForFindings, fRows: fRowsForFindings });
+
+    // ── THE FILED-DATA RESOLVE (findings only; never the scoring path) ────────────────────────────
+    // Keyed on the STOCK's industryType, so a bank reads banking_fundamentals, an NBFC reads
+    // nbfc_fundamentals, and an insurer reads its IRDAI pair — instead of every one of them reading
+    // the non-financial tables it does not file into and receiving an empty array.
+    //
+    // ⚠ For a non-financial stock in a non-financial PG (430 of 504 stocks, and 83 of the 95 scored)
+    // the resolver's rows are the SAME OBJECTS already loaded above: the same query, the same order,
+    // reused rather than re-issued. That is deliberate — it costs no extra round-trip AND makes
+    // "byte-identical for the scored universe" true by construction rather than by comparison.
+    let filedAnnual: FoundationAnnual[], filedQuarterly: MomentumQuarter[];
+    if (stockIndustry === "non_financial" && industry !== "banking") {
+      filedAnnual = fRowsForFindings;
+      filedQuarterly = qRowsForFindings;
+    } else {
+      const filed = await loadFiledFinancials(id, stockIndustry, cutoff);
+      filedAnnual = filed.annual;
+      filedQuarterly = filed.quarterly;
+    }
+
+    raws.push({ stockId: id, symbol, stockIndustry, daily, own, foundation, momentum, snapshotFy, snapshotQuarter, seriesFor, qRows: qRowsForFindings, fRows: fRowsForFindings, filedAnnual, filedQuarterly });
   }
 
   const fSnap = raws[0]?.snapshotFy ?? "FY";
@@ -533,13 +581,26 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       // this period, ≤ cutoff, head-of-chain). Empty for a stock with no backfilled history.
       const priorSnapshots = await loadTrajectorySeries(m.stockId, periodKey, cutoff ?? null);
       const fctx: FiringContext = {
-        stockId: m.stockId, symbol: m.symbol, periodKey, asOfDate: asOf, industry, cutoff: cutoff ?? null,
+        // ★ `industry` IS THE STOCK'S OWN industryType, not the peer group's bar path. The two agree
+        //   for every scored stock today (83 non_financial in non-financial PGs, 12 banking in
+        //   banking PGs), but they answer different questions, and only the stock's own answer can
+        //   name nbfc / life_insurance / general_insurance — the three a rule guard could not say
+        //   before. See FiringContext.industry and isFinancialIndustry in findings/types.ts.
+        stockId: m.stockId, symbol: m.symbol, periodKey, asOfDate: asOf, industry: r.stockIndustry, cutoff: cutoff ?? null,
         current: { composite: m.composite.composite, labelBand: m.composite.labelBand, pillars: pillarMapOf(m.composite) },
         priorSnapshots,
         shareholding: r.own,
-        annualFundamentals: r.fRows,
-        quarterlyOpm: industry === "banking" ? null : (r.qRows.length ? opmSeriesFromQuarters(r.qRows) : null),
-        quarterlyResults: r.qRows,
+        annualFundamentals: r.filedAnnual,
+        // ⚠ THE OPM GATE MOVES FROM THE PG PATH TO THE STOCK'S OWN INDUSTRY, and for the same reason
+        //   the rule guards did. P11/P12 carry NO industry guard of their own — they were kept off
+        //   banks solely by this line and off the other three financial industries only by the
+        //   accident of an empty array. Now that filed-load.ts serves those stocks real quarters,
+        //   the exclusion has to be stated. It is honest either way: filed-load returns
+        //   `operatingProfitStored: null` for all four (an operating line that adds back a lender's
+        //   interest is not an operating line), so the series would be empty regardless — this makes
+        //   the intent explicit instead of relying on that.
+        quarterlyOpm: isFinancialIndustry(r.stockIndustry) ? null : (r.filedQuarterly.length ? opmSeriesFromQuarters(r.filedQuarterly) : null),
+        quarterlyResults: r.filedQuarterly,
         daily: r.daily,
         feeds: feedsByStock.get(m.stockId) ?? NO_FEEDS,
         sectorClass: sectorClassByStock.get(m.stockId) ?? null, // seeded sector→class (§2 Line 2 / F1)
@@ -807,7 +868,7 @@ export interface MemberWriteResult {
   composite: number | null;
   band: string | null;
   marketState: "scored" | "unavailable_redistributed" | "none";
-  r1Written: boolean;
+
   pillarIds: Partial<Record<Pillar, string>>;
   /** LAYER-1 audit rows written for this member. -1 ⇒ the gate did not run for this
    *  pass (distinct from 0 = "ran, nothing fired"). Makes "was this snapshot
@@ -996,7 +1057,7 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
   // Detections still persist — the gate ran and saw something real.
   if (m.composite.state !== "scored" || m.composite.composite === null) {
     const ge = await writeGuardrailFor(null);
-    return { symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: null, band: null, marketState: m.market ? m.market.state : "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: ge };
+    return { symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: null, band: null, marketState: m.market ? m.market.state : "none", pillarIds: {}, guardrailEventsWritten: ge };
   }
 
   // Skip-identical at the snapshot level (ruling 3), compared against the LIVE snapshot.
@@ -1013,7 +1074,7 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
     // THE FIX: the score did not move, but the detection is still recorded. snapshotId is
     // NULL here on purpose — liveSnap exists but was NOT screened by this run.
     const ge = await writeGuardrailFor(null);
-    return { symbol: m.symbol, action: "skipped_identical", version: liveSnap.version, superseded: false, snapshotId: liveSnap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market ? m.market.state : "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: ge };
+    return { symbol: m.symbol, action: "skipped_identical", version: liveSnap.version, superseded: false, snapshotId: liveSnap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market ? m.market.state : "none", pillarIds: {}, guardrailEventsWritten: ge };
   }
 
   // PG-level peer μ/σ rows (score_peer_stats) — get-or-created once per (PG, metric, run,
@@ -1049,11 +1110,21 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
   if (liveSnap) { snapRow.version = liveSnap.version + 1; snapRow.supersedesId = liveSnap.id; } // append-only supersede: chain from the live (highest) version → v1→v2→v3…
 
   const snap = await db.scoreSnapshot.create({ data: snapRow, select: { id: true } });
-  let r1Written = false;
-  if (ownership.r1Fired) {
-    await db.redFlag.create({ data: toR1RedFlagRow(snap.id, m.composite, ownership.r1Triggering) });
-    r1Written = true;
-  }
+  // ── ★ R1's DEDICATED score_red_flags WRITE IS GONE (step 4) ────────────────────────────────────
+  // It stood here for the whole life of the scoring pass and was the reason a pledging fact could
+  // only exist for a stock that had been scored. R1 is a registered filing rule now
+  // (findings/rules/r1-pledging.ts) writing to stock_findings for all 504, and the three consumers
+  // that kept this alive have moved with it: alerts (eval-pass + finding-catalog) and the portfolio's
+  // PS1. The dual write introduced in step 2 was explicitly temporary and this is the step it died in.
+  //
+  // ⚠ WITH THIS GONE, NOTHING WRITES score_red_flags AT ALL. Every red-flag rule (R1…R6) is a filing
+  // rule; SCORING_RULES registers none, so findings/persist.ts's red-flag branch is unreachable from
+  // the scoring pass. The table keeps its 215 rows as history and is read-suppressed on the card
+  // surfaces (filing/channel.ts) — it is not dropped, and nothing here depends on it being empty.
+  //
+  // R1's FIRING is still recorded on OwnershipScore (r1Fired + r1TriggeringValues, ownership/
+  // persist.ts) — that is the Ownership pillar's own record of its own observation, keyed to the
+  // pillar row rather than to a snapshot, and it is untouched.
 
   // ── §2/§5 FINDINGS PERSIST — UNCONDITIONAL, and that is the fix ────────────────────────────────
   // This used to sit behind opts.writeFindings (default OFF). A caller that created a snapshot and
@@ -1094,5 +1165,5 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
   // Snapshot WAS created by this run, so snapshotId is set — real provenance.
   const guardrailEventsWritten = await writeGuardrailFor(snap.id);
 
-  return { symbol: m.symbol, action: "created", version: snapRow.version, superseded: !!liveSnap, snapshotId: snap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market.state, r1Written, pillarIds: pillarScoreIds, guardrailEventsWritten };
+  return { symbol: m.symbol, action: "created", version: snapRow.version, superseded: !!liveSnap, snapshotId: snap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market.state, pillarIds: pillarScoreIds, guardrailEventsWritten };
 }

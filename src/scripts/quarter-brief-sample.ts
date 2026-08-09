@@ -156,15 +156,19 @@ async function main(): Promise<void> {
     }
     totalPrompt += res.promptTokens ?? 0;
     totalOutput += res.outputTokens ?? 0;
-    console.log(res.text);
+    // ★ THE AUTHORED TEXT IS THE BULLETS. Everything else in the payload is a display string
+    // the backend rendered; printing that back would report the fact block, not the generation.
+    const authored: string[] = res.payload.takeaway.bullets;
+    for (const b of authored) console.log(`   - ${b}`);
 
-    const g = scanExplanationText(res.text);
+    const joined = authored.join(" ");
+    const g = scanExplanationText(joined);
     if (g.softHits.length || g.evaluativeHits.length) {
       console.log(`\n   [tiers] soft=${g.softHits.length} evaluative=${g.evaluativeHits.length}`);
       for (const h of g.softHits) console.log(`     SOFT  ${h.term}: "${h.match}" — ${h.context}`);
       for (const h of g.evaluativeHits) console.log(`     EVAL  ${h.term}: "${h.match}"`);
     }
-    const om = omissions(facts, res.text);
+    const om = omissions(facts, joined);
     omissionCount += om.length;
     if (om.length) for (const o of om) console.log(`   ⚠ OMISSION: ${o}`);
   }

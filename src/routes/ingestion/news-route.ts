@@ -4,13 +4,25 @@
 // POST /api/admin/news/trigger        — run daily ingest
 // POST /api/admin/news/extract        — run extraction worker
 // POST /api/admin/news/backfill       — historical backfill
+//
+// ── ⚠ GET /api/news/:symbol/:newsId IS GONE (removed 2026-08-09) ────────────
+// It threw PrismaClientValidationError on every call — its handler `include`d an
+// `aiSummaries` relation that stopped existing when ai_summaries was dropped, so the
+// route had been a guaranteed 500 ever since. It had no caller in either repo.
+//
+// ★ WHY THE BUILD NEVER CAUGHT IT, because the same trap is still open elsewhere:
+// Prisma's `SelectSubset<T, U>` maps only the TOP-LEVEL arg keys (`where`, `include`,
+// `select`) against the args type. `include`'s VALUE is passed through as inferred from
+// the call site, so it is never checked against `StockNewsInclude` — an unknown relation
+// key nested inside `include`/`select` is invisible to tsc and fails only at runtime.
+// `tsc --noEmit --incremental false` was exit 0 with this bug live.
+// A scan of all 79 `include:` blocks in src/ found this as the ONLY occurrence.
 // ─────────────────────────────────────────────────────────────
 
 import { Router } from "express";
 
 import {
   getNewsBySymbol,
-  getNewsBySymbolAndId,
   getNewsFetchLogs,
   getTodayNewsFeed,
   triggerContentExtractionWorker,
@@ -36,11 +48,6 @@ newsRouter.get("/feed/today", getTodayNewsFeed);
 // ── GET /api/news/:symbol ─────────────────────────────────────
 
 newsRouter.get("/:symbol", getNewsBySymbol);
-
-// ── GET /api/news/:symbol/:newsId ─────────────────────────────
-// Single news item with full content (for AI summary page)
-
-newsRouter.get("/:symbol/:newsId", getNewsBySymbolAndId);
 
 // ── Admin routes ──────────────────────────────────────────────
 

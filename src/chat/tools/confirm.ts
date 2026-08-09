@@ -175,6 +175,13 @@ export const confirmPendingActionTool: ChatTool<Record<string, never>> = {
       ctx.effects.add(CHANGE_DOMAIN_BY_KIND[proposal.kind]);
       return {
         ok: true,
+        // ★ THE SAME FACT, RECORDED TWICE ON PURPOSE — AND THE SECOND COPY IS THE DURABLE ONE.
+        //   `ctx.effects` above is read by the controller when THIS request answers, and dies with it.
+        //   `effects` here is written into the persisted tool turn, so the write is still discoverable
+        //   afterwards: by a client recovering a reply whose response it never received, and by the edit
+        //   preflight, which must warn about a confirmed transaction it is about to delete the record of.
+        //   None of those callers can re-read `ctx`, and none of them should be parsing the prose below.
+        effects: [CHANGE_DOMAIN_BY_KIND[proposal.kind]],
         content: [
           "=== DONE — THIS HAS NOW BEEN WRITTEN ===",
           `Action: ${proposal.summary}`,

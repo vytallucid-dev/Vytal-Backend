@@ -22,7 +22,7 @@
 //
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { MomentumQuarter } from "../../metrics/types.js";
 
 export const N4_MIN_RISES = 2;      // ≥2 consecutive TTM rises
@@ -47,8 +47,8 @@ function ttmICat(rows: MomentumQuarter[], i: number): TtmResult {
   return { ok: true, ic: (sumPbt + sumInt) / sumInt };
 }
 
-export const ruleN4: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of R5)
+export const ruleN4: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of R5)
   const rows = [...ctx.quarterlyResults].sort((a, b) => a.qOrdinal - b.qOrdinal);
   const last = rows.length - 1;
 

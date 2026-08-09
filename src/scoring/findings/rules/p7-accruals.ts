@@ -25,14 +25,14 @@
 // is exceptional-driven. (This is the guard P11 couldn't have — P7 is annual, the grain fits.)
 
 import { annualExceptionalLatest } from "../guards/annual-exceptional.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 
 export const P7_CASH_BACK_MAX = 0.50; // OCF < 50% of NP — a SEVERE divergence (half of profit
 // unbacked by operating cash) worthy of a Red −8. 0.70 fired on routine working-capital timing
 // (15 names); 0.50 isolates the severe cases incl. negative-OCF. FLAG: provisional, not in File 1.
 
-export const ruleP7: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null;
+export const ruleP7: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // OCF-vs-NP does not transfer to a lender/insurer
   const f = ctx.annualFundamentals;
   if (f.length < 2) return notEvaluable("insufficient_annual_history"); // ⚠ Phase 2: depth gate, not a false
   const sorted = [...f].sort((a, b) => a.fyOrdinal - b.fyOrdinal);

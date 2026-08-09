@@ -15,17 +15,20 @@
 //       no PHS to chart, so it records nothing — a correct absence, not an error.
 // ─────────────────────────────────────────────────────────────────────────────
 import { prisma } from "../../db/prisma.js";
+import { istDateOnly } from "../../lib/ist-date.js";
 import type { PersistOutcome } from "./persist.js";
 
 /** Today's calendar date in IST (Asia/Kolkata, UTC+5:30) as a `@db.Date`-ready Date at UTC
  *  midnight. The series is an India-market graph, so the "day" a value belongs to is the IST
  *  trading day — using the raw UTC date would misfile a compute that lands between 00:00 UTC
- *  and 05:30 IST onto the previous day. Deterministic fixed offset (India observes no DST). */
-export function istDateOnly(now: Date = new Date()): Date {
-  const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
-  const ist = new Date(now.getTime() + IST_OFFSET_MS);
-  return new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
-}
+ *  and 05:30 IST onto the previous day. Deterministic fixed offset (India observes no DST).
+ *
+ *  ⚠ THE DEFINITION MOVED to src/lib/ist-date.ts and is re-exported here so this module stays the
+ *  import path it has always been. It moved because this file imports `prisma`, and a caller that
+ *  wanted only the offset maths inherited a DB-client import through it — which a `verify:copy`
+ *  build gate is not allowed to do undeclared (verify-build-gate-hygiene.ts). One definition, two
+ *  import paths, no copy. */
+export { istDateOnly };
 
 /**
  * Best-effort daily score-history upsert. `outcome` is the return of the just-run

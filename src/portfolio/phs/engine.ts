@@ -220,6 +220,25 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
   // untouched; only Signals' weight DENOMINATOR is corrected to match its sibling's. By
   // construction the weight vector can now never move Health — Quality renormalizes, Signals
   // renormalizes — so §13's contamination guard is enforced by SYMMETRY, not by exclusion.
+  // ★ STEP 4 — THE SIGNALS DENOMINATOR IS "CAPITAL THAT CAN CARRY A FINDING", WHICH IS NO LONGER
+  //   THE SAME SET AS "SCORED".
+  //
+  // The block above is right that a finding's weight belongs among the businesses we know. Until now
+  // "the businesses we know" and "the businesses we scored" were the same 95 names, so ΣwScored said
+  // both things at once. The filing pass ended that: every stock has a findings channel, so a red flag
+  // can fire on an UNSCORED holding — 360ONE is held, unscored, and pledging 90% of the promoter stake.
+  //
+  // Leaving the denominator at ΣwScored would put that holding's weight in the numerator and not in
+  // the denominator: wSig could exceed 1 (an unscored stock heavier than the whole scored book), the
+  // per-holding clamp scales with wSig so it would not bound it, and Σ wSig over flagged names would
+  // stop being a share of anything. So the denominator moves to the population that can actually
+  // contribute a term — every STOCK, scored or not. Funds, ETFs, bonds and gilts stay out: they carry
+  // no findings, exactly as before, and holding ₹90L of gilt still cannot make a flag less true.
+  //
+  // ⚠ IDENTICAL ON ANY BOOK WHOSE STOCKS ARE ALL SCORED — the two sums are then the same number, term
+  //   for term. It differs only where a book holds an unscored stock, which is precisely the case that
+  //   had no defined answer before.
+  const sumWSignals = holdings.reduce((s, h, i) => (h.assetClass === "stock" ? s + w[i] : s), 0);
   const signalsLedger: SignalsDeduction[] = [];
   let signalsDed = 0;
   holdings.forEach((h, i) => {
@@ -239,9 +258,10 @@ export function computePhs(holdings: PhsHolding[]): PhsResult {
     // i.e. the first fired finding in h.findings order — so which finding wins is UNCHANGED; the
     // entry now merely names it.
     const winner = candidates.reduce((a, b) => (b.base > a.base ? b : a));
-    // scored-renormalized weight (see the block header). Findings fire ONLY on scored holdings, so
-    // this holding is always inside ΣwScored and wSig is well-defined (never a divide-by-zero).
-    const wSig = sumWScored > 0 ? w[i] / sumWScored : 0;
+    // Renormalized over the finding-capable book (see the block above). A holding only reaches this
+    // line by having fired a finding, and only a stock can, so it is always inside ΣwSignals — wSig is
+    // well-defined, never a divide-by-zero, and never greater than 1.
+    const wSig = sumWSignals > 0 ? w[i] / sumWSignals : 0;
     const points = Math.min(winner.base * wSig, K.SIG_HOLDING_CAP * wSig); // clamp per-holding
     signalsDed += points;
     signalsLedger.push({

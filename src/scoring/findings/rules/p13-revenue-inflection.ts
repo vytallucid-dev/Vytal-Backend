@@ -19,7 +19,7 @@
 // implemented faithfully and returns null on insufficient depth (a needs-data outcome, not
 // a silent gap).
 
-import type { FireRule, FiringContext } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule, type FilingContext } from "../types.js";
 import type { MomentumQuarter } from "../../metrics/types.js";
 
 export const P13_INFLECTION_PP = 5; // |Δ TTM growth| ≥ 5pp to be a material inflection — FLAG: provisional
@@ -43,8 +43,8 @@ function ttmYoyGrowth(rows: MomentumQuarter[], i: number): number | null {
   return (cur / base - 1) * 100;
 }
 
-export const ruleP13: FireRule = (ctx: FiringContext) => {
-  if (ctx.industry === "banking") return null;
+export const ruleP13: FilingRule = (ctx: FilingContext) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // "revenue" is a different quantity in each financial taxonomy
   const rows = [...ctx.quarterlyResults].sort((a, b) => a.qOrdinal - b.qOrdinal);
   const last = rows.length - 1;
   const latestG = ttmYoyGrowth(rows, last);

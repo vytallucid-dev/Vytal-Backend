@@ -25,6 +25,7 @@ import { anonymousContext } from "../relational/reader-context.js";
 import { scanAssembled } from "../relational/copy.js";
 import type { BaseRateSnapshot } from "../relational/base-rates.js";
 import type { ReaderContext, ObjectState, ObjectFinding, ReaderHolding, RelationalState } from "../relational/types.js";
+import { EMPTY_FILING_ECHO } from "../relational/constants.js";
 
 let pass = 0, fail = 0;
 const ok = (name: string, cond: boolean, extra = "") => {
@@ -80,7 +81,7 @@ const reader = (over: Partial<ReaderContext> = {}): ReaderContext => ({
   watchlist: { exists: false, count: 0, thisAddedAt: null, peersInPeerGroup: [] },
   attention: NO_ATTN,
   neighbourhood: { pgWeightPct: 0, pgHeld: [], pgSize: 9, sectorWeightPct: 0, sectorHeldCount: 0 },
-  echo: { scoredHoldingsCount: 8, byPatternKey: new Map() },
+  echo: { scoredHoldingsCount: 8, byPatternKey: new Map(), filing: EMPTY_FILING_ECHO() },
   delta: NO_DELTA,
   ...over,
 });
@@ -90,14 +91,18 @@ const holder = (over: Partial<ReaderContext> = {}) => reader({
   ...over,
 });
 
+const AS_OF = new Date("2026-07-27T00:00:00.000Z");
+// ★ EACH FIXTURE RATE NOW DECLARES ITS POPULATION (step 5). H and N1 are FILING rules, so their
+//   denominators are the populations their rules evaluated in — not the 95 scored stocks — and the
+//   fixture says so rather than quietly reusing the scored count for all four.
 const RATES: BaseRateSnapshot = {
   rates: new Map([
-    ["foundation_C1_divergence", { patternKey: "foundation_C1_divergence", firedInUniverse: 10, universeCount: 95, expectedShare: 0.105 }],
-    ["trajectory_B_deterioration", { patternKey: "trajectory_B_deterioration", firedInUniverse: 38, universeCount: 95, expectedShare: 0.4 }],
-    ["ownership_H_block_events", { patternKey: "ownership_H_block_events", firedInUniverse: 13, universeCount: 95, expectedShare: 0.137 }],
-    ["foundation_N1_cash_backed_earnings", { patternKey: "foundation_N1_cash_backed_earnings", firedInUniverse: 5, universeCount: 95, expectedShare: 0.05 }],
+    ["foundation_C1_divergence", { patternKey: "foundation_C1_divergence", population: "scored" as const, firedInUniverse: 10, universeCount: 95, expectedShare: 0.105, asOfDate: AS_OF }],
+    ["trajectory_B_deterioration", { patternKey: "trajectory_B_deterioration", population: "scored" as const, firedInUniverse: 38, universeCount: 95, expectedShare: 0.4, asOfDate: AS_OF }],
+    ["ownership_H_block_events", { patternKey: "ownership_H_block_events", population: "filing" as const, firedInUniverse: 20, universeCount: 504, expectedShare: 0.0397, asOfDate: AS_OF }],
+    ["foundation_N1_cash_backed_earnings", { patternKey: "foundation_N1_cash_backed_earnings", population: "filing" as const, firedInUniverse: 3, universeCount: 16, expectedShare: 0.1875, asOfDate: AS_OF }],
   ]),
-  universeCount: 95, asOfDate: new Date("2026-07-27T00:00:00.000Z"), computedAt: NOW,
+  universeCount: 95, asOfDate: AS_OF, computedAt: NOW,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -182,7 +187,7 @@ section("6 · UD1 — SYNTHETIC (⚠ unverifiable on live data: no reader has a 
   const delta = { evaluable: true, since: daysAgo(20), sinceLabel: "July 2026", lastSeenGeneration: "gen-old",
     newSnapshotSinceLastLook: true, newlyStandingKeys: [HIGH.key], clearedKeys: [], lastSeenBand: null };
   const ctx = holder({ delta, attention: { ...NO_ATTN, hasHistory: true, viewCount: 3, lastViewedAt: daysAgo(20) },
-    echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[HIGH.key, ["A", "B", "C", "D"]]]) } });
+    echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[HIGH.key, ["A", "B", "C", "D"]]]), filing: EMPTY_FILING_ECHO() } });
   const s = composeRelationalState(ctx, obj({ findings: [HIGH] }), NOW, RATES);
   const ud1 = [...s.slots, ...s.overflow].find((x) => x.entryId.startsWith("UD1:"));
   ok("echo annotation merges into UD1 (host precedence UD1 → UO6 → ELEVATED)",
@@ -222,7 +227,7 @@ section("8 · UG9 — SYNTHETIC (⚠ unverifiable live: the evaluability column 
 
 section("9 · ECHO (§3.5) — both numbers, framing switch, no clock-events, no positive echo");
 {
-  const ctx = reader({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[MEDIUM.key, ["A", "B", "C", "D"]]]) } });
+  const ctx = reader({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[MEDIUM.key, ["A", "B", "C", "D"]]]), filing: EMPTY_FILING_ECHO() } });
   const s = composeRelationalState(ctx, obj({ findings: [MEDIUM] }), NOW, RATES);
   const host = [...s.slots, ...s.overflow].find((x) => x.entryId === `ELEVATED:${MEDIUM.key}`);
   ok("echo renders BOTH numbers (book count AND universe count)",
@@ -231,20 +236,20 @@ section("9 · ECHO (§3.5) — both numbers, framing switch, no clock-events, no
 }
 {
   // expectedShare 0.4 ≥ 0.30 ⇒ UE6 environmental framing, never suppression.
-  const ctx = reader({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[HIGH.key, ["A", "B", "C", "D", "E"]]]) } });
+  const ctx = reader({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[HIGH.key, ["A", "B", "C", "D", "E"]]]), filing: EMPTY_FILING_ECHO() } });
   const s = composeRelationalState(ctx, obj({ findings: [HIGH] }), NOW, RATES);
   const host = [...s.slots, ...s.overflow].find((x) => x.entryId === `ELEVATED:${HIGH.key}`);
   ok("a high-base-rate high-share co-occurrence resolves (UE6), never nothing",
     Boolean(host && /across much of the market/.test(host.claim)), host?.claim.slice(0, 140));
 }
 {
-  const ctx = reader({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[CLOCK.key, ["A", "B", "C", "D"]]]) } });
+  const ctx = reader({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[CLOCK.key, ["A", "B", "C", "D"]]]), filing: EMPTY_FILING_ECHO() } });
   const s = composeRelationalState(ctx, obj({ findings: [CLOCK] }), NOW, RATES);
   ok("⚠ NO echo on a CLOCK_EVENT key (a time window is not a book trait)",
     !claims(s).join(" ").includes("of your 8 scored holdings"));
 }
 {
-  const ctx = holder({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[POSITIVE.key, ["A", "B", "C", "D"]]]) } });
+  const ctx = holder({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[POSITIVE.key, ["A", "B", "C", "D"]]]), filing: EMPTY_FILING_ECHO() } });
   const s = composeRelationalState(ctx, obj({ findings: [POSITIVE] }), NOW, RATES);
   ok("⚠ NO positive echo (Part IX·18 — never judges the reader's selection)",
     !/of your 8 scored holdings/.test(claims(s).join(" ")));
@@ -266,7 +271,7 @@ section("10 · UO6 (§3.1) — never manufactured from an absence of flags");
 section("11 · THE BOUNDARY (Part IX) — over ASSEMBLED output, every register");
 {
   const cases: RelationalState[] = [
-    composeRelationalState(holder({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[MEDIUM.key, ["A", "B", "C", "D"]]]) } }), obj({ findings: [CRITICAL, HIGH, MEDIUM, CLOCK, POSITIVE] }), NOW, RATES),
+    composeRelationalState(holder({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[MEDIUM.key, ["A", "B", "C", "D"]]]), filing: EMPTY_FILING_ECHO() } }), obj({ findings: [CRITICAL, HIGH, MEDIUM, CLOCK, POSITIVE] }), NOW, RATES),
     composeRelationalState(reader(), obj({ findings: [CRITICAL] }), NOW, RATES),
     composeRelationalState(anonymousContext(), obj({ findings: [HIGH] }), NOW, null),
   ];
@@ -291,7 +296,7 @@ section("11 · THE BOUNDARY (Part IX) — over ASSEMBLED output, every register"
 
 section("12 · ONE CLAIM, ONE OWNER — no fact stated twice on one card");
 {
-  const ctx = holder({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[MEDIUM.key, ["A", "B", "C", "D"]]]) },
+  const ctx = holder({ echo: { scoredHoldingsCount: 8, byPatternKey: new Map([[MEDIUM.key, ["A", "B", "C", "D"]]]), filing: EMPTY_FILING_ECHO() },
     neighbourhood: { pgWeightPct: 33, pgHeld: [{ stockId: "stk-1", symbol: "ACME", name: "Acme Industries", isThisObject: true }], pgSize: 9, sectorWeightPct: 33, sectorHeldCount: 1 } });
   const s = composeRelationalState(ctx, obj({ findings: [CRITICAL, HIGH, MEDIUM] }), NOW, RATES);
   ok("no two slots render the identical claim string", new Set(slotClaims(s)).size === slotClaims(s).length);

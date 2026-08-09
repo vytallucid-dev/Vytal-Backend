@@ -25,11 +25,11 @@
 
 import { isDistortedOpm } from "../guards/exceptional-opm.js";
 import { annualExceptionalLatest } from "../guards/annual-exceptional.js";
-import { notEvaluable, type FireRule, type QuarterlyOpmPoint } from "../types.js";
+import { notEvaluable, type FilingRule, type QuarterlyOpmPoint } from "../types.js";
 
 export const P12_MIN_RISES = 2;
 
-export const ruleP12: FireRule = (ctx) => {
+export const ruleP12: FilingRule = (ctx) => {
   const series = ctx.quarterlyOpm;
   if (!series) return notEvaluable("opm_unavailable"); // ⚠ Phase 2
   if (series.length < P12_MIN_RISES + 1) return notEvaluable("insufficient_quarters"); // ⚠ Phase 2

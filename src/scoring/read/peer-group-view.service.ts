@@ -61,6 +61,12 @@ import { buildLensSeparation, SEPARATION_DOESNT_MEAN, type LensSeparationRow } f
 //   exactly one place (catalogue/lens-faces.ts §1e) and a second regex here is how the partition and
 //   the census start disagreeing about what a lens key is.
 import { faceIdOfLensKey } from "../../catalogue/lens-faces.js";
+// The three-lens separation section — the metric-level lens findings, re-cut by metric.
+import { buildLensSeparation, SEPARATION_DOESNT_MEAN, type LensSeparationRow } from "./lens-separation.js";
+// ★ THE COMPOSED KEY → FACE TRANSFORM, IMPORTED, NEVER RE-DERIVED. `lens_lm7_CASA` → "LM7" lives in
+//   exactly one place (catalogue/lens-faces.ts §1e) and a second regex here is how the partition and
+//   the census start disagreeing about what a lens key is.
+import { faceIdOfLensKey } from "../../catalogue/lens-faces.js";
 // THE shared lens primitive (used verbatim by the stock read — NOT reimplemented here).
 import { deriveLensTriplet } from "../lens-patterns/lens-states.js";
 import { lensPattern as computeLensPattern } from "../lens-patterns/lens-pattern.js";

@@ -39,6 +39,9 @@ import { rateFor, type BaseRateSnapshot } from "./base-rates.js";
 // ★ WHICH POPULATION A KEY BELONGS TO (step 5) — projected from FILING_REGISTRY, so the echo's two
 //   sides and the base rates cannot disagree about where a key's numbers are drawn from.
 import { isFilingChannelKey } from "../filing/channel.js";
+// ★ WHICH POPULATION A KEY BELONGS TO (step 5) — projected from FILING_REGISTRY, so the echo's two
+//   sides and the base rates cannot disagree about where a key's numbers are drawn from.
+import { isFilingChannelKey } from "../filing/channel.js";
 import type {
   ReaderContext,
   ObjectState,

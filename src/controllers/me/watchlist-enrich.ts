@@ -17,6 +17,16 @@
 // findings or `filingFindings.coverage.quietNote` saying which checks ran and which could not.
 //
 // The three-lens verdicts REUSE the exported lens-pattern
+// READ, never recomputed.
+//
+// ── ★ TWO FINDING CHANNELS, AND THE UNSCORED PIN NOW HAS ONE ─────────────────────────────────────
+// `findings` is score-derived and gated on the head snapshot: an unscored pin gets empty arrays,
+// which is correct for that channel and was ALSO the whole of what the row said. `filingFindings` is
+// the second channel — what the company FILED — and it is present on every pin. Empty arrays on an
+// unscored row read to a user as "nothing wrong here"; that row now carries either real filing
+// findings or `filingFindings.coverage.quietNote` saying which checks ran and which could not.
+//
+// The three-lens verdicts REUSE the exported lens-pattern
 // derivations (deriveLensTriplet / lensPattern / lensPillarPattern / verdict composers)
 // applied in-memory over the bulk-fetched metric rows — scoring is consumed, never
 // touched. Honest-empty: an unscored pin returns price + "not scored yet", never a

@@ -10,6 +10,12 @@
 // The metric count per card went from 2–4 to 12–24. Everything else in this file — the profit source,
 // the health section, the divergence, the gaps — is unchanged and was not touched by the swap.
 //
+// ── ★ STAGE 2 · THE SWAP ─────────────────────────────────────────────────────────────────────────
+// This file used to fetch through a fifteen-field `QRow` that flattened all five families. It now reads
+// `FamilyQuarter<F>` from family-rows.ts, whose `values` is a Record over that family's whole manifest.
+// The metric count per card went from 2–4 to 12–24. Everything else in this file — the profit source,
+// the health section, the divergence, the gaps — is unchanged and was not touched by the swap.
+//
 // ── FOUR RULES THIS FILE ENFORCES STRUCTURALLY ──────────────────────────────────────────────────────
 //
 // 1 · ★ NO BALANCE SHEET — SUPERSEDED AT STAGE 4, AND NARROWED RATHER THAN DROPPED. Every family's

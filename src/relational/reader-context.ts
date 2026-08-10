@@ -18,6 +18,7 @@
 
 import { prisma } from "../db/prisma.js";
 import { Prisma } from "../generated/prisma/client.js";
+import { Prisma } from "../generated/prisma/client.js";
 import { probeStockRelationship } from "../ai/insight/relationship.js";
 import { dropRetiredPatterns, retiredKeysSqlPredicate } from "../catalogue/retired-findings.js";
 // ★ NOT-COVERED SUPPRESSION (companion to boundary 8 of 9 below) — a persisted `notcovered_*` row

@@ -103,6 +103,5 @@ export const ruleD2: FireRule = (ctx) => {
       atTurnSectorExcessPct: -10.3,
       atTurnPositivePct: 22,
     },
-    metricRefs: ["market", "momentum"],
   };
 };

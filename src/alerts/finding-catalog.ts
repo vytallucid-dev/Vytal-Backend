@@ -11,7 +11,7 @@
 //   STATIC  — keys the rule engine emits as literals (src/scoring/findings/rules/**). Complete for the
 //             rule families, and available with no DB read. Includes ownership_R1_pledge, which is NOT
 //             a FireRule at all — it is written by the ownership persist path.
-//   LIVE    — DISTINCT keys present in score_patterns / score_red_flags right now. This is what adds
+//   LIVE    — DISTINCT keys present in score_patterns / stock_findings right now. This is what adds
 //             the THREE-LENS family: those keys are COMPOSED at runtime (`lens_${lens}_${metricKey}`,
 //             see lens-patterns/lens-findings.ts), so no static list can enumerate them — there are as
 //             many as there are lens × metric combinations that have ever fired.
@@ -68,16 +68,31 @@ export const STATIC_FINDING_KEYS: readonly StockFindingKey[] = STOCK_FINDING_KEY
 // key (chat/tools/alerts-write.ts), which a literal-tuple type would reject at the call site.
 export const RETIRED_FINDING_KEYS: readonly string[] = CATALOGUE_RETIRED_KEYS;
 
-/** STATIC ∪ LIVE, resolved once per turn by the caller's memo (it is two cheap DISTINCT scans). */
+/** STATIC ∪ LIVE, resolved once per turn by the caller's memo (it is three cheap DISTINCT scans).
+ *
+ *  ★ LIVE IS score_patterns ∪ stock_findings. The 22 filing rules write to stock_findings and no
+ *  longer to score_patterns. STATIC already covers them — they are catalogued keys, so
+ *  `STOCK_FINDING_KEYS` carries every one — but LIVE must see them too, for the same reason it
+ *  exists at all: it is the half that does not depend on a key having been remembered in a list. A
+ *  filing key missing from the vocabulary means an alert on it is refused as unknown, which is the
+ *  one failure this module was written to prevent. Asserted in scripts/verify-alert-vocabulary.ts.
+ *
+ *  ⚠ score_red_flags WAS A THIRD SOURCE HERE, dropped 2026-08-11. It contributed exactly four keys —
+ *  R1, R2, R5, R6 — and every one of them is a catalogued filing rule, so it is carried twice over
+ *  by STATIC and by the stock_findings scan below. Nothing left the vocabulary with it. */
 export async function loadFindingKeys(): Promise<Set<string>> {
   const keys = new Set<string>(STATIC_FINDING_KEYS);
   try {
-    const [patterns, flags] = await Promise.all([
+    const [patterns, filing] = await Promise.all([
       prisma.scorePattern.findMany({ distinct: ["patternKey"], select: { patternKey: true } }),
-      prisma.redFlag.findMany({ distinct: ["flagKey"], select: { flagKey: true } }),
+      prisma.stockFinding.findMany({ distinct: ["ruleKey"], select: { ruleKey: true } }),
     ]);
     for (const p of patterns) if (!isNotCoveredKey(p.patternKey)) keys.add(p.patternKey);
-    for (const f of flags) keys.add(f.flagKey);
+    // ⚠ stock_findings holds a row per rule per period INCLUDING not_fired and not_evaluable ones, and
+    //   that is exactly right here: "you can set an alert on this" must not depend on whether the
+    //   finding happens to be firing somewhere today. That is what makes the most-worth-setting alert
+    //   — the one on a thing that has never fired yet — configurable at all.
+    for (const r of filing) keys.add(r.ruleKey);
   } catch {
     // A failed live read degrades to the static list — narrower, never wider. Refusing a valid lens
     // key is a conversation; accepting an invented one is a permanently dead alert.

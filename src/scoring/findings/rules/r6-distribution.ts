@@ -10,12 +10,12 @@
 // as evidence so the UI verdict sentence has the real numbers.
 
 import { computeR6, R6_MIN_MOVE_PP } from "../../ownership/disturbances.js";
-import type { FireRule } from "../types.js";
+import type { FilingRule } from "../types.js";
 
 const signed = (x: number) => (x >= 0 ? `+${x.toFixed(2)}` : x.toFixed(2));
 const r2 = (x: number | null) => (x === null ? null : Math.round(x * 100) / 100); // clean evidence floats
 
-export const ruleR6: FireRule = (ctx) => {
+export const ruleR6: FilingRule = (ctx) => {
   const sh = ctx.shareholding;
   if (sh.length < 2) return null;
   // Score the snapshot's quarter = the latest shareholding row (point-in-time correct:
@@ -51,6 +51,5 @@ export const ruleR6: FireRule = (ctx) => {
         `Distribution pattern — promoter and FII both cut while retail absorbed, same quarter ` +
         `(promoter ${signed(r6.promoterDelta!)}pp, FII ${signed(r6.fiiDelta!)}pp, retail ${signed(r6.retailDelta!)}pp into ${curPk}).`,
     },
-    metricRefs: ["promoterPct", "fiiPct", "retailPct"],
   };
 };

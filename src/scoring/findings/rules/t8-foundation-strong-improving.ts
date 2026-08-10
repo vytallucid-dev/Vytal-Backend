@@ -94,6 +94,5 @@ export const ruleT8: FireRule = (ctx) => {
       sameDayPositivePct: 65,
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["foundation"],
   };
 };

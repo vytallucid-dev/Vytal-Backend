@@ -6,7 +6,9 @@
 //
 // pledgeRatio = pledgedShares ÷ promoterShares × 100, from COUNTS (the same discipline R1 uses;
 // the stored promoterPledged* percentage fields are corrupt and ignored). We reuse the engine's
-// computePledging so N7 and R1 never disagree on the ratio or on whether R1 breached.
+// computePledging so N7 and R1 never disagree on the ratio or on whether R1 breached. As of the
+// filing-pass build R1 is itself a rule (rules/r1-pledging.ts) reading that same helper, and the
+// "is R1 standing?" question below is answered by the shared `r1StandingAt` predicate.
 //
 // Trigger (Amendment §5): pledge ratio falling ≥10pp QoQ, OR crossing below 50% from above.
 // (10pp / 50% are SYMMETRIC with R1 — §2: do not loosen.)
@@ -21,7 +23,7 @@
 // │ N7's case. A fall that CLEARS a standing R1 (e.g. 60%→45%, or any crossing below 50%    │
 // │ from above) belongs to the flag-cleared finding (Family J), which owns dated            │
 // │ restorations. We detect "R1 standing in the prior quarter" by re-running the engine's   │
-// │ own R1 verdict on that quarter (computePledging(prior, priorPrior).r1Breach).           │
+// │ own R1 verdict on that quarter, via the shared `r1StandingAt(rows, idx)` predicate.     │
 // │                                                                                          │
 // │ ⚠️ KNOWN GAP, BY DESIGN: Family J does not exist yet. So a pledge fall that clears a     │
 // │ standing R1 currently produces NO card at all until J ships. That is deliberate         │
@@ -34,13 +36,20 @@
 //
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
-import { computePledging } from "../../ownership/pledging.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { computePledging, r1StandingAt } from "../../ownership/pledging.js";
+import { notEvaluable, type FilingRule } from "../types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const N7_QOQ_FALL_PP = 10; // pledge ratio falling ≥ 10pp QoQ (R1-symmetric)
-export const N7_RATIO_PCT = 50;   // OR crossing below 50% from above (R1-symmetric)
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.ownership_N7_pledge_release.facts;
 
-export const ruleN7: FireRule = (ctx) => {
+export const N7_QOQ_FALL_PP = FACTS.thresholds.qoqFallPp; // pledge ratio falling ≥ 10pp QoQ (R1-symmetric)
+export const N7_RATIO_PCT = FACTS.thresholds.ratioPct;   // OR crossing below 50% from above (R1-symmetric)
+
+export const ruleN7: FilingRule = (ctx) => {
   const rows = ctx.shareholding;
   if (rows.length < 2) return notEvaluable("insufficient_shareholding_history");
 
@@ -60,9 +69,13 @@ export const ruleN7: FireRule = (ctx) => {
 
   // ANTI-DOUBLE-COUNT: was R1 standing in the PRIOR quarter? If so, this fall CLEARS a standing
   // R1 → Family J's territory. N7 must not fire (KNOWN GAP: no card until J ships — see header).
-  const priorPrior = rows.length >= 3 ? rows[rows.length - 3] : null;
-  const priorStandingR1 = computePledging(prior, priorPrior).r1Breach;
-  if (priorStandingR1) return null;
+  //
+  // ★ ONE NAMED QUESTION, ONE ANSWER. This used to open-code the verdict —
+  // `computePledging(prior, priorPrior).r1Breach`, with the index arithmetic for `priorPrior` inline
+  // — which was correct but re-derived something R1 also derives. Now that R1 is a rule
+  // (rules/r1-pledging.ts) both ask `r1StandingAt` of the same helper, so "was R1 standing" has a
+  // single implementation and N7 no longer has to know how R1 decides.
+  if (r1StandingAt(rows, rows.length - 2)) return null;
 
   const r2 = (x: number) => Math.round(x * 100) / 100;
   return {
@@ -91,6 +104,5 @@ export const ruleN7: FireRule = (ctx) => {
         `Pledge release — the promoter's pledge ratio fell ${r2(fallPp).toFixed(2)}pp into ${cur.fiscalYear}${cur.quarter} ` +
         `(${r2(ratioQ1)}% → ${r2(ratioQ)}% of promoter holding), from a base that was not in pledging crisis.`,
     },
-    metricRefs: ["pledgedShares", "promoterShares"],
   };
 };

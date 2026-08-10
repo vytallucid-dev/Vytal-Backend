@@ -25,7 +25,7 @@ const PROOF_PGS: { ref: PgRef; expect: string }[] = [
 class Rollback extends Error {}
 
 async function main() {
-  const before = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const before = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log("════ STAGE-A FINDINGS PROOF (dry-run, rolled back) ════");
   console.log("BEFORE  score_red_flags:", before.rf, " score_patterns:", before.pat, "\n");
 
@@ -70,12 +70,12 @@ async function main() {
 
       // READBACK — only the rows we just wrote (the new keys) on these snapshots.
       console.log("\n   ── readback ──");
-      const rfs = await tx.redFlag.findMany({ where: { snapshotId: { in: writtenSnapIds }, flagKey: { in: ["R6_distribution"] } }, select: { symbol: true, flagKey: true, severity: true, tier: true, triggeringValues: true } });
+      const rfs: { symbol: string; flagKey: string; severity: string | null; tier: string; triggeringValues: unknown }[] = /* score_red_flags dropped 2026-08-11 */ [];
       for (const r of rfs) console.log(`   RED_FLAG  ${r.symbol.padEnd(11)} ${r.flagKey} sev=${r.severity} tier=${r.tier}\n      evidence=${JSON.stringify(r.triggeringValues)}`);
-      const pats = await tx.scorePattern.findMany({ where: { snapshotId: { in: writtenSnapIds } }, select: { symbol: true, patternKey: true, severity: true, direction: true, displayState: true, magnitude: true, evidence: true, metricRefs: true } });
-      for (const p of pats) console.log(`   PATTERN   ${p.symbol.padEnd(11)} ${p.patternKey} sev=${p.severity} dir=${p.direction} state=${p.displayState} mag=${p.magnitude}\n      evidence=${JSON.stringify(p.evidence)}\n      metricRefs=${JSON.stringify(p.metricRefs)}`);
+      const pats = await tx.scorePattern.findMany({ where: { snapshotId: { in: writtenSnapIds } }, select: { symbol: true, patternKey: true, severity: true, direction: true, displayState: true, magnitude: true, evidence: true } });
+      for (const p of pats) console.log(`   PATTERN   ${p.symbol.padEnd(11)} ${p.patternKey} sev=${p.severity} dir=${p.direction} state=${p.displayState} mag=${p.magnitude}\n      evidence=${JSON.stringify(p.evidence)}`);
 
-      const mid = { rf: await tx.redFlag.count(), pat: await tx.scorePattern.count() };
+      const mid = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await tx.scorePattern.count() };
       console.log(`\n   in-tx counts → score_red_flags: ${mid.rf} (+${mid.rf - before.rf})  score_patterns: ${mid.pat} (+${mid.pat - before.pat})`);
       throw new Rollback("intentional rollback");
     });
@@ -84,7 +84,7 @@ async function main() {
     console.log("   ⟲ transaction rolled back (intentional)\n");
   }
 
-  const after = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const after = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log("════ RESULT ════");
   console.log(`AFTER   score_red_flags: ${after.rf}  score_patterns: ${after.pat}`);
   console.log(`ZERO RESIDUE: ${after.rf === before.rf && after.pat === before.pat ? "✅ clean (counts == BEFORE)" : "❌ RESIDUE — counts changed!"}`);

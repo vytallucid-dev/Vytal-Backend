@@ -155,12 +155,28 @@ export const PLAIN_DENY_LIST = [
   { term: "so-it's-fine", re: /\bso it['’]?s fine\b/i, why: "plain-drift verdict" },
 ];
 
-/** BUSINESS-LEAD SCOPE (UO1 only) — ruled: the guard is over-broad against operational description.
- *  "Selling electricity", "diversified conglomerate" are what a company DOES, not instruction or
- *  prediction; FORWARD_DENY_LIST's bare "sell"/"buy"/"diversify" false-positives on them. UO1 gets its
- *  OWN narrow list — second-person instruction and explicit recommendation constructions only — instead
- *  of FORWARD_DENY_LIST. Not an exemption: "an attractive entry point at these levels" must still be
- *  caught, so the list still carries the advice-signaling words, just not the bare operational verbs. */
+/**
+ * THIRD-PERSON DESCRIPTIVE SCOPE — ruled over-broad against two different kinds of description that
+ * share the same shape: neither is instruction or prediction, and the shared vocabularies' bare verbs
+ * false-positive on both.
+ *
+ *   · UO1's business lead ("selling electricity", "diversified conglomerate") — what a company DOES.
+ *   · UO6's finding claim — the rule's OWN authored verdict, third-person, past-tense, about what the
+ *     COMPANY (or its owners) did: "FII trimmed", "promoters have increased their holding". §Phase-UO6
+ *     — caught live, wiring UO6 to the filing channel: `ownership_P1_clean_rotation`'s verdict says FII
+ *     "trimmed" its stake, PORTFOLIO_ADVICE_DENY_LIST denies bare "trim" ('consider trimming'), and the
+ *     two collided on Yes Bank the first time a filing-only stock reached UO6. That list's own header
+ *     already predicts this failure mode for a different verb ("'reduced margins' is DESCRIPTIVE… judging
+ *     LM/LP strings by portfolio verbs would manufacture reds") — UO6 is the same shape of false positive,
+ *     a different surface. `ownership_N6_promoter_accumulation`'s "increased" is the same collision
+ *     waiting on the next stock where N6 fires; not hypothetical, just not yet observed live.
+ *
+ * Both get this SAME narrow list instead of the full guard — second-person instruction and explicit
+ * recommendation constructions only. Not an exemption: "an attractive entry point at these levels" or
+ * "consider buying" must still be caught, so the list still carries the advice-signaling words, just not
+ * the bare third-person verbs (buy/sell/trim/reduce/increase/exit/…) that are how ordinary ownership-flow
+ * and business-description language is written.
+ */
 export const BUSINESS_LEAD_DENY_LIST = [
   { term: "you-should", re: /\byou should\b/i, why: "advice" },
   { term: "worth-buying", re: /\bworth buying\b/i, why: "advice" },
@@ -191,17 +207,21 @@ export interface RegisterViolation {
  * verdict; denying it over all output would false-positive on legitimate band copy. Celebration is
  * forbidden only where strength is STATED (UO6), which is exactly what `scanStrength` guards.
  *
- * ★ `businessLeadStrings` (UO1 only) IS SCANNED SEPARATELY, against BUSINESS_LEAD_DENY_LIST instead of
- * FORWARD_DENY_LIST — ruled: operational description ("selling electricity", "diversified conglomerate")
- * is not instruction or prediction, and FORWARD_DENY_LIST's bare verbs false-positive on it. `strings`
+ * ★ `businessLeadStrings` (UO1) AND `uo6Strings` (UO6) ARE SCANNED SEPARATELY, against
+ * BUSINESS_LEAD_DENY_LIST instead of the full guard — ruled: third-person description ("selling
+ * electricity", "diversified conglomerate"; "FII trimmed", "promoters have increased their holding") is
+ * not instruction or prediction, and PORTFOLIO_ADVICE_DENY_LIST's bare verbs (trim/reduce/increase/exit/…)
+ * false-positive on it exactly as FORWARD_DENY_LIST's bare buy/sell false-positive on UO1's. `strings`
  * (everything else — findings, entries, boundary lines) keeps the full list: that copy is Vytal's own
  * voice making claims about a stock, which is exactly where advice drift happens.
  */
-export function scanAssembled(strings: string[], level: ToneLevel, businessLeadStrings: string[] = []): RegisterViolation[] {
+export function scanAssembled(strings: string[], level: ToneLevel, businessLeadStrings: string[] = [], uo6Strings: string[] = []): RegisterViolation[] {
   const extra = [...PORTFOLIO_ADVICE_DENY_LIST, ...MODELED_TXN_DENY_LIST, ...(level === "plain" ? PLAIN_DENY_LIST : [])];
   const hits = scanStringsForForwardLanguage("relational", strings, extra);
-  const leadHits = businessLeadStrings.flatMap((s) => BUSINESS_LEAD_DENY_LIST.filter((d) => d.re.test(s)).map((d) => ({ term: d.term, why: d.why, text: s })));
-  return [...hits.map((h) => ({ term: h.term, why: h.why, text: h.text })), ...leadHits];
+  const narrowScan = (s: string) => BUSINESS_LEAD_DENY_LIST.filter((d) => d.re.test(s)).map((d) => ({ term: d.term, why: d.why, text: s }));
+  const leadHits = businessLeadStrings.flatMap(narrowScan);
+  const uo6Hits = uo6Strings.flatMap(narrowScan);
+  return [...hits.map((h) => ({ term: h.term, why: h.why, text: h.text })), ...leadHits, ...uo6Hits];
 }
 
 /** Scan a STRENGTH claim (UO6 and any future strength entry) for celebration language (§3.1 · Part IX·17).

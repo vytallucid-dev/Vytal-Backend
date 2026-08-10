@@ -21,17 +21,24 @@
 //
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import { netWorthFrom, type FoundationAnnual } from "../../metrics/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const N3_MIN_YEARS = 3;        // ≥3 consecutive annual declines
-export const N3_MIN_ABS_DECLINE = 0.5;  // total D/E fall ≥ 0.5× absolute …
-export const N3_MIN_REL_DECLINE = 0.25; // … OR ≥ 25% relative
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_N3_deleveraging.facts;
+
+export const N3_MIN_YEARS = FACTS.thresholds.minYears;        // ≥3 consecutive annual declines
+export const N3_MIN_ABS_DECLINE = FACTS.thresholds.minAbsoluteDecline;  // total D/E fall ≥ 0.5× absolute …
+export const N3_MIN_REL_DECLINE = FACTS.thresholds.minRelativeDecline; // … OR ≥ 25% relative
 
 const debtOf = (r: FoundationAnnual): number => (r.borrowingsCurrent ?? 0) + (r.borrowingsNoncurrent ?? 0);
 
-export const ruleN3: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of R4)
+export const ruleN3: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of R4)
   const f = ctx.annualFundamentals;
   if (f.length < N3_MIN_YEARS + 1) return notEvaluable("insufficient_annual_history"); // 3 declines need 4 rows
 
@@ -102,6 +109,5 @@ export const ruleN3: FireRule = (ctx) => {
         `Deleveraging — debt-to-equity has fallen for ${declines} straight years, from ${r2(deFrom)}× ` +
         `(${chron[0].fy}) to ${r2(deTo)}× (${chron[chron.length - 1].fy}).`,
     },
-    metricRefs: ["debtToEquity"],
   };
 };

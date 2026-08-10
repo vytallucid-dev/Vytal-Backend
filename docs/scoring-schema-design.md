@@ -175,7 +175,8 @@ Grouped by role. "Grain" = what exactly one row represents.
 - PK `id`; `@@unique([snapshotId, category])`; `@@index([snapshotId])`.
 
 ### 15. `ScorePattern`
-- `snapshotId` → ScoreSnapshot, `symbol` (denorm), `asOfDate` (denorm), `patternKey`, `direction`, `severity`, `evidence` (Json: the values), `metricRefs` (Json/array of metricKeys).
+- `snapshotId` → ScoreSnapshot, `symbol` (denorm), `asOfDate` (denorm), `patternKey`, `direction`, `severity`, `evidence` (Json: the values).
+- ⚠ `metricRefs` (Json/array of metricKeys) was here and was DROPPED 2026-08-10 — write-only for its whole life; the same column on `stock_findings` went with it.
 - PK `id`; `@@index([asOfDate, patternKey])` → QP5 ("every widening divergence"); `@@index([snapshotId])` → QP1.
 
 ### 16. `RedFlag`

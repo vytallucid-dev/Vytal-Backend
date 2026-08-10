@@ -155,25 +155,14 @@ export function toScoreSnapshotRow(
   };
 }
 
-/** The deferred Ownership R1 red flag — writable once a snapshot exists. */
-export function toR1RedFlagRow(
-  snapshotId: string,
-  r: CompositeResult,
-  r1Triggering: Record<string, unknown> | null,
-) {
-  return {
-    snapshotId,
-    symbol: r.symbol,
-    asOfDate: r.asOfDate,
-    flagKey: "ownership_R1_pledge",
-    // File 1 §5A: red flags are severity "Critical" (Watch With Care). The column is a
-    // free String? (no enum) — was "high" (under-severe vs spec); corrected to "critical".
-    severity: "critical",
-    tier: "auto" as const,
-    triggeringValues: (r1Triggering ?? undefined) as object | undefined,
-    guardrailEventId: null as string | null,
-  };
-}
+// ★ `toR1RedFlagRow` IS GONE (step 4). It built the deferred Ownership R1 row for score_red_flags,
+// which score-pass.ts wrote immediately after creating a snapshot — and which was the entire reason a
+// pledging fact could only exist for a stock that had been scored. R1 is a registered filing rule now
+// and writes to stock_findings for all 504 stocks; its three downstream consumers (alerts, the alert
+// vocabulary, and the portfolio's PS1) read that table. Nothing writes score_red_flags any more.
+//
+// Deleted rather than left unused on purpose: a function that constructs a red-flag row, kept beside
+// a persist path that no longer has one, is the shape of thing that gets called again by accident.
 
 export interface CompositeWritePlan {
   symbol: string;
@@ -183,7 +172,9 @@ export interface CompositeWritePlan {
   action: "would_create" | "would_skip_identical" | "no_snapshot_composite_unavailable";
   inputsFingerprint: string | null;
   snapshotRow: ReturnType<typeof toScoreSnapshotRow> | null;
-  r1: { willWrite: boolean; deferred: boolean; flagKey: string } | null;
+  /** The Ownership pillar OBSERVED an R1 breach on this member. No row is written from here — the
+   *  finding is the filing pass's (stock_findings). */
+  r1: { observed: boolean; flagKey: string } | null;
   notes: string[];
 }
 
@@ -255,12 +246,15 @@ export async function writeComposite(r: CompositeResult, ctx: CompositeWriteCont
     if (!existingMapping) notes.push(`would get-or-create BandMappingVersion '${BAND_MAPPING_VERSION}'`);
     notes.push(ctx.runId ? `would attach to run ${ctx.runId}` : "would get-or-create a ScoringRun");
     notes.push("would reference 4 PillarScore FKs (written by their own layers): foundation, momentum, market, ownership");
-    if (r1Fired) notes.push("Ownership R1 red flag DEFERRED-BUT-READY: would write score_red_flags row referencing the new snapshot");
+    // ★ R1 NO LONGER PRODUCES A ROW HERE (step 4). The pillar still OBSERVES the breach and records
+    // it on OwnershipScore; the finding itself belongs to stock_findings, written by the filing pass
+    // for all 504 stocks. The planner reports the observation without promising a write it will not do.
+    if (r1Fired) notes.push("Ownership R1 breach OBSERVED on this member — recorded on OwnershipScore; the FINDING is written by the filing pass to stock_findings, not here");
     return {
       symbol: r.symbol, stockId: r.stockId, periodKey: r.periodKey, state: "scored",
       action: existingSnap ? (identical ? "would_skip_identical" : "would_create") : "would_create",
       inputsFingerprint: fingerprint, snapshotRow,
-      r1: r1Fired ? { willWrite: true, deferred: true, flagKey: "ownership_R1_pledge" } : null,
+      r1: r1Fired ? { observed: true, flagKey: "ownership_R1_pledge" } : null,
       notes,
     };
   }

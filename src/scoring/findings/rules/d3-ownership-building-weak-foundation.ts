@@ -117,6 +117,5 @@ export const ruleD3: FireRule = (ctx) => {
       stressedN: 7,
       caveat: "n=26, and the Ownership pillar is compressed (25th/40th/50th/60th percentiles all exactly 60.0), which structurally limits sample size on every Ownership pattern.",
     },
-    metricRefs: ["ownership", "foundation"],
   };
 };

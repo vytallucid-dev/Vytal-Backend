@@ -34,7 +34,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { N_FAMILY_COPY, N_FAMILY_DOESNT_MEAN, type NFamilyKey } from "./n-family-copy.js";
-import { PATTERN_FACTS, PATTERN_KEYS, type PatternFacts, type PatternKey } from "./pattern-facts.js";
+import { PATTERN_FACTS, PATTERN_KEYS, type PatternKey } from "./pattern-facts.js";
+// ★ EVERY finding's facts, all 53 — the 18 studied records plus the 35 unmeasured ones. See that
+//   file for why this is an extension of PATTERN_FACTS rather than a replacement of it.
+import { FINDING_FACTS, type FactsFor } from "./finding-facts.js";
 import type {
   FindingConcern,
   FindingFamily,
@@ -145,13 +148,26 @@ void _PATTERN_KEYS_ARE_CATALOGUED;
  *   STOCK_FINDINGS.divergence_D6_quality_rolling_over.facts.gapFloor →  null    (unusable as a number)
  *   STOCK_FINDINGS.ownership_R1_pledge.facts                        →  null    (not dereferenceable)
  *
- * A generic consumer that only knows `StockFindingEntry` still sees `PatternFacts | null`; the
- * narrowing is for the rules, which are the only callers that need a threshold rather than a fact.
+ * A generic consumer that only knows `StockFindingEntry` still sees the widened union; the narrowing
+ * is for the rules, which are the only callers that need a threshold rather than a fact.
+ *
+ * ── ★ `facts` IS NO LONGER `null` FOR ANYTHING ────────────────────────────────────────────────────
+ * It used to be, for the 35 findings outside the studied D/S/T set, and the third line above read
+ * `STOCK_FINDINGS.ownership_R1_pledge.facts → null (not dereferenceable)`. That was the type telling
+ * the truth about a real hole: R1's two bars sat as bare `export const`s in pledging.ts, it had no
+ * declared display precision, and it was the one rule of 53 that stamped an unrounded number.
+ *
+ * `FactsFor<K>` closes it — see catalogue/finding-facts.ts for why the 18 studied records were
+ * EXTENDED rather than flattened, and why a red flag gets `thresholds` instead of a fabricated
+ * `regimeMap`. The line above now reads:
+ *
+ *   STOCK_FINDINGS.ownership_R1_pledge.facts.thresholds.pledgeRatioPct  →  50
+ *   STOCK_FINDINGS.ownership_R1_pledge.facts.gapFloor                   →  compile error, correctly
  */
 export type StockFindingRegistry = {
   readonly [K in StockFindingKey]: Omit<StockFindingEntry, "key" | "facts"> & {
     readonly key: K;
-    readonly facts: K extends PatternKey ? (typeof PATTERN_FACTS)[K] : null;
+    readonly facts: FactsFor<K>;
   };
 };
 
@@ -701,7 +717,9 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
  * mandatory line), so every served entry carries a non-empty boundary with no resolution left to the
  * consumer.
  */
-const FACTS_BY_KEY: Readonly<Record<string, PatternFacts | undefined>> = PATTERN_FACTS;
+// ⚠ TOTAL NOW, so the `?? null` at the assignment below is unreachable — kept only because the
+//   index signature is `string` and TypeScript cannot see that. Every key resolves to a record.
+const FACTS_BY_KEY: Readonly<Record<string, FactsFor<StockFindingKey> | undefined>> = FINDING_FACTS;
 
 export const STOCK_FINDINGS: StockFindingRegistry = Object.freeze(
   Object.fromEntries(
@@ -720,7 +738,7 @@ export const STOCK_FINDINGS: StockFindingRegistry = Object.freeze(
         // document's hash (the ETag, and the version the frontend fallback is pinned to) is taken
         // over JSON with insertion order intact — so a field appended and then removed leaves the
         // served bytes byte-identical to before this build.
-        facts: FACTS_BY_KEY[key] ?? null,
+        facts: FACTS_BY_KEY[key]!,
       };
       return [key, entry];
     }),

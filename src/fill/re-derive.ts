@@ -89,7 +89,7 @@ export async function reDeriveFundamentalAnnual(db: Db, rowId: string): Promise<
       borrowingsCurrent: toNumber(row.borrowingsCurrent), borrowingsNoncurrent: toNumber(row.borrowingsNoncurrent),
       cashFromOperating: toNumber(row.cashFromOperating), capex: toNumber(row.capex),
       paidUpEquityCapital: toNumber(row.paidUpEquityCapital),
-      faceValueShareSane: plausibleFaceValue(toNumber(row.faceValueShare)),
+      faceValueShareSane: plausibleFaceValue(toNumber(row.faceValueShare), toNumber(row.paidUpEquityCapital)),
       tradeReceivablesCurrent: toNumber(row.tradeReceivablesCurrent), tradeReceivablesNoncurrent: toNumber(row.tradeReceivablesNoncurrent),
       inventories: toNumber(row.inventories), totalAssets: toNumber(row.totalAssets), basicEps: toNumber(row.basicEps),
     },
@@ -163,8 +163,9 @@ export async function reDeriveBankingAnnual(db: Db, rowId: string): Promise<ReDe
   const r = await db.bankingFundamental.findUniqueOrThrow({ where: { id: rowId }, include: { stock: { select: { symbol: true } } } });
   const pr = await db.bankingFundamental.findUnique({ where: { stockId_fiscalYear_resultType: { stockId: r.stockId, fiscalYear: decrementFY(r.fiscalYear), resultType: r.resultType } }, select: { capital: true, reservesAndSurplus: true, advances: true, investments: true, nii: true, netProfit: true, deposits: true, totalAssets: true } });
   const d = deriveBankingAnnual(
-    { interestEarned: N(r.interestEarned), interestExpended: N(r.interestExpended), otherIncome: N(r.otherIncome), expenditureExclProvisions: N(r.expenditureExclProvisions), capital: N(r.capital), reservesAndSurplus: N(r.reservesAndSurplus), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), gnpaAbsolute: N(r.gnpaAbsolute), nnpaAbsolute: N(r.nnpaAbsolute), cet1Ratio: N(r.cet1Ratio), additionalTier1Ratio: N(r.additionalTier1Ratio), provisions: N(r.provisions), advances: N(r.advances), investments: N(r.investments), deposits: N(r.deposits), netProfit: N(r.netProfit), totalAssets: N(r.totalAssets) },
+    { interestEarned: N(r.interestEarned), interestExpended: N(r.interestExpended), otherIncome: N(r.otherIncome), expenditureExclProvisions: N(r.expenditureExclProvisions), capital: N(r.capital), reservesAndSurplus: N(r.reservesAndSurplus), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), gnpaAbsolute: N(r.gnpaAbsolute), nnpaAbsolute: N(r.nnpaAbsolute), cet1Ratio: N(r.cet1Ratio), additionalTier1Ratio: N(r.additionalTier1Ratio), provisions: N(r.provisions), advances: N(r.advances), investments: N(r.investments), deposits: N(r.deposits), netProfit: N(r.netProfit), totalAssets: N(r.totalAssets) },
     pr ? { capital: N(pr.capital), reservesAndSurplus: N(pr.reservesAndSurplus), advances: N(pr.advances), investments: N(pr.investments), nii: N(pr.nii), netProfit: N(pr.netProfit), deposits: N(pr.deposits), totalAssets: N(pr.totalAssets) } : null,
+    `fill ${r.fiscalYear}/${r.resultType}`,
   );
   const changed = computeChanged(asRec(r), asRec(d.columns), BANK_COLS);
   await db.bankingFundamental.update({ where: { id: rowId }, data: d.columns });
@@ -177,8 +178,9 @@ export async function reDeriveNbfcAnnual(db: Db, rowId: string): Promise<ReDeriv
   const r = await db.nbfcFundamental.findUniqueOrThrow({ where: { id: rowId }, include: { stock: { select: { symbol: true } } } });
   const pr = await db.nbfcFundamental.findUnique({ where: { stockId_fiscalYear_resultType: { stockId: r.stockId, fiscalYear: decrementFY(r.fiscalYear), resultType: r.resultType } }, select: { revenue: true, netProfit: true, loans: true, totalEquity: true, equityShareCapital: true, otherEquity: true, debtSecurities: true, borrowings: true, subordinatedLiabilities: true, depositsLiabilities: true } });
   const d = deriveNbfcAnnual(
-    { interestIncome: N(r.interestIncome), financeCosts: N(r.financeCosts), loans: N(r.loans), totalIncome: N(r.totalIncome), feeAndCommissionIncome: N(r.feeAndCommissionIncome), netGainOnFairValueChanges: N(r.netGainOnFairValueChanges), otherIncome: N(r.otherIncome), employeeBenefitExpense: N(r.employeeBenefitExpense), depreciation: N(r.depreciation), otherExpenses: N(r.otherExpenses), feeAndCommissionExpense: N(r.feeAndCommissionExpense), impairmentOnFinancialInstruments: N(r.impairmentOnFinancialInstruments), debtSecurities: N(r.debtSecurities), borrowings: N(r.borrowings), subordinatedLiabilities: N(r.subordinatedLiabilities), depositsLiabilities: N(r.depositsLiabilities), totalEquity: N(r.totalEquity), equityShareCapital: N(r.equityShareCapital), otherEquity: N(r.otherEquity), totalAssets: N(r.totalAssets), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), netProfit: N(r.netProfit), revenue: N(r.revenue) },
+    { interestIncome: N(r.interestIncome), financeCosts: N(r.financeCosts), loans: N(r.loans), totalIncome: N(r.totalIncome), feeAndCommissionIncome: N(r.feeAndCommissionIncome), netGainOnFairValueChanges: N(r.netGainOnFairValueChanges), otherIncome: N(r.otherIncome), employeeBenefitExpense: N(r.employeeBenefitExpense), depreciation: N(r.depreciation), otherExpenses: N(r.otherExpenses), feeAndCommissionExpense: N(r.feeAndCommissionExpense), impairmentOnFinancialInstruments: N(r.impairmentOnFinancialInstruments), debtSecurities: N(r.debtSecurities), borrowings: N(r.borrowings), subordinatedLiabilities: N(r.subordinatedLiabilities), depositsLiabilities: N(r.depositsLiabilities), totalEquity: N(r.totalEquity), equityShareCapital: N(r.equityShareCapital), otherEquity: N(r.otherEquity), totalAssets: N(r.totalAssets), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), netProfit: N(r.netProfit), revenue: N(r.revenue) },
     pr ? { revenue: N(pr.revenue), netProfit: N(pr.netProfit), loans: N(pr.loans), totalEquity: N(pr.totalEquity), equityShareCapital: N(pr.equityShareCapital), otherEquity: N(pr.otherEquity), debtSecurities: N(pr.debtSecurities), borrowings: N(pr.borrowings), subordinatedLiabilities: N(pr.subordinatedLiabilities), depositsLiabilities: N(pr.depositsLiabilities) } : null,
+    `fill ${r.fiscalYear}/${r.resultType}`,
   );
   const changed = computeChanged(asRec(r), asRec(d.columns), NBFC_COLS);
   await db.nbfcFundamental.update({ where: { id: rowId }, data: d.columns });
@@ -191,8 +193,9 @@ export async function reDeriveLiAnnual(db: Db, rowId: string): Promise<ReDeriveR
   const r = await db.lifeInsuranceFundamental.findUniqueOrThrow({ where: { id: rowId }, include: { stock: { select: { symbol: true } } } });
   const pr = await db.lifeInsuranceFundamental.findUnique({ where: { stockId_fiscalYear_resultType: { stockId: r.stockId, fiscalYear: decrementFY(r.fiscalYear), resultType: r.resultType } }, select: { shareCapital: true, reservesAndSurplus: true, fairValueChangeAccount: true, grossPremiumIncome: true, netProfit: true } });
   const d = deriveLiAnnual(
-    { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), incomeFirstYearPremium: N(r.incomeFirstYearPremium), grossPremiumIncome: N(r.grossPremiumIncome), totalOperatingExpenses: N(r.totalOperatingExpenses), netProfit: N(r.netProfit) },
+    { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), incomeFirstYearPremium: N(r.incomeFirstYearPremium), grossPremiumIncome: N(r.grossPremiumIncome), totalOperatingExpenses: N(r.totalOperatingExpenses), netProfit: N(r.netProfit) },
     pr ? { shareCapital: N(pr.shareCapital), reservesAndSurplus: N(pr.reservesAndSurplus), fairValueChangeAccount: N(pr.fairValueChangeAccount), grossPremiumIncome: N(pr.grossPremiumIncome), netProfit: N(pr.netProfit) } : null,
+    `fill ${r.fiscalYear}/${r.resultType}`,
   );
   const changed = computeChanged(asRec(r), asRec(d.columns), LI_COLS);
   await db.lifeInsuranceFundamental.update({ where: { id: rowId }, data: d.columns });
@@ -205,8 +208,9 @@ export async function reDeriveGiAnnual(db: Db, rowId: string): Promise<ReDeriveR
   const r = await db.generalInsuranceFundamental.findUniqueOrThrow({ where: { id: rowId }, include: { stock: { select: { symbol: true } } } });
   const pr = await db.generalInsuranceFundamental.findUnique({ where: { stockId_fiscalYear_resultType: { stockId: r.stockId, fiscalYear: decrementFY(r.fiscalYear), resultType: r.resultType } }, select: { shareCapital: true, reservesAndSurplus: true, fairValueChangeAccount: true, grossPremiumsWritten: true, netProfit: true } });
   const d = deriveGiAnnual(
-    { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), combinedRatio: N(r.combinedRatio), netProfit: N(r.netProfit), grossPremiumsWritten: N(r.grossPremiumsWritten) },
+    { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), combinedRatio: N(r.combinedRatio), netProfit: N(r.netProfit), grossPremiumsWritten: N(r.grossPremiumsWritten) },
     pr ? { shareCapital: N(pr.shareCapital), reservesAndSurplus: N(pr.reservesAndSurplus), fairValueChangeAccount: N(pr.fairValueChangeAccount), grossPremiumsWritten: N(pr.grossPremiumsWritten), netProfit: N(pr.netProfit) } : null,
+    `fill ${r.fiscalYear}/${r.resultType}`,
   );
   const changed = computeChanged(asRec(r), asRec(d.columns), GI_COLS);
   await db.generalInsuranceFundamental.update({ where: { id: rowId }, data: d.columns });

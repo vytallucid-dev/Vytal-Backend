@@ -9,14 +9,25 @@
 import { prisma } from "../../db/prisma.js";
 import { PILLAR_WEIGHTS } from "../composite/weights.js";
 import {
-  getLatestSnapshot,
-  getSnapshotSeries,
   getDailySnapshotSeries,
-  getInForceSeriesRefs,
   getPeerSiblings,
   getPeerMetricValues,
-  resolveCoverage,
+  // ★ THE ONE-MAP SEAM — see inForceByPeriod's note. These four replace getLatestSnapshot /
+  //   getSnapshotSeries / getInForceSeriesRefs here, which each resolved that map privately and so
+  //   issued the same query three times, sequentially, per view.
+  inForceByPeriod,
+  latestRefFrom,
+  loadSnapshotProjected,
+  seriesFrom,
+  seriesRefsFrom,
+  type ProjectedSnapshot,
 } from "./scoring-read.service.js";
+// ★ THE REQUEST-SCOPED READ MEMO — see db/read-memo.ts. It is opened HERE, around the whole view, so
+//   the three callers that each want a slice of one stock's snapshot rows share one round-trip.
+import { withReadMemo } from "../../db/read-memo.js";
+// ★ THE FILING CHANNEL. Rooted at STOCK, not at ScoreSnapshot — see filing/read.ts. This is the
+//   one section of this view that a stock with no snapshot can still populate.
+import { readFilingFindings, type FilingFindingsSection } from "../../filing/read.js";
 import { canonicalMetric } from "../bars-loader/label-map.js";
 import type { BarDirection as EngineBarDirection } from "../lenses/types.js";
 import {
@@ -37,8 +48,15 @@ import {
 // File-1 §5 verdict sentences, rendered onto the finding rows (Stage 3 of the copy catalogue).
 // Additive: the field is new, and nothing reads it until the frontend switches at Stage 5.
 import { renderVerdict, composeVerdict, composeEndedVerdict } from "../findings/verdicts.js";
+// ★ THE ONE NARROWING for both channels' payload columns (scoring/findings/evidence.ts). Applied
+//   HERE, at the read boundary, so `RedFlagView.triggeringValues` / `PatternView.evidence` reach a
+//   consumer already typed instead of `unknown` for each of them to re-narrow by hand.
+import { asEvidenceBag } from "../findings/evidence.js";
 import { findingName } from "../../catalogue/index.js";
-import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+import { dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+// ★ CHANNEL SUPPRESSION — the filing pass owns these 22 keys now, and `filingFindings` below already
+//   serves them. Keyed on FILING_REGISTRY, never on a literal list; see filing/channel.ts.
+import { dropFilingPatterns } from "../../filing/channel.js";
 // ★ RETIREMENT SUPPRESSION's sibling — a persisted `notcovered_*` row (this turn's Part 2) must never
 //   reach a finding-facing surface either. Same guard shape, applied at the same three boundaries.
 import { dropNotCoveredPatterns, notCoveredPatternKey, NOT_COVERED_SILENT_LINE } from "../../catalogue/not-covered.js";
@@ -49,6 +67,7 @@ import { COMPOSITE_MOVE_DEADBAND } from "./display-constants.js";
 //   existed here, in universe-view, in peer-group-view and on the frontend. See that file's header.
 import {
   ALIGNED_MAX,
+  contextPairOf,
   firingDivergenceKeys,
   headlineOf,
   leadDivergence,
@@ -64,11 +83,15 @@ import { notCoveredFor, type SubjectReadings } from "./not-covered.service.js";
 import { forTool } from "../../catalogue/tool-families.js";
 import { severityWeight } from "../../catalogue/divergence.js";
 import { getRegimeByStock } from "../regime/regime.service.js";
+import { REGIME_HOT_ABOVE, REGIME_STRESSED_BELOW } from "../regime/regime.js";
 // Finding lifecycle — firstSeen / runLength / direction / ended+resolution, read off the append-only
 // pattern history. Facts only; no sentence in this file changes because of it.
 import { resolveFindingLifecycles } from "./finding-lifecycle.service.js";
+import { OMITTABLE_SECTIONS } from "./health-view.types.js";
 import type {
   HealthSnapshotView,
+  HealthSection,
+  HealthViewOptions,
   PillarView,
   PillarKey,
   MetricView,
@@ -84,6 +107,7 @@ import type {
   OwnershipDetail,
   NativeZone,
   BandColour,
+  SectorClass,
   LabelBand,
   DivergenceView,
   DivergenceFlag,
@@ -115,6 +139,15 @@ const NATIVE_MARKS: Record<PillarKey, { lower: number; upper: number }> = {
   momentum: { lower: NATIVE_ZONES.momentum.weak, upper: NATIVE_ZONES.momentum.strong },
   market: { lower: NATIVE_ZONES.market.weak, upper: NATIVE_ZONES.market.strong },
   ownership: { lower: NATIVE_ZONES.ownership.weak, upper: NATIVE_ZONES.ownership.strong },
+};
+/** The same four pairs on the TRAJECTORY block — see TrajectorySection.pillarZones for why a
+ *  section that already ships `pillars[].nativeZone` carries them a second time. Projected from
+ *  NATIVE_ZONES, never re-typed, so the two can only ever say one thing. */
+const PILLAR_ZONES: Record<PillarKey, { weak: number; strong: number }> = {
+  foundation: { weak: NATIVE_ZONES.foundation.weak, strong: NATIVE_ZONES.foundation.strong },
+  momentum: { weak: NATIVE_ZONES.momentum.weak, strong: NATIVE_ZONES.momentum.strong },
+  market: { weak: NATIVE_ZONES.market.weak, strong: NATIVE_ZONES.market.strong },
+  ownership: { weak: NATIVE_ZONES.ownership.weak, strong: NATIVE_ZONES.ownership.strong },
 };
 // ★ PHASE 4 — the local 15/25 pair is GONE. These now come from the ONE place the divergence family
 //   declares its bands (findings/divergence/bands.ts §1.1), so this view can no longer disagree with
@@ -149,8 +182,39 @@ function toPeerStats(src: { mean: unknown; stdDev: unknown; sampleN: number } | 
   return { mean, stdDev, sampleN, usable: sampleN >= 5 && stdDev > 0 };
 }
 
-type LoadedSnapshot = NonNullable<Awaited<ReturnType<typeof getLatestSnapshot>>>;
-type LoadedMetricScore = LoadedSnapshot["foundationPillar"]["metricScores"][number];
+/**
+ * ★ THE LOADED ROW IS A UNION NOW, AND THAT IS THE POINT.
+ *
+ * `ProjectedSnapshot` is `full | lean`, discriminated on `pillarDetail`. Every field this file reads
+ * off the snapshot ROW (composite, subtotals, weights, band, mask) and every pillar's `pillarState`
+ * live on both arms and need no narrowing. The METRIC GRAPH — `metricScores`, `marketSubScores`,
+ * `ownershipScore` — exists only on the full arm, so touching it without first narrowing on
+ * `snap.pillarDetail` does not compile. See `loadSnapshotProjected` for why the alternative
+ * (an empty array standing in for "not fetched") was rejected.
+ *
+ * `FullSnapshot` is the narrowed arm, and it is what the metric-graph mappers below take as their
+ * parameter type — so those mappers are unreachable from a lean load by construction rather than by
+ * a convention someone has to remember.
+ */
+type LoadedSnapshot = ProjectedSnapshot;
+type FullSnapshot = Extract<ProjectedSnapshot, { pillarDetail: true }>;
+type LoadedMetricScore = FullSnapshot["foundationPillar"]["metricScores"][number];
+
+/** One row of the identity join — the stock and its (optional) sector, in one trip. Enums come back
+ *  as text because the driver has no mapping for a Postgres enum; both are compared as strings
+ *  downstream, exactly as the Prisma-typed values were. */
+interface StockIdentityRow {
+  id: string;
+  symbol: string;
+  name: string;
+  industry_type: string;
+  sector_name: string | null;
+  sector_display_name: string | null;
+  /** ⚠ TYPED AS THE VIEW'S OWN UNION, AND THAT IS EXACT rather than convenient: the column is the
+   *  `SectorClass` Postgres enum, whose six members ARE this union's non-null members, or NULL —
+   *  which the union also carries. A `string` here would push the widening onto the identity block. */
+  sector_class: SectorClass;
+}
 
 const SEVERITY_ORDER: Record<string, number> = {
   critical: 0, high: 1, medium: 2, low: 3,
@@ -477,62 +541,182 @@ function mapMetric(
  * stock itself is unknown (the controller maps that to 404). A known-but-unscored
  * stock returns a `scored: false` view with identity + coverage populated.
  */
-export async function buildHealthSnapshotView(
+export function buildHealthSnapshotView(
   symbolRaw: string,
   windowQuarters = 12,
+  opts: HealthViewOptions = {},
+): Promise<HealthSnapshotView | null> {
+  // ★ ONE MEMO SCOPE PER VIEW. Everything below — including the services it awaits — shares one
+  //   store, so a question asked by three call sites costs one round-trip. The scope ends when this
+  //   promise settles; nothing survives the request, which is why there is no invalidation problem to
+  //   have. See db/read-memo.ts.
+  return withReadMemo(() => buildHealthSnapshotViewInScope(symbolRaw, windowQuarters, opts));
+}
+
+async function buildHealthSnapshotViewInScope(
+  symbolRaw: string,
+  windowQuarters = 12,
+  opts: HealthViewOptions = {},
 ): Promise<HealthSnapshotView | null> {
   const symbol = symbolRaw.toUpperCase();
 
-  const stock = await prisma.stock.findUnique({
-    where: { symbol },
-    select: {
-      id: true,
-      symbol: true,
-      name: true,
-      industryType: true,
-      sector: { select: { name: true, displayName: true, sectorClass: true } },
-    },
-  });
-  if (!stock) return null;
+  // ★ THE PROJECTION, RESOLVED ONCE. `omitted` is what the response will DECLARE, and it is derived
+  //   by intersecting the request with the omittable set — so an unknown token cannot silently
+  //   change the payload, and what the caller asked for is never assumed to be what it got.
+  const omitted: HealthSection[] = OMITTABLE_SECTIONS.filter((s) => opts.omit?.includes(s));
+  const wantPillars = !omitted.includes("pillars");
+  const wantPeerStanding = !omitted.includes("peerStanding");
 
-  const [coverage, spg] = await Promise.all([
-    resolveCoverage(stock.id),
+  // ── ★ IDENTITY IN ONE ROUND-TRIP, NOT TWO. ────────────────────────────────────────────────────
+  //
+  // This was `stock.findUnique` with a nested `sector` select — one Prisma call, and TWO statements.
+  // A to-one relation reached through `select` is a second query for Prisma, not a SQL join, so the
+  // read opened with `stocks` and then `sectors`, each a wave of exactly one statement. On the
+  // measured profile those were waves 1 and 2: ~140 ms of pure latency, nothing else in flight,
+  // nothing to overlap them with. A LEFT JOIN is the same rows in one trip — and it removes a WAVE,
+  // which is what matters now that the read is chain-depth-bound rather than statement-bound.
+  //
+  // ⚠ LEFT, NOT INNER. `Stock.sectorId` is nullable and a stock with no sector is a real state the
+  //   identity block already renders (`sector: null`). An INNER JOIN would turn that stock into a
+  //   404 — the one failure mode this join could plausibly introduce, and the reason the null is
+  //   reconstructed below rather than assumed away.
+  //
+  // ⚠ `"industryType"` IS QUOTED, AND IT IS THE ONE COLUMN HERE THAT NEEDS TO BE. Stock.industryType
+  //   carries no @map, so Prisma named the column verbatim in camelCase; unquoted, Postgres folds it
+  //   to industry_type and the statement fails with 42703. Every other column in this join is
+  //   snake_cased by an explicit @map and needs no quoting. (Caught by running it, not by reading it.)
+  const rows = await prisma.$queryRaw<StockIdentityRow[]>`
+      SELECT st.id                AS id,
+             st.symbol            AS symbol,
+             st.name              AS name,
+             st."industryType"::text AS industry_type,
+             sc.name              AS sector_name,
+             sc.display_name      AS sector_display_name,
+             sc.sector_class::text AS sector_class
+        FROM stocks st
+        LEFT JOIN sectors sc ON sc.id = st.sector_id
+       WHERE st.symbol = ${symbol}
+       LIMIT 1`;
+  const row = rows[0];
+  if (!row) return null;
+  // Rebuilt into the exact shape the rest of this function already reads, so nothing downstream
+  // knows the join happened. `sector` is null when the LEFT JOIN found no row — never `{name: null}`.
+  const stock = {
+    id: row.id,
+    symbol: row.symbol,
+    name: row.name,
+    industryType: row.industry_type,
+    sector:
+      row.sector_name !== null
+        ? { name: row.sector_name, displayName: row.sector_display_name!, sectorClass: row.sector_class }
+        : null,
+  };
+
+  // ══ LAYER 1 ══ everything that needs nothing but `stock.id`.
+  //
+  // ★ `inForceByPeriod` IS RESOLVED ONCE HERE AND FEEDS THREE ANSWERS. It used to be issued three
+  //   times per view — privately, inside getLatestSnapshot, getSnapshotSeries and
+  //   getInForceSeriesRefs — as three sequential round-trips for one unchanging fact. The head ref,
+  //   the plotted series and the L3 window all come off this single map now.
+  //
+  // ⚠ COVERAGE IS NOT READ HERE ANY MORE, AND THE PAYLOAD DID NOT CHANGE. `resolveCoverage` queried
+  //   score_stock_states — 0 rows, no writer, dropped 2026-08-09 — so `coverage` was ALWAYS null and
+  //   both identity fields below have always serialised as null. They are written as literal nulls
+  //   now rather than removed: the wire shape (and every consumer's fallback copy) is byte-identical,
+  //   one round-trip per view is gone, and the honest derivation already exists in
+  //   src/relational/coverage.ts for whoever wires it in. Do NOT re-point these at that derivation as
+  //   a drive-by — it returns a DIFFERENT vocabulary and would change what four surfaces render.
+  const [spg, byPeriod, filingBy] = await Promise.all([
     prisma.stockPeerGroup.findFirst({
       where: { stockId: stock.id },
       select: { peerGroup: { select: { id: true, name: true, displayName: true, stockCount: true } } },
     }),
+    inForceByPeriod(stock.id),
+    // ★ RESOLVED IN LAYER 1, BEFORE THE `!ref` GUARD. That position is the whole point: every read
+    //   below this line is snapshot-derived and unreachable for 409 of 504 stocks, so a filing
+    //   channel resolved after the guard would be a filing channel that never runs for the stocks
+    //   that have nothing else. One indexed query on (stock_id, period_end DESC).
+    readFilingFindings([stock.id]),
   ]);
   const pg = spg?.peerGroup ?? null;
-
-  const snap = await getLatestSnapshot(stock.id);
+  const ref = latestRefFrom(byPeriod);
+  const filingFindings: FilingFindingsSection | null = filingBy.get(stock.id) ?? null;
 
   // ── NOT-SCORED branch: identity + coverage only, every snapshot section null ──
-  if (!snap) {
-    return {
-      scored: false,
-      identity: {
-        id: stock.id,
-        symbol: stock.symbol,
-        name: stock.name,
-        sector: stock.sector ? { key: stock.sector.name, displayName: stock.sector.displayName } : null,
-        sectorClass: stock.sector?.sectorClass ?? null,
-        industryPath: stock.industryType === "banking" ? "banking" : "non_financial",
-        peerGroup: pg ? { id: pg.id, name: pg.name, displayName: pg.displayName, memberCount: pg.stockCount } : null,
-        coverageState: coverage?.coverageState ?? null,
-        coverageReason: coverage?.coverageReason ?? null,
-        asOfDate: "",
-        periodKey: "",
-      },
-      verdict: null,
-      pillars: [],
-      trajectory: null,
-      findings: null,
-      peerStanding: null,
-      // The regime is a SECTOR fact and is resolvable for an unscored stock, but this branch returns
-      // nothing snapshot-derived at all; a badge with no reading beside it has nothing to qualify.
-      regime: null,
-    };
-  }
+  // ⚠ `pillars: []` HERE IS A REAL EMPTY, NOT AN OMISSION — the stock has no pillars because it has
+  //   no snapshot. `omitted` still reports what the caller asked to drop, so the two facts stay
+  //   distinguishable even on this branch.
+  const notScored = (): HealthSnapshotView => ({
+    scored: false,
+    identity: {
+      id: stock.id,
+      symbol: stock.symbol,
+      name: stock.name,
+      sector: stock.sector ? { key: stock.sector.name, displayName: stock.sector.displayName } : null,
+      sectorClass: stock.sector?.sectorClass ?? null,
+      industryPath: stock.industryType === "banking" ? "banking" : "non_financial",
+      peerGroup: pg ? { id: pg.id, name: pg.name, displayName: pg.displayName, memberCount: pg.stockCount } : null,
+      coverageState: null, // score_stock_states is gone — see the note at the coverage read above
+      coverageReason: null,
+      asOfDate: "",
+      periodKey: "",
+    },
+    verdict: null,
+    pillars: [],
+    trajectory: null,
+    // ⚠ STILL NULL, AND STILL CORRECT. `findings` is the SCORE findings section — divergences,
+    //   trajectories, composition. Every one of them is a statement about a reading this stock does
+    //   not have, so null is the honest answer and the boundary stays exactly where it was.
+    findings: null,
+    // ★ THE ONE SECTION THAT OPENS. A filing finding is about what the company FILED — promoter
+    //   pledging, an earnings-quality run, receivables outpacing revenue — and is true whether or not
+    //   anyone ever computed a Health Score. 409 stocks reach only this branch; before this line they
+    //   rendered as though we had nothing to say about any of them.
+    filingFindings,
+    peerStanding: null,
+    // The regime is a SECTOR fact and is resolvable for an unscored stock, but this branch returns
+    // nothing snapshot-derived at all; a badge with no reading beside it has nothing to qualify.
+    regime: null,
+    omitted,
+  });
+  if (!ref) return notScored();
+
+  // ══ LAYER 2 ══ the snapshot row, and everything keyed only by `stock.id` or the resolved ref.
+  //
+  // Every one of these used to be its own sequential await; not one of them depends on another's
+  // result. The gated entries are the projection's: with `pillars` omitted, the suppression lookup
+  // and the L3 window read are not issued at all.
+  const seriesRefs = wantPillars ? seriesRefsFrom(byPeriod, windowQuarters) : [];
+  const [snap, series, dailyRaw, regimeByStock, lifecycles, suppressions, windowSnapshots, peerSiblings] =
+    await Promise.all([
+      // ★ THE PROJECTION REACHES THE LOADER. `wantPillars` decides the SHAPE, not just which extra
+      //   queries are skipped: a pillars-omitted read no longer walks the metric graph at all.
+      loadSnapshotProjected(ref.id, wantPillars),
+      seriesFrom(byPeriod, windowQuarters),
+      getDailySnapshotSeries(stock.id, 400),
+      getRegimeByStock([stock.id]),
+      // `ref.periodKey` IS `snap.periodKey` — same row — so the lifecycle walk no longer waits for
+      // the snapshot's relation graph to load before it can start.
+      resolveFindingLifecycles(stock.id, ref.periodKey),
+      wantPillars
+        ? prisma.suppressionDirective.findMany({
+            where: { stockId: stock.id, snapshotKey: ref.periodKey },
+            select: { metricKey: true, outcome: true },
+          })
+        : Promise.resolve([] as { metricKey: string; outcome: string }[]),
+      seriesRefs.length
+        ? prisma.scoreSnapshot.findMany({
+            where: { id: { in: seriesRefs.map((r) => r.id) } },
+            select: { periodKey: true, asOfDate: true, foundationPillarId: true, momentumPillarId: true },
+          })
+        : Promise.resolve([] as { periodKey: string; asOfDate: Date; foundationPillarId: string | null; momentumPillarId: string | null }[]),
+      pg && wantPeerStanding
+        ? getPeerSiblings(pg.id, ref.periodKey)
+        : Promise.resolve(null),
+    ]);
+  // A ref that resolves to no row is not reachable in practice (same transaction-visible id), but the
+  // branch is kept rather than asserted — an absent row is the not-scored answer, not a crash.
+  if (!snap) return notScored();
 
   // ── identity ──
   const identity: HealthSnapshotView["identity"] = {
@@ -543,14 +727,13 @@ export async function buildHealthSnapshotView(
     sectorClass: stock.sector?.sectorClass ?? null,
     industryPath: snap.industryPath === "banking" ? "banking" : "non_financial",
     peerGroup: pg ? { id: pg.id, name: pg.name, displayName: pg.displayName, memberCount: pg.stockCount } : null,
-    coverageState: coverage?.coverageState ?? null,
-    coverageReason: coverage?.coverageReason ?? null,
+    coverageState: null, // score_stock_states is gone — see the note at the coverage read above
+    coverageReason: null,
     asOfDate: ymd(snap.asOfDate),
     periodKey: snap.periodKey,
   };
 
-  // ── series + trajectory marker (needs ≥2 in-force snapshots) ──
-  const series = await getSnapshotSeries(stock.id, windowQuarters);
+  // ── trajectory marker (needs ≥2 in-force snapshots; `series` came off layer 2) ──
   let trajectoryMarker: TrajectoryMarker | null = null;
   let trajectoryDelta: number | null = null;
   if (series.length >= 2) {
@@ -586,11 +769,17 @@ export async function buildHealthSnapshotView(
   const spread = pillarSpreadOf(scoredPillarSubtotals);
   const liveRows = dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns));
   const lead = leadDivergence(liveRows);
+  const headline = headlineOf(spread, firingDivergenceKeys(liveRows));
   const divergence: DivergenceView = {
-    headline: headlineOf(spread, firingDivergenceKeys(liveRows)),
+    headline,
     spread,
     alignedMax: ALIGNED_MAX,
     pair: lead ? pairOf(lead.patternKey, scoredPillarSubtotals) : null,
+    // ★ THE CONTEXT PAIR, AND THE ONE CONDITION THAT MAKES IT SAFE. `spread`'s two pillars, named —
+    //   but ONLY in the states where no finding names a pair of its own, so the widest pair can never
+    //   appear beside a finding about a different one (the IOC bug, four services deep). The ternary
+    //   IS the guarantee; see DivergenceView.contextPair and contextPairOf's own header.
+    contextPair: headline === "patterns_firing" ? null : contextPairOf(scoredPillarSubtotals),
     storedScalar: num(snap.divergence),
   };
 
@@ -611,36 +800,78 @@ export async function buildHealthSnapshotView(
       : null,
   };
 
-  // ── suppression reasons (one lookup keyed by snapshotKey = periodKey) ──
-  const suppressions = await prisma.suppressionDirective.findMany({
-    where: { stockId: stock.id, snapshotKey: snap.periodKey },
-    select: { metricKey: true, outcome: true },
-  });
-  const suppressionByMetric = new Map(suppressions.map((s) => [s.metricKey, `guardrail ${s.outcome}`]));
+  // ══ LAYER 3 ══ the reads that genuinely could not start earlier: they need a field off the
+  // snapshot row (peerGroupId / barPath / asOfDate) or the plotted series, both of which land in
+  // layer 2. Under the projection, only the two trajectory reads remain.
+  //
+  //   peerStats / barSets / peerMetricValues   need snap.peerGroupId · snap.barPath — pillars only
+  //   l3 metric rows                           need the pillar ids off the L2 window — pillars only
+  //   crossings / corporate events             need the plotted series' periodKeys and span
+  const fPillarIds = [...new Set(windowSnapshots.map((s) => s.foundationPillarId).filter(Boolean))] as string[];
+  const mPillarIds = [...new Set(windowSnapshots.map((s) => s.momentumPillarId).filter(Boolean))] as string[];
+  const seriesPeriodKeys = series.map((p) => p.periodKey);
+  const latestAsOf = series.length ? series[series.length - 1].asOfDate : snap.asOfDate;
+  const earliestAsOf =
+    series.length > 1
+      ? series[0].asOfDate
+      : new Date(latestAsOf.getTime() - windowQuarters * 92 * 24 * 3600 * 1000);
 
-  // ── peer-stats natural-key fallback (for MetricScores written before the FK existed) ──
-  // One indexed lookup by (peerGroupId, asOfDate) — the period's whole cross-section. New
-  // scores carry the FK directly and skip this; backfilled rows resolve here. Append-only:
-  // a read-only join, never a write.
-  const peerStatsRows = await prisma.peerStatsSnapshot.findMany({
-    where: { peerGroupId: snap.peerGroupId, asOfDate: snap.asOfDate },
-    select: { metricKey: true, mean: true, stdDev: true, sampleN: true },
-  });
+  const [peerStatsRows, barSetRows, peerMetricValues, fMetricRows, mMetricRows, firedCrossings, eventRows] =
+    await Promise.all([
+      // peer-stats natural-key fallback (for MetricScores written before the FK existed) — one
+      // indexed lookup by (peerGroupId, asOfDate), the period's whole cross-section. New scores
+      // carry the FK directly and skip this; backfilled rows resolve here. Read-only, never a write.
+      wantPillars
+        ? prisma.peerStatsSnapshot.findMany({
+            where: { peerGroupId: snap.peerGroupId, asOfDate: snap.asOfDate },
+            select: { metricKey: true, mean: true, stdDev: true, sampleN: true },
+          })
+        : Promise.resolve([] as { metricKey: string; mean: unknown; stdDev: unknown; sampleN: number }[]),
+      // §1 full pillar metric set — the bar-set keys for this barPath ARE the PG's scored metric
+      // universe; a key with NO scored row is an honest-empty metric we still surface.
+      wantPillars
+        ? prisma.metricBarSet.findMany({
+            where: { barPath: snap.barPath },
+            select: {
+              metricKey: true, direction: true, excellent: true, good: true, acceptable: true,
+              concerning: true, distress: true, inForceFrom: true, barPath: true, inheritsFromPeerGroupId: true,
+            },
+          })
+        : Promise.resolve(
+            [] as {
+              metricKey: string; direction: string; excellent: unknown; good: unknown; acceptable: unknown;
+              concerning: unknown; distress: unknown; inForceFrom: Date; barPath: string;
+              inheritsFromPeerGroupId: string | null;
+            }[],
+          ),
+      // §2.3 per-metric peer cross-section — the modal's peer-field visual.
+      wantPillars ? getPeerMetricValues(snap.peerGroupId, snap.periodKey) : Promise.resolve(new Map()),
+      // L3 per-metric rawValue across the window, one bulk query per pillar type.
+      fPillarIds.length
+        ? prisma.metricScore.findMany({
+            where: { pillarScoreId: { in: fPillarIds } },
+            select: { pillarScoreId: true, metricKey: true, rawValue: true },
+          })
+        : Promise.resolve([] as { pillarScoreId: string; metricKey: string; rawValue: unknown }[]),
+      mPillarIds.length
+        ? prisma.metricScore.findMany({
+            where: { pillarScoreId: { in: mPillarIds } },
+            select: { pillarScoreId: true, metricKey: true, rawValue: true },
+          })
+        : Promise.resolve([] as { pillarScoreId: string; metricKey: string; rawValue: unknown }[]),
+      // The pillar-zone crossings a T-pattern ACTUALLY fired, across the window.
+      firedCrossingEvents(stock.id, seriesPeriodKeys),
+      prisma.corporateEvent.findMany({
+        where: { stockId: stock.id, eventDate: { gte: earliestAsOf, lte: latestAsOf } },
+        orderBy: { eventDate: "asc" },
+        select: { eventType: true, eventDate: true, description: true, impactLevel: true },
+      }),
+    ]);
+
+  const suppressionByMetric = new Map(suppressions.map((s) => [s.metricKey, `guardrail ${s.outcome}`]));
   const peerFallback: PeerFallback = new Map(
     peerStatsRows.map((r) => [r.metricKey, { mean: r.mean, stdDev: r.stdDev, sampleN: r.sampleN }]),
   );
-
-  // ── §1 full pillar metric set + §2.3 per-metric peer cross-section ───────────────
-  // The bar-set keys for this snapshot's barPath ARE the PG's scored metric universe; a
-  // key with NO scored row is an honest-empty (non-scored) metric we still surface (§1).
-  // The per-metric member values feed the modal's peer-field visual (§2.3).
-  const barSetRows = await prisma.metricBarSet.findMany({
-    where: { barPath: snap.barPath },
-    select: {
-      metricKey: true, direction: true, excellent: true, good: true, acceptable: true,
-      concerning: true, distress: true, inForceFrom: true, barPath: true, inheritsFromPeerGroupId: true,
-    },
-  });
   const barSetByKey = new Map<string, (typeof barSetRows)[number]>();
   for (const bs of barSetRows) {
     const cur = barSetByKey.get(bs.metricKey);
@@ -651,53 +882,19 @@ export async function buildHealthSnapshotView(
     const pl = canonicalMetric(key)?.pillar;
     if (pl === "foundation" || pl === "momentum") expectedKeysByPillar.get(pl)!.push(key);
   }
-  const peerMetricValues = await getPeerMetricValues(snap.peerGroupId, snap.periodKey);
-
   // ── L3 series for per-metric sparklines (F+M only) ───────────────────────────────
-  // Load rawValue per metric across the in-force series window, then bucket by metricKey.
-  // This uses the SAME supersede-aware ref list that the composite series uses, so point-
-  // in-time correctness is guaranteed. One extra query per view (indexed by stockId+pillar).
-  const seriesRefs = await getInForceSeriesRefs(stock.id, windowQuarters);
-  // Build L3 series (per-metric sparkline) for Foundation + Momentum.
+  // Bucket the window's per-metric rawValues (fetched in layer 3) by metricKey. The window refs are
+  // the SAME supersede-aware list the composite series uses, so point-in-time correctness holds.
   const l3SeriesFoundation = new Map<string, L3SeriesPoint[]>();
   const l3SeriesMomentum = new Map<string, L3SeriesPoint[]>();
 
-  if (seriesRefs.length > 0) {
-    // Load all in-window snapshots' pillarScoreIds for foundation + momentum.
-    const windowSnapshots = await prisma.scoreSnapshot.findMany({
-      where: { id: { in: seriesRefs.map((r) => r.id) } },
-      select: {
-        periodKey: true,
-        asOfDate: true,
-        foundationPillarId: true,
-        momentumPillarId: true,
-      },
-    });
-
-    // Collect all unique pillarScore IDs per pillar type.
-    const fPillarIds = [...new Set(windowSnapshots.map((s) => s.foundationPillarId).filter(Boolean))] as string[];
-    const mPillarIds = [...new Set(windowSnapshots.map((s) => s.momentumPillarId).filter(Boolean))] as string[];
-
+  if (windowSnapshots.length > 0) {
     // pillarScoreId → (periodKey, asOfDate) via snapshot rows.
     const pillarToMeta = new Map<string, { periodKey: string; asOfDate: Date }>();
     for (const s of windowSnapshots) {
       if (s.foundationPillarId) pillarToMeta.set(s.foundationPillarId, { periodKey: s.periodKey, asOfDate: s.asOfDate });
       if (s.momentumPillarId) pillarToMeta.set(s.momentumPillarId, { periodKey: s.periodKey, asOfDate: s.asOfDate });
     }
-
-    // One bulk query per pillar type for rawValue across all window periods.
-    const fMetricRows = fPillarIds.length
-      ? await prisma.metricScore.findMany({
-          where: { pillarScoreId: { in: fPillarIds } },
-          select: { pillarScoreId: true, metricKey: true, rawValue: true },
-        })
-      : [];
-    const mMetricRows = mPillarIds.length
-      ? await prisma.metricScore.findMany({
-          where: { pillarScoreId: { in: mPillarIds } },
-          select: { pillarScoreId: true, metricKey: true, rawValue: true },
-        })
-      : [];
 
     function buildL3Map(
       rows: { pillarScoreId: string; metricKey: string; rawValue: unknown }[],
@@ -756,8 +953,10 @@ export async function buildHealthSnapshotView(
     ownership: snap.ownershipPillar.pillarState,
   };
 
+  // ★ THE PARAMETER TYPE IS THE NARROWED ARM. A lean pillar row has no `metricScores`, so it cannot
+  //   be passed here at all — the guarantee is the signature, not a comment.
   const fmMetrics = (
-    p: LoadedSnapshot["foundationPillar"],
+    p: FullSnapshot["foundationPillar"],
     pillarKey: "foundation" | "momentum",
     l3SeriesMap: Map<string, L3SeriesPoint[]>,
   ): MetricView[] => {
@@ -779,7 +978,13 @@ export async function buildHealthSnapshotView(
     return [...scored, ...synthesized].sort((a, b) => a.metricKey.localeCompare(b.metricKey));
   };
 
-  const marketSubs: MarketSubView[] = snap.marketPillar.marketSubScores
+  // ★ MOVED BEHIND THE NARROWING, AND THIS IS THE MAPPER THE FORK FORCED. `marketSubs` and
+  //   `ownershipDetail` used to be computed UNCONDITIONALLY at this level, then used only inside
+  //   `pillars[]` (`marketSubs: pillar === "market" ? marketSubs : null`). On a lean load their
+  //   inputs do not exist, so they are now functions the pillars branch calls — which also stops the
+  //   full path building two objects it then discards on every projected read.
+  const marketSubsOf = (full: FullSnapshot): MarketSubView[] =>
+    full.marketPillar.marketSubScores
     .map((s) => ({
       subComponent: s.subComponent as MarketSubView["subComponent"],
       category: s.category as MarketSubView["category"],
@@ -793,8 +998,9 @@ export async function buildHealthSnapshotView(
     }))
     .sort((a, b) => a.subComponent.localeCompare(b.subComponent));
 
-  const os = snap.ownershipPillar.ownershipScore;
-  const ownershipDetail: OwnershipDetail | null = os
+  const ownershipDetailOf = (full: FullSnapshot): OwnershipDetail | null => {
+  const os = full.ownershipPillar.ownershipScore;
+  return os
     ? {
         baseline: num(os.baseline),
         baselineReason: os.baselineReason,
@@ -822,16 +1028,27 @@ export async function buildHealthSnapshotView(
           .sort((a, b) => a.category.localeCompare(b.category)),
       }
     : null;
+  };
 
-  const pillars: PillarView[] = PILLARS.map((pillar) => {
+  /**
+   * ★ EVERY METRIC-GRAPH READ ON THIS PAGE, BEHIND ONE NARROWING.
+   *
+   * It takes the FULL arm, so nothing inside can be reached from a lean load and nothing inside needs
+   * to re-check. The body is unchanged from when it was an inline `.map` — `snap` became `full`, and
+   * the two detail blocks became the calls above.
+   */
+  const buildPillars = (full: FullSnapshot): PillarView[] => {
+    const marketSubs = marketSubsOf(full);
+    const ownershipDetail = ownershipDetailOf(full);
+    return PILLARS.map((pillar) => {
     let metrics: MetricView[] | null = null;
     let lensPillarPatterns: PillarLensPattern[] | null = null;
     let lensShares: PillarLensShares | null = null;
 
     if (pillar === "foundation") {
-      metrics = fmMetrics(snap.foundationPillar, "foundation", l3SeriesFoundation);
+      metrics = fmMetrics(full.foundationPillar, "foundation", l3SeriesFoundation);
       // LP roll-up over scored metrics (the primitive reads the atom, we build atoms here).
-      const atoms = snap.foundationPillar.metricScores.map((ms) =>
+      const atoms = full.foundationPillar.metricScores.map((ms) =>
         toAtom(ms, "foundation", ms.peerStats ?? peerFallback.get(ms.metricKey) ?? null),
       );
       const lpResult = computeLensPillarPattern(atoms);
@@ -841,8 +1058,8 @@ export async function buildHealthSnapshotView(
         return { id: p.id, label: p.label, tone: p.tone, fieldVerdict: p.fieldVerdict, role: adc.role };
       });
     } else if (pillar === "momentum") {
-      metrics = fmMetrics(snap.momentumPillar, "momentum", l3SeriesMomentum);
-      const atoms = snap.momentumPillar.metricScores.map((ms) =>
+      metrics = fmMetrics(full.momentumPillar, "momentum", l3SeriesMomentum);
+      const atoms = full.momentumPillar.metricScores.map((ms) =>
         toAtom(ms, "momentum", ms.peerStats ?? peerFallback.get(ms.metricKey) ?? null),
       );
       const lpResult = computeLensPillarPattern(atoms);
@@ -867,7 +1084,19 @@ export async function buildHealthSnapshotView(
       lensShares,
     };
     return base;
-  });
+    });
+  };
+
+  // ★ THE PROJECTION'S ONE BRANCH ON SHAPE — and now it is a TYPE branch, not a boolean one. `null` —
+  //   never `[]` — because the two facts are different: `[]` is "this stock has no pillars" (the
+  //   not-scored branch says exactly that) and `null` is "you did not ask for them". `omitted` on the
+  //   response names which it was.
+  //
+  //   ⚠ THE DISCRIMINANT IS READ OFF THE LOADED ROW, NOT OFF `wantPillars`. They are the same fact —
+  //     `wantPillars` is what was passed to the loader — but only the row's own flag narrows the type,
+  //     and routing the branch through it is what makes "pillars were requested" and "the metric graph
+  //     is present" one statement instead of two that could drift.
+  const pillars: PillarView[] | null = snap.pillarDetail ? buildPillars(snap) : null;
 
   // ── trajectory: series + crossings + corporate-event overlay ──
   const seriesView: TrajectoryPoint[] = series.map((p) => ({
@@ -910,20 +1139,10 @@ export async function buildHealthSnapshotView(
   // The pillar-zone crossings a T-pattern ACTUALLY fired, read off the persisted rows across the
   // window. `crossedBelow`/`crossedAbove` is the mark the rule itself stamped; the pillar is the
   // record's own subject. Nothing here re-derives a zone.
-  for (const ev of await firedCrossingEvents(stock.id, series.map((p) => p.periodKey))) crossings.push(ev);
+  // (fetched in layer 3 — the event window is the series span, widened back `windowQuarters` when
+  //  the series is a single point so the overlay is still meaningful; see `earliestAsOf` there)
+  for (const ev of firedCrossings) crossings.push(ev);
 
-  // Event window = the series span; widen back windowQuarters quarters when the
-  // series is a single point so the overlay is meaningful.
-  const latestAsOf = series.length ? series[series.length - 1].asOfDate : snap.asOfDate;
-  const earliestAsOf =
-    series.length > 1
-      ? series[0].asOfDate
-      : new Date(latestAsOf.getTime() - windowQuarters * 92 * 24 * 3600 * 1000);
-  const eventRows = await prisma.corporateEvent.findMany({
-    where: { stockId: stock.id, eventDate: { gte: earliestAsOf, lte: latestAsOf } },
-    orderBy: { eventDate: "asc" },
-    select: { eventType: true, eventDate: true, description: true, impactLevel: true },
-  });
   const events: CorporateEventView[] = eventRows.map((e) => ({
     eventType: e.eventType,
     eventDate: ymd(e.eventDate),
@@ -936,8 +1155,7 @@ export async function buildHealthSnapshotView(
   // versions. Fetch a wide (~13-month) window so the client can serve every daily
   // timeframe (60/30/15D) AND an arbitrary custom date-range purely client-side by
   // slicing; the range is honestly bounded by whatever retention actually holds.
-  // Empty when the stock has no daily version history yet.
-  const dailyRaw = await getDailySnapshotSeries(stock.id, 400);
+  // Empty when the stock has no daily version history yet. (fetched in layer 2)
   const dailySeries: DailyTrajectoryPoint[] = dailyRaw.map((p) => ({
     asOfDate: ymd(p.asOfDate),
     periodKey: p.periodKey,
@@ -965,6 +1183,7 @@ export async function buildHealthSnapshotView(
     resultDays,
     crossings,
     events,
+    pillarZones: PILLAR_ZONES,
   };
 
   // ── findings (raw, sorted by severity; red flags first, then patterns) ──
@@ -972,24 +1191,32 @@ export async function buildHealthSnapshotView(
   //   get-stock-facts and the AI grounding block, which both read THIS view's findings).
   //   A retired key's persisted row would otherwise render with a humanised title, a family
   //   boundary line and the fluent sentence the retired rule wrote into evidence at fire time.
-  const redFlags: RedFlagView[] = dropRetiredFlags(snap.redFlags)
-    .map((rf) => ({
-      flagKey: rf.flagKey,
-      severity: rf.severity,
-      tier: rf.tier as RedFlagView["tier"],
-      triggeringValues: rf.triggeringValues ?? null,
-      guardrailEventId: rf.guardrailEventId,
-      verdict: renderVerdict(rf.flagKey, rf.triggeringValues ?? null),
-    }))
-    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
+  //
+  // ★ THE SCORE CHANNEL FIRES NO RED FLAGS, AND THIS ARRAY SAYS SO — 2026-08-11.
+  //
+  // It used to read `snap.redFlags` through two suppression predicates. `score_red_flags` is gone;
+  // every red-flag rule (R1…R6) is a FILING rule, and the scoring pass registers none — so the honest
+  // value of "red flags fired by the SCORE channel on this snapshot" is the empty array, and the field
+  // keeps its shape and its meaning rather than being deleted from the contract.
+  //
+  // ⚠ IT MUST NOT BE REPOINTED AT THE LIVE CHANNEL, and this is the load-bearing part. `filingFindings`
+  //   on this same payload already carries every standing red flag, from the filing's own period, and
+  //   the frontend MERGES the two: prepareStockFindings composes `findings.redFlags` ∪ `filingFindings`
+  //   into one list (lib/findings/index.ts). Feeding this array from the filing channel would render
+  //   all 55 live red flags as two cards each with two dates — exactly the duplication step 4's
+  //   channel suppression removed, arrived at from the opposite direction.
+  //
+  // ⚠ THE PATTERN HALF IS UNAFFECTED: `dropFilingPatterns` below is still doing real work, because
+  //   score_patterns DOES still carry frozen filing-rule pattern rows.
+  const redFlags: RedFlagView[] = [];
   // ★ LIFECYCLE — how long each finding has been true, which way it is moving, and what ended.
   //   A pure read over the append-only score_patterns history (read/finding-lifecycle.service.ts);
   //   it re-runs no rule and changes no firing decision. The verdict sentences above are untouched.
-  //   `snap.periodKey` is passed so the resolver's notion of "current" is THIS view's head, not a
-  //   second derivation of it — see the param note on resolveFindingLifecycles.
-  const lifecycles = await resolveFindingLifecycles(stock.id, snap.periodKey);
+  //   The head period is passed so the resolver's notion of "current" is THIS view's head, not a
+  //   second derivation of it — see the param note on resolveFindingLifecycles. (fetched in layer 2,
+  //   off `ref.periodKey`, which is the same row's key.)
 
-  const patterns: PatternView[] = dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns))
+  const patterns: PatternView[] = dropFilingPatterns(dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns)))
     .map((p) => {
       const lifecycle = lifecycles.firing.get(p.patternKey) ?? null;
       // ★ THE CLAUSE SET, COMPOSED WITH THE LIFECYCLE — this is the one call site that can supply the
@@ -1002,8 +1229,7 @@ export async function buildHealthSnapshotView(
         severity: p.severity,
         displayState: (p.displayState ?? "active") as PatternView["displayState"],
         magnitude: numN(p.magnitude),
-        evidence: p.evidence ?? null,
-        metricRefs: p.metricRefs ?? null,
+        evidence: asEvidenceBag(p.evidence),
         // ⚠ PRECEDENCE UNCHANGED. renderVerdict still resolves authored → engine → generic, and the
         //   authored path is now composeVerdict's own text. Falling back to renderVerdict when the
         //   composer produced nothing keeps the engine-sentence and generic tiers reachable.
@@ -1062,7 +1288,17 @@ export async function buildHealthSnapshotView(
   // ── THE THIRD SILENT STATE — a scored stock, nothing firing, and no not-covered configuration
   //   matched either. `patterns` is built above; `notCovered` just above this. Both empty is the ONLY
   //   condition this line renders under — see the field note on HealthSnapshotView.findings.quietNote.
-  const quietNote: string | null = patterns.length === 0 && notCovered.length === 0 ? NOT_COVERED_SILENT_LINE : null;
+  //
+  // ★ AND NOW A THIRD CLAUSE: THE PAGE IS NOT QUIET IF THE OTHER CHANNEL IS SPEAKING. The channel
+  //   filter above can empty `patterns` on a stock that is still firing — BLUESTARCO's accruals,
+  //   TATACONSUM's margin compression — because those findings moved to `filingFindings` and are
+  //   rendered from there. Without this clause the page would carry "quiet means nothing tested
+  //   reliable here" directly beside a fired filing card, which is the surface contradicting itself.
+  //   The condition is strictly NARROWER than before, so it can only withdraw the line, never add it.
+  const quietNote: string | null =
+    patterns.length === 0 && notCovered.length === 0 && (filingFindings?.fired.length ?? 0) === 0
+      ? NOT_COVERED_SILENT_LINE
+      : null;
 
   // ── CROSS-TOOL · what the OTHER tool is showing, in two lines ────────────────────────────────
   // Built from the `patterns` array already assembled — one source, so the summary and the tool's
@@ -1114,9 +1350,9 @@ export async function buildHealthSnapshotView(
   };
 
   // ── peer standing (rank within PG by composite at this period) ──
-  const peerStanding = pg
-    ? buildPeerStanding(pg.id, snap.periodKey, stock.id, await getPeerSiblings(pg.id, snap.periodKey))
-    : null;
+  // The siblings were fetched in layer 2 (they need only `pg.id` + the head period). `null` covers
+  // both "no peer group" and "not requested" — `omitted` on the response tells the two apart.
+  const peerStanding = pg && peerSiblings ? buildPeerStanding(pg.id, snap.periodKey, stock.id, peerSiblings) : null;
 
   // ── S3.5 rank second-check (read-layer; rank/N only, NO z-score) ──────────────
   // CONFIRMATION ONLY: the triplet already FIRED each pattern above; here we attach the
@@ -1124,7 +1360,7 @@ export async function buildHealthSnapshotView(
   // pillar-verdict wording can never contradict the stock's rank in its PG (e.g. an LP3
   // "trails an elite field" verdict on the PG's #1 stock). Firing is byte-identical —
   // we mutate only the verdict text on the already-built pattern objects.
-  for (const pv of pillars) {
+  for (const pv of pillars ?? []) {
     if (pv.pillar !== "foundation" && pv.pillar !== "momentum") continue;
     const rk = peerStanding?.perPillarRank?.[pv.pillar] ?? null;
     const band = rk ? standingBand(rk.rank, rk.outOf) : null;
@@ -1143,7 +1379,9 @@ export async function buildHealthSnapshotView(
   // ★ THE LIVE REGIME — resolved THROUGH the stock's peer group, never computed on the stock. This
   //   is the first call site getRegimeByStock has ever had: before it, the only regime a reader could
   //   see was a frozen stamp inside one finding's evidence, at that scoring run's asOf rather than now.
-  const regimeView = (await getRegimeByStock([stock.id])).get(stock.id) ?? null;
+  //   (fetched in layer 2 — it needs only `stock.id`, and used to sit at the very END of the chain,
+  //   three sequential round-trips after everything else had already resolved.)
+  const regimeView = regimeByStock.get(stock.id) ?? null;
   const regime: HealthSnapshotView["regime"] = regimeView
     ? {
         regime: regimeView.regime,
@@ -1152,10 +1390,19 @@ export async function buildHealthSnapshotView(
         indexName: regimeView.indexName,
         asOf: regimeView.asOf,
         reason: regimeView.reason ?? null,
+        // ★ THE TEST, BESIDE THE READING — the same discipline `alignedMax` follows. An explainer
+        //   that says "above +25%" has to get that number from the rule that used it, not from a
+        //   sentence typed on the other side of the wire. See RegimeBadgeView.
+        hotAbove: REGIME_HOT_ABOVE,
+        stressedBelow: REGIME_STRESSED_BELOW,
       }
     : null;
 
-  return { scored: true, identity, verdict, pillars, trajectory, findings, peerStanding, regime };
+  // ★ TWO CHANNELS, NEVER ONE ARRAY. `findings` is score-derived and exists on 95 stocks;
+  //   `filingFindings` is filing-derived and exists on all 504. They are separate fields because they
+  //   have different populations behind them — and step 5 gives them different base-rate denominators
+  //   for exactly that reason. Merging them here would force a re-split the moment base rates land.
+  return { scored: true, identity, verdict, pillars, trajectory, findings, filingFindings, peerStanding, regime, omitted };
 }
 
 // ★ zoneLabel() IS DELETED. It banded a pillar against NATIVE_ZONES to emit chart crossings — the

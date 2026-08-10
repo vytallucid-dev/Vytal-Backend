@@ -16,6 +16,9 @@
 // ═══════════════════════════════════════════════════════════════════════
 import { buildHealthSnapshotView } from "../scoring/read/health-view.service.js";
 import type { HealthSnapshotView } from "../scoring/read/health-view.types.js";
+// ★ THE FILING CHANNEL, RENDERED ONCE FOR EVERY MODEL-FACING SURFACE — see ai/filing-facts.ts for why
+//   this block is not composed here (three sites, three vocabularies, one invisible divergence).
+import { renderFilingFacts } from "./filing-facts.js";
 import { buildPortfolioHealthView, type PortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
 
 // ── The closed-world instruction — IDENTICAL in every fact block, never varies, never dropped ──
@@ -279,10 +282,22 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
   L.push("");
 
   if (!view.scored) {
+    // ★ THE SENTENCE USED TO END "…findings, trajectory, or peer standing exist for it", and that was
+    //   false about 409 of 504 stocks. `filingFindings` is populated on THIS branch by construction —
+    //   health-view.service.ts resolves it in layer 1, before the head-snapshot guard, precisely so it
+    //   survives for the stocks that have nothing else. What does not exist here is the SCORE and
+    //   everything derived from a reading; what does exist is what the company filed, below.
     L.push(
       `[HEALTH SNAPSHOT] ${NA} — this stock is not scored (coverageState=${val(id.coverageState)}). ` +
-        `No composite, pillars, findings, trajectory, or peer standing exist for it.`,
+        `No composite, pillars, trajectory, peer standing, or score-derived findings exist for it.`,
     );
+    L.push(
+      `⚠ THAT IS NOT THE SAME AS "nothing to report". Vytal's filing checks run on this company whether ` +
+        `or not it is scored, and their result is below. Read it before saying anything about what is or ` +
+        `is not flagged here.`,
+    );
+    L.push("");
+    L.push(...renderFilingFacts(view.filingFindings, { subject: id.symbol }));
     return L.join("\n");
   }
 
@@ -364,7 +379,10 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
       "them. state=unavailable_redistributed means the pillar could not be scored this period and its " +
       "weight was spread across the pillars that could; describe that qualitatively, never with a number.)",
   );
-  for (const p of view.pillars) {
+  // ⚠ `?? []` COVERS THE PROJECTION, NOT A MISSING SECTION. This call site never asks for one, so
+  //   the array is always there; the fallback exists because `pillars` is nullable on the type now
+  //   (null = not requested — see HealthSnapshotView.omitted), and grounding must not narrow by cast.
+  for (const p of view.pillars ?? []) {
     // nativeZone MARKS WITHHELD — the numeric [lower,upper] are per-PG pillar-zone thresholds (constant per
     // peer group, harvestable across stocks). The model explains from the categorical POSITION ("above its
     // native zone"), never the marks, so only `position` is rendered.
@@ -455,7 +473,14 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
   L.push("[FINDINGS] (coded; the human sentence is composed downstream from these facts)");
   const f = view.findings;
   if (!f || (!f.redFlags.length && !f.patterns.length)) {
-    L.push("No red flags or patterns fired.");
+    // ⚠ THE CHANNEL IS NAMED, because this line is a claim of ABSENCE and it only covers one channel.
+    //   The 22 filing rules moved out of the score pass, so a scored company with a standing pledging
+    //   flag or a margin-compression run reaches here with an empty score-finding set — and a bare
+    //   "No red flags or patterns fired" is then a clean bill of health over a fired red flag.
+    L.push(
+      "No SCORE-channel red flags or patterns fired on this reading. ⚠ That is a statement about this " +
+        "channel ONLY — the filing channel below is read separately and may be firing.",
+    );
   } else {
     for (const rf of f.redFlags) {
       // Name-first: the CANONICAL finding name leads; the raw flagKey stays bracketed for citation
@@ -471,14 +496,33 @@ function renderStockFactBlock(view: HealthSnapshotView): string {
     for (const pt of f.patterns) {
       const ptHead = `"${findingName(pt.patternKey)}" [${pt.patternKey}]`;
       const v = rowVerdict(pt.verdict);
+      // ⚠ `metricRefs` USED TO TRAIL THIS LINE and was removed 2026-08-10 with the column. It emitted a
+      //   bare unlabelled array of internal identifiers — `metricRefs=["market","foundation"]`,
+      //   `["tradeReceivablesCurrent"]` — with nothing saying what the codes were or which of the three
+      //   vocabularies they came from (pillar names, raw source fields, lens metric slots). That is the
+      //   same defect class as `pledgeRatioQ` reaching a reader: a raw identifier handed to the model to
+      //   interpret. Everything it could have said is already on this line — the finding's canonical
+      //   NAME leads it, and `evidence` carries the numbers under labelled keys.
       L.push(
         `- Pattern ${ptHead}: direction=${val(pt.direction)}, severity=${val(pt.severity)}, ` +
           `magnitude=${val(pt.magnitude)}` +
           (v ? `, verdict="${v}"` : "") +
-          `, evidence=${jsonOr(pt.evidence)}, metricRefs=${jsonOr(pt.metricRefs)}`,
+          `, evidence=${jsonOr(pt.evidence)}`,
       );
     }
   }
+  L.push("");
+
+  // ★ THE SECOND FINDING CHANNEL — SCORED STOCKS HAVE ONE TOO, AND IT WAS MISSING FROM THIS BLOCK.
+  //
+  // The unscored branch above is the loud half of the defect, but it is not the whole of it: the 22
+  // filing rules were moved out of the score pass, so a SCORED company's pledging flag, accruals
+  // divergence and margin-compression run all live on `filingFindings` and none of them reached the
+  // model. BEL is scored, carries one score pattern — and four filing findings the block never named.
+  //
+  // Rendered through the same renderer the two chat sites use, so what the assistant is told about a
+  // company does not depend on which surface asked. See ai/filing-facts.ts.
+  L.push(...renderFilingFacts(view.filingFindings, { subject: id.symbol }));
   L.push("");
 
   // PEER STANDING

@@ -19,10 +19,18 @@
 import { prisma } from "../db/prisma.js";
 import { getLatestSnapshotRef } from "../scoring/read/scoring-read.service.js";
 import { deriveCoverage } from "./coverage.js";
-import { dropRetiredFlags, dropRetiredPatterns } from "../catalogue/retired-findings.js";
+import { dropRetiredPatterns } from "../catalogue/retired-findings.js";
 // ★ NOT-COVERED SUPPRESSION (companion to boundary 6 of 9 above) — a persisted `notcovered_*` row
 //   must never win a card slot on the relational surface either.
 import { dropNotCoveredPatterns } from "../catalogue/not-covered.js";
+// ★ THE FILING CHANNEL (this build). `readFilingFindings` is the SAME read the stock page, the chat's
+//   batch findings and the grounding block go through — the card joins the existing consumers rather
+//   than growing a second reader of stock_findings. `dropFilingPatterns`/`dropFilingFlags` are the
+//   companion suppression: the moment this resolver serves BOTH channels it inherits channel.ts's rule
+//   that a frozen score-channel row must not be served beside its live filing twin.
+import { readFilingFindings } from "../filing/read.js";
+import { dropFilingPatterns } from "../filing/channel.js";
+import type { FilingFindingView } from "../filing/read.types.js";
 import type { ObjectState, ObjectFinding } from "./types.js";
 
 /** `_N\d+_` ⇒ Family N (positive). A red flag is negative. Otherwise fall back to the fired instance's
@@ -104,6 +112,46 @@ function parseNotEvaluable(v: unknown): { ruleRef: string; reason: string }[] | 
  * and a capital/opening character, so a decimal ("1.5") or an abbreviation ("Ltd. ") cannot split a
  * sentence in half. Never re-authors, re-punctuates, or re-orders a word (§0.10).
  */
+/**
+ * ★ THE FILING CHANNEL, PROJECTED ONTO THE CARD'S FINDING SHAPE (this build).
+ *
+ * ⚠ WHY THIS EXISTS AT ALL. `ObjectState.findings` was built from score_patterns / score_red_flags
+ * only, and returned `[]` outright when no snapshot resolved. Four entry families read nothing else —
+ * UO6, ELEVATED, UD1 and the whole UE echo layer — so on a stock we do not score they all evaluated to
+ * nothing, and the card said so out loud. Live: 360ONE stands on a CRITICAL pledge red flag (90% of
+ * promoter holding pledged) and its card read "Nothing standing on this stock repeats elsewhere in
+ * your book" under the header "Your position, and what's standing on it." The finding existed, in a
+ * table this resolver never opened.
+ *
+ * ⚠ NO ADAPTER, BY CONSTRUCTION. `FilingFindingView` already publishes `key` (not `ruleKey`) and
+ * `kind: "red_flag" | "pattern"` (the DB enum's own value) — normalised at the source precisely so
+ * consumers converge. The only work here is deriving the two fields the card owns: `polarity` and
+ * `temporalClass`, through the SAME two functions the score channel goes through. A filing finding is
+ * therefore classified by identical rules, not by a parallel set that could drift.
+ *
+ * ⚠ `verdict` AND `name` ARE CARRIED INTO THE EVIDENCE BAG, AND THAT IS NOT A RE-RENDER. UO6 reads
+ * `evidence.verdict` / `evidence.name` directly to compose its strength claim, and the score channel's
+ * rows happen to carry both. The filing view already holds the AUTHORED verdict — produced by the same
+ * `renderVerdict` every other surface uses — so lifting it into the bag hands UO6 the sentence the rest
+ * of the product shows. Without it UO6 falls through to its "A standing strength." placeholder on a
+ * real, named finding. Idempotent: `renderVerdict`'s own precedence would resolve to this same string.
+ */
+function filingToObjectFinding(v: FilingFindingView): ObjectFinding {
+  const evidence: Record<string, unknown> = { ...(v.evidence ?? {}) };
+  if (typeof evidence.verdict !== "string" && v.verdict) evidence.verdict = v.verdict;
+  if (typeof evidence.name !== "string" && v.name) evidence.name = v.name;
+  return {
+    kind: v.kind,
+    key: v.key,
+    severity: v.severity,
+    // The SAME derivations the score channel uses — polarity from the key namespace + direction,
+    // temporal class from the finding's own `windowDays`. Never a filing-specific rule.
+    polarity: derivePolarity(v.key, v.kind, v.direction),
+    temporalClass: deriveTemporalClass(evidence),
+    evidence,
+  };
+}
+
 const SANITY_MAX_CHARS = 400;
 function leadSentence(prose: string | null | undefined): string | null {
   const text = (prose ?? "").trim();
@@ -139,14 +187,25 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
   // ⚠ §Phase 3 — the `resolveCoverage` read is GONE from this path. It queried StockScoringState (0
   // rows, no writer) and returned null for a scored and an unscored stock alike. Coverage is now
   // DERIVED below from the snapshot ref + the declined set + PG membership. Two indexed lookups now.
-  const [spg, snapRef] = await Promise.all([
+  const [spg, snapRef, filingSection] = await Promise.all([
     prisma.stockPeerGroup.findFirst({
       where: { stockId: stock.id },
       select: { peerGroup: { select: { id: true, displayName: true, stockCount: true } } },
     }),
     getLatestSnapshotRef(stock.id),
+    // ⚠ FAIL-SOFT, LIKE EVERY OTHER READ ON THIS PATH. The card is guaranteed-resolve (§0.4): a filing
+    // read that throws degrades to no filing findings rather than 500-ing the card. Logged, because a
+    // silent degradation to "" is how the echo census stayed broken for seven days.
+    readFilingFindings([stock.id]).catch((err: unknown) => {
+      console.warn(`[relational/object-state] filing read failed for ${stock.id}: ${(err as Error).message}`);
+      return null;
+    }),
   ]);
   const pg = spg?.peerGroup ?? null;
+  // The CURRENT fired filing findings for this stock, in the card's shape. `readFilingFindings` returns
+  // a section for every id it is given (an absent key would send a consumer back to rendering nothing),
+  // so an empty list here means "nothing fired", not "not looked at".
+  const filingFindings: ObjectFinding[] = (filingSection?.get(stock.id)?.fired ?? []).map(filingToObjectFinding);
 
   const sector = stock.sector
     ? { key: stock.sector.name, displayName: stock.sector.displayName, sectorClass: stock.sector.sectorClass ?? null }
@@ -168,9 +227,14 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
       snapshot: null,
       sector,
       peerGroup,
-      findings: [],
-      // No in-force snapshot ⇒ no rule ever ran on this stock ⇒ we know NOTHING about declined
-      // checks. That is null, never [] — an empty array would assert a clean evaluation we never made.
+      // ★ NOT `[]` ANY MORE. The filing channel runs on all 504 active stocks and is the ONLY channel
+      //   that reaches a stock we do not score — 218 of the 355 display-only stocks carry at least one
+      //   fired filing finding. This is what un-blinds UO6 / ELEVATED / UD1 / UE on an unscored stock.
+      findings: filingFindings,
+      // No in-force SCORE snapshot ⇒ no scoring rule ran ⇒ we know NOTHING about which of THOSE checks
+      // declined. That is null, never [] — an empty array would assert a clean evaluation we never
+      // made. (The filing channel keeps its own declined set; it is deliberately not folded in here,
+      // because `notEvaluable` feeds `deriveCoverage`, whose states are defined over the score channel.)
       notEvaluable: null,
       pondMask: null,
     };
@@ -186,7 +250,8 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
     labelBand: true,
     maskHeat: true,
     patterns: { select: { patternKey: true, severity: true, direction: true, evidence: true } },
-    redFlags: { select: { flagKey: true, severity: true, triggeringValues: true } },
+    // ★ `redFlags` was selected here until 2026-08-11 and produced nothing after `dropFilingFlags`
+    //   — all six red-flag rules are filing rules, and the live filing channel is folded in below.
   } as const;
 
   // ⚠ MIGRATION-TOLERANT READ (Phase 2/3). `not_evaluable` ships in a migration that is written but
@@ -217,9 +282,14 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
       snapshot: null,
       sector,
       peerGroup,
-      findings: [],
-      // No in-force snapshot ⇒ no rule ever ran on this stock ⇒ we know NOTHING about declined
-      // checks. That is null, never [] — an empty array would assert a clean evaluation we never made.
+      // ★ NOT `[]` ANY MORE. The filing channel runs on all 504 active stocks and is the ONLY channel
+      //   that reaches a stock we do not score — 218 of the 355 display-only stocks carry at least one
+      //   fired filing finding. This is what un-blinds UO6 / ELEVATED / UD1 / UE on an unscored stock.
+      findings: filingFindings,
+      // No in-force SCORE snapshot ⇒ no scoring rule ran ⇒ we know NOTHING about which of THOSE checks
+      // declined. That is null, never [] — an empty array would assert a clean evaluation we never
+      // made. (The filing channel keeps its own declined set; it is deliberately not folded in here,
+      // because `notEvaluable` feeds `deriveCoverage`, whose states are defined over the score channel.)
       notEvaluable: null,
       pondMask: null,
     };
@@ -228,8 +298,21 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
   // ★ RETIREMENT SUPPRESSION (boundary 6 of 9 — the relational card's object state). A retired key
   //   reaching here would be handed to derivePolarity/deriveTemporalClass and could win a card slot,
   //   putting an obsolete claim in the reader's most prominent surface.
+  // ★ CHANNEL SUPPRESSION — NEWLY REQUIRED, AND REQUIRED FOR THE REASON channel.ts ALREADY STATES.
+  //
+  //   Its rule is that filing-key suppression belongs at boundaries serving BOTH channels, "because
+  //   only there does removing a row remove a DUPLICATE rather than a fact". Until this build this
+  //   resolver served the score channel alone, so it was correctly exempt — and it is listed among the
+  //   exempt surfaces there. Merging the filing channel in below is exactly what moves it across that
+  //   line, so it inherits the rule in the same commit that makes it apply.
+  //
+  //   Without this, the 86 FROZEN filing rows still sitting on scored heads (58 of 95 scored stocks —
+  //   score_patterns is append-only and the scoring pass stopped writing these in step 2) would be
+  //   served BESIDE their live filing twins: the same rule, on the same card, from two tables, dated
+  //   two different periods. The frozen row is the stale one; the filing row is current, so the frozen
+  //   one goes and the filing one stays.
   const findings: ObjectFinding[] = [
-    ...dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns)).map((p): ObjectFinding => ({
+    ...dropFilingPatterns(dropNotCoveredPatterns(dropRetiredPatterns(snap.patterns))).map((p): ObjectFinding => ({
       kind: "pattern",
       key: p.patternKey,
       severity: p.severity,
@@ -237,14 +320,8 @@ export async function resolveObjectState(stockId: string): Promise<ObjectState |
       temporalClass: deriveTemporalClass(asRecord(p.evidence)),
       evidence: asRecord(p.evidence),
     })),
-    ...dropRetiredFlags(snap.redFlags).map((r): ObjectFinding => ({
-      kind: "red_flag",
-      key: r.flagKey,
-      severity: r.severity ?? "critical",
-      polarity: derivePolarity(r.flagKey, "red_flag", null),
-      temporalClass: deriveTemporalClass(asRecord(r.triggeringValues)),
-      evidence: asRecord(r.triggeringValues),
-    })),
+    // The live filing channel — the same rules, read from the table that is still being written.
+    ...filingFindings,
   ];
 
   const declined = parseNotEvaluable(declinedRaw);

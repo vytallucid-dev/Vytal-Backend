@@ -18,7 +18,9 @@ import { COMPOSITE_MOVE_DEADBAND } from "./display-constants.js";
 // The ONE severity ordering (File 1 §5, total over all eight tokens). See `worseSeverity` below
 // for why this is imported rather than redeclared locally — the local copy was silently wrong.
 import { severityWeight as severityRank } from "../../catalogue/divergence.js";
-import { dropRetiredFlags, dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+import { dropRetiredPatterns } from "../../catalogue/retired-findings.js";
+// ★ THE LIVE RED-FLAG CHANNEL — stock-grain, still written. Replaces the score_red_flags read.
+import { readStandingRedFlags } from "../../filing/read.js";
 // ★ NOT-COVERED SUPPRESSION (mirrors the retirement guards on this page) — a persisted `notcovered_*`
 //   row must never enter the member-level fired list or the universe pathology census; the census in
 //   particular would otherwise report "fires on N of the universe" about a configuration explicitly
@@ -208,7 +210,8 @@ function loadUniverseCrossSection(ids: string[]) {
           },
         },
       },
-      redFlags: { select: { flagKey: true, severity: true, tier: true } },
+      // `redFlags` was selected here until 2026-08-11 — the relation is gone with score_red_flags;
+      // the live channel is read by stock id (readStandingRedFlags), not off the snapshot graph.
       patterns: { select: { patternKey: true, direction: true, severity: true, displayState: true } },
     },
   });
@@ -391,34 +394,31 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
     if (!cur || r.version < cur.version) priorAnchorByStock.set(r.stockId, r); // keep minimum
   }
 
-  const anchorIds = [...priorAnchorByStock.values()].map((r) => r.id);
 
-  // ── RT2 (parallel): full cross-section + stock names + anchor flags ───────
-  const [fullSnaps, stocks, anchorFlagRows] = await Promise.all([
+  // ── RT2 (parallel): full cross-section + stock names + the LIVE red-flag channel ───────
+  //
+  // ★ REPOINTED 2026-08-11. This used to read `score_red_flags` on the ANCHOR snapshots. That table
+  //   has had no writer since the filing cutover (R1…R6 are all FILING_RULES; the scoring pass
+  //   registers no red-flag rule at all), and every one of its 215 surviving rows sits on a
+  //   superseded or older-period snapshot — so the read returned nothing and `firedFlags` was empty
+  //   on all 94 members. The live channel is stock-grain, not snapshot-grain, which is why it is
+  //   keyed on `currentStockIds` here.
+  //
+  // ⚠ SCOPED TO THE MEMBERS, DELIBERATELY. `readStandingRedFlags` is universe-wide and 51 stocks
+  //   carry a standing red flag today — but 45 of them are unscored and this view describes the
+  //   scored cross-section only (composite, band, pillars, percentile). Passing `currentStockIds`
+  //   and nothing else keeps the population exactly what it was; reaching the other 45 needs a
+  //   504-stock denominator and is a different piece of work.
+  const [fullSnaps, stocks, standingFlags] = await Promise.all([
     loadUniverseCrossSection(currentIds),
     prisma.stock.findMany({
       where: { id: { in: [...currentStockIds] } },
       select: { id: true, name: true },
     }),
-    anchorIds.length > 0
-      ? prisma.redFlag.findMany({
-          where: { snapshotId: { in: anchorIds } },
-          select: { snapshotId: true, flagKey: true, severity: true },
-        })
-      : Promise.resolve([] as { snapshotId: string; flagKey: string; severity: string | null }[]),
+    readStandingRedFlags([...currentStockIds]),
   ]);
 
   const nameById = new Map(stocks.map((s) => [s.id, s.name]));
-
-  const anchorFlagsBySnapId = new Map<
-    string,
-    { flagKey: string; severity: string | null }[]
-  >();
-  for (const row of anchorFlagRows) {
-    const arr = anchorFlagsBySnapId.get(row.snapshotId) ?? [];
-    arr.push({ flagKey: row.flagKey, severity: row.severity });
-    anchorFlagsBySnapId.set(row.snapshotId, arr);
-  }
 
   // ── Build members + scope members + pathology accumulators ────────────────
   const scopeMembers: ScopeMember[] = [];
@@ -452,15 +452,22 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
     if (s.ownershipPillar?.pillarState === "scored")
       scoredSubs.push({ pillar: "ownership", subtotal: pillars.ownership });
 
-    // ★ RETIREMENT SUPPRESSION (boundary 2 of 9 — the universe/Hub census, and via its `members`
-    //   the Hub projection AND the peer-group pathology census, both of which read these arrays
-    //   rather than the DB). A retired key here would inflate a census row and be counted as a
-    //   live pathology across the whole universe.
-    const firedFlags: FiredFlag[] = dropRetiredFlags(s.redFlags)
+    // ★ THE LIVE RED-FLAG CHANNEL, same shape as before. `readStandingRedFlags` returns the CURRENT
+    //   row per (stock, rule) that fired — the same "is it standing now" question the frozen snapshot
+    //   rows used to answer, asked of the table that is still being written.
+    //
+    //   `tier: "auto"` is not a guess: the scoring pass wrote that literal on every rule-fired red
+    //   flag (findings/persist.ts), and `"review"` only ever meant a guardrail-raised one. Every
+    //   filing red flag is a rule firing, so "auto" is exactly what it was.
+    //
+    //   RETIREMENT SUPPRESSION is gone with the source and is not needed: a retired key cannot reach
+    //   `stock_findings` at all — the filing pass writes one row per REGISTERED rule, and the retired
+    //   ones are unregistered by construction (verify-rule-thresholds.ts §3 asserts that set).
+    const firedFlags: FiredFlag[] = (standingFlags.get(s.stockId) ?? [])
       .map((rf) => ({
-        flagKey: rf.flagKey,
+        flagKey: rf.ruleKey,
         severity: rf.severity,
-        tier: rf.tier as "auto" | "review",
+        tier: "auto" as const,
       }))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 
@@ -510,6 +517,9 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       // ★ THIS member's own period, not xs.periodKey (the plurality LABEL). See the field's
       //   comment in universe-view.types.ts — the mixed cross-section is the whole reason.
       periodKey: currentLeanByStock.get(s.stockId)?.periodKey ?? xs.periodKey,
+      // …and the day that reading was written. Same reasoning, one step finer: on a surface that
+      // genuinely mixes quarters, "which quarter" and "how old" are two different questions.
+      asOfDate: ymd(currentLeanByStock.get(s.stockId)?.asOfDate ?? xs.asOfDate),
     });
 
     scopeMembers.push({
@@ -518,12 +528,14 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
       composite: num(s.composite),
       labelBand: s.labelBand as LabelBand,
       pillars,
-      firesAnyRedFlag: s.redFlags.length > 0,
+      firesAnyRedFlag: firedFlags.length > 0,
       weight: 1,
     });
 
-    // Pathology accumulators
-    for (const rf of s.redFlags) {
+    // Pathology accumulators. ★ The flag half reads the SAME live set `firedFlags` was built from
+    //   (2026-08-11), so the census, the member marker and the member's own fired list can no longer
+    //   disagree about whether a company is firing a red flag — they are three views of one array.
+    for (const rf of firedFlags) {
       const acc = flagAcc.get(rf.flagKey) ?? { severity: null, members: [], states: [] };
       acc.severity = worseSeverity(acc.severity, rf.severity);
       acc.members.push({ symbol: s.symbol, sev: rf.severity });
@@ -560,14 +572,16 @@ export async function buildUniverseHealthView(): Promise<UniverseHealthView> {
         });
       }
 
-      const priorFlags = new Set(
-        (anchorFlagsBySnapId.get(priorAnchor.id) ?? []).map((f) => f.flagKey),
-      );
-      for (const rf of s.redFlags) {
-        if (!priorFlags.has(rf.flagKey)) {
-          newFlags.push({ symbol: s.symbol, flagKey: rf.flagKey, severity: rf.severity });
-        }
-      }
+      // ⚠ `newFlags` STAYS EMPTY, AND THAT IS THE HONEST ANSWER — not an oversight left behind by
+      //   the repoint above. This list is "red flags that APPEARED since the 7-day anchor VERSION",
+      //   a rescore-cadence question: it diffed one snapshot version against an earlier one of the
+      //   same period. The score channel fires no red flags at all now, so nothing can appear in it.
+      //
+      //   The filing channel HAS a newly-appeared notion (`readNewlyStandingFilingKeys`, fired +
+      //   newly_standing + a strictly-older period on record) — but it is keyed to the FILING period,
+      //   which moves quarterly, not to a 7-day rescore window. Substituting it here would change
+      //   what the Hub's "N new flags fired" line means while leaving the words identical, which is
+      //   worse than the empty list. It is left for whoever gives this line a filing-period cadence.
 
       if (delta <= DETERIORATION_THRESHOLD) {
         newDeteriorations.push({

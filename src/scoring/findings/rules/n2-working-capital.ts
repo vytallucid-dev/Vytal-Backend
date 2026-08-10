@@ -18,12 +18,19 @@
 //
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const N2_UNDERPACE_PP = 15;       // revenue growth − receivables growth ≥ 15pp (P8-symmetric)
-export const N2_MIN_YEARS = 2;           // ≥2 consecutive annual (growth) periods
-export const N2_MIN_RECV_TO_REV = 0.05;  // receivables ≥ 5% of revenue in the base period to be material
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_N2_working_capital.facts;
+
+export const N2_UNDERPACE_PP = FACTS.thresholds.underpacePp;       // revenue growth − receivables growth ≥ 15pp (P8-symmetric)
+export const N2_MIN_YEARS = FACTS.thresholds.minYears;           // ≥2 consecutive annual (growth) periods
+export const N2_MIN_RECV_TO_REV = FACTS.thresholds.minRecvToRev;  // receivables ≥ 5% of revenue in the base period to be material
 
 /** Trade receivables = current + non-current (null-safe). null only if BOTH are null. */
 const recv = (r: FoundationAnnual): number | null => {
@@ -54,8 +61,8 @@ function trailingDisciplineRun(sortedAsc: FoundationAnnual[]) {
   return { years: detail.length, detail };
 }
 
-export const ruleN2: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of P8)
+export const ruleN2: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of P8)
   const f = ctx.annualFundamentals;
   if (f.length < N2_MIN_YEARS + 1) return notEvaluable("insufficient_annual_history"); // 2 periods need 3 rows
 
@@ -96,6 +103,5 @@ export const ruleN2: FireRule = (ctx) => {
         `Working-capital discipline — revenue has grown at least ${N2_UNDERPACE_PP}pp faster than ` +
         `receivables for ${run.years} straight years (${base.fy}–${last.fy}); scaling without tying up more capital.`,
     },
-    metricRefs: ["revenue", "tradeReceivablesCurrent"],
   };
 };

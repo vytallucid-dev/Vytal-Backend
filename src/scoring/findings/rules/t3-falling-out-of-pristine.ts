@@ -90,6 +90,5 @@ export const ruleT3: FireRule = (ctx) => {
       normalHasDirectionalRead: false,
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["composite"],
   };
 };

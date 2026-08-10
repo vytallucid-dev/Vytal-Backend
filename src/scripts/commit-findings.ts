@@ -38,12 +38,12 @@ function quarterEnd(pk: string): Date {
 
 /** Delete-and-reinsert the legacy "high" R1 rows as "critical" (preserving FK + payload). */
 async function correctR1(): Promise<number> {
-  const high = await prisma.redFlag.findMany({ where: { flagKey: "ownership_R1_pledge", severity: "high" } });
+  const high: { id: string }[] = /* score_red_flags dropped 2026-08-11 */ [];
   if (!COMMIT) return high.length;
   for (const r of high) {
     await prisma.$transaction(async (tx) => {
-      await tx.redFlag.delete({ where: { id: r.id } });
-      await tx.redFlag.create({ data: { snapshotId: r.snapshotId, symbol: r.symbol, asOfDate: r.asOfDate, flagKey: r.flagKey, severity: "critical", tier: r.tier, triggeringValues: (r.triggeringValues ?? undefined) as object | undefined, guardrailEventId: r.guardrailEventId } });
+      void r; // score_red_flags dropped 2026-08-11 — this one-shot severity backfill cannot re-run.
+
     });
   }
   return high.length;
@@ -59,7 +59,7 @@ async function periodsForPg(pgName: string): Promise<string[]> {
 
 async function main() {
   console.log(`════ COMMIT-FINDINGS — ${COMMIT ? "DURABLE WRITE (--commit)" : "DRY (plan only)"} ════`);
-  const before = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const before = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log(`  before: score_red_flags=${before.rf}  score_patterns=${before.pat}\n`);
 
   const r1n = await correctR1();
@@ -100,7 +100,7 @@ async function main() {
     console.log(`  ${ref.pgId.padEnd(5)} ${pks.length} periods → ${COMMIT ? "wrote" : "would write"} redFlags=${pgRf} patterns=${pgPat}`);
   }
 
-  const after = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const after = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log(`\n  ${COMMIT ? "WROTE" : "WOULD WRITE"}: redFlags=${rf} patterns=${pat}  (skip-existing=${skip})  across ~${snapsTouched} snapshots, ${periods} (PG,period) passes, ${errs} errors`);
   console.log(`  score_red_flags: ${before.rf} → ${after.rf}   score_patterns: ${before.pat} → ${after.pat}${COMMIT ? "" : "  (unchanged — dry)"}`);
   await prisma.$disconnect();

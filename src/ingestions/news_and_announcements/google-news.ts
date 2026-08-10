@@ -1,11 +1,14 @@
 // src/lib/news/google-news.ts
 // ─────────────────────────────────────────────────────────────
 // Fetches media news from Google News RSS.
-// Marks each item with whether article scraping should be attempted.
+//
+// ⚠ IT NO LONGER MARKS ITEMS FOR SCRAPING. The `shouldScrape` field and the article scraper behind it
+// were deleted on 2026-08-09 — 0 successes in 23,150 attempts, the stored URL resolves to Google's JS
+// shell rather than the article, and three of the target publishers ban Anthropic's crawler by name.
+// See the header of content-extractor.ts for the full reasoning; do not reintroduce the field.
 // ─────────────────────────────────────────────────────────────
 
 import https from "https";
-import { shouldScrapeArticle } from "./content-extractor.js";
 import { looksLikeRss } from "./news-guards.js";
 
 // ── Types ─────────────────────────────────────────────────────
@@ -14,12 +17,24 @@ export interface GoogleNewsItem {
   symbol: string;
   sourceId: string; // RSS GUID
   headline: string;
-  summary: string | null; // RSS description snippet (always stored)
+  /**
+   * ⚠ NOT A SNIPPET, AND NEVER HAS BEEN. Google News RSS `<description>` is markup, not prose:
+   *     <a href="{the same link}">{the title minus the publisher}</a>&nbsp;&nbsp;<font>{publisher}</font>
+   * Stripped of HTML that is "{headline} {publisher}" — measured byte-exact on 22,870 of 23,150
+   * stored rows, and 0 of 29 items in a live fetch deviated from the pattern. So this field carries
+   * ZERO information beyond `headline` + `sourceName`.
+   *
+   * It is still stored, deliberately: a licensed source with real article text would land here, and
+   * the NSE stream's `summary` (attchmntText) IS genuine content in the same column. Consumers must
+   * branch on sourceType — never render this for google_news, and never feed it to a model.
+   */
+  summary: string | null;
   externalUrl: string; // article URL (always stored)
   sourceName: string | null;
+  /** The publisher's real host from `<source url>`, lowercased and www-stripped. See publisherDomain. */
+  publisherDomain: string | null;
   publishedAt: Date;
   isHighImpact: boolean;
-  shouldScrape: boolean; // should full article be scraped?
 }
 
 // ── High-impact detection ─────────────────────────────────────
@@ -168,8 +183,32 @@ function parsePubDate(s: string): Date | null {
 
 // Google News wraps article URLs in their own tracking redirect
 // We store the Google redirect URL as-is — article scraper follows redirect
+//
+// ⚠ THE REDIRECT NO LONGER RESOLVES TO THE ARTICLE. Followed live with a browser UA it returns
+// HTTP 200 whose final URL is still news.google.com and whose body is ~600 KB of Google's own JS
+// shell. This is why `content_source = 'article_scraped'` has 0 rows out of 23,150 eligible items,
+// and why the publisher must be read from `<source url>` instead of parsed out of this link.
 function resolveGoogleUrl(rawLink: string): string {
   return rawLink.trim();
+}
+
+/**
+ * The publisher's real host, from `<source url="https://www.moneycontrol.com">Moneycontrol.com</source>`.
+ * Present on 29/29 items in a live fetch and previously discarded by this parser.
+ *
+ * Returns a bare lowercase host with `www.` stripped, so it compares directly against the JUNK_HOSTS
+ * / JUNK_PATHS rules in chat/web/news-filter.ts (which normalise the same way in `hostOf`). Null when
+ * the element is missing or unparseable — never a guess, and never an empty string, because the
+ * screen distinguishes "no domain known" from "a domain that matched nothing".
+ */
+function extractSourceDomain(itemXml: string): string | null {
+  const m = itemXml.match(/<source\b[^>]*\burl\s*=\s*"([^"]+)"/i);
+  if (!m) return null;
+  try {
+    return new URL(decodeEntities(m[1].trim())).hostname.toLowerCase().replace(/^www\./, "") || null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Main fetcher ───────────────────────────────────────────────
@@ -256,12 +295,12 @@ export async function fetchGoogleNews(
       symbol: symbol.toUpperCase(),
       sourceId: guid,
       headline,
-      summary, // always stored (RSS snippet)
-      externalUrl, // always stored (article URL)
+      summary, // stored, but carries no information beyond headline + publisher — see the type
+      externalUrl, // always stored (the Google redirect, NOT the publisher)
       sourceName,
+      publisherDomain: extractSourceDomain(itemXml),
       publishedAt,
       isHighImpact: detectHighImpact(headline, summary),
-      shouldScrape: shouldScrapeArticle(externalUrl),
     });
   }
 

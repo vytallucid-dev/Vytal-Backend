@@ -85,7 +85,7 @@ async function committedBefore(stockId: string, periodKey: string): Promise<Befo
   const c = snap.foundationPillar?.metricScores?.[0];
   const [patternCount, redFlagCount] = await Promise.all([
     prisma.scorePattern.count({ where: { snapshotId: snap.id } }),
-    prisma.redFlag.count({ where: { snapshotId: snap.id } }),
+    Promise.resolve(/* score_red_flags dropped 2026-08-11 */ 0),
   ]);
   return {
     version: snap.version, composite: num(snap.composite),
@@ -226,7 +226,7 @@ async function main() {
         const out: MemberWriteResult[] = [];
         for (const m of requireFindingsEvaluated(computed)) {
           if (m.composite.state !== "scored" || m.composite.composite == null || !m.own || !m.market) {
-            out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", r1Written: false, pillarIds: {}, guardrailEventsWritten: -1 });
+            out.push({ symbol: m.symbol, action: "unavailable_no_snapshot", version: 0, superseded: false, snapshotId: null, composite: m.composite.composite ?? null, band: null, marketState: "none", pillarIds: {}, guardrailEventsWritten: -1 });
             continue;
           }
           out.push(await persistMember(tx, m, sc, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats));
@@ -393,7 +393,7 @@ async function main() {
     const head = await prisma.scoreSnapshot.findFirst({ where: { stockId: b.id, snapshotType: "quarterly", periodKey: pk }, orderBy: { version: "desc" }, select: { id: true } });
     if (!head) continue;
     headPatterns += await prisma.scorePattern.count({ where: { snapshotId: head.id } });
-    headRedFlags += await prisma.redFlag.count({ where: { snapshotId: head.id } });
+    headRedFlags += /* score_red_flags dropped 2026-08-11 */ 0;
   }
   console.log(`\n  (3) Findings on new head snapshots: ${headPatterns} patterns, ${headRedFlags} red flags (FK'd to the new versions; prior sets remain on superseded versions).`);
 

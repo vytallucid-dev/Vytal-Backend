@@ -18,6 +18,7 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveBankingAnnual } from "../derive/derive-banking-annual.js";
+import { plausibleFaceValue } from "../derive/derive-indas-annual.js";
 
 export async function ingestBankingAnnual(
   input: { stockId: string; parsed: ParsedBankingAnnual; source: string },
@@ -66,6 +67,16 @@ export async function ingestBankingAnnual(
     },
   });
 
+  // ── Sanitise faceValueShare BEFORE it reaches either the stored column or the
+  // derivation — a corrupt source tag (e.g. KOTAKBANK FY25 standalone: 994.11,
+  // byte-equal to paidUpEquityCapital) must not poison bookValuePerShare or get
+  // persisted as if it were a real face value. See derive-banking-annual.ts's
+  // header note for the evidence and derive-indas-annual.ts for the shared gate. ──
+  const faceValueSane = plausibleFaceValue(p.faceValueShare);
+  if (faceValueSane === null && p.faceValueShare !== null) {
+    console.warn(`[ingest-banking-annual] ${entity}: implausible faceValueShare=${p.faceValueShare} → treated as null.`);
+  }
+
   // ── Derive all 16 stored columns — SINGLE PATH (ingestion ≡ fill). ──
   const derived = deriveBankingAnnual(
     {
@@ -76,7 +87,7 @@ export async function ingestBankingAnnual(
       capital: p.capital,
       reservesAndSurplus: p.reservesAndSurplus,
       paidUpEquityCapital: p.paidUpEquityCapital,
-      faceValueShare: p.faceValueShare,
+      faceValueShareSane: faceValueSane,
       gnpaAbsolute: p.gnpaAbsolute,
       nnpaAbsolute: p.nnpaAbsolute,
       cet1Ratio: p.cet1Ratio,
@@ -100,6 +111,7 @@ export async function ingestBankingAnnual(
           totalAssets: priorRow.totalAssets?.toNumber() ?? null,
         }
       : null,
+    entity,
   );
   // The record guards read the pre-Decimal NII-YoY number.
   const niiGrowthYoy = derived.numbers.niiGrowthYoy;
@@ -181,7 +193,9 @@ export async function ingestBankingAnnual(
 
     basicEps: decimalPerShare(p.basicEps),
     dilutedEps: decimalPerShare(p.dilutedEps),
-    faceValueShare: decimalPerShare(p.faceValueShare),
+    // Sanitised, not raw — an implausible source value must not be persisted as
+    // if it were a real face value (see the note above and derive-banking-annual.ts).
+    faceValueShare: decimalPerShare(faceValueSane),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
     // Derived — the 16 computed columns (nii, totalIncome, NIM, costToIncome,

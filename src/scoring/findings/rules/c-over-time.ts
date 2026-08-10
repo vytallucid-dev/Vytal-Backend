@@ -46,6 +46,5 @@ export const ruleCOverTime: RetiredRule = (ctx) => {
       calibration: CALIBRATION_NOTE,
       verdict: `Price-vs-fundamentals gap widening — up from ${r1(recentLow)} to ${r1(cur)} pts over recent snapshots (a developing divergence, not yet wide).`,
     },
-    metricRefs: ["market", "foundation", "momentum"],
   };
 };

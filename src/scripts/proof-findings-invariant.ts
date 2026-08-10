@@ -38,7 +38,7 @@ async function main() {
   const before = {
     snap: await prisma.scoreSnapshot.count(),
     pat: await prisma.scorePattern.count(),
-    rf: await prisma.redFlag.count(),
+    rf: /* score_red_flags dropped 2026-08-11 */ 0,
   };
   console.log(`  baseline: snapshots=${before.snap} patterns=${before.pat} red_flags=${before.rf}\n`);
 
@@ -195,7 +195,7 @@ async function main() {
     else throw e;
   }
 
-  const after = { snap: await prisma.scoreSnapshot.count(), pat: await prisma.scorePattern.count(), rf: await prisma.redFlag.count() };
+  const after = { snap: await prisma.scoreSnapshot.count(), pat: await prisma.scorePattern.count(), rf: /* score_red_flags dropped 2026-08-11 */ 0 };
   add("(6) ROLLED BACK — zero residue",
     rolledBack && JSON.stringify(after) === JSON.stringify(before),
     `rolledBack=${rolledBack}; ${JSON.stringify(after)} == ${JSON.stringify(before)}`);

@@ -11,13 +11,20 @@
 // points shown, which also matches the spec's printed minimum "[OPM₁] → [OPM₂] → …".
 // FLAG: confirm N with File 1; raise to 3 once deeper OPM history is ingested.
 
-import { notEvaluable, type FireRule, type QuarterlyOpmPoint } from "../types.js";
+import { notEvaluable, type FilingRule, type QuarterlyOpmPoint } from "../types.js";
 import { latestQuarterDistorted } from "../guards/exceptional-opm.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const P11_MIN_DECLINES = 2;
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.momentum_P11_margin_compression.facts;
+
+export const P11_MIN_DECLINES = FACTS.thresholds.minDeclines;
 export const P11_MAGNITUDE = -8; // §5E Red
 
-export const ruleP11: FireRule = (ctx) => {
+export const ruleP11: FilingRule = (ctx) => {
   const series = ctx.quarterlyOpm;
   if (!series) return notEvaluable("opm_unavailable"); // ⚠ Phase 2
   if (series.length < P11_MIN_DECLINES + 1) return notEvaluable("insufficient_quarters"); // ⚠ Phase 2
@@ -56,6 +63,5 @@ export const ruleP11: FireRule = (ctx) => {
       // File 1's locked copy, fully realized with the real series — the UI renders this verbatim.
       verbatim: `Operating margin has been compressing for ${declines} quarters: ${opmStr}.`,
     },
-    metricRefs: ["operatingMargin"],
   };
 };

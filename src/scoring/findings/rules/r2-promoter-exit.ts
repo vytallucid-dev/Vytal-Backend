@@ -14,9 +14,9 @@
 // pattern as R6 ← computeR6.
 
 import { computeR2, R2_DROP_PP } from "../../ownership/disturbances.js";
-import type { FireRule } from "../types.js";
+import type { FilingRule } from "../types.js";
 
-export const ruleR2: FireRule = (ctx) => {
+export const ruleR2: FilingRule = (ctx) => {
   const sh = ctx.shareholding;
   if (sh.length < 2) return null;
   const current = sh[sh.length - 1];
@@ -43,6 +43,5 @@ export const ruleR2: FireRule = (ctx) => {
         `Promoter exit — promoter holding fell ${r2.pctDrop?.toFixed(2)}pp into ${curPk} ` +
         `(> ${R2_DROP_PP}pp), a genuine sell-down (not a QIP/rights dilution: ${r2.gatingVerdict}).`,
     },
-    metricRefs: ["promoterShares", "promoterPct"],
   };
 };

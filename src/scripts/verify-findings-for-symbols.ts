@@ -64,7 +64,8 @@ section("3a · registry, shape, and the VERDICT");
     select: { id: true, stockId: true, periodKey: true, version: true, asOfDate: true },
   });
   const head = resolveHeadSnapshots(snaps).get(stock.id)!;
-  const flags = await prisma.redFlag.findMany({ where: { snapshotId: head.id }, select: { flagKey: true, triggeringValues: true } });
+  // score_red_flags dropped 2026-08-11 — the score channel serves no red flags; the filing channel does.
+  const flags: { flagKey: string; triggeringValues: unknown }[] = [];
   let matched = 0;
   for (const f of flags) {
     const expected = renderVerdict(f.flagKey, f.triggeringValues ?? null);

@@ -15,7 +15,7 @@ import type { LabelBand, Pillar, PillarState } from "../composite/types.js";
 import type { OwnershipQuarter } from "../ownership/types.js";
 import type { FlowFeeds } from "../ownership/flow.js";
 import type { DailyClose } from "../price/range.js";
-import type { IndustryType } from "../bars-loader/label-map.js";
+import type { IndustryType } from "../../generated/prisma/client.js";
 import type { FoundationAnnual, MomentumQuarter } from "../metrics/types.js";
 
 /** Mirrors the Prisma `SectorClass` enum. File 1 §2 groups these A=Quality/Defensive,
@@ -62,12 +62,66 @@ export interface QuarterlyOpmPoint {
  * the sector class, and the point-in-time cutoff (so trajectory rules never read past
  * the period they fire for). Rules are pure functions of this — no DB, no Date.now.
  */
-export interface FiringContext {
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★ THE FILED-DATA SLICE — everything a FILING rule may read, and nothing else.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * GOVERNING PRINCIPLE: a finding about a FILING belongs to the stock; a finding about a SCORE belongs
+ * to the snapshot. The 22 filing rules assert the first kind — "promoters sold 4.1% this quarter" is
+ * true of the company and its filing, and stays true whether or not anyone ever computed a Health
+ * Score. They run on all 504 stocks, 409 of which have no snapshot and 355 of which never will.
+ *
+ * ── WHY THIS IS A TYPE AND NOT A CONVENTION ──────────────────────────────────────────────────────
+ * The filing pass has no composite, no band, no pillars and no prior snapshots to give a rule, because
+ * for most of the universe none exist. "Filing rules must not read the score" could have been a
+ * comment. Instead it is the parameter type: a rule typed {@link FilingRule} that reaches for
+ * `ctx.current` or `ctx.priorSnapshots` DOES NOT COMPILE.
+ *
+ * ── AND IT COSTS THE SCORING PASS NOTHING ────────────────────────────────────────────────────────
+ * {@link FiringContext} extends this, so by parameter contravariance every `FilingRule` is also a
+ * valid `FireRule`. A filing rule can still be handed a full FiringContext (the Family-N fixtures
+ * do exactly that) — the narrowing is one-way and additive.
+ *
+ * ⚠ FIELDS DELIBERATELY ABSENT, each verified against all 22 rules before removal: `current` /
+ * `priorSnapshots` / `bandTypicalProfiles` (score state — the whole point), `sectorClass` (read only
+ * by F1, which stays in the scoring pass), `daily` (read by no rule at all — the price series reaches
+ * the engine through the ownership price probe, not through a rule), `periodKey` and `cutoff` (the
+ * SCORING period and the point-in-time boundary; a filing rule keys on the period of the filing it
+ * read, which it takes from that filing's own rows).
+ */
+export interface FilingContext {
+  stockId: string;
+  symbol: string;
+  asOfDate: Date;
+  /** The STOCK's own `Stock.industryType` — see {@link isFinancialIndustry}. */
+  industry: IndustryType;
+  /** Raw shareholding series, asOnDate ASC (R1/R2/R6/P1/P4/P6/H/N5–N7). */
+  shareholding: OwnershipQuarter[];
+  /** Filed ANNUAL fundamentals, fiscalYear ASC, from the stock's own industry tables. */
+  annualFundamentals: FoundationAnnual[];
+  /** Quarterly OPM series ASC; null for every financial industry (P11/P12). */
+  quarterlyOpm: QuarterlyOpmPoint[] | null;
+  /** Filed QUARTERLY results, qOrdinal ASC, from the stock's own industry tables (R5/N4/P13). */
+  quarterlyResults: MomentumQuarter[];
+  /** Insider/block feeds (P6/H — and P5/P10, which stay in the scoring pass). */
+  feeds: FlowFeeds;
+}
+
+export interface FiringContext extends FilingContext {
   stockId: string;
   symbol: string;
   periodKey: string;
   asOfDate: Date;
-  industry: IndustryType; // "non_financial" | "banking"
+  /** ★ THE STOCK'S OWN `Stock.industryType` — all five values, NOT the peer group's two-valued
+   *  industry PATH (bars-loader/label-map's IndustryType, which only distinguishes the two bar sets
+   *  that exist). Widened on 2026-08-09 so a rule can name `nbfc` / `life_insurance` /
+   *  `general_insurance` explicitly. Before that, those 48 stocks were excluded from the annual and
+   *  quarterly rules only BY ACCIDENT — the guards named `banking`, and the other three fell through
+   *  to an empty `annualFundamentals` because their accounts live in tables the loader never read.
+   *  An accident that produces the right answer is still an accident, and it stops working the
+   *  moment metrics/filed-load.ts serves those stocks real data. See {@link isFinancialIndustry}. */
+  industry: IndustryType;
 
   /** Point-in-time cutoff threaded from ComputeOpts.pointInTime; null in a live pass.
    *  Trajectory rules must read snapshots/series ≤ this only. */
@@ -106,6 +160,28 @@ export interface FiringContext {
   bandTypicalProfiles?: import("./composition/band-typical.js").BandTypicalProfiles | null;
 }
 
+/**
+ * ★ THE INDUSTRY GUARD, IN ONE PLACE.
+ *
+ * True for the four industries that file under a dedicated XBRL taxonomy into their own tables:
+ * banking, nbfc, life_insurance, general_insurance. False only for non_financial.
+ *
+ * ── WHY A PREDICATE AND NOT TEN COPIES OF `ctx.industry === "banking"` ───────────────────────────
+ * Ten rules (R3, R4, R5, P7, P8, P13, N1, N2, N3, N4) carried that literal. Every one of them is
+ * CORRECT — OCF-vs-NP, debt-to-equity, interest coverage, receivables-vs-revenue and revenue
+ * inflection are meaningless for a lender or an insurer, whose interest expense IS its cost of goods
+ * and whose "receivables" are a loan book. What was wrong is that the literal named ONE of the four
+ * industries it needed to exclude, and got away with it because the other three arrived carrying an
+ * empty array from a table they do not file into. This predicate makes the exclusion say what it
+ * means, for all four, and keeps the list in one place rather than in ten rule bodies.
+ *
+ * ⚠ THIS IS NOT "financials are unscoreable". Banks ARE scored, on their own metric set and their own
+ * bars. It is narrower and only that: these particular rules' arithmetic does not transfer. A later
+ * step that builds a genuine financial-industry equivalent of one of them will name that industry
+ * explicitly at the rule, rather than widening this.
+ */
+export const isFinancialIndustry = (industry: IndustryType): boolean => industry !== "non_financial";
+
 export type FindingKind = "red_flag" | "pattern";
 /** File 1 §5E — the three mandatory pattern display states. */
 export type FindingDisplayState = "active" | "pending_data_integration" | "dampened";
@@ -127,7 +203,13 @@ export type TemporalClass = "CONDITION" | "EVENT";
  * The emit shape every rule returns. ONE finding = one card. `evidence` is the JSON the
  * UI reads to build the verdict sentence (it MUST carry the real breaching stat). The
  * persist layer maps `evidence` → RedFlag.triggeringValues (red_flag) or
- * ScorePattern.evidence (pattern), and `metricRefs` → ScorePattern.metricRefs.
+ * ScorePattern.evidence (pattern).
+ *
+ * ⚠ `metricRefs` WAS A FIELD HERE and is gone (2026-08-10, with its column). Every rule stamped one —
+ * 53 of them — and nothing ever read the value back: the peer-group separation section takes the
+ * metric off the composed lens KEY, every other surface takes it off `evidence`. It held three
+ * unrelated vocabularies under one name (pillar names, raw camelCase source fields, lens metric-slot
+ * codes) and its only live consumer was the grounding block, which printed the raw codes at the model.
  */
 /**
  * ★ THE ONE NAMESPACE NO STATIC LIST CAN ENUMERATE. Three-lens findings compose their key at runtime
@@ -179,8 +261,6 @@ export interface FiredFinding {
   temporalClass?: TemporalClass;
   /** UI-facing evidence JSON — the breaching stat(s) for the verdict sentence. */
   evidence: Record<string, unknown>;
-  /** metricKeys / pillars the finding concerns (ScorePattern.metricRefs). */
-  metricRefs?: string[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -231,7 +311,16 @@ export type NotEvaluableReason =
   | "pillar_unavailable"                 // a required pillar is unscored/inert (C1)
   | "band_typical_unavailable"           // band-typical profiles not computed for this pass (F1)
   | "feed_not_wired"                     // insider/block feed absent for this stock (P5/P6/P10/H)
-  | "missing_line_item";                 // a required financial line item is null in the latest period
+  | "missing_line_item"                  // a required financial line item is null in the latest period
+  // ── EXTENSION (the filing pass) ─────────────────────────────────────────────────────────────────
+  // ★ THE INDUSTRY EXCLUSION IS A DECLINE, NOT A CLEAN BILL. The ten industry-guarded rules (R3, R4,
+  // R5, P7, P8, P13, N1–N4) returned a bare `null` for a bank or an NBFC, which the three-state
+  // contract reads as not_fired — "we checked HDFCBANK's earnings quality and it is clean". We did
+  // not check it. OCF-vs-NP, D/E and interest coverage are not defined for a lender, so the honest
+  // answer is that the check does not apply, and a reader is entitled to see that rather than a
+  // silent pass. Score-neutral by construction: every rule carrying this arm left the scoring pass in
+  // the same change.
+  | "industry_not_applicable";           // the rule's arithmetic is undefined for this industry
 
 /** The third rule outcome: "we could not check, and here is the machine-readable why."
  *  Discriminated from a FiredFinding (which has `kind`, never `status`) and from not_fired
@@ -258,6 +347,34 @@ export function isNotEvaluable(r: RuleResult): r is NotEvaluable {
  *  NotEvaluable (could-not-check). Existing rules that return only `FiredFinding | null`
  *  remain valid — that shape is a subtype of RuleResult (additive, not a migration). */
 export type FireRule = (ctx: FiringContext) => RuleResult;
+
+/**
+ * ★ A FILING RULE — a fire-rule that reads ONLY filed data (see {@link FilingContext}).
+ *
+ * Every FilingRule IS a FireRule (parameter contravariance: FiringContext extends FilingContext), so
+ * the two registries in engine.ts can share the runner, `RULE_REFS`, and every existing tool. The
+ * narrowing runs one way only, and that direction is the enforcement: assigning a rule that reads
+ * `ctx.current` to `FilingRule` is a compile error, which is how "the filing pass never reads a
+ * score" stops being a promise and becomes a fact.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ BEFORE YOU CHANGE ONE OF THESE, READ `rules/BACKFILL-LAW.md`. ★★
+ *
+ * Any change to a filing rule's LOGIC or its CONSTANTS requires a full backfill of all 504 stocks:
+ *
+ *     npx tsx src/scripts/filing-backfill.ts --reason "what you changed"
+ *
+ * The pass is filing-keyed (step 6): a stock's row is recomputed when the feed that rule depends on
+ * lands, and not otherwise. So a row computes once and FREEZES — up to eleven months for an annual
+ * rule. Move a threshold and the universe silently splits into rows computed under the old constant
+ * and rows computed under the new one, with nothing on either row recording which. `stock_findings`
+ * stores the verdict, not the constant that produced it.
+ *
+ * The law also covers the case where your change is a FIX: see `--reset-rule` there before shipping
+ * one, or 39 stocks get told a finding is "newly standing" when what changed was our arithmetic.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ */
+export type FilingRule = (ctx: FilingContext) => RuleResult;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RETIRED RULES — "files kept, not registered" is now a TYPE, not a convention.

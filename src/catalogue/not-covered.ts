@@ -264,8 +264,16 @@ export function dropNotCovered<T>(rows: readonly T[], keyOf: (row: T) => string)
 export const dropNotCoveredPatterns = <T extends { patternKey: string }>(rows: readonly T[]): T[] =>
   dropNotCovered(rows, (r) => r.patternKey);
 
-/** A SQL fragment for the raw-SQL readers (relational/base-rates.ts, relational/reader-context.ts),
- *  so they enforce the same rule rather than a copy of it. */
+/**
+ * A SQL fragment for the raw-SQL readers (relational/base-rates.ts, relational/reader-context.ts),
+ * so they enforce the same rule rather than a copy of it.
+ *
+ * ⚠ SAME SPLICE RULE AS `retiredKeysSqlPredicate` — see its doc for the full statement. In short: the
+ * return is SQL TEXT, so a PLAIN template literal fed to $queryRawUnsafe may interpolate it directly,
+ * but a TAGGED $queryRaw/$executeRaw template MUST wrap it in `Prisma.raw(...)` or Prisma binds it as
+ * a parameter and Postgres fails the statement with 22P02. Enforced by
+ * scripts/verify-sql-predicates.ts.
+ */
 export function notCoveredKeysSqlPredicate(column: string): string {
   return `${column} NOT LIKE '${NOT_COVERED_KEY_PREFIX}%'`;
 }

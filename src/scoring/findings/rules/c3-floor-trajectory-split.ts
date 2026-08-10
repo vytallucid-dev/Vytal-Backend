@@ -33,6 +33,5 @@ export const ruleC3: RetiredRule = (ctx) => {
         ? `Floor–trajectory split — a strong Foundation ${r0(f.subtotal)} over weak Momentum ${r0(m.subtotal)} (a ${r0(gap)}pt gap): the balance sheet holds while the near-term trajectory lags.`
         : `Floor–trajectory split — Momentum ${r0(m.subtotal)} running well ahead of Foundation ${r0(f.subtotal)} (a ${r0(gap)}pt gap): the trajectory outruns the floor.`,
     },
-    metricRefs: ["foundation", "momentum"],
   };
 };

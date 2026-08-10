@@ -15,8 +15,15 @@
 import type { FireRule } from "../types.js";
 import { INSIDER_WINDOW_DAYS, INSIDER_ELIGIBLE_CR } from "./p6-insider-conviction.js";
 import { NATIVE_ZONES } from "../thresholds.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const P10_MIN_NET_CR = 2;       // material promoter net buy — FLAG: provisional
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.ownership_P10_promoter_defense.facts;
+
+export const P10_MIN_NET_CR = FACTS.thresholds.minNetCr;       // material promoter net buy — FLAG: provisional
 // ★ FIXED — this was hardcoded 72, Foundation/Ownership's strong mark, borrowed onto Market by
 // mistake. Market's own native strong mark is 74 (NATIVE_ZONES.market.strong). Now read from the
 // one shared table rather than typed as a second literal — the exact class of bug §1.2's "never
@@ -53,6 +60,5 @@ export const ruleP10: FireRule = (ctx) => {
       marketPillar: mkt.subtotal === null ? null : Math.round(mkt.subtotal),
       verdict: `Promoter defense buying — the promoter bought a net ₹${r0(netCr)} Cr (${buys.length} trades) into price weakness${mkt.subtotal !== null ? ` (Market ${Math.round(mkt.subtotal)})` : ""}.`,
     },
-    metricRefs: ["insiderTxns"],
   };
 };

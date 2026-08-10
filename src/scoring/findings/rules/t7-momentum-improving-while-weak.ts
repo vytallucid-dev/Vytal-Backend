@@ -62,9 +62,11 @@ export const T7_MOMENTUM_WEAK = FACTS.evidencedTier; // 54
  *  (it already cleared the epsilon noise floor) but too small to be the pattern the study measured;
  *  T7 requires an actual rise of at least 1.0pp. See the header for how this composes with epsilon. */
 export const T7_MOVEMENT_FLOOR = FACTS.movementFloor; // 1.0 — enforced
-/** The R3 threshold: at or above this rise, price has already run and the reader is late.
- *  ⚠ No declared home — it marks a COPY constraint (Part 4 · R3), not a firing threshold. Reported. */
-export const T7_LARGE_MOVE_PP = 15;
+/** The R3 threshold: at or above this rise, price has already run and the reader is late. A COPY
+ *  constraint (Part 4 · R3), not a firing threshold — see PatternFacts.largeMoveCutPp's note for why
+ *  it is a field of its own rather than a second use of `evidencedTier`. Relocation only: the value
+ *  (15) is unchanged from when this was a bare local literal. */
+export const T7_LARGE_MOVE_PP = FACTS.largeMoveCutPp;
 
 /** ★ ONE FORMATTER, THE PATTERN'S OWN PRECISION — see d1-price-ahead-quality.ts's full note. */
 const round = (x: number) => roundToPrecision(x, FACTS.displayPrecision);
@@ -126,6 +128,5 @@ export const ruleT7: FireRule = (ctx) => {
       leadsComposite: false,
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["momentum"],
   };
 };

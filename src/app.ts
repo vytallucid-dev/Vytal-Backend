@@ -62,6 +62,8 @@ import { meRemindersRouter } from "./routes/me-reminders-routes.js";
 import { meBrokerRouter } from "./routes/me-broker-routes.js";
 import { meChatRouter } from "./routes/me-chat-routes.js";
 import { relationalRouter } from "./routes/relational-routes.js";
+import { resultsSeasonRouter } from "./routes/results-season-routes.js";
+import { peerGroupExposureRouter } from "./routes/peer-group-exposure-route.js";
 
 export const createApp = () => {
   const app = express();
@@ -154,7 +156,9 @@ export const createApp = () => {
   // Read API — cross-stock results feed (reported + upcoming) for the Results landing.
   // Public, no auth; mounted under /api/v1 (envelope style). Reported numbers come from
   // the per-family quarterly_results tables; upcoming from corporate_events earnings.
-  app.use("/api/v1/results", resultsRouter);
+  // ★ optionalAuth — the results viewer is PUBLIC, and reads the token only so a signed-in reader
+  // gets the brief's personal section. Anonymous is a valid caller; see result-detail-controller.ts.
+  app.use("/api/v1/results", optionalAuth, resultsRouter);
 
   // Read API — THE COPY CATALOGUE. Static product vocabulary: every finding's name, description and
   // interpretive boundary, the three-lens faces, the portfolio library's boundaries, and the guardrail
@@ -233,6 +237,20 @@ export const createApp = () => {
   //    valid) and NOT under /api/stocks/* (public + cacheable by symbol; this response is per-reader and
   //    must never be cached stock-side). ──
   app.use("/api/v1/relational", optionalAuth, relationalRouter);
+
+  // ── Results-season banner — the conditional strip above the Stock Overview / Stock Health pages.
+  //    Behind `optionalAuth` for the same reason as the card above it: the anonymous sentence is one of
+  //    the three authored variants, not a degraded fallback. Deliberately NOT folded into
+  //    /api/v1/results (public + cacheable) — this response varies by reader and is `private, no-store`.
+  //    Silence is a 200 with `banner: null`; it is the ordinary answer, not a failure. ──
+  app.use("/api/v1/results-season", optionalAuth, resultsSeasonRouter);
+
+  // ── The reader's own positions inside one peer group — the marks every table on the peer-group page
+  //    wears, and the condition for the page's one exposure legend. Behind `optionalAuth`: anonymous is
+  //    a valid caller and gets an empty map (no marks, no legend), never a 401. Deliberately NOT folded
+  //    into /api/peer-groups/:id/health, which is public and cached per pond for every reader — see the
+  //    service header. `private, no-store`. ──
+  app.use("/api/v1/peer-group-exposure", optionalAuth, peerGroupExposureRouter);
 
   return app;
 };

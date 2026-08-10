@@ -88,6 +88,5 @@ export const ruleT5: FireRule = (ctx) => {
       largeMoveDidNothing: "Gains of 15+ points returned −0.5%, 50% positive (n=4). A bigger move is not a bigger signal.",
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["foundation"],
   };
 };

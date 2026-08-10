@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // RELATIONAL L4 — COVERAGE, DERIVED (§Phase 3).
 //
-// ⚠ WHY THIS EXISTS INSTEAD OF `resolveCoverage`. That resolver reads `StockScoringState`, a table with
+// ⚠ WHY THIS EXISTS INSTEAD OF `resolveCoverage`. That resolver read `StockScoringState`, a table with
 // ZERO rows and NO writer anywhere in the codebase (grep-verified: no .create / .update / .upsert, no
-// job, no seed, no migration populates it). It therefore returns `null` IDENTICALLY for a fully-scored
+// job, no seed, no migration populated it). It therefore returned `null` IDENTICALLY for a fully-scored
 // stock and a never-scored one — the one distinction a coverage state exists to make. The relational
 // card consumed that null and rendered a single orientation line for an unscored stock with no
 // statement of what we do or do not know about it.
@@ -13,9 +13,14 @@
 //   · the declined-check set persisted in Phase 2 — what we could not check, and why
 //   · the presence of a peer group — the display-only firewall (no PG ⇒ never scored)
 //
-// `resolveCoverage` is NOT modified: `health-view.service.ts` also calls it, and changing a shared
-// resolver to fix one consumer is how the next silent defect gets built. The dead read is simply no
-// longer on the relational path. StockScoringState is not revived, not written, not deleted.
+// ── 2026-08-09 UPDATE ─────────────────────────────────────────────────────────────────────────────
+// The dead table is now GONE. `score_stock_states` was dropped and `resolveCoverage` / `CoverageInfo`
+// removed with it (filing-pass step 1); health-view.service.ts, its only other caller, writes the two
+// identity fields as literal nulls — the same values that resolver had always produced.
+//
+// NOTHING BELOW CHANGED. This derivation was already the correct implementation and is untouched: it
+// reads the in-force snapshot ref, the Phase-2 declined set, and peer-group membership, none of which
+// the drop affects. The note above is kept because it is still the reason this module exists.
 //
 // HONEST-EMPTY (§0.9): every state below is derived from something we actually observed. Where we know
 // nothing — a snapshot predating the evaluability column — the state says so rather than guessing.
@@ -103,6 +108,9 @@ const REASON_PHRASES: Record<string, string> = {
   class_not_disclosed: "an ownership breakdown this company did not disclose",
   share_count_unavailable: "an absolute promoter share count this company did not disclose",
   pledging_not_disclosed: "pledging figures this company did not disclose",
+  // ⚠ NOT a data gap — a scope statement. The check itself does not apply to a bank, an NBFC or an
+  // insurer (see isFinancialIndustry), so the phrase must not imply we are waiting for a filing.
+  industry_not_applicable: "a measure that does not apply to how this kind of company is financed",
 };
 
 export const reasonPhrase = (reason: string): string =>
@@ -157,6 +165,10 @@ const CAPABILITY_BY_RULE: Record<string, string> = {
   P6: "insider activity",
   P10: "promoter activity",
   H: "block and bulk deals",
+  // R1 became a rule in the filing-pass build (rules/r1-pledging.ts) and can now DECLINE — pledging
+  // not disclosed, promoter share count absent, one filing only. Before that it was computed inside
+  // the Ownership pillar and had no declined arm at all, which is why it was missing here.
+  R1: "promoter pledging",
   R2: "promoter exit",
   R6: "shareholding distribution",
   N1: "cash-backed earnings",

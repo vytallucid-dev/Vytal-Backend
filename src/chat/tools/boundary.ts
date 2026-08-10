@@ -15,6 +15,9 @@
 // model about how to relay the boundary in its own voice — never invent facts, never apologise.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
+import { filingFactsText } from "../../ai/filing-facts.js";
+import type { FilingFindingsSection } from "../../filing/read.types.js";
+
 /** The covered-universe boundary message for a symbol the read service returned null for. */
 export function notInUniverse(symbol: string): string {
   const s = symbol.trim().toUpperCase() || "that symbol";
@@ -26,14 +29,34 @@ export function notInUniverse(symbol: string): string {
   );
 }
 
-/** The in-universe-but-not-yet-scored message (the read service returned a snapshot whose `scored` is
- *  false — a real, informative state that is NOT the same as "not covered"). */
-export function inUniverseButUnscored(symbol: string, name: string | null): string {
+/**
+ * The in-universe-but-not-yet-scored message (the read service returned a snapshot whose `scored` is
+ * false — a real, informative state that is NOT the same as "not covered").
+ *
+ * ── ★ IT USED TO SAY "no composite, pillars, or findings exist for it", AND THE THIRD WAS FALSE ────
+ * A filing finding is a statement about what the company FILED — pledging, a promoter exit, an
+ * earnings-quality run — and is true whether or not anyone ever computed a health score for it. The
+ * caller is already holding that section (`HealthSnapshotView.filingFindings` is populated on the
+ * not-scored branch by construction), so the message takes it rather than claiming its absence: on
+ * 360ONE this sentence stood in front of a critical red flag over 90% of the promoter holding.
+ *
+ * `filing` is required, not optional. An optional parameter would let a future call site quietly
+ * restore the old sentence by omitting it — which is the defect, spelled `undefined`.
+ */
+export function inUniverseButUnscored(
+  symbol: string,
+  name: string | null,
+  filing: FilingFindingsSection | null,
+): string {
   const s = symbol.trim().toUpperCase() || "that symbol";
   const who = name ? `${name} (${s})` : s;
-  return (
+  return [
     `IN UNIVERSE, NOT SCORED: ${who} is covered by Vytal but does not have a computed health score yet — no ` +
-    `composite, pillars, or findings exist for it at this time. Say so honestly; do not fabricate a score or ` +
-    `any pillar values.`
-  );
+      `composite, pillars, peer standing, or score-derived findings exist for it at this time. Say so honestly; ` +
+      `do not fabricate a score or any pillar values.`,
+    `⚠ THAT IS NOT THE SAME AS "nothing to report", and it is not a clean bill of health. Vytal's filing checks ` +
+      `run on ${s} whether or not it is scored, and their result is below.`,
+    "",
+    filingFactsText(filing, { subject: s }),
+  ].join("\n");
 }

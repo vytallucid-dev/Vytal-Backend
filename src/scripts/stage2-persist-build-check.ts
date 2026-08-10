@@ -13,7 +13,7 @@ import { computePgScores, type PgRef } from "../scoring/composite/score-pass.js"
 import { toPillarScoreRow, metricWeightColumnsByKey, completeMetricScoreRow } from "../scoring/pillars/persist.js";
 import { toMetricScoreRow } from "../scoring/metric-scoring/persist.js";
 import { toMarketPillarScoreRow, marketSubScoreRows } from "../scoring/market/persist.js";
-import { toScoreSnapshotRow, toR1RedFlagRow, snapshotInputsFingerprint } from "../scoring/composite/persist.js";
+import { toScoreSnapshotRow, snapshotInputsFingerprint } from "../scoring/composite/persist.js";
 import { buildOwnershipScoreData } from "../scoring/ownership/persist.js";
 import type { Pillar } from "../scoring/composite/types.js";
 
@@ -26,7 +26,7 @@ const short = (s: string | null | undefined, n = 14) => (s == null ? "—" : s.l
 async function main() {
   const before = {
     run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), metric: await prisma.metricScore.count(),
-    mktSub: await prisma.marketSubScore.count(), own: await prisma.ownershipScore.count(), snap: await prisma.scoreSnapshot.count(), rf: await prisma.redFlag.count(),
+    mktSub: await prisma.marketSubScore.count(), own: await prisma.ownershipScore.count(), snap: await prisma.scoreSnapshot.count(), rf: /* score_red_flags dropped 2026-08-11 */ 0,
   };
 
   console.log("STAGE 2 — LEAF-PERSIST BUILD CHECK (DRY-RUN; writes nothing)");
@@ -83,19 +83,21 @@ async function main() {
       console.log(`     score_snapshots   : composite=${snap.composite} band=${snap.labelBand} wMarket=${snap.wMarket} reason=${snap.weightRedistributionReason}  (marketPillarId still NOT NULL → references the inert pillar)`);
     }
 
+    // ★ THE R1 RED-FLAG ROW SHAPE IS GONE (step 4). R1 is a filing rule now: it writes to
+    // stock_findings for all 504 stocks and the scoring pass writes no score_red_flags row for it.
+    // What survives on this path is the PILLAR's own record of the breach, printed below.
     const r1 = pg.members.find((m) => m.own && buildOwnershipScoreData(m.own).r1Fired && m.composite.state === "scored");
     if (r1) {
       const od = buildOwnershipScoreData(r1.own!);
-      const rf = toR1RedFlagRow("(snapshot fk)", r1.composite, od.r1TriggeringValues);
-      console.log(`\n  ── R1 RED-FLAG ROW SHAPE — ${r1.symbol} ──`);
-      console.log(`     score_red_flags   : flagKey=${rf.flagKey} severity=${rf.severity} tier=${rf.tier} triggering=${JSON.stringify(rf.triggeringValues)}`);
+      console.log(`\n  ── R1 OBSERVED — ${r1.symbol} ──`);
+      console.log(`     score_ownership   : r1Fired=true triggering=${JSON.stringify(od.r1TriggeringValues)}  (the FINDING row now lives in stock_findings)`);
     }
     console.log("");
   }
 
   const after = {
     run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), metric: await prisma.metricScore.count(),
-    mktSub: await prisma.marketSubScore.count(), own: await prisma.ownershipScore.count(), snap: await prisma.scoreSnapshot.count(), rf: await prisma.redFlag.count(),
+    mktSub: await prisma.marketSubScore.count(), own: await prisma.ownershipScore.count(), snap: await prisma.scoreSnapshot.count(), rf: /* score_red_flags dropped 2026-08-11 */ 0,
   };
   const unchanged = Object.keys(before).every((k) => (before as any)[k] === (after as any)[k]);
   console.log("═".repeat(110));

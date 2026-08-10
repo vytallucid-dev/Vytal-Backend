@@ -39,21 +39,22 @@ export async function persistFindings(
 
   for (const f of findings) {
     if (f.kind === "red_flag") {
-      const exists = await db.redFlag.findFirst({ where: { snapshotId, flagKey: f.key }, select: { id: true } });
-      if (exists) { skippedExisting++; continue; }
-      await db.redFlag.create({
-        data: {
-          snapshotId,
-          symbol,
-          asOfDate,
-          flagKey: f.key,
-          severity: f.severity,
-          tier: "auto",
-          triggeringValues: f.evidence as object,
-          guardrailEventId: null,
-        },
-      });
-      redFlags++;
+      // ★ UNREACHABLE, AND LOUD RATHER THAN SILENT — 2026-08-11, when score_red_flags was dropped.
+      //
+      // This branch used to write that table. It cannot fire: all six red-flag rules (R1…R6) live in
+      // FILING_RULES (findings/engine.ts), `runFindings` defaults to SCORING_RULES, and the scoring
+      // pass registers no red-flag rule at all — so no `kind: "red_flag"` finding can reach here. The
+      // filing pass writes its own rows through filing/pass.ts and never comes through this function.
+      //
+      // Throwing rather than skipping is deliberate. A silent `continue` would turn "a red-flag rule
+      // was somehow registered in the scoring pass" into a finding that evaluates, counts toward a
+      // score and then vanishes with no record — which is the failure mode that is hardest to notice
+      // and hardest to reconstruct afterwards.
+      throw new Error(
+        `[persistFindings] red-flag finding "${f.key}" reached the scoring persist path (${symbol}). ` +
+          `score_red_flags no longer exists and every red-flag rule is a FILING rule — a rule has been ` +
+          `registered in SCORING_RULES that belongs in FILING_RULES. See findings/engine.ts.`,
+      );
     } else {
       const exists = await db.scorePattern.findFirst({ where: { snapshotId, patternKey: f.key }, select: { id: true } });
       if (exists) { skippedExisting++; continue; }
@@ -68,7 +69,6 @@ export async function persistFindings(
           displayState: f.displayState ?? "active",
           magnitude: f.magnitude ?? null,
           evidence: f.evidence as object,
-          metricRefs: (f.metricRefs ?? undefined) as object | undefined,
         },
       });
       patterns++;
@@ -137,7 +137,6 @@ export async function persistNotCovered(
         displayState: "tested_not_shipped",
         magnitude: null,
         evidence: r.evidence as object,
-        metricRefs: undefined,
       },
     });
     written++;

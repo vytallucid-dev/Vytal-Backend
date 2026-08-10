@@ -8,18 +8,22 @@
 // MAX(version) per (stockId, snapshotType, periodKey) — then the latest asOfDate
 // across periods. A naive findFirst would silently read a superseded/stale row.
 //
-// StockScoringState is ALSO append-only (ruling 1): a coverage change writes a NEW
-// row, newest-by-createdAt wins on read.
+// ⚠ COVERAGE NO LONGER LIVES HERE. `resolveCoverage` + `CoverageInfo` read
+// StockScoringState / score_stock_states, a table with 0 rows and no writer anywhere,
+// so they returned `null` identically for a fully-scored stock and a never-scored one.
+// The table was dropped on 2026-08-09 and both were removed with it. Coverage is
+// DERIVED — src/relational/coverage.ts `deriveCoverage`, off the in-force snapshot ref,
+// the persisted declined-check set, and peer-group membership.
 //
-// These three functions are the SINGLE place the newest-version rule is enforced.
+// These functions are the SINGLE place the newest-version rule is enforced.
 // The per-stock candidate set is tiny (a handful of periods × versions), so the
 // MAX(version) reduction is done in-memory for provable correctness rather than via
 // a window-function query.
 
 import { prisma } from "../../db/prisma.js";
+import { memoRead } from "../../db/read-memo.js";
 
 export type SnapshotType = "quarterly" | "live";
-export type CoverageState = "scored" | "covered" | "off_platform";
 
 /** Lightweight in-force snapshot descriptor (the resolution result). */
 export interface SnapshotRef {
@@ -53,27 +57,114 @@ const num = (d: unknown): number =>
     : Number(d);
 
 /**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★ ONE STOCK'S SNAPSHOT ROWS — READ ONCE PER REQUEST, BY THREE CALLERS WHO EACH WANTED A SLICE.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── THE DEFECT, MEASURED ────────────────────────────────────────────────────────────────────────
+ * Instrumented at the pg driver, one health read issued `SELECT … FROM score_snapshots WHERE
+ * stock_id = $1 AND snapshot_type = $2` THREE TIMES, with identical bound values, differing only in
+ * the column list:
+ *
+ *     inForceByPeriod            7 columns   id · stockId · symbol · snapshotType · periodKey · version · asOfDate
+ *     getDailySnapshotSeries    10 columns   the plotted numbers + labelBand
+ *     resolveFindingLifecycles  13 columns   the numbers + the four applied weights
+ *
+ * Three round-trips (~70 ms each on a remote database) for one row set that is at most a hundred rows
+ * wide. They were not EXACT duplicates, which is precisely why no cache keyed on the emitted SQL
+ * would have collapsed them — the fix has to be at the question, not at the statement.
+ *
+ * ── THE UNION IS THE POINT, AND IT IS CHEAP ─────────────────────────────────────────────────────
+ * This selects what all three want. The extra columns each caller does not read cost bytes on a
+ * result set bounded by a stock's own scoring history (54 rows on the median stock, 13 periods × a
+ * handful of versions); the round-trips they replace cost 140 ms. Callers narrow locally, exactly as
+ * before — no caller's behaviour changes, because none of them can see a column it does not read.
+ *
+ * ── ⚠ THE RESULT IS SHARED AND IS READ-ONLY BY CONTRACT ─────────────────────────────────────────
+ * `memoRead` hands the SAME array to the second and third callers. What each does with it today:
+ *
+ *     inForceByPeriod            iterates, builds a fresh Map
+ *     getDailySnapshotSeries     iterates into a fresh Map, then maps + sorts THAT
+ *     resolveFindingLifecycles   maps into fresh SnapRows, then sorts THOSE
+ *
+ * Not one mutates the array or a row in place. A future caller that needs to must copy first; see
+ * db/read-memo.ts's header for why the contract exists and what breaks without it.
+ *
+ * ⚠ OUTSIDE A MEMO SCOPE THIS IS AN ORDINARY QUERY. `resolveFindingLifecycles` is called standalone
+ * from scripts and from the lifecycle surfaces; it must not require a ceremony to work, and it does
+ * not — `memoRead` passes straight through when no scope is open.
+ */
+export interface StockSnapshotRow {
+  id: string;
+  stockId: string;
+  symbol: string;
+  snapshotType: string;
+  periodKey: string;
+  version: number;
+  asOfDate: Date;
+  composite: unknown;
+  labelBand: string;
+  foundationSubtotal: unknown;
+  momentumSubtotal: unknown;
+  marketSubtotal: unknown;
+  ownershipSubtotal: unknown;
+  wFoundation: unknown;
+  wMomentum: unknown;
+  wMarket: unknown;
+  wOwnership: unknown;
+}
+
+export function snapshotRowsForStock(
+  stockId: string,
+  snapshotType: SnapshotType = "quarterly",
+): Promise<StockSnapshotRow[]> {
+  return memoRead(`snapshotRowsForStock:${stockId}:${snapshotType}`, () =>
+    prisma.scoreSnapshot.findMany({
+      where: { stockId, snapshotType },
+      select: {
+        id: true,
+        stockId: true,
+        symbol: true,
+        snapshotType: true,
+        periodKey: true,
+        version: true,
+        asOfDate: true,
+        composite: true,
+        labelBand: true,
+        foundationSubtotal: true,
+        momentumSubtotal: true,
+        marketSubtotal: true,
+        ownershipSubtotal: true,
+        wFoundation: true,
+        wMomentum: true,
+        wMarket: true,
+        wOwnership: true,
+      },
+    }),
+  ) as Promise<StockSnapshotRow[]>;
+}
+
+/**
  * Reduce a stock's snapshots to the IN-FORCE row per periodKey:
  * MAX(version) within each (snapshotType, periodKey) group. Tie-break on the
  * same version (should never happen given the unique index) by latest asOfDate.
  * Returns a Map<periodKey, SnapshotRef>.
+ *
+ * ── ★ EXPORTED SO ONE READ CAN SERVE THREE ANSWERS ───────────────────────────────────────────────
+ * `getLatestSnapshot`, `getSnapshotSeries` and `getInForceSeriesRefs` each called this privately, so
+ * a single health view issued the IDENTICAL query three times — three sequential round-trips for one
+ * unchanging fact. A caller that needs more than one of those answers now resolves the map ONCE and
+ * derives all three from it with the pure helpers below (`latestRefFrom` / `seriesRefsFrom`), which
+ * also makes them parallelisable: they no longer each own a hidden await.
+ *
+ * The three original functions are unchanged and still resolve their own map, so every other
+ * consumer is untouched — this is a seam added beside them, not a migration of them.
  */
-async function inForceByPeriod(
+export async function inForceByPeriod(
   stockId: string,
-  snapshotType: SnapshotType,
+  snapshotType: SnapshotType = "quarterly",
 ): Promise<Map<string, SnapshotRef>> {
-  const rows = await prisma.scoreSnapshot.findMany({
-    where: { stockId, snapshotType },
-    select: {
-      id: true,
-      stockId: true,
-      symbol: true,
-      snapshotType: true,
-      periodKey: true,
-      version: true,
-      asOfDate: true,
-    },
-  });
+  const rows = await snapshotRowsForStock(stockId, snapshotType);
 
   const byPeriod = new Map<string, SnapshotRef>();
   for (const r of rows) {
@@ -111,7 +202,11 @@ export async function getLatestSnapshotRef(
   stockId: string,
   snapshotType: SnapshotType = "quarterly",
 ): Promise<SnapshotRef | null> {
-  const byPeriod = await inForceByPeriod(stockId, snapshotType);
+  return latestRefFrom(await inForceByPeriod(stockId, snapshotType));
+}
+
+/** ★ The same reduction as `getLatestSnapshotRef`, PURE — over a map the caller already holds. */
+export function latestRefFrom(byPeriod: Map<string, SnapshotRef>): SnapshotRef | null {
   let latest: SnapshotRef | null = null;
   for (const ref of byPeriod.values()) {
     if (
@@ -138,22 +233,110 @@ export async function getLatestSnapshot(
 ) {
   const ref = await getLatestSnapshotRef(stockId, snapshotType);
   if (!ref) return null;
-  return prisma.scoreSnapshot.findUnique({
-    where: { id: ref.id },
-    include: {
-      bandMappingVersion: true,
-      foundationPillar: {
-        include: { metricScores: { include: { metricBarSet: true, peerStats: true } } },
-      },
-      momentumPillar: {
-        include: { metricScores: { include: { metricBarSet: true, peerStats: true } } },
-      },
-      marketPillar: { include: { marketSubScores: true } },
-      ownershipPillar: { include: { ownershipScore: { include: { flowCategories: true } } } },
-      redFlags: true,
-      patterns: true,
-    },
-  });
+  return loadSnapshotById(ref.id);
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★ THE FORKED SNAPSHOT LOAD — two shapes, and the type system decides which mappers may run.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── ⚠ THE RELATION LOADS ARE NOT CONCURRENT. MEASURED. ──────────────────────────────────────────
+ * This note used to claim they are: "Prisma issues these relation loads CONCURRENTLY off one
+ * findUnique … so they cost roughly ONE round-trip layer, not one per relation." Timed at the pg
+ * driver rather than at the Prisma call, that is false. Prisma resolves a nested include one LEVEL at
+ * a time and must await each level before it has the foreign keys for the next, so the FULL include
+ * is a three-level walk:
+ *
+ *   level 1   score_pillars ×4 (one statement each, `id = $1`) · score_band_mappings · score_red_flags · score_patterns
+ *   level 2   score_metrics ×2 · score_market_subs · score_ownership
+ *   level 3   score_metric_bar_sets ×2 · score_peer_stats ×2 · score_ownership_flows
+ *
+ * Sixteen statements, serialised twice over — by level, and by the 5-connection pool they saturate.
+ * Measured A/B, alternating, same link: full include **328 ms** median vs a `pillarState`-only
+ * include **209 ms**.
+ *
+ * ── ★ WHAT A PILLARS-OMITTED CALLER ACTUALLY READS OFF ALL THAT: `pillarState`. FOUR STRINGS. ────
+ * Nothing else. The metric graph, the market sub-scores and the ownership score exist on the payload
+ * only inside `pillars[]`, which that caller asked not to be built.
+ *
+ * ── ★ THE FORK IS HONEST, NOT CHEAP ─────────────────────────────────────────────────────────────
+ * The cheap version — load lean, then hand back `metricScores: []` / `ownershipScore: null` so the
+ * type stays one shape — SUBSTITUTES A FABRICATED EMPTY FOR "NOT FETCHED". This read layer's rule is
+ * that a field with no backing data is `null` with the key present; `[]` is a different claim ("this
+ * pillar scored no metrics"), and a future mapper reading it outside the projection branch would
+ * render that claim with nothing to warn it.
+ *
+ * So there are two RETURN TYPES, discriminated by a literal `pillarDetail`. On the lean shape the
+ * metric graph is not empty — it is ABSENT, and `snap.foundationPillar.metricScores` is a compile
+ * error until the caller has narrowed on `snap.pillarDetail`. That is the guarantee the empty-array
+ * version could not give: it is impossible to read a metric off a lean load.
+ *
+ * ⚠ THE DISCRIMINANT IS SET BY THIS FUNCTION FROM ITS OWN ARGUMENT, in one place, so the flag and the
+ *   shape cannot disagree. A caller never constructs it.
+ */
+const PILLAR_DETAIL_INCLUDE = {
+  bandMappingVersion: true,
+  foundationPillar: {
+    include: { metricScores: { include: { metricBarSet: true, peerStats: true } } },
+  },
+  momentumPillar: {
+    include: { metricScores: { include: { metricBarSet: true, peerStats: true } } },
+  },
+  marketPillar: { include: { marketSubScores: true } },
+  ownershipPillar: { include: { ownershipScore: { include: { flowCategories: true } } } },
+  patterns: true,
+} as const;
+
+/**
+ * ★ THE LEAN INCLUDE — the four pillar ROWS (for `pillarState`), the band mapping, and the findings.
+ *
+ * ⚠ `patterns` IS NOT PILLAR DETAIL and stays on both shapes. It is the findings block, which every
+ *   projection serves; dropping it here would have been the actual behaviour change this fork exists
+ *   to avoid. (`redFlags` sat beside it under the same rule until 2026-08-11, when score_red_flags was
+ *   dropped — the score channel has no red flags to include on either shape.)
+ */
+const PILLAR_LEAN_INCLUDE = {
+  bandMappingVersion: true,
+  foundationPillar: true,
+  momentumPillar: true,
+  marketPillar: true,
+  ownershipPillar: true,
+  patterns: true,
+} as const;
+
+/** The full graph — pillars → metrics + bars + peer stats, market subs, ownership + flows. */
+export function loadSnapshotById(id: string) {
+  return prisma.scoreSnapshot.findUnique({ where: { id }, include: PILLAR_DETAIL_INCLUDE });
+}
+
+/** The same row with the pillar ROWS only — no metric graph, no subs, no ownership score. */
+export function loadSnapshotLeanById(id: string) {
+  return prisma.scoreSnapshot.findUnique({ where: { id }, include: PILLAR_LEAN_INCLUDE });
+}
+
+export type FullLoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotById>>>;
+export type LeanLoadedSnapshot = NonNullable<Awaited<ReturnType<typeof loadSnapshotLeanById>>>;
+
+/**
+ * The two shapes as one discriminated union. `pillarDetail: true` is the ONLY thing that unlocks the
+ * metric graph, and it is set from the argument below rather than by any caller.
+ */
+export type ProjectedSnapshot =
+  | (FullLoadedSnapshot & { pillarDetail: true })
+  | (LeanLoadedSnapshot & { pillarDetail: false });
+
+/** Load the snapshot at the detail the projection actually needs. Null when the id resolves to no row. */
+export async function loadSnapshotProjected(
+  id: string,
+  pillarDetail: boolean,
+): Promise<ProjectedSnapshot | null> {
+  if (pillarDetail) {
+    const row = await loadSnapshotById(id);
+    return row ? { ...row, pillarDetail: true } : null;
+  }
+  const row = await loadSnapshotLeanById(id);
+  return row ? { ...row, pillarDetail: false } : null;
 }
 
 /**
@@ -166,17 +349,19 @@ export async function getSnapshotSeries(
   windowQuarters = 12,
   snapshotType: SnapshotType = "quarterly",
 ): Promise<SeriesPoint[]> {
-  const byPeriod = await inForceByPeriod(stockId, snapshotType);
+  return seriesFrom(await inForceByPeriod(stockId, snapshotType), windowQuarters);
+}
+
+/** ★ `getSnapshotSeries` over a map the caller already holds — one query instead of two. */
+export async function seriesFrom(
+  byPeriod: Map<string, SnapshotRef>,
+  windowQuarters = 12,
+): Promise<SeriesPoint[]> {
   if (byPeriod.size === 0) return [];
 
   // Newest-first by asOfDate, take the window, then re-fetch the denormalised
   // numbers for exactly those in-force ids.
-  const refsNewestFirst = [...byPeriod.values()].sort(
-    (a, b) =>
-      b.asOfDate.getTime() - a.asOfDate.getTime() || b.periodKey.localeCompare(a.periodKey),
-  );
-  const windowRefs = refsNewestFirst.slice(0, Math.max(1, windowQuarters));
-  const ids = windowRefs.map((r) => r.id);
+  const ids = seriesRefsFrom(byPeriod, windowQuarters).map((r) => r.id);
 
   const rows = await prisma.scoreSnapshot.findMany({
     where: { id: { in: ids } },
@@ -236,20 +421,9 @@ export async function getDailySnapshotSeries(
   windowDays = 60,
   snapshotType: SnapshotType = "quarterly",
 ): Promise<SeriesPoint[]> {
-  const rows = await prisma.scoreSnapshot.findMany({
-    where: { stockId, snapshotType },
-    select: {
-      periodKey: true,
-      asOfDate: true,
-      version: true,
-      composite: true,
-      labelBand: true,
-      foundationSubtotal: true,
-      momentumSubtotal: true,
-      marketSubtotal: true,
-      ownershipSubtotal: true,
-    },
-  });
+  // ★ THE SHARED READ — same stock, same type, the same rows `inForceByPeriod` and the lifecycle
+  //   walk want. This used to be its own round-trip for a narrower projection of one row set.
+  const rows = await snapshotRowsForStock(stockId, snapshotType);
   if (rows.length === 0) return [];
 
   // MAX(version) per asOfDate (one in-force point per calendar day).
@@ -293,46 +467,27 @@ export async function getInForceSeriesRefs(
   windowQuarters = 12,
   snapshotType: SnapshotType = "quarterly",
 ): Promise<SnapshotRef[]> {
-  const byPeriod = await inForceByPeriod(stockId, snapshotType);
+  return seriesRefsFrom(await inForceByPeriod(stockId, snapshotType), windowQuarters).reverse();
+}
+
+/**
+ * ★ The window's in-force refs, PURE — NEWEST → OLDEST.
+ *
+ * ⚠ NOTE THE ORDER, AND THAT IT IS THE OPPOSITE OF `getInForceSeriesRefs`'s. This returns the slice
+ * in the order the reduction produces it; the exported wrapper reverses to oldest→newest because
+ * that is the order its callers plot in. Both orders are correct for their caller and neither is a
+ * default — a helper that guessed would silently reverse someone's series.
+ */
+export function seriesRefsFrom(
+  byPeriod: Map<string, SnapshotRef>,
+  windowQuarters = 12,
+): SnapshotRef[] {
   if (byPeriod.size === 0) return [];
   const newestFirst = [...byPeriod.values()].sort(
     (a, b) =>
       b.asOfDate.getTime() - a.asOfDate.getTime() || b.periodKey.localeCompare(a.periodKey),
   );
-  return newestFirst.slice(0, Math.max(1, windowQuarters)).reverse(); // oldest → newest
-}
-
-/** Coverage descriptor (latest StockScoringState, newest-by-createdAt). */
-export interface CoverageInfo {
-  coverageState: CoverageState;
-  coverageReason: string | null;
-  lastScoredRunId: string | null;
-  asOf: Date;
-}
-
-/**
- * Latest coverage state for a stock. StockScoringState is append-only — newest
- * createdAt wins. Returns null when no coverage row exists for the stock (the
- * caller surfaces coverageState: null rather than guessing).
- */
-export async function resolveCoverage(stockId: string): Promise<CoverageInfo | null> {
-  const row = await prisma.stockScoringState.findFirst({
-    where: { stockId },
-    orderBy: { createdAt: "desc" },
-    select: {
-      coverageState: true,
-      coverageReason: true,
-      lastScoredRunId: true,
-      createdAt: true,
-    },
-  });
-  if (!row) return null;
-  return {
-    coverageState: row.coverageState as CoverageState,
-    coverageReason: row.coverageReason,
-    lastScoredRunId: row.lastScoredRunId,
-    asOf: row.createdAt,
-  };
+  return newestFirst.slice(0, Math.max(1, windowQuarters));
 }
 
 /**

@@ -37,9 +37,31 @@ import {
 // poison its consumers: the derived bookValuePerShare, and the F3 ESC-buyback
 // quantifier in scoring (which reads faceValueShare, gated on an ESC drop).
 export const PLAUSIBLE_FACE_VALUE_MAX = 1000;
-export function plausibleFaceValue(v: number | null): number | null {
+/**
+ * Optional 2nd param — the RELATIONAL check, added 2026-08-11 alongside the fix that
+ * closed PB-3 on the last of five *_fundamentals tables. A face value that exactly
+ * equals the company's OWN paidUpEquityCapital (in ₹Cr) implies ~1 crore total shares
+ * outstanding — essentially never true for a listed company of any real size, and the
+ * exact fingerprint the source-filing corruption leaves (the filer supplies the same
+ * wrong number under both the FaceValueOfEquityShareCapital and
+ * PaidUpValueOfEquityShareCapital tags). The MAGNITUDE check above (v > 1000) does not
+ * catch this: ITCHOTELS (208.12) and JKTYRE (57.66) both sit comfortably under
+ * PLAUSIBLE_FACE_VALUE_MAX. Nor does meaningfulBookValue's ₹1,00,000 OUTPUT ceiling —
+ * that only works when the resulting bookValuePerShare is itself extreme in absolute
+ * rupees (KOTAKBANK's ₹994.11cr paid-up capital produced a ₹1.17-lakh bvps; ITCHOTELS'
+ * ₹208cr and JKTYRE's ₹54-58cr produce a merely-wrong-not-extreme ₹5,283–10,692, which
+ * clears no magnitude bound). This relational check is what actually catches both.
+ * Callers may omit it and get the existing magnitude-only behaviour unchanged.
+ */
+export function plausibleFaceValue(
+  v: number | null,
+  paidUpEquityCapital?: number | null,
+): number | null {
   if (v === null) return null;
   if (v <= 0 || v > PLAUSIBLE_FACE_VALUE_MAX) return null;
+  if (paidUpEquityCapital !== undefined && paidUpEquityCapital !== null && v === paidUpEquityCapital) {
+    return null;
+  }
   return v;
 }
 
@@ -67,6 +89,38 @@ export function boundDerived(
     return null;
   }
   return v;
+}
+
+// ── SHARED ACROSS EVERY *_fundamentals TABLE THAT DERIVES bookValuePerShare ─────────────────────────
+// plausibleFaceValue() catches a corrupt faceValueShare, but `sharesCr = paidUpEquityCapital /
+// faceValueShareSane` collapses the SAME way when paidUpEquityCapital is the corrupt figure and
+// faceValueShare reads as ordinary — first proven on NbfcFundamental's CANFINHOME FY25 standalone
+// (face value ₹2, paidUpEquityCapital 0.02cr, implied ~100,000 shares, stored bvps=506749.37), then
+// confirmed on BankingFundamental's KOTAKBANK FY25 standalone from the OTHER side: faceValueShare
+// (994.11) is itself the corrupt figure, but it sits UNDER PLAUSIBLE_FACE_VALUE_MAX — the filed XBRL
+// carries `PaidUpValueOfEquityShareCapital`=9,941,100,000 (₹994.11cr) and, separately,
+// `FaceValueOfEquityShareCapital`=994.11 (unitRef="INRPerShare") as TWO DISTINCT facts that happen to
+// share a numeral — the filer's error, not a parse fault (verified against the raw XBRL for both).
+// boundDerived() alone does not catch either: both stored values (₹5.07 lakh, ₹1.17 lakh per share)
+// sit well inside a Decimal(10,4) column's storage range. A bound on the INPUT can't cover every raw
+// field that feeds one division, so this bounds the OUTPUT instead.
+//
+// ₹1,00,000/share is not picked blind: the single highest LEGITIMATE bookValuePerShare across every
+// *_fundamentals table is MRF (non-financial — THIS table) at ~₹49,468, itself an illiquid-float
+// outlier; nothing else clears ₹7,500. The ceiling sits ~2× above the genuine maximum, wide enough to
+// admit any real company's figure and tight enough to catch a share count that has collapsed to a
+// handful of digits.
+//
+// ★ APPLIED HERE TOO — 2026-08-11, closing PB-3. This table DEFINED meaningfulBookValue but was the
+// one of five *_fundamentals tables that never called it on its OWN bookValuePerShare below — only
+// boundDerived (column-storage-range, not meaning) wrapped it. ITCHOTELS FY25 consolidated (faceValue
+// 208.12, byte-equal to paidUpEquityCapital — the KOTAKBANK-shape corruption) and JKTYRE FY26 both
+// bases (faceValue 57.66, same byte-equal signature) were live and uncontained as a result — both
+// UNDER PLAUSIBLE_FACE_VALUE_MAX, so plausibleFaceValue alone would not have caught either; see
+// parser-backlog.ts PB-3 (now closed) for the full writeup and the two stocks' actual numbers.
+export const MEANINGFUL_BOOK_VALUE_MAX_ABS = 100_000;
+export function meaningfulBookValue(v: number | null): number | null {
+  return v !== null && Math.abs(v) <= MEANINGFUL_BOOK_VALUE_MAX_ABS ? v : null;
 }
 
 // Raw inputs the derivation reads from the CURRENT row.
@@ -265,7 +319,7 @@ export function deriveIndAsAnnual(
     netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
     operatingMargin: boundDerived(decimalPct(operatingMargin), 4, "operatingMargin", tag),
     netWorth: safeNumber(netWorth),
-    bookValuePerShare: boundDerived(decimalPerShare(bookValuePerShare), 6, "bookValuePerShare", tag),
+    bookValuePerShare: boundDerived(decimalPerShare(meaningfulBookValue(bookValuePerShare)), 6, "bookValuePerShare", tag),
     debtToEquity: boundDerived(decimalPct(debtToEquity !== null ? debtToEquity * 100 : null), 4, "debtToEquity", tag), // store as percent
     roe: boundDerived(decimalPct(roe), 4, "roe", tag),
     roce: boundDerived(decimalPct(roce), 4, "roce", tag),

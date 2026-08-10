@@ -10,7 +10,7 @@ async function main() {
   const pillar = await prisma.pillarScore.count();
   const metric = await prisma.metricScore.count();
   const mktSub = await prisma.marketSubScore.count();
-  const rf = await prisma.redFlag.count();
+  const rf = /* score_red_flags dropped 2026-08-11 */ 0;
   console.log("MetricBarSet rows :", bars);
   console.log("BarProvenance     :", prov);
   console.log("ScoringSpecVersion:", spec);

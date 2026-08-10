@@ -71,8 +71,11 @@ export async function ingestIndAsAnnual(
     return { status: "rejected", rowId: "", scoreRelevantChanged: false };
   }
   // Sanitised face value — corrupt source (e.g. 44539 where the real value is 10)
-  // would otherwise compute a nonsensical bookValuePerShare and reject the row.
-  const faceValueSane = plausibleFaceValue(p.faceValueShare);
+  // would otherwise compute a nonsensical bookValuePerShare and reject the row. The 2nd
+  // arg catches the relational shape a magnitude check alone misses (ITCHOTELS 208.12,
+  // JKTYRE 57.66 — both byte-equal to their own paidUpEquityCapital, both under
+  // PLAUSIBLE_FACE_VALUE_MAX) — see plausibleFaceValue's doc comment.
+  const faceValueSane = plausibleFaceValue(p.faceValueShare, p.paidUpEquityCapital);
   if (faceValueSane === null && p.faceValueShare !== null) {
     console.warn(`[ingest-indas-annual] ${tag}: implausible faceValueShare=${p.faceValueShare} → treated as null.`);
   }

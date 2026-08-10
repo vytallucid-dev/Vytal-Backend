@@ -27,10 +27,13 @@ import {
   type DilutionVerdict,
 } from "./dilution.js";
 import type { OwnershipQuarter } from "./types.js";
+import { STOCK_FINDINGS } from "../../catalogue/stock-findings.js";
 
 // Spec penalty values + thresholds (explicit, not tuned).
 export const R2_PENALTY = -6;
-export const R2_DROP_PP = 5; // promoter % drop must be > 5pp (strict)
+// ★ READ FROM THE CATALOGUE, not declared here. R2's bar is a fact about the finding, and the
+//   finding's facts have one home now (catalogue/finding-facts.ts). Relocation only — still 5.
+export const R2_DROP_PP = STOCK_FINDINGS.ownership_R2_promoter_exit.facts.thresholds.dropPp; // > 5pp (strict)
 export const R6_PENALTY = -8;
 // R6 directional ROUNDING/NOISE floor — explicitly NOT a calibrated threshold
 // (CN-8), same spirit as the dilution detector's `tol`. Its ONLY job is to stop a

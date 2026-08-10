@@ -8,7 +8,9 @@ import { Prisma } from "../generated/prisma/client.js";
 import { decrementFY } from "../ingestions/quaterly-results/ingester-utils.js";
 import { deriveLiAnnual, type LiAnnualRaw, type LiAnnualPrior } from "../ingestions/quaterly-results/derive/derive-li-annual.js";
 import { deriveGiAnnual, type GiAnnualRaw, type GiAnnualPrior } from "../ingestions/quaterly-results/derive/derive-gi-annual.js";
+import { plausibleFaceValue } from "../ingestions/quaterly-results/derive/derive-indas-annual.js";
 
+const TAG = "verify";
 const num = (d: Prisma.Decimal | null) => (d == null ? null : d.toNumber());
 let pass = 0, fail = 0;
 function check(name: string, ok: boolean, got?: unknown) {
@@ -26,10 +28,10 @@ function liUnit() {
   console.log("\n[A] LI synthetic unit-checks");
   const raw: LiAnnualRaw = {
     shareCapital: 200, reservesAndSurplus: 700, fairValueChangeAccount: 100, paidUpEquityCapital: 200,
-    faceValueShare: 10, incomeFirstYearPremium: 300, grossPremiumIncome: 1200, totalOperatingExpenses: 240, netProfit: 150,
+    faceValueShareSane: 10, incomeFirstYearPremium: 300, grossPremiumIncome: 1200, totalOperatingExpenses: 240, netProfit: 150,
   };
   const prior: LiAnnualPrior = { shareCapital: 200, reservesAndSurplus: 600, fairValueChangeAccount: 100, grossPremiumIncome: 1000, netProfit: 120 };
-  const d = deriveLiAnnual(raw, prior).columns;
+  const d = deriveLiAnnual(raw, prior, TAG).columns;
   check("LI netWorth = 200+700+100 = 1000", num(d.netWorth) === 1000);
   check("LI bvps = 1000/(200/10) = 50", num(d.bookValuePerShare) === 50);
   check("LI newBusinessPremiumPct = 300/1200 = 0.25", num(d.newBusinessPremiumPct) === 0.25);
@@ -37,29 +39,60 @@ function liUnit() {
   check("LI roe = 150/avg(1000,900)=150/950 = 0.157895", num(d.roe) === 0.157895);
   check("LI premiumGrowthYoy = (1200-1000)/1000*100 = 20", num(d.premiumGrowthYoy) === 20);
   check("LI patGrowthYoy = (150-120)/120*100 = 25", num(d.patGrowthYoy) === 25);
-  const fb = deriveLiAnnual({ ...raw, paidUpEquityCapital: null, faceValueShare: null }, prior).columns;
-  check("LI bvps face fallback ₹10 + shareCapital: 1000/(200/10)=50", num(fb.bookValuePerShare) === 50);
+  const fb = deriveLiAnnual({ ...raw, paidUpEquityCapital: null, faceValueShareSane: null }, prior, TAG).columns;
+  check("LI bvps face fallback ₹10 + shareCapital: 1000/(200/10)=50 (never disclosed)", num(fb.bookValuePerShare) === 50);
+
+  // ★ REGRESSION — 2026-08-11 PB-3 gate added to LI (no live outlier — face_value_share
+  // is 0% populated on this table — but zero outliers and a gate are different facts).
+  // A source value that fails plausibleFaceValue() at the CALLER must arrive here as
+  // faceValueShareSane=null, and — per the ★ ??10 DECISION (kept) — is treated
+  // IDENTICALLY to "never disclosed": the same IRDAI-norm fallback, not a distinct path.
+  const implausibleAtCaller = deriveLiAnnual(
+    { ...raw, faceValueShareSane: plausibleFaceValue(6018.6) },
+    prior, TAG,
+  ).columns;
+  check("LI: implausible source value (6018.6, caller-sanitised to null) falls back to ₹10, same as undisclosed", num(implausibleAtCaller.bookValuePerShare) === 50);
+  // Mirror shape (CANFINHOME/ICICIBANK/KOTAKBANK): an ORDINARY face value but a
+  // corrupt paidUpEquityCapital collapses sharesCr to a handful — only the OUTPUT
+  // bound catches this, since faceValueShareSane itself looks completely fine.
+  const corruptPaidUp = deriveLiAnnual(
+    { ...raw, reservesAndSurplus: 999900, paidUpEquityCapital: 0.02, faceValueShareSane: 10 },
+    null, TAG,
+  ).columns;
+  check("LI: ordinary face value (10) + corrupt paidUpEquityCapital (0.02) → bookValuePerShare nulled by meaningfulBookValue, not a lakh-plus figure", corruptPaidUp.bookValuePerShare === null, num(corruptPaidUp.bookValuePerShare));
 }
 function giUnit() {
   console.log("\n[A] GI synthetic unit-checks");
   const raw: GiAnnualRaw = {
     shareCapital: 100, reservesAndSurplus: 800, fairValueChangeAccount: 100, paidUpEquityCapital: 100,
-    faceValueShare: 10, combinedRatio: 0.95, netProfit: 150, grossPremiumsWritten: 2000,
+    faceValueShareSane: 10, combinedRatio: 0.95, netProfit: 150, grossPremiumsWritten: 2000,
   };
   const prior: GiAnnualPrior = { shareCapital: 100, reservesAndSurplus: 700, fairValueChangeAccount: 100, grossPremiumsWritten: 1600, netProfit: 120 };
-  const d = deriveGiAnnual(raw, prior).columns;
+  const d = deriveGiAnnual(raw, prior, TAG).columns;
   check("GI netWorth = 100+800+100 = 1000", num(d.netWorth) === 1000);
   check("GI bvps = 1000/(100/10) = 100", num(d.bookValuePerShare) === 100);
   check("GI netUnderwritingMargin = 1-0.95 = 0.05", num(d.netUnderwritingMargin) === 0.05);
   check("GI roe = 150/avg(1000,900)=150/950 = 0.157895", num(d.roe) === 0.157895);
   check("GI gpwGrowthYoy = (2000-1600)/1600*100 = 25", num(d.gpwGrowthYoy) === 25);
   check("GI patGrowthYoy = (150-120)/120*100 = 25", num(d.patGrowthYoy) === 25);
-  check("GI netUWM null when combinedRatio null", deriveGiAnnual({ ...raw, combinedRatio: null }, prior).columns.netUnderwritingMargin === null);
+  check("GI netUWM null when combinedRatio null", deriveGiAnnual({ ...raw, combinedRatio: null }, prior, TAG).columns.netUnderwritingMargin === null);
+
+  // ★ REGRESSION — same two cases as LI, mirrored for GI (structurally identical table).
+  const implausibleAtCaller = deriveGiAnnual(
+    { ...raw, faceValueShareSane: plausibleFaceValue(6018.6) },
+    prior, TAG,
+  ).columns;
+  check("GI: implausible source value (6018.6, caller-sanitised to null) falls back to ₹10, same as undisclosed", num(implausibleAtCaller.bookValuePerShare) === 100);
+  const corruptPaidUp = deriveGiAnnual(
+    { ...raw, reservesAndSurplus: 999900, paidUpEquityCapital: 0.02, faceValueShareSane: 10 },
+    null, TAG,
+  ).columns;
+  check("GI: ordinary face value (10) + corrupt paidUpEquityCapital (0.02) → bookValuePerShare nulled by meaningfulBookValue, not a lakh-plus figure", corruptPaidUp.bookValuePerShare === null, num(corruptPaidUp.bookValuePerShare));
 }
 
 async function bulk<R extends { id: string; stockId: string; fiscalYear: string; resultType: string }>(
   label: string, rows: R[], rawOf: (r: R) => unknown, priorOf: (r: R) => unknown,
-  derive: (raw: unknown, prior: unknown) => { columns: Record<string, Prisma.Decimal | null> },
+  derive: (raw: unknown, prior: unknown, tag: string) => { columns: Record<string, Prisma.Decimal | null> },
   nonPrior: readonly string[], priorDep: readonly string[],
 ) {
   const byKey = new Map<string, R>();
@@ -71,7 +104,7 @@ async function bulk<R extends { id: string; stockId: string; fiscalYear: string;
   let breaches = 0;
   for (const r of rows) {
     const priorRow = byKey.get(`${r.stockId}|${decrementFY(r.fiscalYear)}|${r.resultType}`) ?? null;
-    const d = derive(rawOf(r), priorRow ? priorOf(priorRow) : null).columns;
+    const d = derive(rawOf(r), priorRow ? priorOf(priorRow) : null, `${r.stockId}|${r.fiscalYear}|${r.resultType}`).columns;
     for (const c of nonPrior) {
       const stored = (r as unknown as Record<string, Prisma.Decimal | null>)[c]; const got = d[c]; const t = tol[c];
       if (stored == null && got == null) { t.bothNull++; continue; }
@@ -106,14 +139,14 @@ async function main() {
   const liRows = (await prisma.lifeInsuranceFundamental.findMany({ select: LI_SELECT })) as LiRow[];
   const giRows = (await prisma.generalInsuranceFundamental.findMany({ select: GI_SELECT })) as GiRow[];
   const li = await bulk("LifeInsurance", liRows,
-    (r) => ({ shareCapital: num(r.shareCapital), reservesAndSurplus: num(r.reservesAndSurplus), fairValueChangeAccount: num(r.fairValueChangeAccount), paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShare: num(r.faceValueShare), incomeFirstYearPremium: num(r.incomeFirstYearPremium), grossPremiumIncome: num(r.grossPremiumIncome), totalOperatingExpenses: num(r.totalOperatingExpenses), netProfit: num(r.netProfit) }),
+    (r) => ({ shareCapital: num(r.shareCapital), reservesAndSurplus: num(r.reservesAndSurplus), fairValueChangeAccount: num(r.fairValueChangeAccount), paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(num(r.faceValueShare)), incomeFirstYearPremium: num(r.incomeFirstYearPremium), grossPremiumIncome: num(r.grossPremiumIncome), totalOperatingExpenses: num(r.totalOperatingExpenses), netProfit: num(r.netProfit) }),
     (r) => ({ shareCapital: num(r.shareCapital), reservesAndSurplus: num(r.reservesAndSurplus), fairValueChangeAccount: num(r.fairValueChangeAccount), grossPremiumIncome: num(r.grossPremiumIncome), netProfit: num(r.netProfit) }),
-    (raw, prior) => deriveLiAnnual(raw as LiAnnualRaw, prior as LiAnnualPrior | null) as unknown as { columns: Record<string, Prisma.Decimal | null> },
+    (raw, prior, tag) => deriveLiAnnual(raw as LiAnnualRaw, prior as LiAnnualPrior | null, tag) as unknown as { columns: Record<string, Prisma.Decimal | null> },
     ["netWorth", "bookValuePerShare", "newBusinessPremiumPct", "expenseRatioPolicyholders"], ["roe", "premiumGrowthYoy", "patGrowthYoy"]);
   const gi = await bulk("GeneralInsurance", giRows,
-    (r) => ({ shareCapital: num(r.shareCapital), reservesAndSurplus: num(r.reservesAndSurplus), fairValueChangeAccount: num(r.fairValueChangeAccount), paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShare: num(r.faceValueShare), combinedRatio: num(r.combinedRatio), netProfit: num(r.netProfit), grossPremiumsWritten: num(r.grossPremiumsWritten) }),
+    (r) => ({ shareCapital: num(r.shareCapital), reservesAndSurplus: num(r.reservesAndSurplus), fairValueChangeAccount: num(r.fairValueChangeAccount), paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(num(r.faceValueShare)), combinedRatio: num(r.combinedRatio), netProfit: num(r.netProfit), grossPremiumsWritten: num(r.grossPremiumsWritten) }),
     (r) => ({ shareCapital: num(r.shareCapital), reservesAndSurplus: num(r.reservesAndSurplus), fairValueChangeAccount: num(r.fairValueChangeAccount), grossPremiumsWritten: num(r.grossPremiumsWritten), netProfit: num(r.netProfit) }),
-    (raw, prior) => deriveGiAnnual(raw as GiAnnualRaw, prior as GiAnnualPrior | null) as unknown as { columns: Record<string, Prisma.Decimal | null> },
+    (raw, prior, tag) => deriveGiAnnual(raw as GiAnnualRaw, prior as GiAnnualPrior | null, tag) as unknown as { columns: Record<string, Prisma.Decimal | null> },
     ["netWorth", "bookValuePerShare", "netUnderwritingMargin"], ["roe", "gpwGrowthYoy", "patGrowthYoy"]);
   console.log(`\n=== unit ${pass}/${pass + fail} | LI breaches ${li.breaches} stale ${li.totalStale} | GI breaches ${gi.breaches} stale ${gi.totalStale} ===`);
   await prisma.$disconnect();

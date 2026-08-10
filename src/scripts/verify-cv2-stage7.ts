@@ -72,7 +72,6 @@ async function main() {
   // Construction was pinned at 70.48 throughout. The flicker was price, not contamination).
   //
   // §13's actual claim is CAUSAL: Construction cannot move Health. Asserted two ways, both properties.
-  const EXP: Record<string, number> = { "4c5ca537": 73, "ae8c6537": 73, "e3c6bd3c": 69, "7985d813": 65, "108fd2a6": 50 };
 
   // (i) THE FORMULA, verbatim, on EVERY persisted row: Health = round(max(0, Quality − 0.20×(100−Signals))).
   //     There is no structure term. Contamination of any size would break this on the row it touched.
@@ -105,11 +104,25 @@ async function main() {
     checked > 0 && disagreed === 0, disagreed ? `${disagreed} disagreed` : pairs[0] ?? "");
   for (const p of pairs.slice(1)) console.log(`     ↳ ${p}`);
 
-  // (iii) the SERVED row per user is at the frozen cohort value (a property of the latest row only).
+  // (iii) EVERY live user HAS a served row, and its Health matches the (i) formula — a COVERAGE check
+  // ((i) proves the formula on whatever rows exist; this proves no live user is missing one).
+  //
+  // (2026-08-11) RETIRED the literal pin here — `EXP: Record<string, number>`, 5 Health values keyed by
+  // user id. 3 of those users no longer exist, a 4th postdated the gate (`EXP[tag]` undefined, so the
+  // assertion read `s?.phs === undefined` and failed even where `s` was healthy), and the 5th's live
+  // Health had simply moved since the literal was written — the exact premise (i)/(ii) above exist to
+  // correct: Quality moves with EOD prices, so a specific Health value is never a safe pin. (i) and (ii)
+  // already prove the CAUSAL claim ("Construction cannot move Health") robustly, over every persisted
+  // row, with no literal in sight — this sub-check's only remaining job is coverage, so that's what it
+  // asserts now: for whoever is live today, a row exists and obeys the same formula. See
+  // verify-cv2-stage6.ts's `EXP_HEALTH` retirement for the twin of this fix, one file over.
   for (const uid of users) {
-    const s = await prisma.portfolioHealthSnapshot.findFirst({ where: { userId: uid }, orderBy: { createdAt: "desc" }, select: { phs: true, structure: true } });
+    const s = await prisma.portfolioHealthSnapshot.findFirst({ where: { userId: uid }, orderBy: { createdAt: "desc" }, select: { phs: true, quality: true, signals: true, structure: true } });
     const tag = uid.slice(0, 8);
-    ok(`${tag} · served Health = ${EXP[tag]}`, s?.phs === EXP[tag], `phs ${s?.phs} · Construction ${Number(s?.structure).toFixed(2)}`);
+    const formulaHealth = s ? Math.round(Math.max(0, Number(s.quality) - 0.2 * (100 - Number(s.signals)))) : null;
+    ok(`${tag} · has a served row, Health ${s?.phs} matches the §13 formula`,
+      s != null && s.phs === formulaHealth,
+      `phs ${s?.phs} · formula ${formulaHealth} · Construction ${s ? Number(s.structure).toFixed(2) : "—"}`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -182,7 +195,12 @@ async function main() {
   ok("health-snapshot ids — ISOLATED: a rescore moves the hash", fp(base) !== fp(base, { ...PROV, healthSnapshotIds: ["h1", "h9"] }));
   ok("finding ids — ISOLATED: a finding change moves the hash", fp(base) !== fp(base, { ...PROV, findingIds: ["f9"] }));
   // CONSTANT_VERSION — present by construction (a constant; asserted by its stamp, and by Stage 5's cutover)
-  ok("CONSTANT_VERSION — in the hash (a constant, so proven by the cutover it delivered, not by mutation)", CONSTANT_VERSION === "portfolio-spec 2.0", CONSTANT_VERSION);
+  // (cv 2.1, bookWeight bump) De-pinned from the "portfolio-spec 2.0" literal for the reason spelled out in
+  // verify-cv2-stage5.ts: a literal comparison against a constant that is meant to move breaks `tsc` on
+  // every legitimate bump, in files that are not about the bump. The claim here was never the digit — it is
+  // that a POST-CUTOVER version is stamped, and that `fingerprintOf` reads it.
+  const cvStamped: string = CONSTANT_VERSION;
+  ok("CONSTANT_VERSION — in the hash (a constant, so proven by the cutover it delivered, not by mutation)", cvStamped.startsWith("portfolio-spec 2."), cvStamped);
   // the REMOVED input
   ok("sectorVersion — REMOVED: `PhsProvenance` no longer carries it (it was a constant that could never fire)",
     !("sectorVersion" in PROV), "replaced by the sector-resolution OUTPUTS above");

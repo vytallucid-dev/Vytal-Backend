@@ -19,6 +19,7 @@ import {
   type AiToolCall,
   type AiToolSpec,
   type TokenUsage,
+  type AiStructuredResult,
 } from "../types.js";
 
 // ── THE PINNED MODEL ─────────────────────────────────────────────────────
@@ -42,7 +43,13 @@ function resolveModel(reqModel?: string): string {
  *   · a tool-RESULT message → a `user` Content with a functionResponse part (Gemini has no
  *     "tool" role; Content.role is user|model, and function responses ride under "user");
  *   · a tool-CALL (assistant) message → a `model` Content with functionCall parts;
- *   · anything else → a plain text part (its assistant role becomes Gemini's "model"). */
+ *   · anything else → a plain text part (its assistant role becomes Gemini's "model").
+ *
+ *  ⚠ A TOOL RESULT IS MAPPED FIELD BY FIELD — `name`, `response`, `id`, AND NOTHING ELSE. That is a
+ *  load-bearing omission, not an oversight: `AiToolResult.effects` (which domains that call changed)
+ *  is persisted alongside the result so the transcript can be read back, and it must NEVER become
+ *  prompt content. An enumeration here (`...r`) would silently start shipping it — and every future
+ *  non-model field with it — to the provider on every replay. Add fields explicitly or not at all. */
 export function toGeminiContents(messages: AiMessage[]): Content[] {
   return messages.map((m): Content => {
     if (m.toolResult) {
@@ -189,10 +196,11 @@ export function createGeminiAdapter(): AiProvider {
 
     async generateStructured<T>(
       req: AiGenerateStructuredRequest,
-    ): Promise<{ data: T; usage: TokenUsage }> {
+    ): Promise<AiStructuredResult<T>> {
       const model = resolveModel(req.model);
       let raw: string;
       let usage: TokenUsage;
+      let finishReason: string | null;
       try {
         const response = await client.models.generateContent({
           model,
@@ -207,18 +215,22 @@ export function createGeminiAdapter(): AiProvider {
         });
         raw = response.text ?? "";
         usage = toTokenUsage(response.usageMetadata, response.modelVersion ?? model);
+        // ★ CARRIED OUT OF THE ADAPTER, WHICH IS NEW. "MAX_TOKENS" here is the only thing that
+        // distinguishes output we cut off from output the model got wrong, and both arrive at the
+        // caller as a JSON.parse failure. It has always been on the response and was never read.
+        finishReason = (response.candidates?.[0]?.finishReason as string | undefined) ?? null;
       } catch (err) {
+        // A provider/network failure STILL throws — that is a different fact from a bad answer.
         throw new Error(`Gemini generateStructured failed: ${(err as Error).message}`);
       }
-      // Parse OUTSIDE the network try so a bad-JSON error is not mislabelled as an
-      // API failure.
-      let data: T;
+      // Parse OUTSIDE the network try so a bad-JSON answer is never mislabelled as an API failure —
+      // and is returned as data, so the caller can tell truncation from nonsense and retry each
+      // differently.
       try {
-        data = JSON.parse(raw) as T;
+        return { ok: true, data: JSON.parse(raw) as T, usage, finishReason };
       } catch {
-        throw new Error("Gemini generateStructured: model did not return valid JSON");
+        return { ok: false, reason: "unparseable", raw, usage, finishReason };
       }
-      return { data, usage };
     },
 
     async ping(): Promise<boolean> {

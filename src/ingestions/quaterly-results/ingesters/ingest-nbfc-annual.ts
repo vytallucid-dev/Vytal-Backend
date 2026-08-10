@@ -15,6 +15,7 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveNbfcAnnual } from "../derive/derive-nbfc-annual.js";
+import { plausibleFaceValue } from "../derive/derive-indas-annual.js";
 
 export async function ingestNbfcAnnual(
   input: { stockId: string; parsed: ParsedNbfcAnnual; source: string },
@@ -64,6 +65,16 @@ export async function ingestNbfcAnnual(
     },
   });
 
+  // ── Sanitise faceValueShare BEFORE it reaches either the stored column or
+  // the derivation — a corrupt source tag (e.g. MOTILALOFS FY26 standalone:
+  // 6018.6, filed under unitRef="INRPerShare") must not poison bookValuePerShare
+  // or get persisted as if it were a real face value. See derive-nbfc-annual.ts's
+  // header note for the evidence and derive-indas-annual.ts for the shared gate. ──
+  const faceValueSane = plausibleFaceValue(p.faceValueShare);
+  if (faceValueSane === null && p.faceValueShare !== null) {
+    console.warn(`[ingest-nbfc-annual] ${entity}: implausible faceValueShare=${p.faceValueShare} → treated as null.`);
+  }
+
   // ── Derive all 12 stored columns — SINGLE PATH (ingestion ≡ fill). ──
   const derived = deriveNbfcAnnual(
     {
@@ -88,7 +99,7 @@ export async function ingestNbfcAnnual(
       otherEquity: p.otherEquity,
       totalAssets: p.totalAssets,
       paidUpEquityCapital: p.paidUpEquityCapital,
-      faceValueShare: p.faceValueShare,
+      faceValueShareSane: faceValueSane,
       netProfit: p.netProfit,
       revenue: p.revenue,
     },
@@ -107,6 +118,7 @@ export async function ingestNbfcAnnual(
           depositsLiabilities: priorRow.depositsLiabilities?.toNumber() ?? null,
         }
       : null,
+    entity,
   );
   // The record guards read the pre-Decimal revenue-YoY number.
   const revenueGrowthYoy = derived.numbers.revenueGrowthYoy;
@@ -207,7 +219,9 @@ export async function ingestNbfcAnnual(
 
     basicEps: decimalPerShare(p.basicEps),
     dilutedEps: decimalPerShare(p.dilutedEps),
-    faceValueShare: decimalPerShare(p.faceValueShare),
+    // Sanitised, not raw — an implausible source value must not be persisted as
+    // if it were a real face value (see the note above and derive-nbfc-annual.ts).
+    faceValueShare: decimalPerShare(faceValueSane),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
     // Derived — the 12 computed columns (nim, costToIncome, creditCost, spread,

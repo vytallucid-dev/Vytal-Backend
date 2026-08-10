@@ -16,6 +16,7 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveLiAnnual } from "../derive/derive-li-annual.js";
+import { plausibleFaceValue } from "../derive/derive-indas-annual.js";
 
 export async function ingestLifeInsuranceAnnual(
   input: { stockId: string; parsed: ParsedLifeInsuranceAnnual; source: string },
@@ -59,6 +60,15 @@ export async function ingestLifeInsuranceAnnual(
     },
   });
 
+  // ── Sanitise faceValueShare BEFORE it reaches either the stored column or the
+  // derivation — a corrupt source tag must not poison bookValuePerShare or get
+  // persisted as if it were a real face value. See derive-li-annual.ts's header
+  // note for the ??10 decision and derive-indas-annual.ts for the shared gate. ──
+  const faceValueSane = plausibleFaceValue(p.faceValueShare);
+  if (faceValueSane === null && p.faceValueShare !== null) {
+    console.warn(`[ingest-li-annual] ${entity}: implausible faceValueShare=${p.faceValueShare} → treated as null.`);
+  }
+
   // ── Derive 7 stored columns — SINGLE PATH (ingestion ≡ fill). ──
   const derived = deriveLiAnnual(
     {
@@ -66,7 +76,7 @@ export async function ingestLifeInsuranceAnnual(
       reservesAndSurplus: p.reservesAndSurplus,
       fairValueChangeAccount: p.fairValueChangeAccount,
       paidUpEquityCapital: p.paidUpEquityCapital,
-      faceValueShare: p.faceValueShare,
+      faceValueShareSane: faceValueSane,
       incomeFirstYearPremium: p.incomeFirstYearPremium,
       grossPremiumIncome: p.grossPremiumIncome,
       totalOperatingExpenses: p.totalOperatingExpenses,
@@ -81,6 +91,7 @@ export async function ingestLifeInsuranceAnnual(
           netProfit: priorRow.netProfit?.toNumber() ?? null,
         }
       : null,
+    entity,
   );
   // The record guards read the pre-Decimal premium-YoY number.
   const premiumGrowthYoy = derived.numbers.premiumGrowthYoy;
@@ -183,7 +194,9 @@ export async function ingestLifeInsuranceAnnual(
 
     basicEps: decimalPerShare(p.basicEps),
     dilutedEps: decimalPerShare(p.dilutedEps),
-    faceValueShare: decimalPerShare(p.faceValueShare),
+    // Sanitised, not raw — an implausible source value must not be persisted as
+    // if it were a real face value (see the note above and derive-li-annual.ts).
+    faceValueShare: decimalPerShare(faceValueSane),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
     // Derived — netWorth, bvps, roe, newBusinessPremiumPct, expenseRatio,

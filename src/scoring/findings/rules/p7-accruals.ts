@@ -25,14 +25,21 @@
 // is exceptional-driven. (This is the guard P11 couldn't have — P7 is annual, the grain fits.)
 
 import { annualExceptionalLatest } from "../guards/annual-exceptional.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const P7_CASH_BACK_MAX = 0.50; // OCF < 50% of NP — a SEVERE divergence (half of profit
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_P7_accruals.facts;
+
+export const P7_CASH_BACK_MAX = FACTS.thresholds.cashBackMax; // OCF < 50% of NP — a SEVERE divergence (half of profit
 // unbacked by operating cash) worthy of a Red −8. 0.70 fired on routine working-capital timing
 // (15 names); 0.50 isolates the severe cases incl. negative-OCF. FLAG: provisional, not in File 1.
 
-export const ruleP7: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null;
+export const ruleP7: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // OCF-vs-NP does not transfer to a lender/insurer
   const f = ctx.annualFundamentals;
   if (f.length < 2) return notEvaluable("insufficient_annual_history"); // ⚠ Phase 2: depth gate, not a false
   const sorted = [...f].sort((a, b) => a.fyOrdinal - b.fyOrdinal);
@@ -73,6 +80,5 @@ export const ruleP7: FireRule = (ctx) => {
           : `Accruals divergence — operating cash backed only ${Math.round(cashBack * 100)}% of ${latest.fiscalYear} ` +
             `net profit (₹${r0(np - ocf)} Cr of profit not converted to cash).`,
     },
-    metricRefs: ["netProfit", "cashFromOperating"],
   };
 };

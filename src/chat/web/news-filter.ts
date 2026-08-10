@@ -75,7 +75,13 @@ const ACRONYM_STOPLIST = new Set(
   ("IT AI EV ESG IPO QIP FPO GST SEBI RBI NSE BSE NCLT NCLAT CCI CBI ED ROC CEO CFO COO CTO CIO MD CMD AGM EGM EPS " +
     "PAT PBT EBIT ROE ROCE ROA NPA GNPA NNPA CASA NIM MSME SME MSMEs USA US UK UAE EU UN JV MOU CSR FII DII FPI NBFC " +
     "AMC ETF NAV SIP PSU PLI GDP CPI WPI UPI KYC ATM NRI FD RD EMI MCLR CRR SLR LTV AUM PE PB PAT YOY QOQ HNI IPOs " +
-    "ESOP OFS FMCG EBITDA NDTV PTI ANI IANS BFSI CAGR IRR TDS ITR AGMs").split(" "),
+    "ESOP OFS FMCG EBITDA NDTV PTI ANI IANS BFSI CAGR IRR TDS ITR AGMs " +
+    // ── ★ PERIOD LABELS. Added on evidence, 2026-08-09. `nx` below captures only LETTERS, so the very
+    //    common "RailTel FY26 Revenue Surges 23%" arrives here as the token "FY" — an unlisted 2-letter
+    //    all-caps string, i.e. a suspected sibling entity. A real, on-topic earnings headline was being
+    //    dropped as "names a different entity" purely because a fiscal-year label followed the name.
+    //    Q1/H1 truncate to a single letter and never reach the 2–5 test, which is why only these bite.
+    "FY CY HY YTD MTD TTM").split(" "),
 );
 
 export interface EntityGuard {
@@ -83,32 +89,137 @@ export interface EntityGuard {
   /** The universe's own name for the company — the ONLY authority on who was asked about. */
   name: string;
   shortName: string;
-  /** Case-insensitive name aliases (multi-word tolerated). */
+  /** Case-insensitive name aliases (multi-word tolerated). `shortName` first, then progressively
+   *  shorter prefixes of it that were admitted as unambiguous — see `prefixAliasesFor`. */
   aliases: string[];
   /** Extra sibling markers derived from the COVERED UNIVERSE (a listed sibling whose name extends ours). */
   siblingMarkers: string[];
+  /** ★ Words that legitimately follow one of OUR OWN aliases inside OUR OWN name, lowercased.
+   *  Consulted BEFORE the sibling tests so shortening an alias cannot make the company look like a
+   *  sibling of itself — see the OWN-CONTINUATION note on `prefixAliasesFor`. */
+  ownContinuations: string[];
+}
+
+/** Words that must never END a prefix alias. "Bank of" and "Housing &" are not names, and as aliases
+ *  they would match every "Bank of X" headline ever written. */
+const DANGLING_TAIL = new Set(["&", "of", "and", "the", "for", "de"]);
+
+/**
+ * ★★★ PROGRESSIVELY SHORTER ALIASES, ADMITTED ONLY WHEN THE UNIVERSE SAYS THEY ARE UNAMBIGUOUS.
+ *
+ * ── THE FAILURE THIS FIXES, MEASURED ─────────────────────────────────────────────────────────────
+ * `shortenCompanyName` strips only a trailing corporate suffix, so it keeps every remaining word:
+ * "Bikaji Foods International", "Acutaas Chemicals", "Railtel Corporation Of India". The press does
+ * not. "Bikaji Foods Q1 Results: Revenue Grows 12.5% to ₹734 Cr" — a real earnings story about the
+ * company asked for — matched no alias and was dropped as `off-topic`. 200 of 504 covered names
+ * (40%) carry a 3+ word short name. Measured over the stored corpus: keep rate 24.0% → 30.0%,
+ * +1,386 rows, landing on the 32% hand count.
+ *
+ * ── ⚠⚠ WHY A WORD-COUNT RULE IS WRONG, AND WHY THIS TAKES THE UNIVERSE AS AN ARGUMENT ───────────
+ * "Drop to at least two words" was written first and MEASURED AGAINST THE UNIVERSE, which killed it:
+ * 5.5% of the aliases it admits collide with another covered company, and the collisions are the
+ * worst possible ones — "Bank of" (Bank of Maharashtra / Baroda / India) and "Aditya Birla" (four
+ * separate listings). One word is worse still: 17.9% collide, including "Tata", "Adani", "Bajaj",
+ * "Piramal". An alias of "Tata" would file every Tata Group headline under whichever Tata company
+ * the reader happened to open.
+ *
+ * So admission is DATA-DRIVEN, not length-driven: a prefix is admitted only when NO OTHER covered
+ * company's short name equals it or extends it. "Bikaji Foods" is admitted because nothing else in
+ * the universe starts with it; "Adani" is refused because five things do; "Adani Energy" is admitted
+ * because nothing extends it. The refusals are not a gap — the full short name still matches, and an
+ * ambiguous group prefix is exactly the case this file exists to be careful about.
+ *
+ * ── ★ OWN-CONTINUATION: SHORTENING MUST NOT MAKE US A SIBLING OF OURSELF ────────────────────────
+ * Found in the same measurement run. With "Ambuja" admitted for "Ambuja Cements", the headline
+ * "Ambuja Cement Q1 Results: Net profit drops 34% YoY" matched, and then `mentionKind` looked at the
+ * word after the alias — "Cement" — found it in AFFILIATE_WORDS, and dropped a real earnings story as
+ * `sibling-entity`. Same for "Acutaas Chem" under "Acutaas Chemicals". The word after one of our own
+ * prefixes is OUR OWN NEXT WORD, so it is returned here as an `ownContinuation` and cleared before the
+ * sibling tests run. Stem-tolerant, because the press abbreviates: Cement/Cements, Chem/Chemicals.
+ *
+ * `relatedShorts` must be the SHORTENED names of other covered companies sharing our first word —
+ * both call sites derive it from one indexed `startsWith` read. PURE: no network, no DB, no clock.
+ */
+function prefixAliasesFor(shortName: string, relatedShorts: string[]): { aliases: string[]; ownContinuations: string[] } {
+  const words = shortName.split(/\s+/).filter(Boolean);
+  const aliases: string[] = [];
+  const ownContinuations: string[] = [];
+  for (let k = words.length - 1; k >= 1; k--) {
+    const prefix = words.slice(0, k).join(" ");
+    if (prefix.length < 4) continue;
+    if (DANGLING_TAIL.has(words[k - 1].toLowerCase())) continue;
+    const pl = prefix.toLowerCase();
+    // ★★ A ONE-WORD ALIAS MUST CARRY THE COMPANY'S IDENTITY BY ITSELF, AND A SECTOR WORD DOES NOT.
+    //
+    // ⚠ THIS IS NOT BELT-AND-BRACES — the shipped proof caught its absence. verify-stock-news.ts
+    // builds the MAHABANK guard as buildEntityGuard("MAHABANK", "Bank of Maharashtra", []) — an
+    // EMPTY universe, correctly, because it is testing a pure function. With no collision data the
+    // test below cannot fire, so "Bank" was admitted as an alias, and "Court rules on compassionate
+    // appointment plea against bank" — the canonical off-topic case this whole file was written for
+    // (see the header) — came back KEPT. A guard whose safety depends entirely on its caller passing
+    // a good list is not a guard. So genericness is judged INTRINSICALLY, from the word itself.
+    if (k === 1 && (AFFILIATE_WORDS.has(pl) || CORP_SUFFIX_WORDS.has(pl))) continue;
+    // …and then EXTRINSICALLY, against the covered universe (the group-prefix case: Tata, Adani).
+    if (relatedShorts.some((o) => o === pl || o.startsWith(`${pl} `))) continue;
+    aliases.push(prefix);
+    ownContinuations.push(words[k].toLowerCase()); // the word this prefix cut off — ours, not a sibling's
+  }
+  return { aliases, ownContinuations };
+}
+
+/** "cement" ↔ "cements", "chem" ↔ "chemicals". The shorter must be a ≥3-char prefix of the longer —
+ *  loose enough for the press's abbreviations, tight enough that "labs" ≠ "laboratories" stays a miss
+ *  (a known limit, stated on `screenNewsItems`). */
+function stemMatches(a: string, b: string): boolean {
+  if (a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  return short.length >= 3 && long.startsWith(short);
 }
 
 /**
  * Build the guard for one covered stock.
  *
- * `siblingNames` are OTHER covered companies whose names start with our short name — a free, exact
- * source of sibling markers. It does NOT cover the case that forced this file (Cyient DLM is separately
- * listed but NOT in Vytal's universe), which is why the heuristic below exists as well.
+ * `siblingNames` are OTHER covered companies sharing our FIRST WORD — which is a wider read than this
+ * function originally took (names extending our full short name) and deliberately so: the same list
+ * now feeds BOTH the sibling markers AND the collision test that admits shorter aliases. It still does
+ * NOT cover the case that forced this file (Cyient DLM is separately listed but NOT in Vytal's
+ * universe), which is why the heuristics in `mentionKind` exist as well.
  */
 export function buildEntityGuard(symbol: string, name: string, siblingNames: string[] = []): EntityGuard {
   const shortName = shortenCompanyName(name) || name.trim();
-  const aliases = [shortName];
+  const lower = shortName.toLowerCase();
+
+  const relatedShorts = siblingNames
+    .map((s) => shortenCompanyName(s).toLowerCase())
+    .filter((s) => s && s !== lower);
+
+  const { aliases: prefixes, ownContinuations } = prefixAliasesFor(shortName, relatedShorts);
+  // Longest first: the most specific reading of a headline should be the one that settles it.
+  const aliases = [...new Set([shortName, ...prefixes])];
+
+  // Markers are derived from EVERY admitted alias, not just the full short name. Shortening an alias
+  // without widening the markers would be the unsafe half of this change: "Adani Energy" must still
+  // recognise that a following "Solutions"/"Green"/"Ports" names one of the other listings.
   const markers = new Set<string>();
-  for (const sib of siblingNames) {
-    const s = shortenCompanyName(sib);
-    if (!s || s.toLowerCase() === shortName.toLowerCase()) continue;
-    if (s.toLowerCase().startsWith(`${shortName.toLowerCase()} `)) {
-      const nextWord = s.slice(shortName.length).trim().split(/\s+/)[0];
-      if (nextWord) markers.add(nextWord.toLowerCase());
+  for (const alias of aliases) {
+    const al = alias.toLowerCase();
+    for (const related of relatedShorts) {
+      if (!related.startsWith(`${al} `)) continue;
+      const nextWord = related.slice(al.length).trim().split(/\s+/)[0];
+      if (nextWord) markers.add(nextWord);
     }
   }
-  return { symbol: symbol.toUpperCase(), name, shortName, aliases, siblingMarkers: [...markers] };
+  // A word that continues OUR OWN name is never a sibling marker, whatever the universe says.
+  for (const own of ownContinuations) markers.delete(own);
+
+  return {
+    symbol: symbol.toUpperCase(),
+    name,
+    shortName,
+    aliases,
+    siblingMarkers: [...markers],
+    ownContinuations,
+  };
 }
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -123,11 +234,18 @@ type Mention = "clean" | "sibling" | "none";
  * ★ THE RULE, IN ONE FUNCTION. For every occurrence of the company's name, look at the word that
  * follows it:
  *   · a corporate suffix (Ltd / Limited / Pvt)                → OUR company  → clean
+ *   · a continuation of OUR OWN name ("Ambuja" + "Cement")    → OUR company  → clean
  *   · a universe-derived sibling marker                        → someone else → sibling
  *   · an unlisted ALL-CAPS acronym of 2–5 letters ("DLM")      → someone else → sibling
  *   · a capitalised group word ("Finance", "Technologies")     → someone else → sibling
  *   · anything else (a verb, "Q1", "shares", punctuation, end) → OUR company  → clean
  * One clean occurrence anywhere in title or snippet keeps the item.
+ *
+ * ⚠ THE OWN-CONTINUATION TEST MUST STAY SECOND — above every sibling test and below only the corporate
+ * suffix. It exists because the aliases are now prefixes of our own name, and the word a prefix cut off
+ * is frequently ALSO a group word: "Ambuja" + "Cement", "Acutaas" + "Chem", "Adani Energy" + "Solutions".
+ * Ordered any lower, AFFILIATE_WORDS would claim those first and drop the company's own earnings story
+ * as `sibling-entity`. Measured: that is exactly what happened before this test existed.
  */
 function mentionKind(text: string, guard: EntityGuard): Mention {
   if (!text) return "none";
@@ -142,6 +260,7 @@ function mentionKind(text: string, guard: EntityGuard): Mention {
       const raw = nx[1].replace(/[.,;:]+$/, "");
       const low = raw.toLowerCase();
       if (CORP_SUFFIX_WORDS.has(low) || CORP_SUFFIX_WORDS.has(`${low}.`)) return "clean";
+      if (guard.ownContinuations.some((own) => stemMatches(low, own))) return "clean";
       if (guard.siblingMarkers.includes(low)) { sawSibling = true; continue; }
       if (/^[A-Z]{2,5}$/.test(raw) && !ACRONYM_STOPLIST.has(raw)) { sawSibling = true; continue; }
       if (/^[A-Z]/.test(raw) && AFFILIATE_WORDS.has(low)) { sawSibling = true; continue; }
@@ -192,6 +311,22 @@ const JUNK_TITLES: { re: RegExp; why: string }[] = [
   { re: /\bstock\s+price,\s*(news|quote|chart|history)\b/i, why: "quote page (template title)" },
   { re: /\bshare\s+price\s*[-–—|:]\s*live\b/i, why: "quote page (template title)" },
   { re: /\blive\s+nse\s*:/i, why: "quote page (template title)" },
+  // ── ★ ADDED 2026-08-09, ON CORPUS EVIDENCE, AND IT REPLACED A WORSE IDEA ────────────────────────
+  // A fan-out ceiling (drop an item syndicated to N+ tickers) was measured first. It "worked" — but
+  // when the rows it would have dropped were read, 375 of them were ONE quote-page template the rules
+  // above just miss: "ADANI POWER LTD Share Price Today - Live ADANIPOWER Stock Price for NSE/BSE"
+  // (the existing `share price - live` rule needs those words adjacent; "Today" sits between them, and
+  // the end-anchored rule needs the title to STOP at "Share Price Today"). They fanned out to 5–66
+  // tickers each because a broker publishes one template per stock, which is incidental. Dropping them
+  // for BEING SYNDICATED would have been right by accident; dropping them for BEING QUOTE PAGES is
+  // right on purpose, and it does not touch a genuine multi-company story. See the fan-out note below.
+  //
+  // ⚠ ALL THREE MUST LEAVE "Cyient share price today: stock slides 6% after Q1 miss" ALONE — a real
+  // headline in this exact shape, pinned in verify-stock-news.ts PART A6. The separator class below
+  // deliberately EXCLUDES the colon, which is what splits the template from the headline.
+  { re: /\bshare\s+price\s+(today|live)\s*[-–—,|]/i, why: "quote page (template title, dated variant)" },
+  { re: /\bshare\s+price\b[\s\S]*\bstock\s+price\b/i, why: "quote page (name repeated with both price phrases)" },
+  { re: /\btop\s+(gainers|losers)\b/i, why: "market-wrap screener list, not a story about one company" },
 ];
 
 const hostOf = (url: string): string => {

@@ -61,7 +61,7 @@ async function main() {
   const baseline = {
     patterns: await prisma.scorePattern.count(),
     lensPatterns: await prisma.scorePattern.count({ where: { patternKey: { startsWith: "lens_" } } }),
-    redFlags: await prisma.redFlag.count(),
+    redFlags: /* score_red_flags dropped 2026-08-11 */ 0,
     snapshots: await prisma.scoreSnapshot.count(),
     metricScores: await prisma.metricScore.count(),
     peerStats: await prisma.peerStatsSnapshot.count(),
@@ -151,7 +151,7 @@ async function main() {
     const [patterns, lens, redFlags, snapshots] = await Promise.all([
       (tx as typeof prisma).scorePattern.count(),
       (tx as typeof prisma).scorePattern.count({ where: { patternKey: { startsWith: "lens_" } } }),
-      (tx as typeof prisma).redFlag.count(),
+      Promise.resolve(/* score_red_flags dropped 2026-08-11 */ 0),
       (tx as typeof prisma).scoreSnapshot.count(),
     ]);
     txCounts = { patterns, lens, nonLens: patterns - lens, redFlags, snapshots };
@@ -178,7 +178,7 @@ async function main() {
   const after = {
     patterns: await prisma.scorePattern.count(),
     lensPatterns: await prisma.scorePattern.count({ where: { patternKey: { startsWith: "lens_" } } }),
-    redFlags: await prisma.redFlag.count(),
+    redFlags: /* score_red_flags dropped 2026-08-11 */ 0,
     snapshots: await prisma.scoreSnapshot.count(),
   };
   console.log("\n── COMMITTED COUNTS (after) ──");

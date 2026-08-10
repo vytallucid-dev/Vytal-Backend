@@ -82,6 +82,5 @@ export const ruleT1: FireRule = (ctx) => {
       fundamentallyDriven: "On moves of this size the non-price pillars contributed 5.7 of 10.6 points on average, driving more than half the move in 56% of cases.",
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["composite"],
   };
 };

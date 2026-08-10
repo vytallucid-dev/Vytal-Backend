@@ -9,10 +9,12 @@
     "start": "node dist/server.js",
     "postinstall": "prisma generate",
     "gen:copy": "tsx src/scripts/gen-frontend-fallback.ts",
-    "verify:copy": "tsx src/scripts/verify-build-gate-hygiene.ts && tsx src/scripts/verify-catalogue.ts && tsx src/scripts/verify-verdicts.ts && tsx src/scripts/verify-trajectory.ts && tsx src/scripts/verify-not-covered.ts && tsx src/scripts/verify-copy-register.ts && tsx src/scripts/verify-catalogue-endpoint.ts && tsx src/scripts/verify-grounding-names.ts && tsx src/scripts/verify-evidence-register.ts && tsx src/scripts/verify-phs-copy.ts && tsx src/scripts/verify-boundary-corpus.ts && tsx src/scripts/verify-quarter-brief-vocabulary.ts",
-    "verify:copy-fresh": "tsx src/scripts/gen-frontend-fallback.ts --check",
-    "verify:cross-repo": "tsx src/scripts/cross-repo/verify-boundary-render.ts && tsx src/scripts/cross-repo/verify-quarter-brief-money.ts && tsx src/scripts/cross-repo/verify-quarter-brief-badge.ts && npm run verify:copy-fresh",
-    "verify:all": "npm run verify:copy && npm run verify:cross-repo"
+    "verify:copy": "tsx src/scripts/verify-build-gate-hygiene.ts && tsx src/scripts/verify-catalogue.ts && tsx src/scripts/verify-verdicts.ts && tsx src/scripts/verify-trajectory.ts && tsx src/scripts/verify-not-covered.ts && tsx src/scripts/verify-sql-predicates.ts && tsx src/scripts/verify-copy-register.ts && tsx src/scripts/verify-catalogue-endpoint.ts && tsx src/scripts/verify-grounding-names.ts && tsx src/scripts/verify-evidence-register.ts && tsx src/scripts/verify-phs-copy.ts && tsx src/scripts/verify-boundary-corpus.ts && tsx src/scripts/verify-quarter-brief-vocabulary.ts && tsx src/scripts/verify-quarter-brief-anchors.ts && tsx src/scripts/verify-quarter-metrics.ts && tsx src/scripts/verify-annual-metrics.ts && tsx src/scripts/verify-results-season.ts && tsx src/scripts/verify-results-season-group.ts && tsx src/scripts/verify-lens-separation.ts && tsx src/scripts/verify-rule-thresholds.ts",
+    "verify:copy-fresh": "tsx src/scripts/gen-frontend-fallback.ts --check && tsx src/scripts/gen-frontend-metric-catalogue.ts --check",
+    "verify:cross-repo": "tsx src/scripts/cross-repo/verify-boundary-render.ts && tsx src/scripts/cross-repo/verify-quarter-brief-money.ts && tsx src/scripts/cross-repo/verify-quarter-brief-badge.ts && tsx src/scripts/cross-repo/verify-pg-table-copy.ts && tsx src/scripts/cross-repo/verify-metric-label-coverage.ts && npm run verify:copy-fresh",
+    "verify:all": "npm run verify:copy && npm run verify:cross-repo && npm run verify:read-parity && npm run verify:evidence-facts",
+    "verify:read-parity": "tsx src/scripts/verify-projection-parity.ts",
+    "verify:evidence-facts": "tsx src/scripts/verify-evidence-facts.ts"
   },
   "keywords": [],
   "author": "",
@@ -24,7 +26,6 @@
     "@react-email/components": "^1.0.12",
     "@react-email/render": "^2.0.10",
     "adm-zip": "^0.5.17",
-    "cheerio": "^1.2.0",
     "compression": "^1.8.1",
     "cors": "^2.8.6",
     "csv-parse": "^6.2.1",
@@ -47,7 +48,6 @@
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",
-    "@types/cheerio": "^0.22.35",
     "@types/compression": "^1.8.1",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

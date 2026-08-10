@@ -67,6 +67,5 @@ export const ruleB: RetiredRule = (ctx) => {
       calibration: CALIBRATION_NOTE,
       verdict,
     },
-    metricRefs: variant === "pillar" ? [leg] : ["composite"],
   };
 };

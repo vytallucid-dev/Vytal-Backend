@@ -25,7 +25,7 @@ async function counts() {
   return {
     run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), metric: await prisma.metricScore.count(),
     mktSub: await prisma.marketSubScore.count(), own: await prisma.ownershipScore.count(),
-    snap: await prisma.scoreSnapshot.count(), rf: await prisma.redFlag.count(),
+    snap: await prisma.scoreSnapshot.count(), rf: /* score_red_flags dropped 2026-08-11 */ 0,
   };
 }
 
@@ -89,8 +89,8 @@ async function main() {
   const scaffold = await prisma.$transaction(async (tx) => ensureScaffold(tx as any, new Date()));
   console.log(`PHASE B — commit  (ScoringRun ${scaffold.runId.slice(0, 8)}…, spec ${scaffold.specVersionId.slice(0, 8)}…)`);
 
-  let totalScored = 0, totalSkipped = 0, totalNoSnap = 0, totalR1 = 0;
-  const r1Stocks: string[] = []; const noSnap: string[] = [];
+  let totalScored = 0, totalSkipped = 0, totalNoSnap = 0;
+  const noSnap: string[] = [];
 
   for (const ref of [PG5, PG6]) {
     // ★ withFindings: a committed snapshot carries its own findings, or it is a blank head.
@@ -106,11 +106,11 @@ async function main() {
     const noSnapHere = results.filter((r) => r.action === "unavailable_no_snapshot");
     const comps = created.map((r) => r.composite!).filter((x) => x != null);
     totalScored += created.length; totalSkipped += skipped.length; totalNoSnap += noSnapHere.length;
-    for (const r of created) if (r.r1Written) { totalR1++; r1Stocks.push(`${r.symbol}(${ref.pgId})`); }
+
     for (const r of noSnapHere) noSnap.push(`${r.symbol}(${ref.pgId})`);
 
     const range = comps.length ? `${f(Math.min(...comps))}–${f(Math.max(...comps))}` : "—";
-    const perStock = results.map((r) => r.action === "created" ? `${r.symbol} ${f(r.composite)}/${r.band}${r.marketState !== "scored" ? "*" : ""}${r.r1Written ? "⚑R1" : ""}` : `${r.symbol}:${r.action === "skipped_identical" ? "skip" : "no-snap"}`).join("  ");
+    const perStock = results.map((r) => r.action === "created" ? `${r.symbol} ${f(r.composite)}/${r.band}${r.marketState !== "scored" ? "*" : ""}` : `${r.symbol}:${r.action === "skipped_identical" ? "skip" : "no-snap"}`).join("  ");
     console.log(`  ${ref.pgId.padEnd(4)} ${`${created.length}/${pg.members.length}`.padEnd(6)} ${range.padEnd(14)} ${perStock}`);
   }
 
@@ -120,7 +120,8 @@ async function main() {
   const after = await counts();
   console.log(`\n  post counts: ${JSON.stringify(after)}`);
   console.log(`  committed: ${totalScored} banking Health Scores | ${totalSkipped} skipped-identical | ${totalNoSnap} no-snapshot`);
-  console.log(`  R1 red flags (${totalR1}): ${r1Stocks.join(", ") || "none (banks zero-pledge → R1 inactive)"}`);
+  // R1 red flags are no longer written by the scoring pass (step 4) — R1 is a filing rule and
+  // writes to stock_findings for all 504 stocks, scored or not.
   if (noSnap.length) console.log(`  no-snapshot: ${noSnap.join(", ")}`);
 
   // Idempotency: recompute a committed banking snapshot's fingerprint == stored.

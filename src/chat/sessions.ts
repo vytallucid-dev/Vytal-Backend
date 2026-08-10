@@ -21,7 +21,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { prisma } from "../db/prisma.js";
 import type { AiMessage, AiToolCall, AiToolResult, TokenUsage } from "../ai/types.js";
-import type { Prisma } from "../generated/prisma/client.js";
+// ⚠ A VALUE IMPORT, not `import type`. `Prisma.DbNull` is the only way to write SQL NULL into a nullable
+// Json column through the client (a bare `null` is a type error, because for Json columns `null` is
+// ambiguous between the JSON value and the SQL one) — and clearing pending_proposal on an edit needs it.
+import { Prisma } from "../generated/prisma/client.js";
 import type { DiscussContext } from "./discuss-context.js";
 import type { PersistedToolTurn } from "./engine.js";
 import { canonicalSubjectSymbol } from "./compose.js";
@@ -60,7 +63,7 @@ export function serializeSession(s: ChatSessionRow) {
  *  Substituting here, at the single serialization point, is what makes every read path agree: open,
  *  resume, and GET-by-id all render the same line without any of them knowing about the split. The
  *  model's copy is untouched — loadHistoryForModel reads the row directly and never comes through here. */
-function serializeMessage(m: ChatMessageRow) {
+function serializeMessage(m: ChatMessageRow, changed: string[] = []) {
   return {
     id: m.id,
     role: m.role,
@@ -68,6 +71,12 @@ function serializeMessage(m: ChatMessageRow) {
     isOpening: m.isOpening,
     guardrailBlocked: m.guardrailBlocked,
     regenerated: m.regenerated,
+    // ★ WHAT THIS TURN CHANGED IN THE READER'S DATA — attributed to the assistant row that ended the
+    //   turn (see serializeVisibleMessages). Empty on every ordinary answer. It exists because the tool
+    //   turns that carry the evidence are stripped from this transcript, so without it the ONLY place a
+    //   confirmed write is visible to a client is the live send response — which is exactly the thing a
+    //   dropped connection loses, and exactly the thing an edit is about to delete.
+    changed,
     // ★ THE DENIAL TRAVELS WITH THE MESSAGE IT REFUSED. Not as a trailing notice on the transcript —
     //   that is exactly what could not tell the reader WHICH of two messages went unanswered, and what
     //   vanished on refresh. `denial` is composed here, against the clock, from the stored scope + reset
@@ -93,9 +102,34 @@ function serializeMessage(m: ChatMessageRow) {
  *  hidden-by-default posture is intact — a row earns visibility by having a reader-facing text, never by
  *  being an opening. serializeMessage above then swaps in that text for `content`. */
 export function serializeVisibleMessages(messages: ChatMessageRow[]) {
-  return messages
-    .filter((m) => m.kind === "text" && !(m.role === "user" && m.isOpening && m.displayContent == null))
-    .map(serializeMessage);
+  const out: ReturnType<typeof serializeMessage>[] = [];
+  // ── EFFECT ATTRIBUTION ────────────────────────────────────────────────────────────────────────────
+  // A turn is written as one contiguous run: user → [tool_call → tool_result]* → assistant, with
+  // strictly-increasing stamps (see appendFollowup §EXPLICIT createdAt). So the domains a confirmed write
+  // changed — recorded on the tool_result's payload — always sit between a user row and the assistant row
+  // that answered it, and belong to THAT assistant row. Accumulate, then flush onto it.
+  //
+  // Reset on a visible user row too: a run that produced no assistant row (which today cannot happen —
+  // nothing is persisted until the terminal transaction) must not be able to leak its effects forward
+  // onto some later turn's reply, where it would claim a write that a different exchange performed.
+  let pending = new Set<string>();
+  for (const m of messages) {
+    if (m.kind === "tool_result") {
+      const eff = (m.toolPayload as { effects?: unknown } | null)?.effects;
+      if (Array.isArray(eff)) for (const d of eff) if (typeof d === "string") pending.add(d);
+      continue;
+    }
+    if (m.kind !== "text") continue; // tool_call — internal, carries no effects of its own
+    if (m.role === "user" && m.isOpening && m.displayContent == null) continue; // hidden scaffolding
+    if (m.role === "user") {
+      out.push(serializeMessage(m));
+      pending = new Set();
+      continue;
+    }
+    out.push(serializeMessage(m, [...pending]));
+    pending = new Set();
+  }
+  return out;
 }
 
 // ── History for the model — ALL messages in order (incl. the grounded scaffolding AND the tool turns). ──
@@ -106,10 +140,18 @@ export function serializeVisibleMessages(messages: ChatMessageRow[]) {
 //   their message, and they can retry it — but the model's history is exactly what it was before denied
 //   messages were persisted at all. This is also why the denial notice is not stored as an assistant
 //   message: there is no assistant row to exclude, so the model can never quote it back.
-export async function loadHistoryForModel(sessionId: string): Promise<AiMessage[]> {
+export async function loadHistoryForModel(
+  sessionId: string,
+  opts: { excludeMessageId?: string } = {},
+): Promise<AiMessage[]> {
   const rows = await prisma.chatMessage.findMany({
-    where: { sessionId, undelivered: false },
-    orderBy: { createdAt: "asc" },
+    // ★ `excludeMessageId` IS THE EDIT PATH, AND IT IS NOT A CONVENIENCE. An edit re-sends one existing
+    //   row, and the row it re-sends must be dropped from the history and re-appended by the caller as
+    //   `modelFacingUserTurn(newText)` — the per-turn language directive that every ordinary send gets and
+    //   that is deliberately never persisted (compose.ts). Replaying the stored row instead would make the
+    //   edited turn the ONE turn in the product generated without it.
+    where: { sessionId, undelivered: false, ...(opts.excludeMessageId ? { id: { not: opts.excludeMessageId } } : {}) },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: { role: true, content: true, kind: true, toolPayload: true },
   });
   // ⚠ TRUNCATION SEAM (config.ts): if this grows unbounded, keep rows[0] (the grounding) and summarize/drop
@@ -148,7 +190,17 @@ export async function findResumableDiscussSession(userId: string, ctx: DiscussCo
 export async function getSessionWithMessages(userId: string, id: string): Promise<{ session: ChatSessionRow; messages: ChatMessageRow[] } | null> {
   const session = await prisma.chatSession.findFirst({ where: { id, userId } });
   if (!session) return null;
-  const messages = await prisma.chatMessage.findMany({ where: { sessionId: id }, orderBy: { createdAt: "asc" } });
+  // ⚠ TIES BROKEN BY id, EVERYWHERE TRANSCRIPT ORDER IS READ. Within a turn the stamps are explicitly
+  // strictly-increasing (§EXPLICIT createdAt below), but nothing prevents two SEPARATE transactions from
+  // landing on the same millisecond, and `ORDER BY created_at` alone leaves that pair's order undefined —
+  // it could differ between two reads of the same rows. That is tolerable for rendering and NOT tolerable
+  // for the edit boundary, which is "every row after this one": an undefined order there is an undefined
+  // set of rows to delete. One deterministic order, used by this read, the model's history read and the
+  // edit plan alike, so all three agree about what "after" means.
+  const messages = await prisma.chatMessage.findMany({
+    where: { sessionId: id },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
   return { session, messages };
 }
 
@@ -263,6 +315,20 @@ export interface FollowupInput {
   regenerated: boolean;
   /** Optionally set the provisional title in the same txn (chat_page's first message). */
   provisionalTitle?: string;
+  /**
+   * ★ WHEN THE READER ACTUALLY PRESSED SEND — captured by the controller BEFORE the generation, not here.
+   *
+   * ⚠ WITHOUT IT THE USER ROW IS STAMPED AT THE WRONG MOMENT, and it took a reader-visible timestamp to
+   * notice. This function runs AFTER the turn has been generated, so `Date.now()` here is send-time plus
+   * the whole generation — a few seconds on an ordinary answer, and far longer on a tool-using turn that
+   * made five round trips. Nothing cared while the stamp was only an ordering key; the transcript now
+   * renders it as "4m ago", and a message would have claimed to be newer than it was, by an amount that
+   * varies with how hard the question was.
+   *
+   * Optional, and IGNORED unless it is genuinely between the previous row and this transaction — see the
+   * clamp below. The ordering invariant outranks the label.
+   */
+  sentAt?: Date;
 }
 
 /** The newest message on a session, or null. Used to decide whether a send SUPERSEDES a denied attempt. */
@@ -353,10 +419,22 @@ export async function appendFollowup(input: FollowupInput): Promise<{ session: C
   const tail = await newestMessage(session.id);
   const supersede = isRetryOf(tail, input.userText) ? tail!.id : null;
 
+  // ── THE USER ROW'S STAMP: the send instant, CLAMPED to the ordering invariant ────────────────────
+  // `sentAt` is the honest moment (see FollowupInput). It is used only when it genuinely falls between the
+  // conversation's newest surviving row and this transaction — which is the normal case, and is checked
+  // rather than assumed because two tabs can be sending at once: a second tab that started BEFORE the
+  // first tab's reply landed would otherwise stamp its question earlier than the answer above it and
+  // silently reorder the transcript, which is the one thing every reader of these rows depends on.
+  const floor = supersede ? null : (tail?.createdAt.getTime() ?? null);
+  const userSlot = nextTs(); // consumed either way, so the tool/assistant stamps keep their positions
+  const sent = input.sentAt?.getTime();
+  const userTs =
+    sent != null && sent < userSlot.getTime() && (floor == null || sent > floor) ? new Date(sent) : userSlot;
+
   await prisma.$transaction(async (tx) => {
     if (supersede) await tx.chatMessage.delete({ where: { id: supersede } });
     await tx.chatMessage.create({
-      data: { sessionId: session.id, role: "user", content: input.userText, isOpening: false, kind: "text", createdAt: nextTs() },
+      data: { sessionId: session.id, role: "user", content: input.userText, isOpening: false, kind: "text", createdAt: userTs },
     });
     for (const t of turns) {
       await tx.chatMessage.create({
@@ -440,6 +518,201 @@ export async function deleteSession(userId: string, id: string): Promise<boolean
  *  follow-up: no title job, and the conversation would keep the truncated-text placeholder forever. */
 export async function countVisibleUserMessages(sessionId: string): Promise<number> {
   return prisma.chatMessage.count({ where: { sessionId, isOpening: false, role: "user", undelivered: false } });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// EDITING A MESSAGE — REPLACE IN PLACE, AND DELETE WHAT IT INVALIDATED
+//
+// The reader rewrites something they said; everything after it was answered from a premise that no longer
+// exists, so it goes. Destructive by design and by the reader's explicit choice — which is what buys the
+// absence of a parent pointer, a branch UI, a lineage column and a second session in the list.
+//
+// ── ★ WHY THE BOUNDARY IS "EVERY ROW AFTER THE TARGET", AND WHY THAT CANNOT SPLIT A TOOL PAIR ──────
+//
+// A functionResponse with no functionCall before it is malformed history, and Gemini 3.x additionally
+// rejects a replayed functionCall whose thoughtSignature is missing (400 INVALID_ARGUMENT) — so a cut
+// that lands INSIDE a turn does not degrade the next generation, it kills it. The guarantee here is
+// structural rather than a rule someone has to remember:
+//
+//   · a turn is persisted as one contiguous run in ONE transaction — user → [tool_call → tool_result]* →
+//     assistant — with explicitly strictly-increasing stamps (§EXPLICIT createdAt in appendFollowup);
+//   · therefore every tool row of turn N lies strictly between turn N's user row and turn N+1's user row;
+//   · the target is required to be a `kind:"text"` user row, i.e. a turn's FIRST row;
+//   · so "delete everything after the target" is always a cut at a turn boundary, and a pair is either
+//     wholly before the cut or wholly after it. Never straddling. There is no pair-aware code below
+//     because there is nothing for it to do.
+//
+// ⚠ `kind:"text"` IS LOAD-BEARING IN THAT ARGUMENT, not a tidiness check. A tool_result rides on
+// role:"user" too (Gemini has no tool role), so "a user row" alone would admit a row in the MIDDLE of a
+// turn and the cut would split exactly the pair this is protecting.
+//
+// ── ★ AND `isOpening:false` IS WHAT PROTECTS THE GROUNDING ────────────────────────────────────────
+// message[0] is the server-composed scaffolding: the fact block, the orientation, the style example. On a
+// discuss session it IS the fact block, and it is now VISIBLE to the reader (its display_content twin), so
+// it looks exactly like something they said and could edit. Deleting or rewriting it silently un-grounds
+// the conversation — every later answer would be generated against a world that was never described. It is
+// the one row that is rendered and not editable, refused here as well as hidden client-side.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Why an edit was refused. `not_found` covers a foreign / unknown id (owner-scoped — same IDOR posture
+ *  as everything else here); the other two are the two structural bars above. */
+export type EditRefusal = "not_found" | "opening_not_editable" | "not_a_text_message";
+
+export interface EditPlan {
+  target: ChatMessageRow;
+  /** Every row after the target, in transcript order — exactly what will be deleted. */
+  suffixIds: string[];
+  /** How many of those the READER can see. The count in the warning must be the count on their screen,
+   *  not the row count, which includes tool traffic they have never been shown. */
+  visibleSuffixCount: number;
+  /**
+   * ★ THE DOMAINS A CONFIRMED WRITE IN THE SUFFIX ALREADY CHANGED — the evidence behind the specific
+   * warning. Read off the persisted tool results (AiToolResult.effects), which is the only honest source:
+   * none of the tables a chat write touches carries a session back-reference, so the transcript is the
+   * ONLY record that a given conversation caused a given change. Empty ⇒ nothing in the tail wrote
+   * anything and the warning can say so plainly.
+   */
+  writeEffects: string[];
+}
+
+/** Build the plan without touching anything. Owner-scoped through the session. */
+export async function planMessageEdit(userId: string, sessionId: string, messageId: string): Promise<EditPlan | EditRefusal> {
+  const owned = await prisma.chatSession.findFirst({ where: { id: sessionId, userId }, select: { id: true } });
+  if (!owned) return "not_found";
+  const rows = await prisma.chatMessage.findMany({
+    where: { sessionId },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }], // the one deterministic order — see getSessionWithMessages
+  });
+  const at = rows.findIndex((r) => r.id === messageId);
+  if (at < 0) return "not_found";
+  const target = rows[at];
+  if (target.role !== "user") return "not_a_text_message";
+  if (target.kind !== "text") return "not_a_text_message"; // a tool_result also rides on role "user"
+  if (target.isOpening) return "opening_not_editable"; // the grounding — see the header
+
+  const suffix = rows.slice(at + 1);
+  const writeEffects = new Set<string>();
+  for (const r of suffix) {
+    if (r.kind !== "tool_result") continue;
+    const eff = (r.toolPayload as { effects?: unknown } | null)?.effects;
+    if (Array.isArray(eff)) for (const d of eff) if (typeof d === "string") writeEffects.add(d);
+  }
+  return {
+    target,
+    suffixIds: suffix.map((r) => r.id),
+    visibleSuffixCount: serializeVisibleMessages(suffix).length,
+    writeEffects: [...writeEffects],
+  };
+}
+
+/**
+ * Commit the destructive half: drop the suffix, rewrite the target, disarm the session.
+ *
+ * ★ THE PENDING PROPOSAL IS CLEARED UNCONDITIONALLY, and it is the reason this is a transaction rather
+ * than three statements. A proposal is "the change the next 'yes' refers to", and after this call the
+ * message that produced it may not exist any more — so the referent is gone while the consent slot is
+ * still armed. Leaving it would let a later "yes" execute values the reader was shown in a turn that has
+ * been deleted, which is precisely the failure the one-proposal-per-session column exists to prevent.
+ *
+ * ★ AND THE TARGET'S DENIAL MARKS ARE CLEARED, which is what makes editing a never-sent message work at
+ * all: `undelivered` rows are excluded from the model's history, so a row left flagged would be rewritten,
+ * re-sent, answered — and invisible to the generation answering it.
+ *
+ * `createdAt` is deliberately NOT touched: the row keeps the moment the reader first sent it, which is
+ * what the transcript's own relative-time label reports.
+ */
+export async function applyMessageEdit(userId: string, sessionId: string, plan: EditPlan, content: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    // ★ EVERY STATEMENT RE-ASSERTS THE OWNER, rather than inheriting it from the plan that was built a
+    //   moment ago. `updateMany`/`deleteMany` take a relation filter where `update` cannot, so this costs
+    //   nothing and means the destructive half is scoped on its own terms — the same posture as
+    //   deleteSession, and the reason a session id alone can never reach another reader's transcript.
+    if (plan.suffixIds.length) {
+      await tx.chatMessage.deleteMany({ where: { sessionId, session: { userId }, id: { in: plan.suffixIds } } });
+    }
+    await tx.chatMessage.updateMany({
+      where: { id: plan.target.id, sessionId, session: { userId } },
+      data: { content, undelivered: false, deniedReason: null, deniedScope: null, deniedResetAt: null },
+    });
+    await tx.chatSession.updateMany({
+      where: { id: sessionId, userId },
+      data: { lastMessageAt: new Date(), pendingProposal: Prisma.DbNull },
+    });
+  });
+}
+
+/** Append the fresh reply (and its tool turns) after an edited message. The user row already exists — this
+ *  is appendFollowup minus the user write, minus promotion and minus titling (see the controller for why
+ *  the title deliberately does not move). Same strictly-increasing stamp discipline. */
+export interface EditedReplyInput {
+  session: ChatSessionRow;
+  toolTurns?: PersistedToolTurn[];
+  assistantText: string;
+  assistantUsage: TokenUsage | null;
+  guardrailBlocked: boolean;
+  regenerated: boolean;
+}
+
+export async function appendReplyAfterEdit(input: EditedReplyInput): Promise<{ session: ChatSessionRow; messages: ChatMessageRow[] }> {
+  const { session } = input;
+  const turns = input.toolTurns ?? [];
+  const base = Date.now();
+  let seq = 0;
+  const nextTs = (): Date => new Date(base + seq++);
+
+  await prisma.$transaction(async (tx) => {
+    for (const t of turns) {
+      await tx.chatMessage.create({
+        data: {
+          sessionId: session.id,
+          role: t.role,
+          content: t.content,
+          isOpening: false,
+          kind: t.kind,
+          toolPayload: t.toolPayload as unknown as Prisma.InputJsonValue,
+          createdAt: nextTs(),
+          ...meterCols(t.usage),
+        },
+      });
+    }
+    await tx.chatMessage.create({
+      data: {
+        sessionId: session.id,
+        role: "assistant",
+        content: input.assistantText,
+        isOpening: false,
+        kind: "text",
+        guardrailBlocked: input.guardrailBlocked,
+        regenerated: input.regenerated,
+        createdAt: nextTs(),
+        ...meterCols(input.assistantUsage),
+      },
+    });
+    await tx.chatSession.update({ where: { id: session.id }, data: { lastMessageAt: new Date() } });
+  });
+  const got = await getSessionWithMessages(session.userId, session.id);
+  return got!;
+}
+
+/** The edit was made but the spend gate refused the regeneration: the rewritten message stands, marked
+ *  undelivered, carrying its own denial and its own retry — the same state a denied ordinary send leaves,
+ *  reached from the one path that has an existing row to mark instead of a new one to write. */
+export async function markMessageUndelivered(
+  userId: string,
+  sessionId: string,
+  messageId: string,
+  denial: { reason: string | null; scopeDenied: DeniedScope; resetAt: Date | null },
+): Promise<{ session: ChatSessionRow; messages: ChatMessageRow[] } | null> {
+  await prisma.chatMessage.updateMany({
+    where: { id: messageId, sessionId, session: { userId } },
+    data: {
+      undelivered: true,
+      deniedReason: denial.reason,
+      deniedScope: denial.scopeDenied,
+      deniedResetAt: denial.resetAt,
+    },
+  });
+  return getSessionWithMessages(userId, sessionId);
 }
 
 // ── THE EMPTY-CONVERSATION SWEEP ────────────────────────────────────────────────────────────────────

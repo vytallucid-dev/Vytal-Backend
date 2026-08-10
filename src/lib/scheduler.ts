@@ -363,6 +363,29 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   // land. Runs at 8:30 PM IST so each alert reads the day's fresh band / findings, not a
   // stale pre-rescore snapshot. Weekdays only (prices only move Mon–Fri). Evaluation
   // RECORDS fires into alert_events and flips (active, armed) — it SENDS NOTHING.
+  // ── The filing pass: the rolling-window sweep (step 6) ─────
+  // ★ THE ONLY CLOCK-KEYED THING IN THE FILING PASS, AND IT EXISTS FOR ONE REASON. Every other rule
+  // recomputes when a filing lands, because a filing is the only thing that can change its answer.
+  // P6 and H are different: they evaluate a TRAILING 90-DAY WINDOW, so yesterday's deal leaves the
+  // window tomorrow whether or not anything is ingested. An ingestion trigger cannot fire for the
+  // absence of an event, so those two — and only those two — need a clock.
+  //
+  // 8:00 PM IST, DAILY INCLUDING WEEKENDS. Weekdays it lands after the 6:30 PM insider ingest and the
+  // 7:30 PM deals ingest, so it sees the day's feed. Weekends it still runs, because a window edge
+  // moves on a Saturday exactly as it does on a Tuesday and a Monday-only sweep would let a finding
+  // sit two days past true. Its worklist is the stocks that HAVE a feed row, never the universe.
+  {
+    name: "daily-filing-rolling-window",
+    schedule: "30 14 * * *", // 8:00 PM IST, every day
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.FILING_ROLLING_DAILY,
+        {},
+        "cron:daily-filing-rolling-window",
+        60,
+      ).then(() => {}),
+  },
+
   {
     name: "daily-alerts-eval",
     schedule: "0 15 * * 1-5", // 8:30 PM IST, Mon–Fri (≈1.5h after EOD prices → post-rescore)

@@ -4,6 +4,7 @@ import { runManualPeerMetrics } from "../../ingestions/peer-metrics/peer-metrics
 import { ComputeBodySchema, PeerMetricsLogsQuerySchema } from "../../schema/schema.js";
 import { enqueueJob } from "../../jobs/enqueue.js";
 import { JobTypes } from "../../jobs/types.js";
+import { loadFiledFinancials } from "../../scoring/metrics/filed-load.js";
 
 const fmt = (v: { toString(): string } | null) =>
   v != null ? parseFloat(v.toString()) : null;
@@ -133,6 +134,7 @@ export const getALlStockInPeerGroupWithMetrics = async (
             symbol: true,
             name: true,
             marketCapCategory: true,
+            industryType: true,
           },
         },
       },
@@ -140,31 +142,61 @@ export const getALlStockInPeerGroupWithMetrics = async (
 
     const stockIds = memberships.map((m) => m.stock.id);
 
-    // Get latest fundamentals for each stock
-    const fundamentals = await prisma.fundamental.findMany({
-      where: { stockId: { in: stockIds } },
-      orderBy: { reportDate: "desc" },
-      distinct: ["stockId"],
-      select: {
-        stockId: true,
-        fiscalYear: true,
-        revenue: true,
-        netProfit: true,
-        netMargin: true,
-        operatingMargin: true,
-        roe: true,
-        roce: true,
-        debtToEquity: true,
-        revenueGrowthYoy: true,
-        dilutedEps: true,
-        basicEps: true,
-        bookValuePerShare: true,
-        ebitda: true,
-        interestCoverage: true,
-      },
-    });
+    // `fundamentals` is non-financial ONLY (schema: "Annual fundamentals for
+    // non-financial companies"). A bank/NBFC/insurer files into one of four other
+    // tables under its own XBRL taxonomy — querying `fundamentals` for those stocks
+    // returns zero rows, not an error, so this used to silently render every
+    // financial peer as "no data" instead of reading its real filed accounts.
+    //
+    // Non-financial members keep the exact batched read below (unchanged). Financial
+    // members are dispatched through `loadFiledFinancials` — the same industry-aware
+    // resolver the filing pass uses (src/scoring/metrics/filed-load.ts) — rather than
+    // a second industryType switch. Its output (`FoundationAnnual`) is the shared,
+    // unit-safe shape: fields with no honest cross-industry equivalent (eps, book
+    // value/share, netMargin, revenueGrowthYoy, and — per that resolver's own
+    // documented unit traps — roe/roce/debtToEquity/interestCoverage/ebitda) come
+    // back null rather than invented, exactly as every other reader of that resolver
+    // gets them.
+    const nonFinancialIds = memberships
+      .filter((m) => m.stock.industryType === "non_financial")
+      .map((m) => m.stock.id);
+    const financialMembers = memberships.filter(
+      (m) => m.stock.industryType !== "non_financial",
+    );
+
+    const [fundamentals, financialFiled] = await Promise.all([
+      prisma.fundamental.findMany({
+        where: { stockId: { in: nonFinancialIds } },
+        orderBy: { reportDate: "desc" },
+        distinct: ["stockId"],
+        select: {
+          stockId: true,
+          fiscalYear: true,
+          revenue: true,
+          netProfit: true,
+          netMargin: true,
+          operatingMargin: true,
+          roe: true,
+          roce: true,
+          debtToEquity: true,
+          revenueGrowthYoy: true,
+          dilutedEps: true,
+          basicEps: true,
+          bookValuePerShare: true,
+          ebitda: true,
+          interestCoverage: true,
+        },
+      }),
+      Promise.all(
+        financialMembers.map(async (m) => {
+          const filed = await loadFiledFinancials(m.stock.id, m.stock.industryType);
+          return [m.stock.id, filed.annual[filed.annual.length - 1] ?? null] as const;
+        }),
+      ),
+    ]);
 
     const fundamentalMap = new Map(fundamentals.map((f) => [f.stockId, f]));
+    const financialAnnualMap = new Map(financialFiled);
 
     // Get current prices
     const prices = await prisma.stockPrice.findMany({
@@ -174,7 +206,29 @@ export const getALlStockInPeerGroupWithMetrics = async (
     const priceMap = new Map(prices.map((p) => [p.stockId, fmt(p.price)]));
 
     const stocks = memberships.map((m) => {
-      const fund = fundamentalMap.get(m.stock.id);
+      const fund =
+        m.stock.industryType === "non_financial"
+          ? fundamentalMap.get(m.stock.id)
+          : (() => {
+              const latest = financialAnnualMap.get(m.stock.id);
+              if (!latest) return undefined;
+              return {
+                fiscalYear: latest.fiscalYear,
+                revenue: latest.revenue,
+                netProfit: latest.netProfit,
+                netMargin: null, // FoundationAnnual carries no per-industry-safe netMargin
+                operatingMargin: latest.stored.operatingMargin,
+                roe: latest.stored.roe,
+                roce: latest.stored.roce,
+                debtToEquity: latest.stored.debtToEquity,
+                revenueGrowthYoy: null, // not carried on FoundationAnnual
+                dilutedEps: null, // not carried on FoundationAnnual — see header note
+                basicEps: null,
+                bookValuePerShare: null,
+                ebitda: latest.stored.ebitda,
+                interestCoverage: latest.stored.interestCoverage,
+              };
+            })();
       const currentPrice = priceMap.get(m.stock.id);
 
       const eps = fund ? (fmt(fund.dilutedEps) ?? fmt(fund.basicEps)) : null;

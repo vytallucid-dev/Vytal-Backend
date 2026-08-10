@@ -35,6 +35,11 @@ export const RUNG = {
   CONTEXT: 15, // low severity, UE5, UN8
 } as const;
 
+/** The top of the ladder — the band that outranks a mode's own floor. Rungs 1–4 are critical severity
+ *  and delta; nothing below them may jump the order arbitration produced. Named here rather than
+ *  written as a bare `<= 4` at the one call site that needs it (service.ts's `leadEntryId`). */
+export const URGENT_RUNG_CEILING: number = RUNG.DELTA_ANY;
+
 /** Severity → intra-rung tiebreak rank (higher = more severe). Used only AFTER relational weight, never
  *  to move a rung (§4.2 step 4). */
 const SEVERITY_RANK: Record<string, number> = {
@@ -110,18 +115,27 @@ export function assemble(floorIds: string[], candidates: ResolvedEntry[], cap: n
 
   // The floor, in DECLARED order — that order is the mode's relevance statement, not a rung. A declared
   // id with no candidate is simply absent (§2.3); it is never a hole.
+  //
+  // ★ THE RANK IS STAMPED ON THE ENTRY (`floorRank`), not left to be counted back out of the array.
+  // It is the one thing this function knows that its output cannot otherwise express: rung says how
+  // relevant an entry is in general, floor rank says how relevant THIS MODE ranks it for THIS reader,
+  // and the two disagree by design (see types.ts). Non-floor entries carry `null` — placed by the
+  // global ladder, which their rung already states.
   const floor: ResolvedEntry[] = [];
   const floorSet = new Set<string>();
   for (const id of floorIds) {
     const e = byId.get(id);
     if (e && !floorSet.has(id)) {
-      floor.push(e);
+      floor.push({ ...e, floorRank: floor.length });
       floorSet.add(id);
     }
   }
 
   // Everything else, by GLOBAL rung. The ladder governs here and is never overridden.
-  const rest = candidates.filter((c) => !floorSet.has(c.entryId)).sort(byRung);
+  const rest = candidates
+    .filter((c) => !floorSet.has(c.entryId))
+    .sort(byRung)
+    .map((c) => ({ ...c, floorRank: null }));
 
   const ordered = [...floor, ...rest];
   return { slots: ordered.slice(0, cap), overflow: ordered.slice(cap) };

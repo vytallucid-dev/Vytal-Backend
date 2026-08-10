@@ -5,7 +5,7 @@ async function main() {
   const counts = {
     run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), metric: await prisma.metricScore.count(),
     mktSub: await prisma.marketSubScore.count(), own: await prisma.ownershipScore.count(), flow: await prisma.ownershipFlowCategory.count(),
-    snap: await prisma.scoreSnapshot.count(), rf: await prisma.redFlag.count(),
+    snap: await prisma.scoreSnapshot.count(), rf: /* score_red_flags dropped 2026-08-11 */ 0,
   };
   console.log("COMMITTED STATE:", JSON.stringify(counts));
 
@@ -51,9 +51,8 @@ async function main() {
     console.log(`  VEDL §14.4 (committed): composite=${vedl.composite} ${vedl.labelBand} wMarket=${vedl.wMarket} reason=${vedl.weightRedistributionReason} | marketPillar state=${mp?.pillarState} subtotal=${mp?.subtotal}, ${excl}/7 subs excluded`);
   }
 
-  // R1 (committed)
-  const rf = await prisma.redFlag.findFirst({ where: { flagKey: "ownership_R1_pledge" }, select: { symbol: true, severity: true, snapshotId: true } });
-  console.log(`  R1 red flag (committed): ${rf ? `${rf.symbol} severity=${rf.severity} → snapshot ${rf.snapshotId?.slice(0, 8)}…` : "none"}`);
+  // R1 (committed) — line removed 2026-08-11 with score_red_flags. R1 is a filing rule now.
+  console.log("  R1 red flag: served by the filing channel (stock_findings), not by the score channel.");
 
   await prisma.$disconnect();
 }

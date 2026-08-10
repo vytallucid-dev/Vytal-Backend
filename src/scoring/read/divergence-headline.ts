@@ -39,7 +39,12 @@ import { isRetiredFinding } from "../../catalogue/retired-findings.js";
 import { severityWeight } from "../../catalogue/divergence.js";
 import { roundToPrecision } from "../findings/format.js";
 import type { Pillar } from "../composite/types.js";
-import type { DivergenceHeadline, DivergencePair, PillarKey } from "./health-view.types.js";
+import type {
+  DivergenceContextPair,
+  DivergenceHeadline,
+  DivergencePair,
+  PillarKey,
+} from "./health-view.types.js";
 
 /** S1's ceiling, from S1's own record. ⚠ `gapFloor` bounds from ABOVE on that one record. */
 export const ALIGNED_MAX: number = STOCK_FINDINGS.divergence_S1_aligned.facts.gapFloor;
@@ -58,6 +63,46 @@ export function pillarSpreadOf(scored: readonly ScoredPillar[]): number | null {
   if (scored.length < 2) return null;
   const vals = scored.map((p) => p.subtotal);
   return roundToPrecision(Math.max(...vals) - Math.min(...vals), 4);
+}
+
+/**
+ * ★ THE WIDEST SCORED PAIR, AS CONTEXT ONLY — the two pillars `spread` is the distance BETWEEN.
+ *
+ * ⚠ READ THE CONSTRAINT ON ITS CALL SITE BEFORE READING THIS FUNCTION. This is the same max/min the
+ * file header calls out as defect ① (a pair chosen with no reference to any finding — the IOC bug),
+ * and it is safe here for exactly one reason: health-view.service serves it ONLY when NO divergence
+ * pattern is firing, i.e. when there is no finding pair for it to compete with. The moment something
+ * fires, the field is null and the finding's own `pair` is the only pair on the wire. That is a
+ * structural guarantee, not a convention — a surface cannot draw the widest pair beside a finding
+ * that names a different one, because in that state the widest pair is not served.
+ *
+ * ⚠ AND IT IS NOT BANDED. No notable/wide/tier word comes out of here — defect ② was the banding, and
+ * a distance with no severity attached to it is a measurement, not a third severity scale. The
+ * consumer must label it as carrying no reading (the divergence tool's context-chart eyebrow does).
+ *
+ * It exists because the alternative was worse: the frontend redesign wanted a context spread on the
+ * nothing-firing screen and would otherwise have recomputed max−min client-side — the fourth home of
+ * this arithmetic, which is what `pickScoredPair`'s removal was for. Computed here, beside
+ * `pillarSpreadOf` and off the SAME inert-0-guarded input, the pair and the spread cannot disagree:
+ * `gap` is `spread` at difference precision by construction.
+ */
+export function contextPairOf(scored: readonly ScoredPillar[]): DivergenceContextPair | null {
+  if (scored.length < 2) return null;
+  let hi = scored[0];
+  let lo = scored[0];
+  for (const p of scored) {
+    if (p.subtotal > hi.subtotal) hi = p;
+    if (p.subtotal < lo.subtotal) lo = p;
+  }
+  // Four identical subtotals is a degenerate "pair" — one pillar against itself. Null, not a line.
+  if (hi.pillar === lo.pillar) return null;
+  return {
+    high: { pillar: hi.pillar, subtotal: roundToPrecision(hi.subtotal, 1) },
+    low: { pillar: lo.pillar, subtotal: roundToPrecision(lo.subtotal, 1) },
+    // ⚠ the DIFFERENCE at difference precision — the same split `pairOf` applies, and the reason
+    //   this number always matches `spread` as a reader sees it.
+    gap: roundToPrecision(hi.subtotal - lo.subtotal, 0),
+  };
 }
 
 /**

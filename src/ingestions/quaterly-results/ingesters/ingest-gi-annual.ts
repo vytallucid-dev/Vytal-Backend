@@ -16,6 +16,7 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveGiAnnual } from "../derive/derive-gi-annual.js";
+import { plausibleFaceValue } from "../derive/derive-indas-annual.js";
 
 export async function ingestGeneralInsuranceAnnual(
   input: {
@@ -63,6 +64,15 @@ export async function ingestGeneralInsuranceAnnual(
     },
   });
 
+  // ── Sanitise faceValueShare BEFORE it reaches either the stored column or the
+  // derivation — a corrupt source tag must not poison bookValuePerShare or get
+  // persisted as if it were a real face value. See derive-li-annual.ts's header
+  // note for the ??10 decision and derive-indas-annual.ts for the shared gate. ──
+  const faceValueSane = plausibleFaceValue(p.faceValueShare);
+  if (faceValueSane === null && p.faceValueShare !== null) {
+    console.warn(`[ingest-gi-annual] ${entity}: implausible faceValueShare=${p.faceValueShare} → treated as null.`);
+  }
+
   // ── Derive 6 stored columns — SINGLE PATH (ingestion ≡ fill). The BVPS
   // ₹10-face fallback + netUnderwritingMargin (= 1 − combinedRatio) live in
   // deriveGiAnnual. ──
@@ -72,7 +82,7 @@ export async function ingestGeneralInsuranceAnnual(
       reservesAndSurplus: p.reservesAndSurplus,
       fairValueChangeAccount: p.fairValueChangeAccount,
       paidUpEquityCapital: p.paidUpEquityCapital,
-      faceValueShare: p.faceValueShare,
+      faceValueShareSane: faceValueSane,
       combinedRatio: p.combinedRatio,
       netProfit: p.netProfit,
       grossPremiumsWritten: p.grossPremiumsWritten,
@@ -86,6 +96,7 @@ export async function ingestGeneralInsuranceAnnual(
           netProfit: priorRow.netProfit?.toNumber() ?? null,
         }
       : null,
+    entity,
   );
   // The record guards read the pre-Decimal GPW-YoY number.
   const gpwGrowthYoy = derived.numbers.gpwGrowthYoy;
@@ -177,7 +188,9 @@ export async function ingestGeneralInsuranceAnnual(
 
     basicEps: decimalPerShare(p.basicEps),
     dilutedEps: decimalPerShare(p.dilutedEps),
-    faceValueShare: decimalPerShare(p.faceValueShare),
+    // Sanitised, not raw — an implausible source value must not be persisted as
+    // if it were a real face value (see the note above and derive-gi-annual.ts).
+    faceValueShare: decimalPerShare(faceValueSane),
     paidUpEquityCapital: safeNumber(p.paidUpEquityCapital),
 
     // Derived — netWorth, bvps, roe, netUnderwritingMargin, gpw/patGrowthYoy —

@@ -35,6 +35,22 @@ export const UO_STRENGTH_MIN_SNAPSHOTS = 4;
 export const UN_PG_NOTABLE_PCT = 25; //     UN2 — the level at which we mark a pond NOTABLE in a book
 export const UN_PG_HEAVY_PCT = 40; //       UN2 — the level at which we mark a pond HEAVY
 export const UN_SECTOR_NOTABLE_PCT = 30; // UN7 — sector (a different cut from the pond)
+// ★ UN7's SECOND REGISTER — the presence floor, not a threshold change.
+//
+// UN_SECTOR_NOTABLE_PCT answers "is this sector big in your book?". It cannot answer "do you hold
+// anything comparable?", and the two are different questions: a reader holding HDFC Bank at 8% of their
+// book opening Yes Bank has a real, useful connection that a 30% notability bar silences outright.
+//
+// That silence was load-bearing, because UO4 WITHHOLDS its "nothing connects to this name or its
+// sector" null the moment `hasSectorOverlap` is true, on the stated assumption that UN7 states the
+// connection. Below 30% UN7 did not, so both entries stood down and the card said nothing at all — a
+// hole between two entries, each correct on its own terms.
+//
+// This is a COUNT of other held names, not a weight, and it is deliberately the lowest number that can
+// be true: one comparable name is exactly the fact the reader wants. The notable register is unchanged
+// and still owns the magnitude claim — 35% of a book and 6% of a book are different facts and read
+// differently (§3.3).
+export const UN_SECTOR_PRESENT_MIN = 1; //  UN7 — ≥N OTHER held names in the sector for the quiet register
 export const UN_POND_SHARED_MIN = 2; //     UN6 — ≥N of the reader's held names share this finding
 
 // ── UE — Echo (§3.5), built in Phase 6. Library Part XII values verbatim. ────────────────────────────
@@ -59,3 +75,17 @@ export const OVERFLOW_ENABLED = true; // expand-to-full-standing-set
 //      UE_MIN_BOOK 4 · UE_MIN_LIFT 2.0 · UE_MIN_COUNT 2 · UE_HIGH_BOOK_SHARE 0.50 · UE_SHARE_MIN_COUNT 3
 //      UE_ENVIRONMENTAL_BASE_RATE 0.30 · UE_FAMILY_MIN_COUNT 3
 //      UD_NEWS_HORIZON_DAYS 14 · UD_MIN_GAP_FOR_FUNDAMENTAL_DELTA 1 · UD_EVENT_HORIZON_DAYS 90
+
+// ── The empty filing census (§Phase 6 · step 5) ──────────────────────────────────────────────────────
+// A ReaderEcho now carries TWO censuses, one per population. This is the honest-empty for the filing
+// half: no rule evaluated on any holding, so no filing echo can fire and none is claimed.
+//
+// Exported rather than re-literalled because every fixture that builds a ReaderEcho needs it, and a
+// fixture that quietly invented its own shape would be asserting against a census the resolver never
+// produces. Also the failure path in resolveFilingEcho — a filing-census failure must not take the
+// score half of the family down with it.
+export const EMPTY_FILING_ECHO = (): {
+  byRuleKey: Map<string, string[]>;
+  evaluatedByRuleKey: Map<string, number>;
+  coveredHoldingsCount: number;
+} => ({ byRuleKey: new Map(), evaluatedByRuleKey: new Map(), coveredHoldingsCount: 0 });

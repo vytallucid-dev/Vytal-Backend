@@ -116,6 +116,5 @@ export const ruleS2: FireRule = (ctx) => {
       // so the read layer can still show the §1.2 tier word without inferring a warning level.
       tierSeverityIfApplied: severityForTier(tier),
     },
-    metricRefs: ["foundation", "momentum"],
   };
 };

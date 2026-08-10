@@ -54,6 +54,5 @@ export const ruleI: RetiredRule = (ctx) => {
       calibration: CALIBRATION_NOTE,
       verdict: `Crossed into ${toBand} (from ${fromVal.toFixed(1)} to ${cur.toFixed(1)}), held ${runLen} snapshots.`,
     },
-    metricRefs: ["composite"],
   };
 };

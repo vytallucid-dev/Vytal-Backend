@@ -82,6 +82,5 @@ export const ruleT2: FireRule = (ctx) => {
       bullMaskedReading: 15.0,       // the FALSE +15% in the 2021–26 bank bull
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["composite"],
   };
 };

@@ -20,14 +20,15 @@ const ok = (label: string, cond: boolean, detail = "") => {
 async function main() {
   const view = await getUniverseHealthView();
   const values = await getUniverseMetricValues();
-  const R = (req: Parameters<typeof screenUniverse>[3]) => renderScreen(screenUniverse(view, values, null, req));
+  const R = async (req: Parameters<typeof screenUniverse>[3]) =>
+    renderScreen(await screenUniverse(view, values, null, req));
 
-  const roe20 = R({ conditions: [{ field: "returnOnEquity", min: 20 }] });
-  const pristinePharma = R({ conditions: [], band: "Pristine", sector: "Pharma & Healthcare", redFlags: "none" });
-  const spreadRoe = R({ conditions: [{ field: "returnOnEquity" }] });
-  const spreadFoundation = R({ conditions: [{ field: "foundation" }] });
-  const noMatch = R({ conditions: [{ field: "returnOnEquity", min: 200 }] });
-  const twoMetric = R({ conditions: [{ field: "returnOnEquity", min: 20 }, { field: "debtToEquity", max: 0.5 }] });
+  const roe20 = await R({ conditions: [{ field: "returnOnEquity", min: 20 }] });
+  const pristinePharma = await R({ conditions: [], band: "Pristine", sector: "Pharma & Healthcare", redFlags: "none" });
+  const spreadRoe = await R({ conditions: [{ field: "returnOnEquity" }] });
+  const spreadFoundation = await R({ conditions: [{ field: "foundation" }] });
+  const noMatch = await R({ conditions: [{ field: "returnOnEquity", min: 200 }] });
+  const twoMetric = await R({ conditions: [{ field: "returnOnEquity", min: 20 }, { field: "debtToEquity", max: 0.5 }] });
 
   console.log(`\n═══ 2a/2b · CAPPED + EVALUABLE ═══`);
   ok("cap is 12 and the bound is stated as a sentence", /SAY "12 of 32"/.test(roe20));
@@ -52,8 +53,24 @@ async function main() {
     ok(`${name} carries the period block`, /HOW TO SAY THE DATE/.test(text) && /Quarters actually represented/.test(text));
   }
   ok("the forbidden sentence-shape is shown as forbidden", /NEVER name one quarter as though it covered them all/.test(roe20));
-  ok("the mixed spread is present as the proof", /64 at FY27Q1, 30 at FY26Q4/.test(roe20));
-  ok("no single-quarter scope claim is constructible from the text", !/as of FY27Q1, \d+ companies/i.test(roe20));
+
+  // ── The period mix drifts every time a stock rescores onto a newer quarter — "64 at FY27Q1, 30 at
+  //    FY26Q4" was true the day this was written and false a rescore later. That's not a fact worth
+  //    pinning; what has to hold on ANY day is the RELATIONSHIP: the rendered breakdown is exactly the
+  //    live period contract (not stale, not invented), the per-period counts foot to the stated total,
+  //    and the "mixed" sentence appears if and only if more than one period is actually represented.
+  const roe20Proj = await screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }] });
+  if (roe20Proj.kind !== "matches") throw new Error("expected a matches projection for the period-mix assertions");
+  const period = roe20Proj.period;
+  const spreadPhrase = period.spread.map((s) => `${s.count} at ${s.period}`).join(", ");
+  ok("the rendered quarter breakdown is exactly the live period contract, not a fixed snapshot",
+     spreadPhrase.length > 0 && roe20.includes(spreadPhrase), spreadPhrase);
+  ok("the per-period counts foot to the stated companies-read total",
+     period.spread.reduce((sum, s) => sum + s.count, 0) === period.companiesRead,
+     `${period.spread.map((s) => s.count).join("+")} = ${period.companiesRead}`);
+  ok(`the "mixed" sentence appears iff more than one period is actually represented (currently ${period.mixed})`,
+     period.mixed === /more than one, which is why no single label fits/.test(roe20));
+  ok("no single-quarter scope claim is constructible from the text", !/as of FY\d\dQ\d, \d+ companies/i.test(roe20));
 
   console.log(`\n═══ 2e · EVERY ROW CARRIES ITS VALUES ═══`);
   const rows = twoMetric.split("\n").filter((l) => /^  · [A-Z]/.test(l));
@@ -66,10 +83,10 @@ async function main() {
 
   console.log(`\n═══ 2f · SORT ═══`);
   ok("default sort is health, stated", /ordered by health score, highest first|by health score, highest first/.test(roe20));
-  const byField = R({ conditions: [{ field: "debtToEquity", max: 1 }], sort: "field" });
+  const byField = await R({ conditions: [{ field: "debtToEquity", max: 1 }], sort: "field" });
   ok("sort=field uses the first condition and its direction", /debt to equity, lowest first/.test(byField),
      "lower-is-better fields sort ascending");
-  const twoSorted = R({ conditions: [{ field: "returnOnEquity", min: 20 }, { field: "debtToEquity", max: 0.5 }], sort: "field" });
+  const twoSorted = await R({ conditions: [{ field: "returnOnEquity", min: 20 }, { field: "debtToEquity", max: 0.5 }], sort: "field" });
   ok("sort=field with two conditions names only the FIRST", /return on equity, highest first/.test(twoSorted) && !/debt to equity, /.test(twoSorted.split("MATCHES")[0].split("CONDITIONS")[1] ?? ""));
 
   console.log(`\n═══ 3a · A FIELD WITH NO BOUNDS RETURNS THE SPREAD ═══`);
@@ -78,7 +95,7 @@ async function main() {
   ok("the spread carries its own evaluable denominator", /82 could be tested on return on equity/.test(spreadRoe));
   ok("spread returns NO company list", !/^  · [A-Z]{3,}/m.test(spreadRoe.split("RETURN ON EQUITY")[1] ?? ""));
   // A MIXED request — one bounded, one unbounded — must still refuse to invent the missing one.
-  const mixed = R({ conditions: [{ field: "returnOnEquity" }, { field: "debtToEquity", max: 1 }] });
+  const mixed = await R({ conditions: [{ field: "returnOnEquity" }, { field: "debtToEquity", max: 1 }] });
   ok("a MIXED request still refuses to invent the missing threshold", /DO NOT PICK A THRESHOLD/.test(mixed) && !/MATCHES:/.test(mixed),
      "answering half with a guessed bar for the other half is the failure this prevents");
 
@@ -102,7 +119,7 @@ async function main() {
   //    Every number in the spread body must be one the data produced: an order statistic, a count, or
   //    a companies-read figure. The period block is excluded because it legitimately carries dates and
   //    fiscal-quarter labels ("2026-07-31", "64 at FY27Q1"), which are not thresholds.
-  const proj = screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity" }] });
+  const proj = await screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity" }] });
   if (proj.kind !== "spread") throw new Error("expected a spread projection");
   const f = proj.spreads[0];
   const legal = new Set<number>([
@@ -132,7 +149,7 @@ async function main() {
   console.log(`\n═══ NO INTERNAL IDENTIFIERS (5i, asserted early) ═══`);
   let codeLeak = 0;
   for (const id of SCREEN_FIELDS_IDS) {
-    for (const t of [R({ conditions: [{ field: id, min: 1 }] }), R({ conditions: [{ field: id }] })]) {
+    for (const t of [await R({ conditions: [{ field: id, min: 1 }] }), await R({ conditions: [{ field: id }] })]) {
       try { assertNoMetricCodes(t); } catch (e) { codeLeak++; console.log(`     ${id}: ${(e as Error).message}`); }
     }
   }

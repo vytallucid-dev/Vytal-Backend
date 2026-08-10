@@ -22,7 +22,7 @@ async function tableCounts(db: any) {
   return {
     run: await db.scoringRun.count(), pillar: await db.pillarScore.count(), metric: await db.metricScore.count(),
     mktSub: await db.marketSubScore.count(), own: await db.ownershipScore.count(), flow: await db.ownershipFlowCategory.count(),
-    snap: await db.scoreSnapshot.count(), rf: await db.redFlag.count(),
+    snap: await db.scoreSnapshot.count(), rf: /* score_red_flags dropped 2026-08-11 */ 0,
   };
 }
 
@@ -104,9 +104,10 @@ async function main() {
       // ── (3) R1 RED FLAG readback — ASHOKLEY ──
       {
         const snap = await snapFor("ASHOKLEY");
-        const rf = snap ? await tx.redFlag.findFirst({ where: { snapshotId: snap.id, flagKey: "ownership_R1_pledge" }, select: { flagKey: true, severity: true, tier: true, triggeringValues: true, snapshotId: true } }) : null;
-        const ok = !!rf && rf.snapshotId === snap!.id && rf.severity === "high";
-        checks.push({ name: "(3) ASHOKLEY R1 red_flag persisted, linked to its snapshot", ok, detail: rf ? `flagKey=${rf.flagKey} severity=${rf.severity} tier=${rf.tier} triggering=${JSON.stringify(rf.triggeringValues).slice(0, 80)}…` : "no red_flag row found" });
+        // (3) RETIRED 2026-08-11 — this asserted an ASHOKLEY R1 row in score_red_flags, a table that
+        //     no longer exists. R1 is a filing rule; its row lives in stock_findings and is proven by
+        //     the filing pass's own checks.
+        void snap;
       }
 
       // ── (4) SKIP-IDENTICAL — re-write TATASTEEL within the same tx ──

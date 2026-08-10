@@ -69,6 +69,5 @@ export const ruleP3: RetiredRule = (ctx) => {
         (rising ? ` (up ${risePp!.toFixed(1)}pp QoQ)` : ``) +
         ` into ${cur.fiscalYear}${cur.quarter}, short of the R1 crisis line.`,
     },
-    metricRefs: ["pledgedShares", "promoterShares"],
   };
 };

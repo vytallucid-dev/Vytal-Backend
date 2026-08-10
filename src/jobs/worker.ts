@@ -16,10 +16,16 @@ import { prisma } from "../db/prisma.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { makeJobContext, JobCancelledError } from "./context.js";
 import { getHandler } from "./dispatcher.js";
-import { JobStatus } from "./types.js";
+import { JobStatus, JobTypes } from "./types.js";
+import { enqueueJob } from "./enqueue.js";
 import { maybeEnqueueRescoresForJob } from "./scoring-triggers.js";
+// ★ THE FILING PASS'S ARM OF THE SAME HOOK (step 6) — see the block at the call site.
+import { planFilingRecompute } from "../filing/triggers.js";
 import { maybeRefreshPortfolioHealthForScoringJob } from "../portfolio/phs/refresh.js";
 import { surfaceFailedScoringJobById, resolveHealedScoringErrors } from "../scoring/errors/failed-job-guard.js";
+
+/** Below fresh ingestion work, alongside the PG rescores this runs next to. */
+const FILING_RECOMPUTE_PRIORITY = 60;
 
 interface WorkerOptions {
   /** How often to poll when no jobs are pending. Default 3000ms. */
@@ -245,6 +251,37 @@ class JobWorker {
         } catch (err) {
           console.error(
             `[worker] job ${job.id} (${job.type}) scoring-trigger error (job still SUCCEEDED):`,
+            err,
+          );
+        }
+        // ── FILING TRIGGER (step 6) ──────────────────────────────────────────
+        // The same hook, the other pass. Where the scoring trigger fans a changed symbol out to its
+        // PEER GROUPS, this one narrows to the RULES the moved feed drives and the STOCKS in that
+        // batch — a shareholding upload recomputes eight rules on the symbols it wrote, and nothing
+        // else. `startedAt` is passed because the two daily feeds (insider, block deals) do not
+        // declare their batch and it has to be derived from what they inserted during the run.
+        // Same best-effort contract: a trigger error never changes the job's outcome.
+        try {
+          const plan = await planFilingRecompute(job.type, result, new Date(start));
+          if (plan && plan.symbols.length) {
+            const j = await enqueueJob({
+              type: JobTypes.FILING_RECOMPUTE,
+              payload: {
+                feeds: [...plan.feeds],
+                symbols: plan.symbols,
+                triggeredBy: `hook:${job.type}`,
+                reason: `${job.type} moved ${plan.feeds.join("+")} on ${plan.symbols.length} symbol(s) [${plan.source}]`,
+              },
+              triggeredBy: `hook:${job.type}`,
+              priority: FILING_RECOMPUTE_PRIORITY,
+            });
+            console.log(
+              `[worker] job ${job.id} (${job.type}) → filing trigger: FILING_RECOMPUTE ${j.id} — ${plan.feeds.join("+")} × ${plan.symbols.length} symbol(s) [${plan.source}]`,
+            );
+          }
+        } catch (err) {
+          console.error(
+            `[worker] job ${job.id} (${job.type}) filing-trigger error (job still SUCCEEDED):`,
             err,
           );
         }

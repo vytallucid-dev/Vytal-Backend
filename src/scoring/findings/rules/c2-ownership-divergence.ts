@@ -40,6 +40,5 @@ export const ruleC2: RetiredRule = (ctx) => {
         ? `Owners stepping back beneath a holding floor — Foundation ${r0(f.subtotal)} but Ownership only ${r0(own.subtotal)} (a ${r0(gap)}pt gap).`
         : `Smart money building under weakness — Ownership ${r0(own.subtotal)} above a weak Foundation ${r0(f.subtotal)} (a ${r0(gap)}pt gap, the regime-robust tell).`,
     },
-    metricRefs: ["foundation", "ownership"],
   };
 };

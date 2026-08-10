@@ -14,7 +14,7 @@ import { resolveObjectState } from "./object-state.js";
 import { resolveReaderContext, anonymousContext } from "./reader-context.js";
 import { resolveMode } from "./mode.js";
 import { buildEntries, attachEchoAnnotations } from "./entries.js";
-import { assemble } from "./arbitration.js";
+import { assemble, URGENT_RUNG_CEILING } from "./arbitration.js";
 import { scanAssembled, scanStrength } from "./copy.js";
 import { getBaseRates, type BaseRateSnapshot } from "./base-rates.js";
 import type { RelationalState, ReaderContext, ObjectState } from "./types.js";
@@ -53,8 +53,13 @@ export function composeRelationalState(
   // UO1 carries the editorial business-lead sentence (operational description, e.g. "selling
   // electricity") — scanned separately against the narrower BUSINESS_LEAD_DENY_LIST (§4.2 step 7 note).
   const businessLeadStrings = allEntries.filter((e) => e.entryId === "UO1").map((e) => e.claim);
-  const assembledStrings = [built.header.claim, ...allEntries.filter((e) => e.entryId !== "UO1").map((s) => s.claim)];
-  const violations = scanAssembled(assembledStrings, ctx.identity.aiLevel, businessLeadStrings);
+  // UO6 carries the finding's OWN authored verdict, third-person and past-tense about the company/its
+  // owners ("FII trimmed", "promoters have increased their holding") — the SAME shape of description as
+  // UO1's business lead, and scanned against the same narrower list for the same reason (copy.ts's note
+  // on scanAssembled).
+  const uo6Strings = allEntries.filter((e) => e.entryId === "UO6").map((e) => e.claim);
+  const assembledStrings = [built.header.claim, ...allEntries.filter((e) => e.entryId !== "UO1" && e.entryId !== "UO6").map((s) => s.claim)];
+  const violations = scanAssembled(assembledStrings, ctx.identity.aiLevel, businessLeadStrings, uo6Strings);
   // Celebration is scoped to strength claims (UO6) — never band labels / finding verdicts (§3.1).
   const strengthViolations = allEntries.filter((e) => e.entryId === "UO6").flatMap((e) => scanStrength(e.claim));
   const all = [...violations, ...strengthViolations];
@@ -72,6 +77,19 @@ export function composeRelationalState(
     ?? slots[0]?.entryId
     ?? null;
 
+  // ── THE LEAD PICK — the entry that OPENS the card. The first slot on the ladder's urgent floor
+  // (rungs 1–4: critical severity and delta), else the first slot as arbitration ranked it.
+  //
+  // ⚠ THE SECOND CLAUSE IS NOT A FALLBACK, IT IS THE RULE. A mode's floor already ranks, for THIS
+  // reader, what the card should open on — identity for a stranger, the position for a holder. Only
+  // rungs 1–4 outrank that statement. Picking by rung alone would open a watched stock on its
+  // watchlist date and an uncovered stock on its coverage gap; both are what the mode ranked LAST
+  // among its floor, and both are true, and neither is what the card is for. Same reasoning as the
+  // boundary pick above: the backend makes the relevance call, once, where the ladder lives. ──
+  const leadEntryId = slots.find((s) => s.weight.ladderRung <= URGENT_RUNG_CEILING)?.entryId
+    ?? slots[0]?.entryId
+    ?? null;
+
   return {
     mode: mode.mode,
     header: built.header,
@@ -79,6 +97,7 @@ export function composeRelationalState(
     overflow,
     negatives: built.negatives,
     boundaryEntryId,
+    leadEntryId,
     meta: {
       resolvedAt: now.toISOString(),
       snapshotGeneration: obj.snapshot?.generation ?? null,

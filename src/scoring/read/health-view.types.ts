@@ -20,11 +20,18 @@
 // types/health.ts, inline these from the service file.
 import type { FindingLifecycle } from "./finding-lifecycle.types.js";
 import type { VerdictClause } from "../findings/verdicts.js";
+import type { FilingFindingsSection } from "../../filing/read.types.js";
 import type { ServedPatternFacts } from "../../catalogue/pattern-facts.js";
 import type { NotCoveredNote } from "./not-covered.service.js";
+// ★ THE SHARED EVIDENCE-BAG TYPES — the same two the filing channel serves, so the two channels'
+//   payload columns are one type and not two `unknown`s. Runtime-free by construction (that file has
+//   no imports), which is what keeps this contract safe for the build gates that walk it.
+import type { EvidenceBag } from "../findings/evidence.js";
+export type { EvidenceBag } from "../findings/evidence.js";
 export type { NotCoveredNote, NotCoveredReading, NotCoveredPair } from "./not-covered.service.js";
 export type { ServedPatternFacts } from "../../catalogue/pattern-facts.js";
 export type { VerdictClause, ClauseType, ComposedVerdict } from "../findings/verdicts.js";
+export type { FilingFindingsSection, FilingFindingView, FilingDeclinedView, FilingCoverage } from "../../filing/read.types.js";
 export type {
   FindingLifecycle,
   LifecycleState,
@@ -112,7 +119,12 @@ export interface IdentitySection {
     /** Roster size (PeerGroup.stockCount). */
     memberCount: number;
   } | null;
-  /** Latest StockScoringState — null when no coverage row exists (current reality). */
+  /** ⚠ ALWAYS NULL as of 2026-08-09. These were read from `score_stock_states`, a table with 0 rows
+   *  and no writer, so they have ALWAYS serialised as null; the table is now dropped and the fields
+   *  are written as literal nulls. The keys are kept so the wire shape (and every consumer's
+   *  fallback copy) is unchanged. The working coverage answer is DERIVED — relational/coverage.ts
+   *  `deriveCoverage` — and speaks a different vocabulary; wiring it here would change what four
+   *  surfaces render and is a deliberate decision, not a drive-by. */
   coverageState: CoverageState | null;
   coverageReason: string | null;
   asOfDate: string; // YYYY-MM-DD
@@ -189,6 +201,26 @@ export interface DivergenceView {
    */
   pair: DivergencePair | null;
   /**
+   * ★ THE TWO PILLARS `spread` MEASURES BETWEEN — SERVED ONLY WHEN NOTHING IS FIRING, AND CARRYING
+   * NO READING.
+   *
+   * `spread` has always been on the wire as a bare number, which leaves a surface that wants to DRAW
+   * it with no way to know which two pillars it belongs to — and exactly one way to find out, which
+   * is to sort the four subtotals client-side. That is `pickScoredPair` again (see the note on `pair`
+   * above and divergence-headline.ts's header), so the identity is served instead of re-derived.
+   *
+   * ⚠ NULL WHENEVER `headline === "patterns_firing"`, AND THAT NULL IS THE GUARDRAIL, NOT AN
+   * OMISSION. The IOC bug is a widest pair rendered NEXT TO a finding about a different pair; with
+   * nothing firing there is no finding to contradict, and the field is absent in every state where
+   * there could be one. A consumer therefore cannot use this as a fallback for `pair` — in the only
+   * state `pair` is non-null, this is null.
+   *
+   * ⚠ IT IS NOT A DIVERGENCE, NOT BANDED, AND CARRIES NO TIER. It is the distance already published
+   * as `spread`, with the two names attached. A surface must present it as context with no reading
+   * on it (the divergence tool labels its context chart exactly that way).
+   */
+  contextPair: DivergenceContextPair | null;
+  /**
    * ⚠ NOT `gap`, AND NOT FOR DISPLAY. The engine's own per-snapshot scalar (denormalised on the row).
    * It reaches no render path, and grounding.ts deliberately keeps it out of the model's fact block:
    * it is a linear function of the WITHHELD pillar weights, so printing it beside the four subtotals
@@ -223,6 +255,18 @@ export interface DivergencePair {
 }
 
 /**
+ * The widest scored pair, as CONTEXT. Deliberately NOT a `DivergencePair`: there is no `patternKey`
+ * on it because no pattern named it, and the missing field is what stops it being passed to anything
+ * that expects a finding's pair. See DivergenceView.contextPair for when it is served at all.
+ */
+export interface DivergenceContextPair {
+  high: PillarReading;
+  low: PillarReading;
+  /** high − low, at difference precision. Equals `spread` as a reader sees it, by construction. */
+  gap: number;
+}
+
+/**
  * ★ THE LIVE MARKET REGIME for this stock's sector — NET-NEW ON THE WIRE.
  *
  * ── ⚠ THERE WAS NO LIVE REGIME PATH AT ALL ────────────────────────────────────────────────────────
@@ -252,6 +296,21 @@ export interface RegimeBadgeView {
   asOf: string | null;
   /** Why, whenever `regime` is null — and on pg_pool readings, which members and why no index. */
   reason: string | null;
+  /**
+   * ★ THE CUT POINTS THE PHASE WAS DECIDED BY — signed fractions (0.25 = +25%, −0.12 = −12%), read
+   * from REGIME_HOT_ABOVE / REGIME_STRESSED_BELOW in scoring/regime/regime.ts.
+   *
+   * ⚠ CARRIED FOR THE SAME REASON `DivergenceView.alignedMax` IS: an explainer that states the test
+   * has to state the numbers, and a number typed into frontend prose is a number that goes stale
+   * silently. These are spec-locked (Divergence §1.3 / Trajectory §1.4, identical in both), so they
+   * are not expected to move — which is precisely the argument that lost last time, when the
+   * divergence tool went on printing "≥ 25 pts apart" for a cut that had moved to 12.
+   *
+   * ⚠ PRESENT EVEN WHEN `regime` IS NULL. They describe the test, not the reading — an explainer on a
+   * stock with no establishable phase still says how a phase would be set.
+   */
+  hotAbove: number;
+  stressedBelow: number;
 }
 
 /** PG-level pond mask (File 1 §5 / File 2 §3.3) — inherited from the snapshot's PG. */
@@ -593,6 +652,27 @@ export interface ResultDayMarker {
   periodKey: string;
 }
 
+/**
+ * ★ A PILLAR'S OWN WEAK / STRONG MARKS — the zone bounds `NATIVE_ZONES` declares, served.
+ *
+ * ── ⚠ WHY A CHART NEEDS THESE, AND WHY IT MUST NOT BORROW THE COMPOSITE'S ────────────────────────
+ * The composite's condition bands (55 / 62 / 68 / 74) are a fact about the COMPOSITE. A trajectory
+ * chart that emphasises a PILLAR line and leaves the composite's bands shaded behind it states that
+ * the pillar has those bands, and it does not: borrowing composite 60 for Momentum's weak mark is
+ * exactly what read a FALSE +3.2% where Momentum's own 54 reads negative (T6's own record says so).
+ * So a surface drawing a pillar against a zone needs THAT pillar's marks — and it must not type them,
+ * because `NATIVE_ZONES` is the one home and a fifth transcription is a fifth value.
+ *
+ * ⚠ ALREADY SERVED ON `pillars[].nativeZone`, AND THAT IS NOT A DUPLICATE HOME — both project the
+ * same constant. It is repeated here because the research tools ask for `omit=pillars` (55–61% of the
+ * payload they never read), so the pillar block is genuinely absent for them; the alternative is a
+ * tool fetching a metric/lens graph to learn four pairs of integers.
+ */
+export interface PillarNativeZone {
+  weak: number;
+  strong: number;
+}
+
 export interface TrajectorySection {
   windowQuarters: number;
   series: TrajectoryPoint[];
@@ -607,6 +687,10 @@ export interface TrajectorySection {
   crossings: CrossingEvent[];
   /** External overlay — CorporateEvent rows in the series window. */
   events: CorporateEventView[];
+  /** Each pillar's own weak/strong marks — see {@link PillarNativeZone}. Constant per build,
+   *  not per stock; it rides here because it is what a chart of these series needs to draw a
+   *  pillar against its own zones rather than the composite's. */
+  pillarZones: Record<PillarKey, PillarNativeZone>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -629,7 +713,10 @@ export interface RedFlagView {
   flagKey: string;
   severity: string | null;
   tier: "auto" | "review";
-  triggeringValues: unknown | null;
+  /** This firing's own numbers. ★ Narrowed at the read layer — see scoring/findings/evidence.ts. The
+   *  field keeps its long-standing wire name (`triggeringValues` is what a red flag's bag has always
+   *  been called on this shape); only its TYPE stops being `unknown`. */
+  triggeringValues: EvidenceBag;
   guardrailEventId: string | null;
   /** The File-1 §5 verdict sentence, bound to this firing's own evidence. Never empty — the
    *  renderer falls back to the engine's assembled sentence, then to a generic form. */
@@ -645,8 +732,8 @@ export interface PatternView {
   /** Effective §5E score impact; a dampened pattern carries the HALVED value. null for
    *  structural cards (B/C/D/F/G/H/I) which carry no §5E magnitude. */
   magnitude: number | null;
-  evidence: unknown | null;
-  metricRefs: unknown | null;
+  /** ★ Narrowed at the read layer — see scoring/findings/evidence.ts. */
+  evidence: EvidenceBag;
   /** The File-1 §5 verdict sentence, bound to this firing's own evidence. Never empty. */
   verdict: string;
   /**
@@ -824,10 +911,68 @@ export interface HealthSnapshotView {
   scored: boolean;
   identity: IdentitySection;
   verdict: VerdictSection | null;
-  pillars: PillarView[];
+  /** ⚠ `[]` = this stock has no pillars (not scored). `null` = NOT REQUESTED — see `omitted`. The
+   *  two are never interchangeable, which is why an omitted section is nulled rather than emptied. */
+  pillars: PillarView[] | null;
   trajectory: TrajectorySection | null;
+  /** ★ SCORE findings — divergence, trajectory, composition. Statements about a READING, so they
+   *  exist only where a reading does: `null` on the not-scored path, and that boundary is correct. */
   findings: FindingsSection | null;
+  /**
+   * ★ FILING findings — a DELIBERATELY SEPARATE CHANNEL, present on both branches.
+   *
+   * These are statements about what the company FILED (shareholding, annual accounts, quarterly
+   * results, insider transactions, block deals). They are true whether or not the stock has ever been
+   * scored, so this is the one section an unscored stock can populate — 409 of 504 stocks reach only
+   * the not-scored branch, and before this field they returned nothing at all.
+   *
+   * ⚠ NOT MERGED INTO `findings`, AND NOT MERGEABLE. A filing finding is drawn from a 504-stock
+   * population and a score finding from a 95-stock one; one array holding both would carry two
+   * denominators inside it, and a reader asking "is this common?" would get an answer with no stated
+   * basis. Step 5 gives the two different base rates for that reason.
+   *
+   * ⚠ AND IT CARRIES MORE THAN THE FIRED SET. `coverage.quietNote` and `declined` are what stop an
+   * empty `fired` array from reading as a clean bill of health — see filing/read.ts.
+   *
+   * `null` only when the reader could not be resolved at all.
+   */
+  filingFindings: FilingFindingsSection | null;
   peerStanding: PeerStandingSection | null;
   /** ★ The LIVE sector regime — see RegimeBadgeView. Null on the not-scored path only. */
   regime: RegimeBadgeView | null;
+  /**
+   * ★ WHICH SECTIONS THIS RESPONSE DOES NOT CARRY, because the caller asked for them to be skipped.
+   *
+   * ⚠ AN ABSENT SECTION AND AN EMPTY ONE ARE DIFFERENT FACTS, AND THIS IS WHAT KEEPS THEM APART.
+   * `pillars: []` means the stock has no pillars (the not-scored path). `pillars: null` means they
+   * were not requested. A consumer that reads one as the other would report "no metrics for this
+   * stock" about a stock whose metrics simply were not fetched — so an omitted section is NEVER `[]`.
+   *
+   * Always present. `[]` on a full response, which is itself the statement "nothing was omitted".
+   */
+  omitted: HealthSection[];
+}
+
+/** The sections `GET /api/stocks/:symbol/health` can be asked to skip. Total — a token outside this
+ *  set has no effect, and the response's `omitted` array reports what actually happened. */
+export type HealthSection = "pillars" | "peerStanding";
+
+/** The omittable set, in one place, so the parser and the builder cannot disagree about it. */
+export const OMITTABLE_SECTIONS: readonly HealthSection[] = ["pillars", "peerStanding"] as const;
+
+/**
+ * ★ THE PROJECTION REQUEST.
+ *
+ * ── WHY IT EXISTS ────────────────────────────────────────────────────────────────────────────────
+ * The measured cost of this view is ROUND-TRIP COUNT, not payload size: ~44 SQL statements at a
+ * ~65 ms floor each on the remote DB. The research tools read the verdict, the trajectory and the
+ * findings — about a third of the bytes — while `pillars[]` (the metric/lens block) is over half the
+ * payload and every one of its separate reads is a round-trip they wait on and then discard.
+ *
+ * ⚠ IT IS OPT-IN, AND SILENCE MEANS THE FULL VIEW. Every existing caller — grounding, the chat
+ * tools, the stock page, the verify scripts — keeps the exact response it had, byte for byte.
+ */
+export interface HealthViewOptions {
+  /** Sections to skip. Unknown tokens are ignored; `omitted` on the response is the truth. */
+  omit?: readonly HealthSection[];
 }

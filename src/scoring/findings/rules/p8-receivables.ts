@@ -9,14 +9,21 @@
 // receivables base is material (≥ MIN_RECV_TO_REV of revenue, so a tiny-base % blip can't
 // fire). Annual data; non-financials (banks carry empty annualFundamentals).
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const RECV_OUTPACE_PP = 15; // receivables YoY growth − revenue YoY growth ≥ 15pp — FLAG: confirm with File 1
-export const MIN_RECV_GROWTH_PCT = 10; // receivables must ACTUALLY build ≥10% YoY — rejects the
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_P8_receivables.facts;
+
+export const RECV_OUTPACE_PP = FACTS.thresholds.outpacePp; // receivables YoY growth − revenue YoY growth ≥ 15pp — FLAG: confirm with File 1
+export const MIN_RECV_GROWTH_PCT = FACTS.thresholds.minRecvGrowthPct; // receivables must ACTUALLY build ≥10% YoY — rejects the
 // "revenue crashed, receivables flat" false-positive (e.g. ZYDUSLIFE rec +4% / rev −24%): that is a
 // revenue story, not capital tied in receivables. FLAG: provisional.
-export const MIN_RECV_TO_REV = 0.05; // receivables ≥ 5% of revenue to be material
+export const MIN_RECV_TO_REV = FACTS.thresholds.minRecvToRev; // receivables ≥ 5% of revenue to be material
 
 const recv = (r: FoundationAnnual): number | null => {
   const c = r.tradeReceivablesCurrent, nc = r.tradeReceivablesNoncurrent;
@@ -24,8 +31,8 @@ const recv = (r: FoundationAnnual): number | null => {
   return (c ?? 0) + (nc ?? 0);
 };
 
-export const ruleP8: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null;
+export const ruleP8: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // a financial's asset is a loan book, not customer credit
   const f = ctx.annualFundamentals;
   if (f.length < 2) return notEvaluable("insufficient_annual_history"); // ⚠ Phase 2: depth gate, not a false
   const latest = f[f.length - 1], prior = f[f.length - 2];
@@ -65,6 +72,5 @@ export const ruleP8: FireRule = (ctx) => {
         `Capital tied in receivables — receivables grew ${r1(recGrowthPct)}% in ${latest.fiscalYear} ` +
         `while revenue ${revGrowthPct >= 0 ? "grew" : "fell"} ${r1(Math.abs(revGrowthPct))}% (a ${r1(gapPp)}pp gap).`,
     },
-    metricRefs: ["tradeReceivablesCurrent", "revenue"],
   };
 };

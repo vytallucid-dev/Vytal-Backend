@@ -22,6 +22,7 @@ import {
   UN_PG_NOTABLE_PCT,
   UN_PG_HEAVY_PCT,
   UN_SECTOR_NOTABLE_PCT,
+  UN_SECTOR_PRESENT_MIN,
   UN_POND_SHARED_MIN,
   UE_MIN_BOOK,
   UE_MIN_LIFT,
@@ -35,6 +36,9 @@ import { describeDeclined, reasonPhrase } from "./coverage.js";
 import { plainClaimFor } from "./plain-claims.js";
 import { renderVerdict } from "../scoring/findings/verdicts.js";
 import { rateFor, type BaseRateSnapshot } from "./base-rates.js";
+// ★ WHICH POPULATION A KEY BELONGS TO (step 5) — projected from FILING_REGISTRY, so the echo's two
+//   sides and the base rates cannot disagree about where a key's numbers are drawn from.
+import { isFilingChannelKey } from "../filing/channel.js";
 import type {
   ReaderContext,
   ObjectState,
@@ -50,6 +54,12 @@ import type { ResolvedMode } from "./mode.js";
 // ── Doesn't-mean strings (inherited per entry, §0.10 — the relational layer adds no verdict). ─────────
 const DM = {
   UO1: "identity and grouping only; the peer group is the fair comparison set, not a quality tier.",
+  // ★ THE NO-PEER-GROUP VARIANT. UO1 always resolves — including on the 355 stocks with no peer group —
+  //   so its boundary line cannot explain a peer group the reader does not have. On Yes Bank the
+  //   original sat one bullet above UG1's "it isn't placed in a peer group": two adjacent sentences,
+  //   one glossing a thing the other says does not exist. Says the same thing about grouping, minus the
+  //   object that isn't there.
+  UO1_NO_PG: "identity only — what the company is and what it does, never a judgement about it.",
   UO2: "higher is not a better investment, not more upside, and not a prediction — it means sounder and calmer, and already priced.",
   UO3: "nothing flagged is not an endorsement; a flag is a place to look, not a verdict.",
   UO4: "absence of a connection is not a reason to acquire one — it is a statement about your current book, nothing more.",
@@ -69,6 +79,17 @@ const DM = {
   UN3: "a watchlist is not a position and not an intention — these are names you asked us to watch, nothing more.",
   UN6: "peers face the same field, so shared conditions inside a peer group are common by construction — this is a count, not a signal, and not a prediction that these names move together.",
   UN7: "sector and peer group are different cuts of the same book; neither number corrects the other, and a wider sector figure is not a bigger problem than a narrower one.",
+  // The notable register fires on sector weight alone, so it reaches stocks with NO peer group — where
+  // the sector-versus-pond contrast this line is built on has nothing to contrast against. Same
+  // boundary, minus the comparison that cannot be drawn.
+  UN7_NO_PG: "this describes where your book already sits, never whether it should — a larger share of a sector is not a bigger problem than a smaller one, and nothing here suggests changing any of it.",
+  // The PRESENT register's own boundary. It cannot inherit UN7's, which is written about two COMPETING
+  // NUMBERS and says nothing about the risk this sentence actually carries: naming a comparable the
+  // reader already owns is one word away from suggesting they compare, switch, or add. §0.8 forbids
+  // inferring intent and forbids modelling an unmade trade, so this refuses both explicitly, and also
+  // refuses the quieter error — that two names sharing a sector will behave alike.
+  UN7_PRESENT:
+    "sharing a sector is not being alike — it is not a claim that the two names move together, perform alike, or are substitutes for one another. This counts what you already own and stops; it is not a comparison, and it is not a reason to buy, trim, or switch anything.",
   UN8: "having no other holdings in a peer group is a statement about your current book — it is neither a gap to fill nor a reason to acquire one.",
   // ── UG (§3.6), the honesty family. Every one of these describes OUR coverage, never the stock. ──
   UG1: "not scoring a stock is a statement about our coverage, never about the company's quality — an unscored name is not a worse name.",
@@ -98,6 +119,26 @@ function hasSectorOverlap(ctx: ReaderContext, obj: ObjectState): boolean {
   const sec = obj.sector?.displayName ?? obj.sector?.key ?? null;
   if (!sec || !ctx.book) return false;
   return ctx.book.holdings.some((h) => h.sector != null && (h.sector === sec || h.sector === obj.sector?.key));
+}
+
+/**
+ * How many OTHER names the reader holds in this object's sector.
+ *
+ * ⚠ THE SUBTRACTION IS THE WHOLE POINT. `ReaderNeighbourhood.sectorHeldCount` is resolved INCLUDING the
+ * object when the reader holds it (its own documented contract, and the same convention `pgHeld` uses).
+ * Read raw, a held object would be counted as its own neighbour and the card would tell a reader who
+ * owns exactly one bank that they hold "1 other name" in Banks — a fabricated companion.
+ *
+ * The count is READ, never re-derived (§0.7): the neighbourhood resolver owns the sector match and the
+ * weights. This only removes the object from a count it is documented to be inside, by asking the entity
+ * ledger the same question the resolver asked — does THIS object's held entity carry this sector key.
+ */
+function otherHeldInSector(ctx: ReaderContext, obj: ObjectState): number {
+  const n = ctx.neighbourhood;
+  if (!n) return 0;
+  const self = matchHeldEntity(ctx, obj);
+  const selfInSector = self != null && self.sector != null && self.sector === obj.sector?.key ? 1 : 0;
+  return Math.max(0, n.sectorHeldCount - selfInSector);
 }
 
 // ── Self-dated duration from a Family N finding's own evidence (§3.1 duration-source precedence). Reads
@@ -149,14 +190,19 @@ function buildUO1(obj: ObjectState, level: ReaderContext["identity"]["aiLevel"])
     entryId: "UO1",
     family: "UO",
     claim,
-    gloss: glossFor("peer group", level),
+    // ⚠ GATED ON THE PEER GROUP EXISTING. `glossFor("peer group", …)` renders "the fair comparison set
+    // — companies we score against each other" at the plain register, and this entry resolves for EVERY
+    // stock. On a stock with no peer group that gloss explained a concept the card had no instance of,
+    // and on Yes Bank it was contradicted by the very next bullet ("it isn't placed in a peer group").
+    // A gloss is a definition of something on screen, not a definition in the abstract.
+    gloss: obj.peerGroup ? glossFor("peer group", level) : null,
     temporalClass: "CONDITION",
     standingSince: null,
     isNewSinceLastLook: false,
     weight: { ladderRung: RUNG.ORIENTATION, relationalWeight: 0.12 },
     arithmetic: null,
     interpretationCeiling: null,
-    doesntMean: DM.UO1,
+    doesntMean: obj.peerGroup ? DM.UO1 : DM.UO1_NO_PG,
     sourceRef: OPAQUE("UO1", obj.stockId),
   };
 }
@@ -261,9 +307,23 @@ function buildUO4(ctx: ReaderContext, obj: ObjectState, mode: ResolvedMode): Res
 /** UO6 — standing strength. Resolves on the BEST self-dating Family N finding (longest run), duration read
  *  from the rule's own evidence with `standing_since` ABSENT from the environment. Stated and dated, never
  *  celebrated (§3.1). Eligible in EVERY mode — the entry that stops an always-present card from becoming
- *  permanently scolding. Never manufactured from an absence of flags (that is UO3, a weaker claim). */
+ *  permanently scolding. Never manufactured from an absence of flags (that is UO3, a weaker claim).
+ *
+ *  ⚠ NOT GATED ON `obj.isScored`. The guard used to read `if (!obj.isScored) return null;`, dropping a
+ *  real positive finding on every one of the 355 display-only stocks — live, Yes Bank stands on
+ *  `ownership_P1_clean_rotation` (a filing-channel pattern with `direction: "positive"`, not Family N,
+ *  but selected by the same `polarity === "positive"` filter below) and UO6 discarded it before ever
+ *  reading it. A filing finding describes what the company FILED — the rule fired against the company's
+ *  own numbers, nothing about our coverage of it — so it carries no dependency on a health score
+ *  existing. Checked, not assumed: every filing-registry rule reachable here (all seven Family N rules,
+ *  plus the non-N positive patterns P1/P6/P12/P13/H) was read against its verdict copy in
+ *  scoring/findings/verdicts.ts and catalogue/n-family-copy.ts — none composes a peer-group comparison,
+ *  a band label, or a composite figure (contrast `ownership_P10_promoter_defense`'s "(Market NN)"
+ *  clause, which DOES lean on a score pillar — and is not a filing rule, so it never reaches here
+ *  unscored). `DM.UO6` itself only invokes market pricing ("already priced"), not a score. The guard
+ *  was load-bearing for nothing but the isScored flag itself.
+ */
 function buildUO6(obj: ObjectState): ResolvedEntry | null {
-  if (!obj.isScored) return null;
   // Positive-polarity, self-dating findings only (Family N by the key namespace). Pick the longest run.
   const candidates = obj.findings
     .filter((f) => f.polarity === "positive")
@@ -698,28 +758,94 @@ function buildUN6(ctx: ReaderContext, obj: ObjectState): ResolvedEntry | null {
 //     be the wrong order.
 // A stub returning null would look like a built entry that never fires; a degradation says why.
 
-/** UN7 — sector exposure. A DIFFERENT cut from the pond (a sector spans several peer groups); the two
- *  numbers are never presented as if one corrects the other (§3.3). */
+/**
+ * UN7 — sector exposure, in TWO REGISTERS. A DIFFERENT cut from the pond (a sector spans several peer
+ * groups); the two numbers are never presented as if one corrects the other (§3.3).
+ *
+ * ── ★ WHY THERE ARE TWO, AND WHY IT IS NOT A LOWER THRESHOLD ──────────────────────────────────────
+ * NOTABLE (≥ UN_SECTOR_NOTABLE_PCT) states a MAGNITUDE: "Banks more broadly is about 35% of your book."
+ * PRESENT  (≥ UN_SECTOR_PRESENT_MIN other names) states EXISTENCE: "You hold 1 other name in Banks."
+ *
+ * Dropping the threshold instead would have collapsed them into one sentence that renders a 6% figure
+ * in the register reserved for a 35% one — asserting concentration where there is only company. They
+ * are different facts and they read differently; the notable form is untouched.
+ *
+ * ── ★ THE HOLE THIS CLOSES (the reason the present register exists at all) ────────────────────────
+ * UO4 withholds "nothing in your portfolio or watchlist connects to this name or its sector" as soon as
+ * `hasSectorOverlap` is true, with the comment "a connection exists — UN7 states it." Below 30% UN7 did
+ * not state it. UO4 stayed quiet because a connection EXISTED; UN7 stayed quiet because it was SMALL;
+ * and a reader holding HDFC Bank opening Yes Bank — no peer group, so the whole UN pond family is out —
+ * got a card that mentioned neither. Neither entry was wrong alone. The ground between them was unowned.
+ *
+ * UO4's suppression is now correct as written, and is deliberately left untouched.
+ */
 function buildUN7(ctx: ReaderContext, obj: ObjectState): ResolvedEntry | null {
   const n = ctx.neighbourhood;
   const sector = obj.sector?.displayName ?? null;
   if (!n || !sector || n.sectorWeightPct === null) return null;
-  if (n.sectorWeightPct < UN_SECTOR_NOTABLE_PCT) return null;
-  // Suppressed when it would merely restate the pond figure: same weight AND the pond is the whole
-  // sector exposure. Two identical percentages side by side read as a contradiction, not a second cut.
-  if (n.pgWeightPct !== null && Math.round(n.pgWeightPct) === Math.round(n.sectorWeightPct)) return null;
+
+  // ── THE NOTABLE REGISTER — unchanged, including its suppression. ────────────────────────────────
+  if (n.sectorWeightPct >= UN_SECTOR_NOTABLE_PCT) {
+    // Suppressed when it would merely restate the pond figure: same weight AND the pond is the whole
+    // sector exposure. Two identical percentages side by side read as a contradiction, not a second cut.
+    if (n.pgWeightPct !== null && Math.round(n.pgWeightPct) === Math.round(n.sectorWeightPct)) return null;
+    return {
+      entryId: "UN7",
+      family: "UN",
+      claim: `${sector} more broadly is about ${pctStr(n.sectorWeightPct)} of your book.`,
+      gloss: null,
+      temporalClass: "CONDITION",
+      standingSince: null,
+      isNewSinceLastLook: false,
+      weight: { ladderRung: RUNG.POND_EXPOSURE, relationalWeight: 0.32 },
+      arithmetic: { register: "notable", sectorWeightPct: Math.round(n.sectorWeightPct), sectorHeldCount: n.sectorHeldCount },
+      interpretationCeiling: null,
+      // Gated for the same reason UO1's is: this register fires on sector weight alone and so reaches
+      // stocks with no pond to contrast the sector against.
+      doesntMean: obj.peerGroup ? DM.UN7 : DM.UN7_NO_PG,
+      sourceRef: OPAQUE("UN7", obj.stockId),
+    };
+  }
+
+  // ── THE PRESENT REGISTER — real but below notability. ──────────────────────────────────────────
+  const others = otherHeldInSector(ctx, obj);
+  if (others < UN_SECTOR_PRESENT_MIN) return null; // genuinely nothing else in the sector → UO4's ground
+
+  // ANTI-DOUBLE-COUNT (§4.5). UN1 names the reader's pond holdings outright ("2 companies: A and B").
+  // When the pond already accounts for every sector name, this would restate that roster as a bare
+  // count one rung lower — the same fact, twice, in weaker words. It speaks only when the sector is
+  // genuinely WIDER than the pond, which is the one case where it is a second cut rather than an echo.
+  const pondOthers = n.pgHeld.filter((h) => !h.isThisObject).length;
+  if (pondOthers >= others) return null;
+
   return {
     entryId: "UN7",
     family: "UN",
-    claim: `${sector} more broadly is about ${pctStr(n.sectorWeightPct)} of your book.`,
+    // ★ PRESENCE, NOT MAGNITUDE. No percentage is rendered here on purpose: at these weights `pctStr`
+    //   would print "<1%" or "6%", and a number that small beside a named connection invites the reader
+    //   to read it as insignificant — which is a judgement, and not one this entry is allowed to make.
+    //   The weight travels in `arithmetic` for any caller that wants it.
+    claim: `You hold ${plural(others, "other name")} in ${sector}.`,
     gloss: null,
     temporalClass: "CONDITION",
     standingSince: null,
     isNewSinceLastLook: false,
-    weight: { ladderRung: RUNG.POND_EXPOSURE, relationalWeight: 0.32 },
-    arithmetic: { sectorWeightPct: Math.round(n.sectorWeightPct), sectorHeldCount: n.sectorHeldCount },
-    interpretationCeiling: null,
-    doesntMean: DM.UN7,
+    // Rung 15, NOT the notable form's rung 6. Rung 6 is POND_EXPOSURE — reserved for exposure large
+    // enough to be a fact about the book's shape. This is a context facet: it fills a slot on a card
+    // that has little else to say (exactly the Yes Bank case) and yields the moment real findings
+    // compete. Weight 0.2 places it above UN8's absent-connection null (0.15) and UE5 (0.12), below
+    // UH4 (0.25) — a present connection outranks an absent one, and both sit under position facts.
+    weight: { ladderRung: RUNG.CONTEXT, relationalWeight: 0.2 },
+    arithmetic: {
+      register: "present",
+      otherHeldCount: others,
+      sectorWeightPct: Math.round(n.sectorWeightPct),
+      sectorHeldCount: n.sectorHeldCount,
+      notableLevelPct: UN_SECTOR_NOTABLE_PCT,
+    },
+    interpretationCeiling:
+      "State that the reader holds other names in this sector and stop. Never name it a comparable, a substitute or a benchmark, never compare the two companies, and never suggest acting on the overlap.",
+    doesntMean: DM.UN7_PRESENT,
     sourceRef: OPAQUE("UN7", obj.stockId),
   };
 }
@@ -901,6 +1027,10 @@ interface EchoResolution {
   observedShare: number;
   lift: number | null;
   names: string[];
+  /** ★ THE BOOK DENOMINATOR THIS RESOLUTION USED (step 5). Carried out rather than re-derived by the
+   *  builder: a score key's is the reader's scored holdings, a filing key's is the holdings that
+   *  rule EVALUATED on, and the claim has to render the one the share was actually computed against. */
+  bookDenominator: number;
 }
 
 function resolveEcho(
@@ -910,7 +1040,26 @@ function resolveEcho(
 ): EchoResolution | null {
   const echo = ctx.echo;
   if (!echo) return null;
-  if (echo.scoredHoldingsCount < UE_MIN_BOOK) return null; // universal gate — cannot be stated honestly
+
+  // ★ ONE POPULATION PER KEY, ON BOTH SIDES OF THE RATIO (step 5).
+  //
+  // `lift` is observedShare / expectedShare. The base rates now draw a FILING key's expectedShare from
+  // the population its RULE evaluated in — not from the 95 we score — so the book share has to come
+  // from the matching population, or the multiple divides a share of one set by a share of another.
+  //
+  // The book denominator is per KEY, for the same reason it is per key on the universe side: a holding
+  // whose rule DECLINED is not a clean observation of that holding. A book of ten where R3 could only
+  // be evaluated on two is a book of TWO for R3, and rendering "1 of your 10" would count eight
+  // holdings we never checked as eight that came back clean.
+  const isFiling = isFilingChannelKey(finding.key);
+  const bookDenominator = isFiling
+    ? echo.filing.evaluatedByRuleKey.get(finding.key) ?? 0
+    : echo.scoredHoldingsCount;
+
+  // The universal gate, applied to the denominator the share is ACTUALLY computed against rather than
+  // to the scored count for both. A filing key on a book of three scored and eleven unscored holdings
+  // is stateable; a score key on the same book is not, and only a per-key basis can say both.
+  if (bookDenominator < UE_MIN_BOOK) return null;
 
   // ⚠ POSITIVE ECHO DOES NOT FIRE (§3.5.4 · Part IX·18 — a BOUNDARY decision, not a mechanic).
   //
@@ -944,11 +1093,11 @@ function resolveEcho(
   // wearing a low base rate, and NO base-rate gate can detect it; only the class can.
   if (finding.temporalClass === "CLOCK_EVENT") return null;
 
-  const names = echo.byPatternKey.get(finding.key) ?? [];
+  const names = (isFiling ? echo.filing.byRuleKey.get(finding.key) : echo.byPatternKey.get(finding.key)) ?? [];
   const firedInBook = names.length;
   if (firedInBook === 0) return null;
 
-  const observedShare = firedInBook / echo.scoredHoldingsCount;
+  const observedShare = firedInBook / bookDenominator;
   const rate = rateFor(rates, finding.key);
   // lift is undefined when the universe rate is zero — the key fires in this book and nowhere else we
   // score. Treated as null (not Infinity): the SHARE path can still carry it, and a null lift renders
@@ -961,7 +1110,7 @@ function resolveEcho(
 
   // The framing switch. NEVER a kill switch: both branches render.
   const entryId = rate.expectedShare >= UE_ENVIRONMENTAL_BASE_RATE ? "UE6" : "UE1";
-  return { entryId, firedInBook, observedShare, lift, names };
+  return { entryId, firedInBook, observedShare, lift, names, bookDenominator };
 }
 
 /** The echo entries for this object's findings. At most ONE per finding; UE1 and UE6 are mutually
@@ -978,7 +1127,18 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
     const claimLead = findingLead(f);
 
     // BOTH NUMBERS, ALWAYS — the reader's count and the universe's, each with its denominator.
-    const bookClause = `It's showing in ${res.firedInBook} of your ${ctx.echo.scoredHoldingsCount} scored holdings`;
+    //
+    // ⚠ THE NUMBERS ARE NOW PER-POPULATION; THE WORDS AROUND THEM ARE NOT, AND THAT IS A KNOWN,
+    //   DELIBERATE GAP. `bookDenominator` and `rate.universeCount` are whichever population this key
+    //   belongs to — that is arithmetic and it had to move with the split, because printing a
+    //   denominator the share was not divided by is simply a wrong number.
+    //
+    //   The PROSE has not moved with it. "your N scored holdings" and "the N stocks we score" are both
+    //   false for a filing key: its denominators are the holdings and the stocks in which that RULE
+    //   EVALUATED, which includes stocks we do not score and excludes stocks we do. Both strings are
+    //   listed in the step-5 copy report. Rewriting them is the copy pass's job, not this one's —
+    //   inventing replacement prose here would put an unreviewed sentence on a live reader surface.
+    const bookClause = `It's showing in ${res.firedInBook} of your ${res.bookDenominator} scored holdings`;
     const universeClause = `${rate.firedInUniverse} of the ${rate.universeCount} stocks we score${asOf}`;
 
     // ⚠ THE CLAIM IS OWNED ONCE (§4.5, extended — the library covers UE against PHS and against
@@ -988,10 +1148,17 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
     // ALSO elevated in a slot above it, the reader sees the identical sentence twice on one card. Both
     // shapes are pre-rendered here; `dropDuplicateEchoClaims` (called after assembly, when slot
     // membership is finally known) swaps in the arithmetic-only form where the key is already shown.
-    const fullClaim =
+    //
+    // ★ THE APPENDED HALF IS BUILT AS ITS OWN STRING (`claimTail`), not recovered later by matching
+    // `__arithmeticOnlyClaim` back against the sentence. The two forms are DELIBERATELY different
+    // prose — UE1 joins with an em-dash here and a semicolon there, UE6 opens "This is showing" here
+    // and "Showing" there — so a consumer matching them gets the split right on some entries and
+    // wrong on others, with nothing to tell it which. `claim` is still exactly `head + " " + tail`.
+    const claimTail =
       res.entryId === "UE6"
-        ? `${claimLead} This is showing across much of the market right now — ${universeClause}. ${bookClause}.`
-        : `${claimLead} ${bookClause} — ${universeClause} show it too.`;
+        ? `This is showing across much of the market right now — ${universeClause}. ${bookClause}.`
+        : `${bookClause} — ${universeClause} show it too.`;
+    const fullClaim = `${claimLead} ${claimTail}`;
     // Arithmetic only — used when the claim is already on the card. Still carries BOTH numbers (§3.5.3).
     const arithmeticOnlyClaim =
       res.entryId === "UE6"
@@ -1003,6 +1170,9 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
       entryId: res.entryId,
       family: "UE",
       claim,
+      // The finding's own sentence, and the counts this family appends to it — both verbatim slices.
+      claimHead: claimLead,
+      claimTail,
       gloss: null,
       temporalClass: "CONDITION",
       standingSince: null,
@@ -1015,13 +1185,17 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
       },
       arithmetic: {
         firedInBook: res.firedInBook,
-        scoredHoldingsCount: ctx.echo.scoredHoldingsCount,
+        // ★ THE DENOMINATOR THE SHARE WAS COMPUTED AGAINST, and the population it came from. Both are
+        //   structured numbers a caller may render or check; `population` is what makes the pair
+        //   self-describing rather than requiring the reader to know which channel a key belongs to.
+        scoredHoldingsCount: res.bookDenominator,
+        population: rate.population,
         observedShare: Math.round(res.observedShare * 100) / 100,
         firedInUniverse: rate.firedInUniverse,
         universeCount: rate.universeCount,
         expectedShare: Math.round(rate.expectedShare * 100) / 100,
         lift: res.lift === null ? null : Math.round(res.lift * 100) / 100,
-        asOfDate: rates.asOfDate?.toISOString() ?? null,
+        asOfDate: (rate.population === "filing" ? rate.asOfDate : rates.asOfDate)?.toISOString() ?? null,
         // Internal, for `dropDuplicateEchoClaims` — the key this echo is about, and the arithmetic-only
         // form to swap in when that key's claim is already rendered by an ELEVATED slot above.
         __echoKey: f.key,
@@ -1053,8 +1227,30 @@ function buildEcho(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot
  *
  * One slot, two facts, no duplication, no competition. Echo then delivers EVERY time it fires.
  *
- * When the key is NOT on the card, the echo does not render at all: the finding itself lost its slot,
- * and its echo is strictly less important than the finding it annotates. It goes to overflow with it.
+ * ⚠⚠ THE MERGE IS NOT A SLOT MECHANIC — CORRECTED. It used to run over `slots` alone, on the reading
+ * that an echo whose host missed the cut should "go to overflow with it". Overflow is RENDERED (the
+ * card's expand shows every entry), so what that actually produced was the finding printed TWICE on
+ * one card: once bare as its ELEVATED host, once again as the UE entry, whose claim is that same
+ * sentence with the counts appended. DIXON ships two such pairs live today
+ * (`composition_F1_atypical`, `divergence_S2_sticky_divergence`).
+ *
+ * The mirror defect was quieter and cost a real fact: an echo that WON a slot while its host sat in
+ * overflow was dropped as an orphan and the counts vanished from the card entirely — the host printed
+ * bare below, the reader never saw the book-and-market numbers, and the vacated slot stayed empty.
+ * CUMMINSIND is exactly this case (a three-slot card under a cap of four).
+ *
+ * BOTH ARE THE SAME BUG: host membership was read from `slots` when the question is whether the key is
+ * ON THE CARD. It is now read from slots ∪ overflow, and the merge runs over both — slots first, so a
+ * host the reader can see without expanding is the one that carries the annotation.
+ *
+ * WHICH COPY SURVIVES: THE HOST'S. The echo contributes its two counts and nothing else — that is all
+ * it ever contributed (the header of this comment: "one slot, two facts"). The host owns the claim,
+ * its rung, its boundary and its sourceRef, and it is the entry the ladder placed. Keeping the UE copy
+ * instead would promote the finding to the echo's rung on the strength of an annotation, and swap the
+ * finding's own `doesntMean` for the echo family's.
+ *
+ * An echo whose key has NO host anywhere on the card still renders standalone — its claim carries the
+ * finding's own sentence, so dropping it would drop the finding.
  *
  * NOT A NEW CONCEPT — UN5 (pond weather) is already specified as a modifier on price-linked entries
  * rather than a slot-consuming one. Same mechanism.
@@ -1100,43 +1296,46 @@ export function attachEchoAnnotations(slots: ResolvedEntry[], overflow: Resolved
   }
   if (echoesByKey.size === 0) return { slots, overflow };
 
-  const merged = new Set<string>(); // echo entryIds absorbed into a host
+  const absorbed = new Set<string>(); // keys whose echo has been taken up by a host
   const mergeInto = (host: ResolvedEntry): ResolvedEntry => {
     const key = hostKeyOf(host);
     if (key === null) return host;
+    // ONE host per key — the precedence note above, made structural. Two entries rendering the same
+    // key cannot both carry the counts; the first to be offered the annotation keeps it, and `slots`
+    // is offered before `overflow` so the visible copy is the annotated one.
+    if (absorbed.has(key)) return host;
     const echo = echoesByKey.get(key);
     if (!echo) return host;
     const annotation = annotationOf(echo);
     if (!annotation) return host;
-    merged.add(echo.entryId + "::" + key);
+    absorbed.add(key);
     return {
       ...host,
       // The finding's own claim, then the echo's arithmetic. The finding's words are untouched (§0.10);
       // the echo contributes only its two counts, which is all it ever contributed.
       claim: `${host.claim} ${annotation}`,
+      // …and the seam between them, published rather than left to be found by matching (types.ts).
+      claimHead: host.claim,
+      claimTail: annotation,
       arithmetic: { ...(host.arithmetic ?? {}), ...(echo.arithmetic ?? {}) },
       // The host keeps its own rung, boundary and sourceRef — it is still the entry that owns the claim.
     };
   };
 
+  // Slots first: precedence is "whichever copy the reader sees without expanding".
   const slotsMerged = slots.map(mergeInto);
+  const overflowMerged = overflow.map(mergeInto);
 
-  // Drop every key-tied echo that was absorbed, AND every key-tied echo whose host is not in slots —
-  // an echo without its finding on the card is an orphan annotation, not a standalone claim.
-  const hostKeysInSlots = new Set(slots.map(hostKeyOf).filter((k): k is string => k !== null));
-  const isOrphanedEcho = (e: ResolvedEntry): boolean => {
+  // Drop every echo a host took up, from WHEREVER it sat. An echo with no host anywhere is not an
+  // orphan annotation — its claim carries the finding's own sentence — and it stays.
+  const wasAbsorbed = (e: ResolvedEntry): boolean => {
     const k = echoKeyOf(e);
-    return k !== null && !hostKeysInSlots.has(k);
-  };
-  const wasMerged = (e: ResolvedEntry): boolean => {
-    const k = echoKeyOf(e);
-    return k !== null && merged.has(e.entryId + "::" + k);
+    return k !== null && absorbed.has(k);
   };
 
   return {
-    slots: slotsMerged.filter((e) => !wasMerged(e) && !isOrphanedEcho(e)),
-    // Orphaned echoes travel to overflow WITH their finding, where the reader can see both on expand.
-    overflow: overflow.filter((e) => !wasMerged(e)),
+    slots: slotsMerged.filter((e) => !wasAbsorbed(e)),
+    overflow: overflowMerged.filter((e) => !wasAbsorbed(e)),
   };
 }
 
@@ -1188,12 +1387,49 @@ function findingLead(f: ObjectFinding): string {
 function buildUE5(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot | null): ResolvedEntry | null {
   const echo = ctx.echo;
   if (!rates || !echo) return null;
-  if (echo.scoredHoldingsCount < UE_MIN_BOOK) return null;
+
+  // ⚠ "NOTHING REPEATS" IS A CLAIM ABOUT A LOOK WE ACTUALLY TOOK (Standing Rule 7).
+  //
+  // This entry has two branches — "N other holdings show it" and "nothing repeats" — and the second is
+  // an ASSERTION OF ABSENCE. It was previously reachable in two states where no look had happened:
+  //
+  //   · the object had NO findings at all (every unscored stock, before the filing channel was fed),
+  //     so the sentence spoke about a subject that did not exist. Live, on 360ONE: "Nothing standing on
+  //     this stock repeats elsewhere in your book" — while a CRITICAL pledge flag stood on it, in a
+  //     table this layer had not read.
+  //   · the census covering the finding's own population was too thin to look in, and an empty lookup
+  //     result is indistinguishable from a genuine absence.
+  //
+  // Both now produce silence. Same principle as `echo_not_evaluable` naming the substrate that failed:
+  // a family that cannot see must say nothing, not report a clean result.
+  if (obj.findings.length === 0) return null; // nothing standing ⇒ nothing to repeat
+
   // Only when NO echo fired — otherwise the specific claim is the better one.
   const anyEcho = obj.findings.some((f) => resolveEcho(ctx, f, rates) !== null);
   if (anyEcho) return null;
-  // Does anything standing on this object repeat anywhere in the book at all?
-  const repeats = obj.findings.filter((f) => (echo.byPatternKey.get(f.key)?.length ?? 0) > 0).length;
+
+  // ★ LOOKABILITY IS PER POPULATION (step 5), because the DENOMINATORS are. The score census counts the
+  //   reader's SCORED holdings; the filing census counts the holdings a filing rule EVALUATED on, and
+  //   reaches holdings that have no snapshot at all. A single `scoredHoldingsCount` gate — which is what
+  //   stood here — silenced filing keys on a book that could answer for them perfectly well, and, worse,
+  //   let score keys speak on a book too thin to have looked.
+  const scoreLookable = echo.scoredHoldingsCount >= UE_MIN_BOOK;
+  const filingLookable = echo.filing.coveredHoldingsCount >= UE_MIN_BOOK;
+  const looked = obj.findings.filter((f) => (isFilingChannelKey(f.key) ? filingLookable : scoreLookable));
+  if (looked.length === 0) return null; // no census could answer for anything standing ⇒ silence
+
+  // ★ BOTH CENSUSES (step 5). Filing keys left `byPatternKey` when the populations split, so a
+  //   single-census count here would have quietly stopped seeing them.
+  const repeats = looked.filter(
+    (f) => ((isFilingChannelKey(f.key) ? echo.filing.byRuleKey.get(f.key) : echo.byPatternKey.get(f.key))?.length ?? 0) > 0,
+  ).length;
+
+  // ⚠ THE NEGATIVE BRANCH REQUIRES A COMPLETE LOOK. "Nothing standing on this stock repeats" speaks for
+  // EVERY standing finding; if one of them belongs to a population we could not look in, the sentence
+  // covers ground we never checked. The positive branch is unaffected — a repeat we DID find is true
+  // regardless of what else we could not check.
+  if (repeats === 0 && looked.length < obj.findings.length) return null;
+
   const claim =
     repeats > 0
       ? `Also showing in ${plural(repeats, "other holding")} of yours — about what the rest of the market would suggest.`
@@ -1207,7 +1443,14 @@ function buildUE5(ctx: ReaderContext, obj: ObjectState, rates: BaseRateSnapshot 
     standingSince: null,
     isNewSinceLastLook: false,
     weight: { ladderRung: RUNG.CONTEXT, relationalWeight: 0.12 },
-    arithmetic: { repeats, scoredHoldingsCount: echo.scoredHoldingsCount },
+    arithmetic: {
+      repeats,
+      scoredHoldingsCount: echo.scoredHoldingsCount,
+      // What the claim actually spoke for, so a caller can tell a complete look from a partial one.
+      lookedCount: looked.length,
+      standingCount: obj.findings.length,
+      filingCoveredHoldingsCount: echo.filing.coveredHoldingsCount,
+    },
     interpretationCeiling: null,
     doesntMean: DM.UE5,
     sourceRef: OPAQUE("UE5", obj.stockId),
@@ -1239,11 +1482,37 @@ function buildUG1(obj: ObjectState, held: boolean): ResolvedEntry | null {
       ? "it isn't placed in a peer group, so we have no comparison set to score it against"
       : "we don't have enough history for it yet";
   // What we DO have — named from what actually resolved, never a boilerplate list (§3.6 rule).
+  //
+  // ⚠ THE CAP IS 4, AND IT IS THE COMPLETE SET — NOT A DISPLAY BUDGET.
+  //
+  // `nameList`'s default cap of 3 truncates a 4-item list to "A, B and 1 more". In an ORIENTATION entry
+  // that is a fair trade; in THIS entry it is self-defeating. UG1's entire job is to name what we do
+  // have after admitting what we do not, and a coverage sentence that hides part of its own coverage
+  // list reproduces, in miniature, the omission the family exists to correct. The array has at most four
+  // members by construction (sector · business lead · peer group · filings), so 4 names the whole set
+  // and can never truncate — the cap is a statement that the list is complete, not a budget.
+  //
+  // ⚠ THE FOURTH MEMBER — FILINGS — IS NOW REACHABLE, AND IT IS THE SUBSTANTIVE ONE.
+  //
+  // It was dead until object-state.ts began merging the filing channel: `ObjectState.findings` was
+  // hardcoded `[]` on the unscored branch, and `obj.isScored` is this entry's own first guard, so UG1
+  // ran ONLY where the fired set was empty by construction. That is why it was recorded as the
+  // `object_filing_findings` degradation rather than stubbed.
+  //
+  // With filings fed, the predicate fires on exactly the stocks it should: an unscored stock's fired
+  // set is filing-channel by definition (there is no snapshot to carry score keys), so this is a real
+  // test of whether we hold anything the company itself filed. Measured live — 218 of the 355
+  // display-only stocks have ≥1 fired filing finding; Yes Bank has one, and now says so.
+  //
+  // It is phrased as the CHANNEL predicate rather than `findings.length > 0` because that is what the
+  // sentence claims — that we have read this company's own filings — and it stays true if a scored
+  // stock ever reaches this branch carrying score keys.
   const have: string[] = [];
   if (obj.sector) have.push("its sector and classification");
   if (obj.businessLead) have.push("what the company does");
   if (obj.peerGroup) have.push("its peer group");
-  const haveClause = have.length > 0 ? ` What we do have: ${nameList(have, 3)}.` : "";
+  if (obj.findings.some((f) => isFilingChannelKey(f.key))) have.push("what its own filings show");
+  const haveClause = have.length > 0 ? ` What we do have: ${nameList(have, 4)}.` : "";
   return {
     entryId: "UG1",
     family: "UG",
@@ -1343,7 +1612,8 @@ function buildUG9(obj: ObjectState): ResolvedEntry | null {
 // UG2 (provisional), UG3 (stale prices), UG4 (unresolved holdings), UG10 (data older than cadence) are
 // NOT BUILT — each lacks its input, and a stub that never fires reads as a built entry:
 //   · UG2 needs `coverage.provisional`. The derived coverage has no provisional state, because the
-//     column it would come from (StockScoringState) has zero rows and no writer (Phase 3).
+//     column it would come from (StockScoringState) had zero rows and no writer, and the table was
+//     dropped outright on 2026-08-09.
 //   · UG3 needs `priceFreshness`, which ObjectState does not carry — adding a price read to the
 //     read-critical path is out of this build's scope.
 //   · UG4 needs `book.unresolvedHoldingsCount` AND a plausible match between an unmatched broker row
@@ -1434,10 +1704,15 @@ export const SLICE_DEGRADATIONS: Degradation[] = [
   { prerequisite: "fund_look_through", effect: "look-through is unavailable — UH5 can never fire; UG5 now states the limit on the card rather than leaving it silent" },
   // §Phase 5 — the four UG entries whose INPUT does not exist. Each names the missing input, not a
   // vague deferral, so the next builder knows exactly what unblocks it.
-  { prerequisite: "provisional_coverage_flag", effect: "no provisional column is populated (StockScoringState has 0 rows) — UG2 cannot fire" },
+  { prerequisite: "provisional_coverage_flag", effect: "no provisional column exists (score_stock_states was dropped 2026-08-09; it never held a row) — UG2 cannot fire" },
   { prerequisite: "price_freshness", effect: "ObjectState carries no priceFreshness — UG3 (stale prices) cannot fire" },
   { prerequisite: "unresolved_holdings_detail", effect: "ReaderBook carries no unresolved-broker-row detail — UG4 cannot claim 'you may hold more than we can see'" },
   { prerequisite: "refresh_cadence", effect: "no expected-cadence definition is published per snapshot type — UG10 cannot judge staleness" },
+  // ⚠ RESOLVED THIS BUILD — `object_filing_findings` is GONE, not left as a stale declaration. A
+  // degradation that no longer applies is itself a false statement about our coverage (the same reason
+  // the watchlist and UD entries were struck above). object-state.ts now merges `readFilingFindings`
+  // into ObjectState.findings, so UO6 / ELEVATED / UD1 / UE and UG1's fourth have-item all see the
+  // filing channel on a stock we do not score.
   // ⚠ position_delta remains: UH7/UH8 (added/reduced since last look) need the TRANSACTION-delta path,
   // which is distinct from the snapshot-delta UD1/UD3 now use. Narrowed, not retired.
   { prerequisite: "position_delta", effect: "no transaction-delta path — UH7/UH8 (you added/reduced since last look) cannot resolve; the snapshot-delta family (UD1/UD3) is built and unaffected" },
@@ -1519,14 +1794,26 @@ export function buildEntries(
     floorIds,
     cap,
     header,
-    negatives: buildNegatives(ctx, obj, mode),
-    // §Phase 6 — the base-rate degradation is RUNTIME, not a slice constant: it is declared only when
-    // the aggregate genuinely failed for THIS request, and only for a reader who has a book to echo
-    // against. Declaring it unconditionally would be a false statement about our coverage.
-    degradations:
-      ctx.book?.exists && rates === null
-        ? [...SLICE_DEGRADATIONS, { prerequisite: "universe_base_rates", effect: "the base-rate aggregate did not resolve for this request — the UE echo family was dropped whole rather than rendered with a missing number" }]
-        : SLICE_DEGRADATIONS,
+    negatives: buildNegatives(ctx, obj, mode, rates),
+    // §Phase 6 — the echo degradations are RUNTIME, not slice constants: each is declared only when
+    // that substrate genuinely failed for THIS request, and only for a reader who has a book to echo
+    // against. Declaring either unconditionally would be a false statement about our coverage.
+    //
+    // ⚠ UE STANDS ON TWO SUBSTRATES, AND BOTH MUST BE ABLE TO SAY SO. This used to test `rates` only,
+    //   which left the OTHER half — ctx.echo, the reader's own book census — able to fail while the
+    //   card reported full coverage: buildEcho/buildUE5/UN6 all return empty on a null census, so the
+    //   family vanished and the degradation list still read clean. That is what made the 2026-08-02
+    //   reader-context.ts census failure invisible for seven days rather than merely broken. A
+    //   dropped family must always be able to name the thing that dropped it.
+    degradations: [
+      ...SLICE_DEGRADATIONS,
+      ...(ctx.book?.exists && rates === null
+        ? [{ prerequisite: "universe_base_rates", effect: "the base-rate aggregate did not resolve for this request — the UE echo family was dropped whole rather than rendered with a missing number" }]
+        : []),
+      ...(ctx.book?.exists && ctx.echo === null
+        ? [{ prerequisite: "book_finding_census", effect: "the reader's book-wide fired-finding census did not resolve for this request — the UE echo family and UN6 (shared with your pond) were dropped whole rather than rendered against an incomplete book" }]
+        : []),
+    ],
   };
 }
 
@@ -1660,7 +1947,14 @@ function headerAndFloor(
 
 /** The negatives for the AI layer (§6.2) — everything that did NOT resolve, because absence is as useful
  *  in a conversation as presence. */
-function buildNegatives(ctx: ReaderContext, obj: ObjectState, mode: ResolvedMode): NegativeFact[] {
+function buildNegatives(
+  ctx: ReaderContext,
+  obj: ObjectState,
+  mode: ResolvedMode,
+  /** The base-rate snapshot, so `echo_not_evaluable` can name the substrate that actually failed rather
+   *  than declaring the family out of slice unconditionally. See the note at that push. */
+  rates: BaseRateSnapshot | null,
+): NegativeFact[] {
   const out: NegativeFact[] = [];
   if (!ctx.identity.isAuthenticated) out.push({ fact: "anonymous", detail: null });
   if (mode.positionAxis !== "HELD") out.push({ fact: "not_held", detail: null });
@@ -1669,20 +1963,86 @@ function buildNegatives(ctx: ReaderContext, obj: ObjectState, mode: ResolvedMode
   if (ctx.identity.isAuthenticated && !ctx.book?.exists) out.push({ fact: "no_portfolio_connected", detail: null });
   // §Phase 4 — now sourced from the REAL peer-group intersection, not a sector-overlap proxy.
   const nb = ctx.neighbourhood;
-  if (ctx.book?.exists && nb && nb.pgHeld.filter((h) => !h.isThisObject).length === 0) {
-    out.push({ fact: "no_pg_exposure", detail: { peerGroupLabel: obj.peerGroup?.label ?? null, pgSize: nb.pgSize } });
+  // ⚠ `no_pg_exposure` IS NOW GATED ON THE OBJECT HAVING A POND.
+  //
+  // It used to fire whenever `pgHeld` held no other name — and on a stock with no peer group `pgHeld` is
+  // `[]` unconditionally (resolveNeighbourhood only populates it when `objectRefs.peerGroupId` is set).
+  // So every display-only stock told the model "no peer-group exposure" with `peerGroupLabel: null`,
+  // which reads as an exposure finding but is really an absence of a pond to be exposed to. On Yes Bank
+  // that fact was the ONLY exposure statement in the array, for a reader holding HDFC Bank.
+  //
+  // The two are now distinct: `object_has_no_peer_group` is a fact about OUR grouping of the stock,
+  // `no_pg_exposure` a fact about the reader's book inside a pond that exists.
+  if (ctx.book?.exists && nb) {
+    if (!obj.peerGroup) {
+      out.push({ fact: "object_has_no_peer_group", detail: { sectorLabel: obj.sector?.displayName ?? null } });
+    } else if (nb.pgHeld.filter((h) => !h.isThisObject).length === 0) {
+      out.push({ fact: "no_pg_exposure", detail: { peerGroupLabel: obj.peerGroup.label, pgSize: nb.pgSize } });
+    }
   }
   if (nb && nb.pgWeightPct !== null && nb.pgHeld.length > 0) {
-    out.push({ fact: "pg_exposure", detail: { peerGroupLabel: obj.peerGroup?.label ?? null, weightPct: Math.round(nb.pgWeightPct), heldCount: nb.pgHeld.length } });
+    // `heldCount` INCLUDES this object when held (pgHeld's contract), so for a reader whose only name in
+    // the pond is the one they are reading, this fact and `no_pg_exposure` are both true at once and
+    // read as a contradiction. `otherHeldCount` is carried alongside so the pair can never be misread:
+    // one counts the pond, the other counts the company the reader has in it.
+    out.push({
+      fact: "pg_exposure",
+      detail: {
+        peerGroupLabel: obj.peerGroup?.label ?? null,
+        weightPct: Math.round(nb.pgWeightPct),
+        heldCount: nb.pgHeld.length,
+        otherHeldCount: nb.pgHeld.filter((h) => !h.isThisObject).length,
+        includesThisObject: nb.pgHeld.some((h) => h.isThisObject),
+      },
+    });
+  }
+  // ── SECTOR EXPOSURE — the counterpart the array never had (§3.3's second cut). ──────────────────
+  // Without this the model was told "no peer-group exposure" and nothing else, on a stock where the
+  // reader holds a same-sector name — an absence of exposure asserted while exposure existed. The
+  // sector cut is reported whether or not the object has a pond, because it is true either way and it
+  // is the ONLY exposure fact available on a display-only stock.
+  if (ctx.book?.exists && nb && obj.sector) {
+    const othersInSector = otherHeldInSector(ctx, obj);
+    if (othersInSector > 0) {
+      out.push({
+        fact: "sector_exposure",
+        detail: {
+          sectorLabel: obj.sector.displayName,
+          otherHeldCount: othersInSector,
+          // ⚠ NOT ROUNDED — a negative is DATA FOR THE MODEL, not rendered copy, and rounding it here
+          // manufactured a contradiction: a 29.9% sector printed `weightPct: 30, notable: false` beside
+          // a documented 30% threshold. Rounding belongs to the claim (where `pctStr` owns it), never to
+          // the fact the claim was derived from. One decimal keeps it readable without inventing one.
+          weightPct: nb.sectorWeightPct === null ? null : Math.round(nb.sectorWeightPct * 10) / 10,
+          // Which UN7 register this weight falls in — so the AI can tell "a big sector position" from
+          // "one comparable name" without re-deriving the threshold (§6.4).
+          notable: nb.sectorWeightPct !== null && nb.sectorWeightPct >= UN_SECTOR_NOTABLE_PCT,
+          notableLevelPct: UN_SECTOR_NOTABLE_PCT,
+        },
+      });
+    } else {
+      out.push({ fact: "no_sector_exposure", detail: { sectorLabel: obj.sector.displayName } });
+    }
   }
   if (ctx.book?.hasFundHoldings) {
     out.push({ fact: "lookthrough_unavailable", detail: { note: "reader holds fund/basket products we cannot see through" } });
   }
-  // Echo is out of slice: it is never evaluated. Recorded as a negative so the AI never infers a book
-  // trait from silence (§3.5.3 / §6.2).
-  out.push({
-    fact: "echo_not_evaluable",
-    detail: { reason: ctx.book?.exists ? "out_of_slice_no_base_rates" : "no_book" },
-  });
+  // ⚠ ECHO IS NO LONGER OUT OF SLICE, AND THIS FACT USED TO SAY IT WAS — UNCONDITIONALLY.
+  //
+  // The push was outside every guard, with `reason: "out_of_slice_no_base_rates"` for any reader with a
+  // book. The UE family has been built since Phase 6, so a card that had just rendered UE1 with its two
+  // counts also handed the model "echo_not_evaluable" in the same payload. The array whose whole purpose
+  // is to stop the AI inferring from silence was itself asserting a silence that was not there.
+  //
+  // It now names the substrate that actually failed, and says nothing when both resolved — in which case
+  // echo WAS evaluated, and whether it FIRED is visible from the entries themselves (§6.2).
+  const echoGapReason = !ctx.book?.exists
+    ? "no_book"
+    : ctx.echo === null
+      ? "book_census_unavailable"
+      : rates === null
+        ? "base_rates_unavailable"
+        : null;
+  if (echoGapReason) out.push({ fact: "echo_not_evaluable", detail: { reason: echoGapReason } });
   return out;
 }

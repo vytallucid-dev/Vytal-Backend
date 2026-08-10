@@ -17,18 +17,25 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { prisma } from "../db/prisma.js";
+import { Prisma } from "../generated/prisma/client.js";
 import { probeStockRelationship } from "../ai/insight/relationship.js";
-import { dropRetiredFlags, dropRetiredPatterns, retiredKeysSqlPredicate } from "../catalogue/retired-findings.js";
+import { dropRetiredPatterns, retiredKeysSqlPredicate } from "../catalogue/retired-findings.js";
 // ★ NOT-COVERED SUPPRESSION (companion to boundary 8 of 9 below) — a persisted `notcovered_*` row
 //   would otherwise tell a reader "N of your holdings also show this" about a configuration explicitly
 //   never shipped as a claim.
 import { dropNotCoveredPatterns, notCoveredKeysSqlPredicate } from "../catalogue/not-covered.js";
+// ★ CHANNEL SUPPRESSION + the filing channel's own book census (step 5). A key belongs to exactly
+//   one population, and which one is projected from FILING_REGISTRY — see filing/channel.ts.
+import { isFilingChannelKey } from "../filing/channel.js";
+// ★ THE FILING CHANNEL'S OWN DELTA SUBSTRATE (§Phase 7 extension). Snapshot-free, so it is the only
+//   way UD1 can resolve on the 355 stocks that never get a ScoreSnapshot — see resolveDelta below.
+import { readNewlyStandingFilingDetail } from "../filing/read.js";
 import { buildPortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
 import { listUnifiedPositions } from "../brokers/union.js";
 import { resolveToneForUser } from "../ai/tone.js";
 import { holdingsInPeerGroup } from "../scoring/read/holdings-in-peer-group.js";
 import { monthYear } from "./copy.js";
-import type { ReaderContext, ReaderBook, ReaderHolding, ReaderWatchlist, ReaderAttention, ReaderNeighbourhood } from "./types.js";
+import type { ReaderContext, ReaderBook, ReaderHolding, ReaderWatchlist, ReaderAttention, ReaderNeighbourhood, ReaderEcho } from "./types.js";
 
 const TRAILING_30D_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -168,6 +175,23 @@ export async function resolveReaderContext(
  *
  * NEVER CLEANS THE SLATE (§0.5). Nothing is removed from the card because it was seen; this resolver
  * only computes the novelty ANNOTATION.
+ *
+ * ── ★ THE FILING CHANNEL'S OWN SUBSTRATE, RECONCILED AGAINST A DIFFERENT CLOCK ─────────────────────
+ * The block above is snapshot-generation-based, so it is permanently silent on the 355 stocks that
+ * never get a ScoreSnapshot — `currentGeneration` is null there, `newSnapshotSinceLastLook` is false,
+ * and no amount of filing activity could ever reach `newlyStandingKeys`. The filing channel has its own
+ * transitions (stock_findings, snapshot-free — filing/read.ts `readNewlyStandingFilingDetail`), and
+ * that function already performs the "is this a genuine transition" test the alert evaluator uses. It
+ * is reused here VERBATIM, never reimplemented — what follows is not a second version of that test.
+ *
+ * What that function CANNOT answer is reader-scoped: it returns an OBJECT fact ("this rule transitioned
+ * on the record"), not a READER fact ("this reader hasn't seen it yet"), because it takes no reader. The
+ * two clocks are genuinely different — `createdAt` dates when OUR pipeline wrote the transitioned row;
+ * `since` dates when THIS reader last looked at THIS stock — and a real transition can predate a real
+ * visit: the row was already there, already fired, the first time this reader ever opened the card. That
+ * is not new to them, even though it is the first newly-standing row we hold. So a candidate only
+ * survives into `newlyStandingKeys` when its landing postdates `since` — the same reader clock the score
+ * branch above is built on, reconciled here because this is the only place both clocks are in scope.
  */
 async function resolveDelta(
   userId: string,
@@ -193,16 +217,22 @@ async function resolveDelta(
     try {
       const seen = await prisma.scoreSnapshot.findUnique({
         where: { id: lastSeenGeneration },
-        select: { labelBand: true, patterns: { select: { patternKey: true } }, redFlags: { select: { flagKey: true } } },
+        select: { labelBand: true, patterns: { select: { patternKey: true } } },
       });
       if (seen) {
         lastSeenBand = seen.labelBand;
         // Retired keys dropped on BOTH sides of the comparison: a retired key present in the
         // last-seen snapshot but suppressed now would otherwise read as "this cleared since you
         // last looked", announcing a resolution that never happened.
+        //
+        // ★ THE RED-FLAG HALF IS GONE (2026-08-11), and its removal is the SAME correction. It read
+        //   `seen.redFlags` off the last-seen snapshot without the channel filter the other surfaces
+        //   applied, so a frozen filing-rule row on that snapshot entered `seenKeys` while the
+        //   current side (object-state.ts) no longer emits red flags at all — every one of them would
+        //   have read as "cleared since you last looked". The score channel fires no red flags on
+        //   either side of this comparison now, so both sides are patterns and the diff is honest.
         const seenKeys = new Set<string>([
           ...dropNotCoveredPatterns(dropRetiredPatterns(seen.patterns)).map((p) => p.patternKey),
-          ...dropRetiredFlags(seen.redFlags).map((r) => r.flagKey),
         ]);
         const nowKeys = new Set(currentKeys);
         newlyStandingKeys = currentKeys.filter((k) => !seenKeys.has(k));
@@ -214,6 +244,21 @@ async function resolveDelta(
       newlyStandingKeys = [];
       clearedKeys = [];
     }
+  }
+
+  // The filing channel's transitions, gated on the reader's OWN clock (see the note above). Runs
+  // regardless of whether the score branch above found anything — the two substrates are independent
+  // and a key cannot collide between them (channel-exclusive namespaces, filing/channel.ts).
+  try {
+    const filingDetail = await readNewlyStandingFilingDetail([stockId]);
+    const candidates = filingDetail.get(stockId) ?? [];
+    const newToThisReader = candidates.filter((c) => c.createdAt.getTime() > since.getTime()).map((c) => c.ruleKey);
+    if (newToThisReader.length > 0) {
+      newlyStandingKeys = [...new Set([...newlyStandingKeys, ...newToThisReader])];
+    }
+  } catch {
+    // Fail-soft like every other delta sub-read: the filing half drops, the score half (if any)
+    // stands unaffected, and the card still renders.
   }
 
   return {
@@ -245,6 +290,20 @@ async function resolveEcho(userId: string, book: ReaderBook | null): Promise<Rea
   // Direct equity only, quantity-gated — the same rule as the position axis (§2.1 amended). A fund is
   // not an echo member because look-through does not exist.
   try {
+    // ⚠ THE Prisma.raw BELOW IS LOAD-BEARING, NOT DECORATION. This is a TAGGED template, so an
+    //   unwrapped predicate expression is BOUND AS A PARAMETER rather than spliced as SQL: Postgres
+    //   receives `WHERE $3 AND $4` with two text values where boolean expressions belong and rejects
+    //   the whole statement with 22P02. The catch below then returns null, the UE family drops, and
+    //   the card still renders — so the failure is invisible to the reader and to the caller. That is
+    //   not hypothetical; it is what this query did from 2026-08-02 to 2026-08-09.
+    //
+    //   The sibling boundary (relational/base-rates.ts) escapes this only because it assembles a plain
+    //   template literal for $queryRawUnsafe, where interpolation splices text. Both helpers return
+    //   `string` by design (see the SQL-fragment contract in retired-findings.ts); Prisma.raw is what
+    //   turns that string back into SQL at a tagged site. Held to it by scripts/verify-sql-predicates.ts.
+    //
+    //   Note this comment lives OUTSIDE the template on purpose — a `$`-brace sequence written inside
+    //   it, even within a `--` SQL comment, is still a live JS interpolation.
     const rows = await prisma.$queryRaw<{ stockId: string; name: string; patternKey: string }[]>`
       WITH held AS (
         SELECT DISTINCT stock_id FROM holdings WHERE user_id = ${userId} AND stock_id IS NOT NULL AND quantity > 0
@@ -264,13 +323,21 @@ async function resolveEcho(userId: string, book: ReaderBook | null): Promise<Rea
       -- ★ RETIREMENT SUPPRESSION (boundary 8 of 9 — "N of your holdings also show this"). RAW SQL,
       --   the second reader a Prisma extension would have missed. Without it a retired key would be
       --   presented to the reader as a live pattern shared across their own portfolio.
-      WHERE ${retiredKeysSqlPredicate("p.pattern_key")} AND ${notCoveredKeysSqlPredicate("p.pattern_key")}
+      --   Prisma.raw is required at this tagged site — see the note above the query.
+      WHERE ${Prisma.raw(retiredKeysSqlPredicate("p.pattern_key"))}
+        AND ${Prisma.raw(notCoveredKeysSqlPredicate("p.pattern_key"))}
     `;
 
     const scoredStocks = new Set<string>();
     const byPatternKey = new Map<string, string[]>();
     for (const r of rows) {
       scoredStocks.add(r.stockId);
+      // ★ CHANNEL SUPPRESSION (step 5). A filing key on a head snapshot is a FROZEN row — the scoring
+      //   pass stopped writing these in step 2 — and its rate is now computed over the population its
+      //   rule evaluated in. Counting it here would put a numerator from a decaying subset of the
+      //   reader's SCORED holdings over a denominator drawn from the filing population. The filing
+      //   census below supplies these keys from stock_findings instead.
+      if (isFilingChannelKey(r.patternKey)) continue;
       const names = byPatternKey.get(r.patternKey) ?? [];
       // De-duplicate: one stock may carry a key once per snapshot, and a name must never count twice.
       if (!names.includes(r.name)) names.push(r.name);
@@ -281,10 +348,65 @@ async function resolveEcho(userId: string, book: ReaderBook | null): Promise<Rea
     // still belongs in "3 of your 8 holdings". Counted from the head set, so it matches the numerator's
     // basis exactly.
     const scoredHoldingsCount = await countScoredHoldings(userId);
-    return { scoredHoldingsCount: scoredHoldingsCount ?? scoredStocks.size, byPatternKey };
+    const filing = await resolveFilingEcho(userId);
+    return { scoredHoldingsCount: scoredHoldingsCount ?? scoredStocks.size, byPatternKey, filing };
   } catch (err) {
     console.warn(`[relational/echo] census failed — UE family dropped: ${(err as Error).message}`);
     return null;
+  }
+}
+
+/**
+ * ★ THE FILING CHANNEL'S BOOK CENSUS (step 5) — the other half of the ratio the base rates split.
+ *
+ * Rooted at STOCK, so it folds in holdings that have never been scored. One indexed statement over
+ * (stock_id, period_end DESC): `DISTINCT ON (stock_id, rule_key)` reduces the accumulated periods to
+ * the current row per rule, exactly as filing/read.ts does in memory, and the two counts are then a
+ * FILTER pair over that — fired for the numerator, fired-or-not_fired for the denominator.
+ *
+ * ⚠ THROWS ARE SWALLOWED INTO AN EMPTY CENSUS, NOT PROPAGATED. The caller's own catch drops the whole
+ * UE family on failure, which is right when the SCORE census fails — that census is the family's
+ * spine. A filing-census failure must not take the score half down with it: the score keys are still
+ * completely computable and their claims are still honest. An empty filing census renders no filing
+ * echo, which is the same outcome as a book that simply has no filings.
+ */
+async function resolveFilingEcho(userId: string): Promise<ReaderEcho["filing"]> {
+  const empty = { byRuleKey: new Map<string, string[]>(), evaluatedByRuleKey: new Map<string, number>(), coveredHoldingsCount: 0 };
+  try {
+    const rows = await prisma.$queryRaw<{ ruleKey: string; name: string; stockId: string; state: string }[]>`
+      WITH held AS (
+        SELECT DISTINCT stock_id FROM holdings WHERE user_id = ${userId} AND stock_id IS NOT NULL AND quantity > 0
+        UNION
+        SELECT DISTINCT stock_id FROM broker_holdings WHERE user_id = ${userId} AND stock_id IS NOT NULL AND quantity > 0
+      ),
+      cur AS (
+        SELECT DISTINCT ON (f.stock_id, f.rule_key)
+               f.stock_id, f.rule_key, f.evaluation_state
+        FROM stock_findings f
+        JOIN held h ON h.stock_id = f.stock_id
+        ORDER BY f.stock_id, f.rule_key, f.period_end DESC
+      )
+      SELECT cur.rule_key AS "ruleKey", st.name AS "name", cur.stock_id AS "stockId",
+             cur.evaluation_state::text AS "state"
+      FROM cur JOIN stocks st ON st.id = cur.stock_id
+      WHERE cur.evaluation_state IN ('fired', 'not_fired')
+    `;
+
+    const byRuleKey = new Map<string, string[]>();
+    const evaluatedByRuleKey = new Map<string, number>();
+    const covered = new Set<string>();
+    for (const r of rows) {
+      covered.add(r.stockId);
+      evaluatedByRuleKey.set(r.ruleKey, (evaluatedByRuleKey.get(r.ruleKey) ?? 0) + 1);
+      if (r.state !== "fired") continue;
+      const names = byRuleKey.get(r.ruleKey) ?? [];
+      if (!names.includes(r.name)) names.push(r.name);
+      byRuleKey.set(r.ruleKey, names);
+    }
+    return { byRuleKey, evaluatedByRuleKey, coveredHoldingsCount: covered.size };
+  } catch (err) {
+    console.warn(`[relational/echo] filing census failed — filing echoes dropped, score echoes unaffected: ${(err as Error).message}`);
+    return empty;
   }
 }
 
@@ -318,7 +440,7 @@ async function countScoredHoldings(userId: string): Promise<number | null> {
  * yet."). Fail-soft: on error it falls back to the probe's answer rather than silently un-holding a
  * real position — a false NEITHER is worse than a stale HELD.
  */
-async function holdsPositiveQuantity(userId: string, stockId: string): Promise<boolean> {
+export async function holdsPositiveQuantity(userId: string, stockId: string): Promise<boolean> {
   try {
     const [manual, broker] = await Promise.all([
       prisma.holding.count({ where: { userId, stockId, quantity: { gt: 0 } } }),

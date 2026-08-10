@@ -90,7 +90,7 @@ async function main() {
     if (!view || !view.scored) continue;
 
     for (const pillarKey of ["foundation", "momentum"] as PillarKey[]) {
-      const pillarView = view.pillars.find((p) => p.pillar === pillarKey);
+      const pillarView = (view.pillars ?? []).find((p) => p.pillar === pillarKey);
       if (!pillarView) continue;
 
       const metrics = fmMetrics(pillarView);
@@ -193,7 +193,7 @@ async function main() {
     if (!view || !view.scored) continue;
     let count = 0;
     for (const pKey of ["foundation", "momentum"] as PillarKey[]) {
-      const pv = view.pillars.find((p) => p.pillar === pKey);
+      const pv = (view.pillars ?? []).find((p) => p.pillar === pKey);
       for (const m of pv?.metrics ?? []) {
         if (m.metricState === "scored" && m.lens?.l3.reason === "building_history") count++;
       }
@@ -210,7 +210,7 @@ async function main() {
       console.log(`   Proof stock: ${degradationSymbol} (${maxBuildingHistory} metrics with L3 reason=building_history)`);
       let shown = 0;
       for (const pKey of ["foundation", "momentum"] as PillarKey[]) {
-        const pv = view.pillars.find((p) => p.pillar === pKey);
+        const pv = (view.pillars ?? []).find((p) => p.pillar === pKey);
         for (const m of pv?.metrics ?? []) {
           if (shown >= 4) break;
           if (!m.lens) continue;
@@ -239,7 +239,7 @@ async function main() {
         const v2 = await buildHealthSnapshotView(sym);
         if (!v2 || !v2.scored) continue;
         for (const pKey of ["foundation", "momentum"] as PillarKey[]) {
-          const pv2 = v2.pillars.find((p) => p.pillar === pKey);
+          const pv2 = (v2.pillars ?? []).find((p) => p.pillar === pKey);
           for (const m of pv2?.metrics ?? []) {
             if (
               (m.lensPattern?.id === "LM3" || m.lensPattern?.id === "LM4") &&
@@ -279,7 +279,7 @@ async function main() {
   for (const symbol of symbols) {
     const view = await buildHealthSnapshotView(symbol);
     if (!view || !view.scored) continue;
-    const pv = view.pillars.find((p) => p.pillar === "momentum");
+    const pv = (view.pillars ?? []).find((p) => p.pillar === "momentum");
     if (!pv) continue;
     for (const m of pv.metrics ?? []) {
       if (!m.lens || !m.lens.l3.evaluable) continue;
@@ -364,7 +364,7 @@ async function main() {
     const view = await buildHealthSnapshotView(symbol);
     if (!view || !view.scored) continue;
     for (const pKey of ["foundation", "momentum"] as PillarKey[]) {
-      const pv = view.pillars.find((p) => p.pillar === pKey);
+      const pv = (view.pillars ?? []).find((p) => p.pillar === pKey);
       for (const m of pv?.metrics ?? []) {
         candidates.push({
           symbol,
@@ -399,7 +399,7 @@ async function main() {
     }
     const view = await buildHealthSnapshotView(cand.symbol);
     if (!view || !view.scored) { console.log("      (view not scored)"); continue; }
-    const pv = view.pillars.find((p) => p.pillar === cand.pillar);
+    const pv = (view.pillars ?? []).find((p) => p.pillar === cand.pillar);
     const m = pv?.metrics?.find((x) => x.metricKey === cand.metricKey);
     if (!m) { console.log("      (metric not found in view)"); continue; }
 

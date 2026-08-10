@@ -80,7 +80,14 @@ async function catalogSnapshot(): Promise<Record<string, string>> {
 async function main() {
   const catalogBefore = await catalogSnapshot(); // HEAD of the run — the same-run-delta baseline (§9)
   const users = await q<{ user_id: string }>(`SELECT DISTINCT user_id FROM transactions`);
-  ok("engine stamps CONSTANT_VERSION 2.0 (the cutover fingerprint bump)", CONSTANT_VERSION === "portfolio-spec 2.0", CONSTANT_VERSION);
+  // (cv 2.1, bookWeight bump) THE PIN WAS A LITERAL — `CONSTANT_VERSION === "portfolio-spec 2.0"` — and a
+  // literal pin on a constant that is DESIGNED to move is a padlock, not a gate: the first legitimate bump
+  // after Stage 5 broke `tsc` on it (TS2367, two string literals with no overlap), in a file that has
+  // nothing to say about that bump. What this line actually asserts is that the Stage-5 CUTOVER happened —
+  // that the engine stamps a post-cutover version rather than a 1.x one — and that is now what it checks.
+  // The era is still named in the label, so the gate keeps its date without holding the constant hostage.
+  const cv: string = CONSTANT_VERSION;
+  ok("engine stamps a post-cutover CONSTANT_VERSION (2.0 at Stage 5; whatever 2.x is current today)", cv.startsWith("portfolio-spec 2."), cv);
 
   // ══════════════════════════════════════════════════════════════════════════════════════════════
   rule("1 · §13 UN-WAIVABLE — Construction is now DISPLAYED, and Health/Quality/Signals + FINDINGS did not move.");

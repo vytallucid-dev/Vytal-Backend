@@ -56,6 +56,5 @@ export const ruleG: RetiredRule = (ctx) => {
         ? `Converging — the ${ref.minPillar} laggard rose ${r1(minRose)}pp, closing a ${r1(ref.spread)}pp pillar gap to ${r1(curSpread.spread)}pp (healthy resolution).`
         : `Converging — the ${ref.maxPillar} leader fell ${r1(maxFell)}pp, closing a ${r1(ref.spread)}pp pillar gap to ${r1(curSpread.spread)}pp (deterioration convergence).`,
     },
-    metricRefs: [ref.minPillar, ref.maxPillar],
   };
 };

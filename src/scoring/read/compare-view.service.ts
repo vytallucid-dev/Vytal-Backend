@@ -408,6 +408,10 @@ function buildComparee(symbol: string, data: EntityData): Comparee {
     // (never row-paired), trajectorySeries on the shared 0–100 overlay, pondMask +
     // trajectoryDelta as facts about this entity (pond never cross-compared).
     findings: health?.findings ?? null,
+    // ★ THE FILING CHANNEL, SAME PASS-THROUGH, ZERO NEW READS. buildHealthSnapshotView resolves it in
+    //   its first layer — before the not-scored guard — so this is populated for an unscored entity
+    //   too, which is the whole point: an unscored column had no content at all before this line.
+    filingFindings: health?.filingFindings ?? null,
     trajectorySeries: health?.trajectory?.series ?? [],
     pondMask: verdict?.pondMask ?? null,
     trajectoryDelta: verdict?.trajectoryDelta ?? null,

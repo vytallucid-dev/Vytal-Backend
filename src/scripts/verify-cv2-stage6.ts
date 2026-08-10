@@ -1,23 +1,42 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════
 // CONSTRUCTION v2 — STAGE 6 — GATE 3 VERIFICATION (bands · archetype · display · S1–S5 DEFERRED).
 // DETERMINISTIC: everything is proven via computePhs + the pure band/archetype/reshape functions, so a
-// concurrent snapshot writer (the dev-server scheduler) cannot affect the result. §13 keys on Health,
-// which is byte-identical across EVERY persisted row regardless of cv/structure.
+// concurrent snapshot writer (the dev-server scheduler) cannot affect the result.
 //
-//   1. §13 — Health/Quality/Signals byte-identical (73·73·69·65·50); Construction is display-only.
+//   1. §13 — Construction cannot move Health: live recompute agrees with the served row, for WHOEVER
+//      is live today (2026-08-11: dropped the `EXP_HEALTH` literal pin — see below).
 //   2. FE renders C-rules: CONSTRUCTION_RULE_META resolves all C1…C6; reshape serves construction_data.
 //   3. Bands recut (85/70/55/40) on the cohort + boundary edges; 70→Solid inclusive.
 //   4. Fragile GONE from Construction; still present in Health (separate functions).
-//   5. Archetype: cohort → Stock-led; order proven (bond→Income, gold→Commodity).
+//   5. Archetype: the §9.4 priority order (debt→commodity→nameRisk→basket→blended), re-derived from
+//      each live user's own exposures — not pinned to any label a specific cohort happened to earn.
 //   6. Evaluability: a stock-only book distinguishes not-evaluable (C5, no subject) from clean-0.
 //   7. structureTier GONE from the payload; capitalTier survives as copy input.
 //   8. S1–S5 GONE (§15, Stage 9 — this INVERTED from "still computed"); relative-threshold idiom alive in C1.
 //   9. SAME-RUN-DELTA: the catalog did not move DURING this proof + the 95-stock structural invariant.
 //
+// ── 2026-08-11 · `EXP_HEALTH` RETIRED, AND WHY (same class as verify-screen-brief) ─────────────────
+//   §1 used to pin 5 literal Health values by user id ("`EXP_HEALTH`"). Three of those users no longer
+//   exist and a 4th postdated the gate entirely (`EXP_HEALTH[tag]` undefined) — the SAME mistake as
+//   pinning a period count, just on a user id instead of a date. Worse, the premise it was written
+//   under — "Health is byte-identical across every persisted row regardless of cv/structure" — is
+//   false: Health tracks Quality, and Quality moves with EOD prices (verify-cv2-stage7.ts's §1 found
+//   this the hard way on 7985d813's Quality, sitting on the .5 rounding knife-edge). The literal pin
+//   was never a safe invariant, only a snapshot of what happened to be true the day it was written.
+//   The RELATIONSHIP it was actually guarding — a Construction v2 display change cannot reach Health —
+//   survives unpinned: recompute (computePhs on the live holdings) still has to agree with the served
+//   (persisted) row, for whichever users exist today. See §1 below and verify-cv2-stage7.ts §1 for the
+//   more robust (persistence-independent) version of the same claim.
+//   §5's live-cohort loop had the identical shape one level down — hardcoding "archetype == Stock-led"
+//   for whoever the live cohort happened to be. Fixed the same way: re-derive the expected label from
+//   the §9.4 threshold order applied to that user's own exposures, so it holds for any live user with
+//   any composition, not just the three the gate happened to be written against.
+//
 // ── WHAT THIS FILE PINS, AND WHY (operator ruling ②) ─────────────────────────────────────────────
 //   §1–§8 are SYNTHETIC or PURE (computePhs + the pure band/archetype/reshape functions on hand-built
-//   books) → drift-immune BY CONSTRUCTION, asserted EXACT. §13 keys on Health, an INTEGER that is
-//   byte-identical across every persisted row regardless of cv/structure.
+//   books) → drift-immune BY CONSTRUCTION, asserted EXACT. §1 and §5's LIVE-cohort loops are the
+//   exception (real users, real holdings) — asserted as PROPERTIES (recompute==served; label matches
+//   the documented order), never as literal values, exactly because live data drifts.
 //   §9 was the exception and carried the WORSE OF BOTH: it re-pinned the 5 non-EOD tables to literals
 //   (the same trap, just slower — the next legitimate catalogue import breaks them) and merely REPORTED
 //   the 4 EOD-fed ones, so those four were asserted by NOBODY. A silent gap is worse than a failing pin;
@@ -30,8 +49,11 @@
 import { prisma } from "../db/prisma.js";
 import { assemblePortfolio } from "../portfolio/phs/assemble.js";
 import { computePhs, type PhsHolding } from "../portfolio/phs/engine.js";
-import { buildExposures, archetypeOf, constructionDataOf } from "../portfolio/phs/entity.js";
-import { constructionBandOf, bandOf, type ConstructionBand } from "../portfolio/phs/constants.js";
+import { buildExposures, archetypeOf, constructionDataOf, type Archetype } from "../portfolio/phs/entity.js";
+import {
+  constructionBandOf, bandOf, type ConstructionBand,
+  ARCHETYPE_DEBT_MIN, ARCHETYPE_COMMODITY_MIN, ARCHETYPE_NAMERISK_MIN, ARCHETYPE_BASKET_MIN,
+} from "../portfolio/phs/constants.js";
 import { reshapeSnapshot, type SnapshotReadInput } from "../controllers/me/portfolio-snapshot-controller.js";
 
 let fail = 0;
@@ -66,26 +88,43 @@ async function catalogSnapshot(): Promise<Record<string, string>> {
 async function main() {
   const catalogBefore = await catalogSnapshot(); // HEAD of the run — the same-run-delta baseline (§9)
   const users = await q<{ user_id: string }>(`SELECT DISTINCT user_id FROM transactions`);
-  const EXP_HEALTH: Record<string, number> = { "4c5ca537": 73, "ae8c6537": 73, "e3c6bd3c": 69, "7985d813": 65, "108fd2a6": 50 };
 
   // ══════════════════════════════════════════════════════════════════════════════════════════════
-  rule("1 · §13 — Health byte-identical (7th time). Construction v2 display changes touch NO Health input.");
+  rule("1 · §13 — Construction cannot move Health. recompute == served row, for WHOEVER is live today.");
   // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // (2026-08-11) NO LITERAL PIN. The old `EXP_HEALTH` table pinned 5 users' Health by id — 3 no longer
+  // exist, a 4th postdated the gate, and the premise ("Health is byte-identical across every persisted
+  // row") was false anyway (Health tracks Quality, which moves with EOD prices — see stage7 §1's more
+  // careful treatment of the same claim). The RELATIONSHIP survives: a live recompute (computePhs on
+  // this user's CURRENT holdings) must still agree with the served (persisted) row, because a Stage-6
+  // display change has no path to Health's inputs. That holds for whoever is live, not just who was
+  // live the day this was written.
   for (const u of users) {
     const tag = u.user_id.slice(0, 8);
     const r = computePhs((await assemblePortfolio(u.user_id)).holdings);
-    // Health is byte-identical across EVERY persisted row (the concurrent writer never moves it), so we
-    // assert against the invariant constant, then confirm the served row agrees.
     const served = await prisma.portfolioHealthSnapshot.findFirst({ where: { userId: u.user_id }, orderBy: { createdAt: "desc" }, select: { phs: true } });
-    ok(`${tag} · Health ${EXP_HEALTH[tag]} (recompute == invariant == served row)`,
-      r.health === EXP_HEALTH[tag] && served?.phs === r.health, `recompute ${r.health} · served ${served?.phs}`);
+    ok(`${tag} · Health ${r.health} — recompute == served row`,
+      served != null && r.health === served.phs, `recompute ${r.health} · served ${served?.phs}`);
   }
 
   // ══════════════════════════════════════════════════════════════════════════════════════════════
   rule("2 · FE RENDERS C-RULES — every C1…C6 id resolves; reshape serves construction_data (no crash).");
   // ══════════════════════════════════════════════════════════════════════════════════════════════
   // the FE's meta must key on exactly C1…C6 (mirrors the wire). A C-rule ledger through reshape → payload.
-  const armanR = computePhs((await assemblePortfolio(users.find((u) => u.user_id.startsWith("7985d813"))!.user_id)).holdings);
+  // (2026-08-11) SYNTHETIC, not a live user pin. This used to be `assemblePortfolio(users.find(u =>
+  // u.user_id.startsWith("7985d813"))!.user_id)` — a non-null assertion on a live user lookup that throws
+  // the moment that user is deleted (the EXP_HEALTH failure, one level down, and worse: a crash rather
+  // than a red assertion). Nothing below needs a REAL portfolio, only SOME book with a nontrivial
+  // entity/sector spread to exercise the C-rule ledger shape — built directly, 5 stocks/5 sectors,
+  // Stock-led (matches the archetype assertion further down), drift-immune by construction.
+  const armanBook: PhsHolding[] = [
+    S("TCS", "INE467B01029", 400_000, "it_technology", 70),
+    S("HDFCBANK", "INE040A01034", 250_000, "banks", 70),
+    S("SUNPHARMA", "INE044A01036", 200_000, "pharma", 70),
+    S("ITC", "INE154A01025", 100_000, "fmcg", 70),
+    S("MARUTI", "INE585B01010", 50_000, "auto", 70),
+  ];
+  const armanR = computePhs(armanBook);
   const cData = constructionDataOf(armanR.construction, armanR.entityLedger, armanR.basketLedger, armanR.sectors, armanR.entityLedger.length, 0);
   const RULE_IDS = ["C1", "C2", "C3", "C4", "C5", "C6"];
   ok("construction_data.rules = exactly [C1…C6] in order (the FE meta keys resolve — no undefined.title)",
@@ -128,12 +167,27 @@ async function main() {
   ok("Health bandOf STILL returns 'Fragile' (35–49) — the collision is resolved, not deleted", bandOf(40) === "Fragile" && bandOf(48) === "Fragile");
 
   // ══════════════════════════════════════════════════════════════════════════════════════════════
-  rule("5 · ARCHETYPE — cohort → Stock-led; ORDER proven (Income beats Stock; Commodity).");
+  rule("5 · ARCHETYPE — the §9.4 order re-derived on live books; ORDER proven (Income beats Stock; Commodity).");
   // ══════════════════════════════════════════════════════════════════════════════════════════════
+  // (2026-08-11) NOT "cohort → Stock-led". That was the same mistake as `EXP_HEALTH` one level down —
+  // it happened to be true of the 3 original users' portfolios, and broke the moment a 4th (82169381,
+  // nameRisk 56.6% — Blended, not Stock-led) showed up. Archetype is not a property of the SYSTEM, it's
+  // a fact about whatever a user happens to hold. What IS a system property, and survives any cohort:
+  // the §9.4 PRIORITY ORDER (debt→commodity→nameRisk→basket→blended) is applied correctly. Re-derive the
+  // expected label from each user's own exposures via the documented thresholds (same technique as §3's
+  // band recut, a few lines up) rather than calling `archetypeOf` again, which would just prove it agrees
+  // with itself.
   for (const u of users) {
     const { holdings } = await assemblePortfolio(u.user_id);
     const r = computePhs(holdings);
-    ok(`${u.user_id.slice(0, 8)} · Stock-led`, r.construction.archetype === "Stock-led", `nameRisk ${(r.sleeves.nameRisk * 100).toFixed(1)}%`);
+    const e = r.construction.exposures;
+    const expect: Archetype = e.debt >= ARCHETYPE_DEBT_MIN ? "Income-led"
+      : e.commodity >= ARCHETYPE_COMMODITY_MIN ? "Commodity-led"
+      : e.nameRisk >= ARCHETYPE_NAMERISK_MIN ? "Stock-led"
+      : e.basket >= ARCHETYPE_BASKET_MIN ? "Fund-led" : "Blended";
+    ok(`${u.user_id.slice(0, 8)} · archetype ${r.construction.archetype} matches the §9.4 order`,
+      r.construction.archetype === expect,
+      `nameRisk ${(e.nameRisk * 100).toFixed(1)}% · debt ${(e.debt * 100).toFixed(1)}% · commodity ${(e.commodity * 100).toFixed(1)}% · basket ${(e.basket * 100).toFixed(1)}%`);
   }
   const bond: PhsHolding = { symbol: "B", marketValue: 1e6, tier: "unknown", sector: null, health: null, findings: [], isin: "INE111A07011", assetClass: "bond" };
   ok("100% bond → Income-led (both name-risk AND income → Income WINS — the truer sentence)", archetypeOf(buildExposures([bond], 1e6)) === "Income-led");

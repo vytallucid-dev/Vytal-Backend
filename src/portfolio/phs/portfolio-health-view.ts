@@ -31,7 +31,7 @@
 // ═══════════════════════════════════════════════════════════════════════
 import { prisma } from "../../db/prisma.js";
 import type { PfFinding } from "./patterns.js";
-import type { PillarProfile, LensProfile } from "./engine.js";
+import type { PillarProfile, LensProfile, SignalsDeduction } from "./engine.js";
 import { listPortfolioDisclosure, constructionValuation } from "./assemble.js";
 import { fireReadTimeFindings, fireDisclosureFindings, fireInstrumentFindings } from "./read-time-findings.js";
 import { composeStory, type Storyboard } from "./story.js";
@@ -130,6 +130,23 @@ export interface ConstructionRead {
   findings: PfFinding[]; // PC + PB (— OR every fired finding when there is no health read)
 }
 
+/**
+ * ONE served Signals-ledger row. The engine's `SignalsDeduction` with `bookWeight` WIDENED to nullable
+ * — and the widening is the whole point of declaring this type instead of re-exporting the engine's.
+ *
+ * The engine always sets `bookWeight` (it is `w[i]`, never absent). But this read serves PERSISTED JSON,
+ * and rows written before CONSTANT_VERSION 2.1 simply have no such key. Typing the wire as the engine's
+ * shape would tell every consumer the field is always there and hand them `undefined` — the exact
+ * "documentation the compiler endorses" this codebase deletes types for. So the wire says what the wire
+ * can actually contain: a number on a 2.1+ row, absent on an older one, and NEVER a stand-in.
+ *
+ * ⚠ THE TWO WEIGHTS ARE NOT INTERCHANGEABLE. `weight` is wSig — the finding-capable (stock-only) share the
+ * deduction was computed over. `bookWeight` is the whole-book share. Substituting one for the other is
+ * how a 42.7% shipped under a "% of book" label on a book whose true share was 39.4%. A consumer that
+ * cannot find `bookWeight` must SAY NOTHING about book share, not reach for `weight`.
+ */
+export type SignalsLedgerEntry = Omit<SignalsDeduction, "bookWeight"> & { bookWeight?: number | null };
+
 export interface HealthRead {
   value: number | null; // (1.2) the Health Score — TRUE / UNCAPPED (was "PHS"); present ⇒ integer
   band: string | null; // Strong | Steady | Mixed | Fragile | Weak
@@ -138,7 +155,7 @@ export interface HealthRead {
   evaluable: boolean; // always true when this read is present
   provisional: boolean; // (1.2 Change 3) coverage < 40% → "Provisional" tag (ceiling retired)
   findings: PfFinding[]; // PQ + PS + PX + PV
-  signalsLedger: unknown; // the red-flag evidence (SignalsDeduction[])
+  signalsLedger: SignalsLedgerEntry[]; // the red-flag evidence — verbatim off the row, both denominators
   pillarProfile: PillarProfile | null; // (1.2 Change 4) where the quality comes from
   lensProfile: LensProfile; // (1.2 Change 5) findings-character shares; null ⇔ no lens patterns
 }
@@ -343,7 +360,11 @@ export function reshapeSnapshot(s: SnapshotReadInput, counts: ReshapeCounts, rea
         evaluable: s.evaluable,
         provisional: s.provisional, // (1.2 Change 3) the tag replaces the retired ceiling
         findings: healthFindings,
-        signalsLedger: s.signalsLedger,
+        // Verbatim off the row — no recompute, no reshape, no defaulting. `[]` guards the (impossible on
+        // a real row, reachable in a mock) null column; `Array.isArray` is the same degrade the
+        // Construction ledger uses two fields up. A legacy entry keeps its missing `bookWeight` as
+        // MISSING: the read never invents one, and never lends it `weight`.
+        signalsLedger: Array.isArray(s.signalsLedger) ? (s.signalsLedger as SignalsLedgerEntry[]) : [],
         pillarProfile: (s.pillarProfile ?? null) as PillarProfile | null,
         lensProfile: (s.lensProfile ?? null) as LensProfile,
       }

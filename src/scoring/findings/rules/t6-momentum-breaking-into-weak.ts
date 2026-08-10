@@ -96,6 +96,5 @@ export const ruleT6: FireRule = (ctx) => {
       medianLeadDays: 0,
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["momentum"],
   };
 };

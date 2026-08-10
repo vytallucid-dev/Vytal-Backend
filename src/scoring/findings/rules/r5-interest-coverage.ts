@@ -17,11 +17,18 @@
 // over-engineer where the structure already guards. This is inherently far less one-off-
 // sensitive than the quarterly OPM P11 reads.)
 
-import { notEvaluable, type FireRule, type FiringContext } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule, type FilingContext } from "../types.js";
 import type { MomentumQuarter } from "../../metrics/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const R5_IC_THRESHOLD = 1.5;   // < 1.5×
-export const R5_MIN_CONSECUTIVE = 2;  // ≥2 consecutive TTM quarters
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_R5_interest_coverage.facts;
+
+export const R5_IC_THRESHOLD = FACTS.thresholds.interestCoverage;   // < 1.5×
+export const R5_MIN_CONSECUTIVE = FACTS.thresholds.minConsecutiveQuarters;  // ≥2 consecutive TTM quarters
 
 /**
  * TTM interest coverage ending at row index `i` (rows sorted qOrdinal ASC). Requires 4 CONTIGUOUS
@@ -49,9 +56,9 @@ function ttmIC(rows: MomentumQuarter[], i: number): TtmResult {
   return { ok: true, ic: (sumPbt + sumInt) / sumInt }; // = ΣEBIT / Σinterest
 }
 
-export const ruleR5: FireRule = (ctx: FiringContext) => {
+export const ruleR5: FilingRule = (ctx: FilingContext) => {
   // Scope decision, not a data gap — stays not_fired (see R3's banking note).
-  if (ctx.industry === "banking") return null;
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // interest is a lender/insurer cost of goods — coverage is undefined
   const rows = [...ctx.quarterlyResults].sort((a, b) => a.qOrdinal - b.qOrdinal);
   // ⚠ MIGRATED (Phase 2): the depth gate is a declined check, not a false one.
   if (rows.length < R5_MIN_CONSECUTIVE + 3) return notEvaluable("insufficient_quarters"); // need 5 quarters
@@ -85,6 +92,5 @@ export const ruleR5: FireRule = (ctx: FiringContext) => {
         `Interest coverage collapse — TTM interest coverage held below ${R5_IC_THRESHOLD}× for ` +
         `${R5_MIN_CONSECUTIVE} straight quarters (latest ${r2(ttms[ttms.length - 1].ic)}×).`,
     },
-    metricRefs: ["interestCoverage"],
   };
 };

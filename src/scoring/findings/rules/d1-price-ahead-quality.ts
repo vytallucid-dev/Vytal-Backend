@@ -130,6 +130,5 @@ export const ruleD1: FireRule = (ctx) => {
       atTurnPositivePct: 22,
       regimeConditionalCopy: true, // §1.3 — HOT appends a sentence; display is never gated
     },
-    metricRefs: ["market", "foundation"],
   };
 };

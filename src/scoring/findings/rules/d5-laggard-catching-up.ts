@@ -120,6 +120,5 @@ export const ruleD5: FireRule = (ctx) => {
       disclosureAnchoredN: 6,
       caveat: "n=5–6 on the core cells. Seen in four separate tests, which is why it survives scrutiny — but a directional hypothesis, not a proven edge.",
     },
-    metricRefs: ["foundation", "momentum"],
   };
 };

@@ -22,6 +22,9 @@ import type {
   LensRead,
 } from "./health-view.types.js";
 import type { ScopeDispersion } from "./scope-aggregate.js";
+// ★ RUNTIME-FREE BY DESIGN — the filing view shapes live in their own module precisely so a wire
+//   contract can import them without acquiring the Prisma client. See filing/read.types.ts.
+import type { FilingFindingsSection } from "../../filing/read.types.js";
 
 export type BandDistribution = Record<LabelBand, number>;
 
@@ -143,6 +146,21 @@ export interface FiredPattern {
 export interface PeerGroupMemberView {
   symbol: string;
   name: string;
+  /**
+   * ★ WHICH QUARTER THIS ROW IS OF — the member's OWN in-force snapshot period ("FY27Q1").
+   *
+   * ── WHY A PER-MEMBER FIELD WHEN THE CROSS-SECTION IS SINGLE-PERIOD ─────────────────────────────
+   * `resolveCrossSection` filters `members` to ONE periodKey, so every row here carries the same
+   * value today and the table can say it once instead of on every row. That is the whole reason the
+   * field exists as DATA rather than as a caption: the collapse is then a MEASUREMENT the renderer
+   * makes ("are these all equal?"), not an assumption it inherits. A reader looking at a peer
+   * comparison is entitled to know the two rows are of the same quarter, and nothing on this page
+   * said so before — `identity.periodKey` was on the payload and rendered nowhere.
+   */
+  periodKey: string;
+  /** The day that snapshot was written, YYYY-MM-DD. "Scored 7 August 2026" — the as-of, per member,
+   *  so a rescore that lands mid-season is dateable at the row rather than only for the pond. */
+  asOfDate: string;
   composite: number;
   labelBand: LabelBand;
   /** Four pillar subtotals. */
@@ -176,6 +194,57 @@ export interface PathologyCensusItem {
   /** Dominant display state across firing members (File 1 §5E). A pattern dampened PG-wide
    *  (>80%) surfaces as "dampened" so the board can show the sector-wide chip. Defaults "active". */
   displayState?: "active" | "pending_data_integration" | "dampened";
+}
+
+// ── THREE-LENS SEPARATION (the lens findings, grouped by METRIC) ─────────────
+//
+// ★ THE SAME FINDINGS THE CENSUS USED TO CARRY, RE-CUT ALONG THE OTHER AXIS. The metric-level lens
+// rows (`lens_lm*_<metricKey>`) are PARTITIONED OUT of `pathology` into this structure — they are not
+// in both places, because a block says everything its row said and more, and printing one fact twice
+// on one page is how two renderings of it start disagreeing. The PILLAR-level lens rows
+// (`lens_lp*_<pillar>`) STAY in `pathology`: they name no metric, so no block can head them, and
+// dropping them to keep the family tidy would lose findings the page currently shows.
+//
+// Composition is server-side (sentence, direction, order); the frontend renders and never re-words.
+
+/** Which side of the peer field a pole reports. Derived from the face's own L2 cell — see
+ *  scoring/lens-patterns/field-side.ts for why the peer lens is the axis and not the bar. */
+export type LensSeparationSide = "above" | "below";
+
+export interface PeerGroupLensSeparationPole {
+  /** The face that fired — "LM3" (above) or "LM7" (below). Carried for the audit trail; the section
+   *  renders the composed sentence, never the face label. */
+  face: string;
+  side: LensSeparationSide;
+  memberCount: number;
+  /** Symbols on this side, worst-first then alpha (the census's own order). */
+  members: string[];
+  /** The composed line — how many members, and in which direction. Peer-relative, no valence. */
+  sentence: string;
+}
+
+export interface PeerGroupLensSeparationBlock {
+  /** The identifier. The DISPLAY NAME is the frontend's catalogue lookup, exactly as
+   *  `metricDistributions` and `fieldLensVerdicts` already do — the read layer has no label map, and
+   *  humanising the key is the bug that renders `lens_lm7_CASA` as "Lens lm7 CASA". */
+  metricKey: string;
+  pillar: "foundation" | "momentum";
+  /** Members caught on this metric ACROSS BOTH POLES — the ordering key, descending. */
+  memberCount: number;
+  /** The cross-section size, the same M the census counts against. */
+  outOf: number;
+  /** One pole, or two when the metric caught members at both ends. Heavier first. */
+  poles: PeerGroupLensSeparationPole[];
+}
+
+export interface PeerGroupLensSeparation {
+  /** Ordered by `memberCount` descending. Empty when no metric-level lens finding fired. */
+  blocks: PeerGroupLensSeparationBlock[];
+  /** Composed only when `blocks` is empty — a group that separates on nothing is a real reading about
+   *  the group, not an absence, so the empty state is a sentence rather than a shrug. */
+  emptySentence: string | null;
+  /** The section's one interpretive boundary. Always present. */
+  doesntMean: string;
 }
 
 /** The named metric-level lens pattern (LM1–LM8) as carried PER MEMBER on the PG
@@ -237,6 +306,40 @@ export interface PeerGroupMover {
   toPeriod: string;
 }
 
+/** One unscored roster member, with the filing channel's read of it. */
+export interface UnscoredPondMember {
+  symbol: string;
+  name: string;
+  /**
+   * What this company FILED — fired findings, the checks that declined in the reader's words, and a
+   * coverage block whose `quietNote` is what stops an empty `fired` from reading as a clean bill of
+   * health. Never an empty array standing in for "nothing wrong".
+   *
+   * `null` only when the stock has no filing rows at all, which is a different statement again and is
+   * left distinguishable rather than collapsed into an empty section.
+   */
+  filing: FilingFindingsSection | null;
+}
+
+/**
+ * The unscored half of a pond, with its own denominator on every number it states.
+ * See the field note on `PeerGroupHealthView.unscoredMembers` for why this is not merged upward.
+ */
+export interface UnscoredPondMembers {
+  /** Roster members with no reading at all — the denominator for `unscoredPathology.outOf`. */
+  count: number;
+  /** Of those, how many we hold at least one filing for. `count - covered` have filed nothing we
+   *  have ingested, and that is a coverage fact about US, stated rather than hidden in an empty list. */
+  covered: number;
+  members: UnscoredPondMember[];
+  /**
+   * A census over THESE members only. Same shape as `pathology` so a surface can render it with the
+   * same component — and `outOf` is `count`, never the scored cross-section, which is what keeps the
+   * two readable side by side without either borrowing the other's denominator.
+   */
+  unscoredPathology: PathologyCensusItem[];
+}
+
 export interface PeerGroupHealthView {
   scored: boolean;
   identity: PeerGroupIdentity;
@@ -244,10 +347,71 @@ export interface PeerGroupHealthView {
   aggregate: PeerGroupAggregate | null;
   /** Full roster of members scored at the current period. */
   members: PeerGroupMemberView[];
-  /** Roster members whose latest in-force snapshot is at an OLDER period (e.g.
-   *  NESTLEIND@FY26Q2) — listed, never silently folded into the cross-section. */
-  notAtCurrentPeriod: { symbol: string; latestPeriod: string }[];
+  /**
+   * ★ ON AN OLDER READING — roster members whose latest in-force snapshot is at an EARLIER period
+   * (NESTLEIND@FY26Q2 in Large-Cap FMCG, the one live case across the 13 scored ponds today). Listed,
+   * never silently folded into the cross-section: a composite computed across two quarters would be
+   * comparing two different things, so these are excluded from `members`, from the aggregate, from
+   * the band mix, from the pathology census and from every metric distribution.
+   *
+   * ⚠ THIS IS NOT "UNSCORED" — see `rosterNotScored`. A member here HAS a reading; it is of an older
+   * quarter and has not taken in the latest results. The two states used to be indistinguishable on
+   * the page, because both showed up only as the gap between `scoredCount` and `memberCount`.
+   */
+  notAtCurrentPeriod: {
+    symbol: string;
+    /** The company's catalogue name — so the disclosure can name a company, not only a ticker. */
+    name: string;
+    /** The period that older reading IS of ("FY26Q2"). */
+    latestPeriod: string;
+    /** The day it was written, YYYY-MM-DD — how old "older" actually is. */
+    asOfDate: string;
+  }[];
+  /**
+   * ★ NO READING AT ALL — roster members with no snapshot in any period.
+   *
+   * A DIFFERENT STATE from `notAtCurrentPeriod`, and the honest-empty rule is that the two must not
+   * render the same. Empty across all 13 scored ponds today (every peer-group member carries a
+   * snapshot), which is exactly why it has to be a field rather than an inference: the moment the
+   * Nifty-500 firewall lets an unscored member into a pond, "N of M scored" would otherwise start
+   * silently counting it alongside a member that is merely a quarter behind.
+   */
+  rosterNotScored: { symbol: string; name: string }[];
+  /**
+   * ★ THE UNSCORED MEMBERS, WITH WHAT WE ACTUALLY KNOW ABOUT THEM (step 5).
+   *
+   * 54 stocks sit in a peer group and have no score. `rosterNotScored` above has always NAMED them —
+   * that was the honest minimum — but the page had nothing else to say, so a pond whose members are
+   * all unscored rendered as a shell with a list of tickers. Ten of the 23 ponds are in exactly that
+   * state, and in every one of them EVERY member is unscored: Large-Cap NBFCs 8/8, Specialty
+   * Chemicals 7/7, Auto Ancillaries 7/7, AMCs & Exchanges 6/6, Retail & Apparel 5/5, Real Estate 5/5,
+   * Hospitals 5/5, Telecom 4/4, Housing Finance 4/4, Paints 3/3.
+   *
+   * The filing channel has plenty to say about them: what each one filed, what fired, and what we
+   * could not check. That is served here.
+   *
+   * ⚠ SEPARATELY DENOMINATED, AND NEVER MERGED INTO THE AGGREGATES ABOVE. `aggregate`, `members`,
+   * `pathology`, `metricDistributions` and `movers` are all scored-member aggregates BY CONSTRUCTION —
+   * every one of them is a statement about a cross-section of composites. Folding filing findings into
+   * `pathology` would put a numerator drawn from the whole roster over a denominator of the scored
+   * members, which is the same arithmetic error the base rates carried until step 5. So this block
+   * carries its OWN count and its own census, and `unscoredPathology.outOf` states it on every row.
+   *
+   * Empty on the 13 scored ponds — none of them has an unscored member.
+   */
+  unscoredMembers: UnscoredPondMembers;
+  /**
+   * The flag + pattern census.
+   *
+   * ⚠ THE METRIC-LEVEL LENS ROWS ARE NO LONGER HERE — they are `lensSeparation` below. The universe
+   * read made the same partition for the same reason (`UniverseHealthView.lensPathology`); this one
+   * goes further and re-cuts them by metric, because a pond is small enough for "which side of this
+   * field" to be a comparison a reader can actually hold. Pillar-level lens rows are still here.
+   */
   pathology: PathologyCensusItem[];
+  /** The metric-level lens findings, grouped by metric. Always present; `blocks` may be empty, in
+   *  which case `emptySentence` carries the reading. */
+  lensSeparation: PeerGroupLensSeparation;
   metricDistributions: PeerMetricDistribution[];
   movers: { risers: PeerGroupMover[]; slippers: PeerGroupMover[] };
 }

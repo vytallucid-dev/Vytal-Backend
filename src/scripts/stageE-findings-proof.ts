@@ -18,7 +18,7 @@ const PGS: PgRef[] = [
 class Rollback extends Error {}
 
 async function main() {
-  const before = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const before = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log("════ STAGE-E + FULL-CATALOG PROOF (dry-run, rolled back) ════");
   console.log("BEFORE red_flags:", before.rf, "patterns:", before.pat, "\n");
 
@@ -82,7 +82,7 @@ async function main() {
     }, { timeout: 30000, maxWait: 10000 });
   } catch (e) { if (!(e instanceof Rollback)) throw e; console.log("  ⟲ rolled back"); }
 
-  const after = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const after = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log(`\nAFTER red_flags ${after.rf} patterns ${after.pat} — ZERO RESIDUE: ${after.rf === before.rf && after.pat === before.pat ? "✅" : "❌"}`);
   await prisma.$disconnect();
 }

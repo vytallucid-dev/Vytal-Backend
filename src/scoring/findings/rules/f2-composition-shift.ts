@@ -10,9 +10,16 @@
 import { seriesWithCurrent, CALIBRATION_NOTE, type SeriesPoint } from "../trajectory/view.js";
 import type { FireRule } from "../types.js";
 import type { Pillar } from "../../composite/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const F2_COMPOSITE_HOLD = 3; // |Δ composite| < 3 ⇒ "the composite held" — FLAG: provisional
-export const F2_SHIFT_PP = 8;       // a pillar moved ≥ 8pp ⇒ "material mix shift" — FLAG: provisional
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.trajectory_F2_composition_shift.facts;
+
+export const F2_COMPOSITE_HOLD = FACTS.thresholds.compositeHold; // |Δ composite| < 3 ⇒ "the composite held" — FLAG: provisional
+export const F2_SHIFT_PP = FACTS.thresholds.shiftPp;       // a pillar moved ≥ 8pp ⇒ "material mix shift" — FLAG: provisional
 
 const PILLARS: Pillar[] = ["foundation", "momentum", "market", "ownership"];
 const leader = (s: SeriesPoint): Pillar | null => {
@@ -57,6 +64,5 @@ export const ruleF2: FireRule = (ctx) => {
         `${rose.k} rose ${r1(rose.d)}pp, ${fell.k} fell ${r1(-fell.d)}pp` +
         (leadChanged ? `; lead passed from ${leadPrior} to ${leadCur}.` : `.`),
     },
-    metricRefs: [rose.k, fell.k],
   };
 };

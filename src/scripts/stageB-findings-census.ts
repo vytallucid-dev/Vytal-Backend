@@ -34,7 +34,7 @@ const PGS: PgRef[] = [
 class Rollback extends Error {}
 
 async function main() {
-  const before = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const before = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log(`════ STAGE-B CENSUS (${CLEAN_ONLY ? "clean Stage-B set only" : "all active rules"}) — dry-run, rolled back ════`);
   console.log("BEFORE  score_red_flags:", before.rf, " score_patterns:", before.pat, "\n");
 
@@ -89,19 +89,19 @@ async function main() {
         snapIds.push(a.snapId);
         wroteRf += res.redFlags; wrotePat += res.patterns;
       }
-      const midRf = await tx.redFlag.count(), midPat = await tx.scorePattern.count();
+      const midRf = /* score_red_flags dropped 2026-08-11 */ 0, midPat = await tx.scorePattern.count();
       console.log(`  wrote: redFlags=${wroteRf} patterns=${wrotePat} across ${snapIds.length} snapshots`);
       console.log(`  in-tx counts → red_flags ${midRf} (+${midRf - before.rf}), patterns ${midPat} (+${midPat - before.pat})`);
       // sample readback: show stored shape of a couple of patterns + a red flag
       const sampleP = await tx.scorePattern.findMany({ where: { snapshotId: { in: snapIds } }, take: 3, select: { symbol: true, patternKey: true, severity: true, direction: true, displayState: true, magnitude: true } });
       for (const p of sampleP) console.log(`     readback PATTERN ${p.symbol.padEnd(11)} ${p.patternKey} sev=${p.severity} dir=${p.direction} state=${p.displayState} mag=${p.magnitude}`);
-      const sampleR = await tx.redFlag.findMany({ where: { snapshotId: { in: snapIds }, flagKey: { startsWith: "ownership_R2" } }, take: 2, select: { symbol: true, flagKey: true, severity: true } });
+      const sampleR: { symbol: string; flagKey: string; severity: string | null }[] = /* score_red_flags dropped 2026-08-11 */ [];
       for (const r of sampleR) console.log(`     readback RED_FLAG ${r.symbol.padEnd(11)} ${r.flagKey} sev=${r.severity}`);
       throw new Rollback("rollback");
     }, { timeout: 30000, maxWait: 10000 });
   } catch (e) { if (!(e instanceof Rollback)) throw e; console.log("  ⟲ rolled back (intentional)"); }
 
-  const after = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const after = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log(`\nAFTER   red_flags ${after.rf}  patterns ${after.pat}`);
   console.log(`ZERO RESIDUE: ${after.rf === before.rf && after.pat === before.pat ? "✅ clean" : "❌ RESIDUE"}`);
   await prisma.$disconnect();

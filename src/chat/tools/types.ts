@@ -137,7 +137,23 @@ export interface ToolContext extends ToolContextInput {
  *  labeled — see the tool). `ok:false` carries an honest error that is ALSO handed to the model (fail-soft:
  *  a tool never throws the turn — the model apologises or tries another path). A "not covered" boundary is
  *  an `ok:true` result (a valid, honest answer), NOT an error. */
-export type ToolResult = { ok: true; content: string } | { ok: false; error: string };
+export type ToolResult =
+  | {
+      ok: true;
+      content: string;
+      /**
+       * ★ WHAT THIS CALL ACTUALLY CHANGED — the durable twin of `ctx.effects`, carried out to the
+       * persisted tool result (see AiToolResult.effects for why it never reaches the model).
+       *
+       * Only `confirmPendingAction` sets it, and only after the service returned: a proposal is not a
+       * change, and a failed write is not one either. `ctx.effects` still exists and still drives the
+       * live response's `changed` — this is the copy that survives the request, so a later reader of
+       * the transcript (a recovered reply, an edit that is about to delete this turn) can tell that a
+       * write happened here without re-reading anyone's prose.
+       */
+      effects?: readonly ChangeDomain[];
+    }
+  | { ok: false; error: string };
 
 /** The tool descriptor. `description` is WHAT THE MODEL SEES — prompt engineering, not documentation.
  *  `parameters` is a JSON-Schema object (passed to the provider verbatim). */

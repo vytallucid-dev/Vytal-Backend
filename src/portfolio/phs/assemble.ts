@@ -18,6 +18,10 @@ import type { AssetClass } from "./entity.js";
 import { LENS_NATURE, type LensNature, CONSTRUCTION_PROVISIONAL_ABOVE, MATCHER_VERSION_NONE } from "./constants.js";
 import type { PhsProvenance } from "./persist.js";
 import { listUnifiedPositions, type UnifiedPosition } from "../../brokers/union.js";
+// ★ THE FILING CHANNEL — PS1's red-flag input as of step 4. Keyed on STOCK, so it resolves for a
+//   holding that has never been scored; see the block above the call for what that fixes.
+import { readStandingRedFlags } from "../../filing/read.js";
+import { findingName } from "../../catalogue/index.js";
 import {
   resolvePrice,
   type InstrumentPriceInput,
@@ -41,7 +45,14 @@ function identityOf(key: string, evidence: unknown): { flagKey: string; title: s
   const ev = (evidence ?? null) as { name?: unknown; verdict?: unknown } | null;
   const name = typeof ev?.name === "string" && ev.name.trim() ? ev.name : null;
   const verdict = typeof ev?.verdict === "string" && ev.verdict.trim() ? ev.verdict : null;
-  return { flagKey: key, title: name ?? key, read: verdict };
+  // ★ THE CATALOGUE IS THE SECOND TIER, AND IT HAD TO BE ADDED (step 4). R1's evidence payload is the
+  //   one that carries no `name`: `r1TriggeringValues` predates the FiredFinding shape and was never
+  //   given one, so the ledger fell straight through to the raw key and printed "ownership_R1_pledge"
+  //   at a reader. That was already true of any scored book holding a pledged name; this step is what
+  //   put R1 in front of UNSCORED holdings, where 360ONE made it visible. findingName is the same
+  //   authority every other surface names findings through, and it humanises an unknown key rather
+  //   than throwing — so the last resort still exists, it is just no longer the first one reached.
+  return { flagKey: key, title: name ?? findingName(key as Parameters<typeof findingName>[0]), read: verdict };
 }
 
 /** A position we hold but CANNOT score or value with our own prices: a broker symbol outside
@@ -379,6 +390,25 @@ export async function assemblePortfolio(userId: string): Promise<{
   const fieldWeakSymbols = new Set<string>(); // LM3/LP2 — for PX5 ONLY, NEVER a deduction
   let tierAsOfDate = "none";
 
+  // ★ THE RED FLAGS, FROM THE FILING CHANNEL, IN ONE READ (step 4).
+  //
+  // PS1 ("capital under active red flags") used to read score_red_flags on each holding's head
+  // snapshot, inside the loop below, one query per holding. Two things were wrong with that and only
+  // one of them was the N+1:
+  //   · EVERY row in score_red_flags belongs to a filing rule. R1…R6 are all filing rules now and the
+  //     scoring pass registers no red-flag rule at all, so once R1's dual write goes (this step) that
+  //     table receives nothing, ever. PS1's input would have quietly decayed to whatever was frozen on
+  //     each head — a Signals score drifting for reasons that are about rescore cadence.
+  //   · It was gated on `if (score)`. A holding that was never scored contributed no findings at all,
+  //     so a book holding 360ONE — unscored, promoter stake 90% pledged — read as carrying no red
+  //     flags. That is the single sharpest thing PS1 is for.
+  //
+  // Measured before the swap: on all 95 scored stocks the two channels agree exactly — same keys, same
+  // severities, 0 gained and 0 lost — so no scored holding's Signals deduction moves. What changes is
+  // that unscored holdings now have one.
+  const heldStockIds = [...byStock.values()].map((a) => a.stockId);
+  const standingFlags = await readStandingRedFlags(heldStockIds);
+
   for (const agg of byStock.values()) {
     const stock = await prisma.stock.findUnique({
       where: { id: agg.stockId },
@@ -427,19 +457,21 @@ export async function assemblePortfolio(userId: string): Promise<{
       : null;
     const lensNatures: LensNature[] = []; // (1.2 Change 5) natures of this holding's fired lens patterns
     const findings: HoldingFinding[] = [];
+    // ★ OUTSIDE `if (score)`, AND THAT IS THE CHANGE. A red flag is a statement about what the company
+    //   FILED — pledging, promoter exit, interest coverage — and is true whether or not anyone
+    //   computed a Health Score for it. severityToFinding still GATES which flags become Signals
+    //   findings (low/null → not a deduction); the severity it reads is the one the RULE stamped at
+    //   evaluation time, not one re-derived here.
+    for (const f of standingFlags.get(stockId) ?? []) {
+      findingIds.push(f.id);
+      const k = severityToFinding(f.severity);
+      // identityOf reads `.name` / `.verdict` from the evidence JSON — the same shape score_red_flags
+      // carried (stock_findings.evidence matches ScorePattern/RedFlag by construction, step 1), so the
+      // ledger names the finding exactly as it did before.
+      if (k) findings.push({ kind: k, ...identityOf(f.ruleKey, f.evidence) });
+    }
     if (score) {
       healthSnapshotIds.push(score.id);
-      // Widened select (was { id, severity }): flagKey + triggeringValues carry the finding's IDENTITY
-      // (code + name + written verdict) — the thing the ledger has always thrown away here. severity
-      // still drives the Signals band; the identity now rides alongside so the ledger can name WHAT fired.
-      const flags = await prisma.redFlag.findMany({ where: { snapshotId: score.id }, select: { id: true, severity: true, flagKey: true, triggeringValues: true } });
-      for (const f of flags) {
-        findingIds.push(f.id);
-        const k = severityToFinding(f.severity);
-        // severityToFinding still GATES which flags become Signals findings (low/null → not a
-        // deduction), unchanged. When it fires, carry the flag's identity beside its severity band.
-        if (k) findings.push({ kind: k, ...identityOf(f.flagKey, f.triggeringValues) });
-      }
       // Distress band → distress headline. The stock engine's lowest band ("fragile")
       // is the distress-equivalent. Headline-wins in the engine dedupes it against any
       // Critical flag on the same name (single-largest), so no double-count. It is BAND-DERIVED, not

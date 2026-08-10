@@ -22,11 +22,18 @@
 //
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { MomentumQuarter } from "../../metrics/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const N4_MIN_RISES = 2;      // ≥2 consecutive TTM rises
-export const N4_LOW_BASE_MAX = 3.0; // trough TTM coverage must be < 3.0× (thin base)
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_N4_coverage_strengthening.facts;
+
+export const N4_MIN_RISES = FACTS.thresholds.minRises;      // ≥2 consecutive TTM rises
+export const N4_LOW_BASE_MAX = FACTS.thresholds.lowBaseMax; // trough TTM coverage must be < 3.0× (thin base)
 
 type TtmResult = { ok: true; ic: number } | { ok: false; reason: "insufficient" | "no_debt" };
 
@@ -47,8 +54,8 @@ function ttmICat(rows: MomentumQuarter[], i: number): TtmResult {
   return { ok: true, ic: (sumPbt + sumInt) / sumInt };
 }
 
-export const ruleN4: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of R5)
+export const ruleN4: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of R5)
   const rows = [...ctx.quarterlyResults].sort((a, b) => a.qOrdinal - b.qOrdinal);
   const last = rows.length - 1;
 
@@ -106,6 +113,5 @@ export const ruleN4: FireRule = (ctx) => {
         `Coverage strengthening — TTM interest coverage has risen for ${rises} straight quarters, ` +
         `up from a thin ${r2(trough)}× (${chron[0].period}) to ${r2(chron[chron.length - 1].ic)}× (${chron[chron.length - 1].period}).`,
     },
-    metricRefs: ["interestCoverage"],
   };
 };

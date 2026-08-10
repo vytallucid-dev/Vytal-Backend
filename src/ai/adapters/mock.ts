@@ -15,6 +15,7 @@ import {
   type AiProvider,
   type AiToolCall,
   type TokenUsage,
+  type AiStructuredResult,
 } from "../types.js";
 
 const MOCK_MODEL_VERSION = "mock-ai-1";
@@ -86,13 +87,17 @@ export function createMockAdapter(): AiProvider {
 
     async generateStructured<T>(
       req: AiGenerateStructuredRequest,
-    ): Promise<{ data: T; usage: TokenUsage }> {
+    ): Promise<AiStructuredResult<T>> {
       // Deterministic canned object. NOT schema-aware — callers validate the shape.
       const payload = { ok: true, echo: lastUserContent(req) };
       const outputChars = JSON.stringify(payload).length;
       return {
+        ok: true,
         data: payload as unknown as T,
         usage: synthUsage(promptCharCount(req), outputChars),
+        // The mock never truncates and never fails to parse, so it reports the clean terminal state
+        // rather than null — a caller branching on finishReason must exercise the same shape here.
+        finishReason: "STOP",
       };
     },
 

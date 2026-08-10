@@ -10,9 +10,9 @@
 // card's display magnitude. The card carries −8.
 
 import { computeCategoryB } from "../../ownership/flow.js";
-import type { FireRule } from "../types.js";
+import type { FilingRule } from "../types.js";
 
-export const ruleP4: FireRule = (ctx) => {
+export const ruleP4: FilingRule = (ctx) => {
   const rows = ctx.shareholding;
   if (rows.length < 2) return null;
   const b = computeCategoryB(rows, rows.length - 1);
@@ -38,6 +38,5 @@ export const ruleP4: FireRule = (ctx) => {
         `Dual institutional exit — FII (${r2(ev.fiiDelta)?.toFixed(2)}pp) and DII (${r2(ev.diiDelta)?.toFixed(2)}pp) ` +
         `both cut in the same quarter (${cur.fiscalYear}${cur.quarter}).`,
     },
-    metricRefs: ["fiiPct", "diiPct"],
   };
 };

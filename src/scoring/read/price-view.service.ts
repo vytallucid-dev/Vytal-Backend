@@ -17,10 +17,13 @@ import type {
 } from "./price-view.types.js";
 
 const DAY_MS = 86_400_000;
-const num = (v: unknown): number | null =>
+// Exported (not just module-local) so other per-stock price reads — e.g. peer-comparison.service.ts,
+// which resolves a benchmark THROUGH the stock's peer group rather than its raw sector — can share the
+// exact same numeric coercion / window-return math instead of re-deriving it.
+export const num = (v: unknown): number | null =>
   v == null ? null : typeof (v as { toString(): string }).toString === "function" ? parseFloat((v as { toString(): string }).toString()) : Number(v);
-const ymd = (d: Date): string => d.toISOString().slice(0, 10);
-const round2 = (x: number): number => Math.round(x * 100) / 100;
+export const ymd = (d: Date): string => d.toISOString().slice(0, 10);
+export const round2 = (x: number): number => Math.round(x * 100) / 100;
 
 /** The broad-market benchmark every stock is compared against. */
 const BENCHMARK_INDEX = "Nifty 50";
@@ -52,12 +55,12 @@ export const SECTOR_INDEX_MAP: Record<string, string> = {
   telecom: "Nifty Telecommunications",
 };
 
-const WINDOW_DAYS = { r1m: 30, r3m: 91, r6m: 182, r1y: 365, r3y: 1095 } as const;
+export const WINDOW_DAYS = { r1m: 30, r3m: 91, r6m: 182, r1y: 365, r3y: 1095 } as const;
 
 /** % return over a trailing window, measured from the close on-or-before (latest−days).
  *  null when the series doesn't reach that far back — an honest "can't measure" rather
  *  than a misleading short-window number. Series is oldest→newest. */
-function pctReturn(series: PriceSeriesPoint[], days: number): number | null {
+export function pctReturn(series: PriceSeriesPoint[], days: number): number | null {
   if (series.length < 2) return null;
   const latest = series[series.length - 1];
   const targetMs = new Date(latest.date).getTime() - days * DAY_MS;
@@ -82,7 +85,7 @@ function returnsOf(series: PriceSeriesPoint[]): PriceReturnSet {
 
 /** Load an index's series (oldest→newest) + computed per-window returns, or null when
  *  the index has no rows at all. Windowed to ≤~3.2Y so a deep index doesn't bloat the payload. */
-async function loadIndexLine(indexName: string, label: string): Promise<IndexLine | null> {
+export async function loadIndexLine(indexName: string, label: string): Promise<IndexLine | null> {
   const rows = await prisma.indexPrice.findMany({
     where: { indexName },
     orderBy: { date: "desc" },

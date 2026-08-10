@@ -170,17 +170,77 @@ export const MARGIN_MATERIAL_PP = 1.0;
  *  (gnpa_pct is stored as a fraction, so the caller converts before comparing). */
 export const GNPA_MATERIAL_PP = 0.05;
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★★ THE SHARED BASE — WHY EVERY AXIS BELOW MUST BE MEASURED AGAINST THE SAME PERIOD (2026-08-10)
+//
+// ⚠ THIS IS A COUPLING, NOT A CONVENTION. The inputs are computed in fact-block.ts and consumed here,
+// so nothing in either file forces them to agree. The rule has to be written down or it does not hold.
+//
+// THE RULE. Every axis is measured against `comparison` — the ONE row fact-block.ts resolves as
+//   const comparison = yearAgo ?? prevQ
+// and which every metric line, every contrast, the driver and every "against the same quarter last
+// year" string on the card is also measured against. The badge and the prose beneath it share one
+// clock.
+//
+// ── WHY, FROM THE CARD THAT SHIPPED WITHOUT IT ────────────────────────────────────────────────────
+// `gnpaRising` took `prevQ` directly until this date, while everything else took `comparison`. On a
+// bank with a year-ago row those are DIFFERENT QUARTERS, and the badge silently spoke QoQ while every
+// sentence under it spoke YoY. MEASURED across the live universe: 4 of 26 banks disagreed between the
+// two bases (AUBANK, AXISBANK, BANKBARODA, KARURVYSYA). AXISBANK FY27Q1 was generated and STORED with
+// the contradiction visible in a single screen:
+//
+//     badge  "Grew, bad loans up"  — GNPA 1.23% → 1.28% against the PREVIOUS QUARTER, rising
+//     line   "Bad-loan share: 1.3% — down 0.3 percentage points against the same quarter last year"
+//     bullet "…a bad-loan share of 1.3% this quarter, down 0.3 percentage points against the same
+//             quarter last year."
+//
+// Neither figure is wrong. The card asserted that bad loans rose and fell in the same breath, and a
+// reader has no way to tell which clock the badge is on because the badge does not name its base. A
+// verdict that cannot be checked against the card it sits on is worse than no verdict.
+//
+// ⚠ AND THE READER IS THE REASON IT IS THE PROSE'S BASE THAT WINS, not the badge's. The prose NAMES
+// its comparison in every line; the badge names none. When two clocks disagree, the one the reader can
+// see has to be the real one.
+//
+// ── ⚠⚠ ONE AXIS IS STILL NOT ON THIS BASE, AND IT IS DELIBERATE-PENDING-A-DECISION ────────────────
+// `marginDirection` is NOT computed against `comparison`. It is the endpoint-to-endpoint direction of
+// the MARGIN SERIES, which is a rolling MARGIN_WINDOW=4 quarter trend (margins.ts) — so its base is
+// normally the quarter THREE BACK, not the year-ago one. MEASURED: the window's oldest quarter is the
+// year-ago quarter on only 7 of 462 cards; the window direction disagrees with a straight
+// year-on-year margin move on 149; and on 70 of those the badge is a margin badge whose MEANING COPY
+// asserts the base it did not use — "kept more of each rupee of sales than it did A YEAR AGO".
+//
+// It is left alone here on purpose, because unlike the GNPA case the fix is not obvious and is not
+// small:
+//   · the 4-quarter trend is a DELIBERATE reading (margins.ts's header argues it at length), not an
+//     accident, and the series the reader sees on the card is that same 4-quarter trend;
+//   · either side could be the one that moves — recompute the direction YoY, or reword the meaning
+//     copy to stop claiming a year; and
+//   · changing the computation reassigns badges on up to 149 of 493 cards. margins.ts already carries
+//     a standing note against exactly this ("would change the endpoints, therefore the direction,
+//     therefore verdictMarginDirection, therefore the badge on cards this build has no business
+//     moving").
+// So it is a product decision with a measurement attached, not a defect to be quietly patched. When it
+// is taken, it self-heals: the verdict is part of the fact text, so a changed verdict changes the
+// fingerprint and the affected cards regenerate on the next pass. Census:
+// scripts/brief-comparison-base-census.ts.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
 export interface VerdictInputs {
   family: Family;
-  /** Direction of the family's top line. null ⇒ not computable (no comparison period on file). */
+  /** Direction of the family's top line, against `comparison`. null ⇒ not computable (no comparison
+   *  period on file). */
   toplineDirection: LineDirection | null;
-  /** Direction of net profit. The PRIMARY line — "the quarter" means profit to most readers. */
+  /** Direction of net profit, against `comparison`. The PRIMARY line — "the quarter" means profit to
+   *  most readers. */
   profitDirection: LineDirection | null;
-  /** Direction of the family's quality margin, or null when unavailable. REFINEMENT ONLY. */
+  /** Direction of the family's quality margin, or null when unavailable. REFINEMENT ONLY.
+   *  ⚠ THE ONE AXIS NOT ON `comparison` — see the SHARED BASE note above before using it as a
+   *  year-on-year reading. */
   marginDirection: "rising" | "falling" | "little changed" | null;
   /** A B-1/B-4 guardrail event exists for this stock and period. REFINEMENT ONLY. */
   profitSourceFired: boolean;
-  /** Banking only. true ⇒ GNPA rose materially. null ⇒ unknown, which must NOT read as "false". */
+  /** Banking only. true ⇒ GNPA rose materially AGAINST `comparison` — the same row the card's own
+   *  bad-loan line is measured against. null ⇒ unknown, which must NOT read as "false". */
   gnpaRising: boolean | null;
   /** Loss in BOTH the current and the comparison period, so no percentage change is meaningful. */
   profitBothLoss: boolean;

@@ -100,6 +100,5 @@ export const ruleD6: FireRule = (ctx) => {
       hotPositivePct: 33,
       regimeConditionalCopy: true, // §1.3 — wording only, never a display gate
     },
-    metricRefs: ["foundation", "momentum"],
   };
 };

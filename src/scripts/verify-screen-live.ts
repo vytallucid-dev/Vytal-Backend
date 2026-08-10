@@ -178,7 +178,7 @@ async function run() {
   const values = await getUniverseMetricValues();
   const TICKERS = view.members.map((m) => m.symbol);
   /** Ground truth straight from the service, for the attribution check. */
-  const truthRoe20 = screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }] });
+  const truthRoe20 = await screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }] });
   const trueSet = truthRoe20.kind === "matches" ? new Set(truthRoe20.matches.shown.map((r) => r.symbol)) : new Set<string>();
   const trueVal = new Map<string, number>();
   if (truthRoe20.kind === "matches") for (const r of truthRoe20.matches.shown) trueVal.set(r.symbol, r.values[0].value);

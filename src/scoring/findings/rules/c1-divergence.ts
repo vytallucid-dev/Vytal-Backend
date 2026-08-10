@@ -54,6 +54,5 @@ export const ruleC1: RetiredRule = (ctx) => {
         `Price (${mkt.subtotal.toFixed(0)}) sits ${round1(gap)} pts above its fundamentals ` +
         `(F${f.subtotal.toFixed(0)} / M${m.subtotal.toFixed(0)}, mean ${round1(meanFM)}) — a wide gap.`,
     },
-    metricRefs: ["market", "foundation", "momentum"],
   };
 };

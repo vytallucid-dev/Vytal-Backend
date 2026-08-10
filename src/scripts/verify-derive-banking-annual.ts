@@ -20,7 +20,9 @@ import {
   type BankingAnnualRaw,
   type BankingAnnualPrior,
 } from "../ingestions/quaterly-results/derive/derive-banking-annual.js";
+import { plausibleFaceValue } from "../ingestions/quaterly-results/derive/derive-indas-annual.js";
 
+const TAG = "verify";
 const num = (d: Prisma.Decimal | null) => (d == null ? null : d.toNumber());
 const NON_PRIOR = ["nii", "totalIncome", "costToIncomeRatio", "netWorth", "bookValuePerShare", "pcr", "tier1Ratio", "creditDepositRatio"] as const;
 const PRIOR_DEP = ["creditCostPct", "netInterestMargin", "roe", "niiGrowthYoy", "patGrowthYoy", "depositGrowthYoy", "advanceGrowthYoy", "assetGrowthYoy"] as const;
@@ -41,7 +43,7 @@ function unitChecks() {
   console.log("\n[A] Synthetic formula unit-checks");
   const raw: BankingAnnualRaw = {
     interestEarned: 1000, interestExpended: 600, otherIncome: 200, expenditureExclProvisions: 480,
-    capital: 100, reservesAndSurplus: 900, paidUpEquityCapital: 100, faceValueShare: 10,
+    capital: 100, reservesAndSurplus: 900, paidUpEquityCapital: 100, faceValueShareSane: 10,
     gnpaAbsolute: 50, nnpaAbsolute: 20, cet1Ratio: 0.12, additionalTier1Ratio: 0.02,
     provisions: 30, advances: 2000, investments: 1000, deposits: 2500, netProfit: 150, totalAssets: 5000,
   };
@@ -49,7 +51,7 @@ function unitChecks() {
     capital: 100, reservesAndSurplus: 800, advances: 1800, investments: 900,
     nii: 350, netProfit: 120, deposits: 2200, totalAssets: 4000,
   };
-  const d = deriveBankingAnnual(raw, prior).columns;
+  const d = deriveBankingAnnual(raw, prior, TAG).columns;
   check("nii = 1000-600 = 400", num(d.nii) === 400);
   check("totalIncome = 1000+200 = 1200", num(d.totalIncome) === 1200);
   check("costToIncomeRatio = 480/1200 = 0.4", num(d.costToIncomeRatio) === 0.4);
@@ -69,17 +71,49 @@ function unitChecks() {
   check("assetGrowthYoy = (5000-4000)/4000*100 = 25", num(d.assetGrowthYoy) === 25);
 
   // helper fallbacks: no prior → avg denominators fall back to current
-  const noP = deriveBankingAnnual(raw, null).columns;
+  const noP = deriveBankingAnnual(raw, null, TAG).columns;
   check("no prior: creditCostPct = 30/2000 = 0.015 (avgAdv→current)", num(noP.creditCostPct) === 0.015);
   check("no prior: NIM = 400/3000 = 0.133333 (avgIEA→current)", num(noP.netInterestMargin) === 0.133333);
   check("no prior: roe = 150/1000/100 = 0.15 (avgEquity→current)", num(noP.roe) === 0.15);
   check("no prior: niiGrowthYoy null", noP.niiGrowthYoy === null);
   // prior present but advances null → avgAdv falls back to current advances
-  const pNullAdv = deriveBankingAnnual(raw, { ...prior, advances: null }).columns;
+  const pNullAdv = deriveBankingAnnual(raw, { ...prior, advances: null }, TAG).columns;
   check("prior advances null: creditCostPct = 30/2000 = 0.015", num(pNullAdv.creditCostPct) === 0.015);
+
+  // ★ REGRESSION — 2026-08-11 KOTAKBANK FY25 standalone bookValuePerShare
+  // implausible (₹1,17,239.89/share). Root cause: verified against the raw
+  // filed XBRL — `FaceValueOfEquityShareCapital`=994.11 (unitRef="INRPerShare")
+  // and `PaidUpValueOfEquityShareCapital`=9,941,100,000 (→ ₹994.11cr) are TWO
+  // DISTINCT facts that happen to share a numeral, a source error, not a parse
+  // fault. 994.11 sits UNDER plausibleFaceValue's 1000 cutoff — the input gate
+  // alone does NOT catch it — so only meaningfulBookValue (imported from
+  // derive-indas-annual.ts, the same helper NBFC uses) nulls the result.
+  const badFaceValue = deriveBankingAnnual(
+    { ...raw, capital: 994.11, reservesAndSurplus: 116245.78, paidUpEquityCapital: 994.11, faceValueShareSane: plausibleFaceValue(994.11) },
+    null,
+    TAG,
+  ).columns;
+  check("plausibleFaceValue(994.11) passes the INPUT gate (under 1000 cutoff)", plausibleFaceValue(994.11) === 994.11);
+  check(
+    "byte-equal faceValueShare/paidUpEquityCapital (994.11) → bookValuePerShare nulled by the OUTPUT bound, not ₹1,17,239.89",
+    badFaceValue.bookValuePerShare === null,
+    num(badFaceValue.bookValuePerShare),
+  );
+  // a legitimate face value must still produce a sane bvps (KOTAKBANK's real face value is ₹5)
+  const goodFaceValue = deriveBankingAnnual(
+    { ...raw, capital: 994.11, reservesAndSurplus: 116245.78, paidUpEquityCapital: 994.11, faceValueShareSane: plausibleFaceValue(5) },
+    null,
+    TAG,
+  ).columns;
+  check(
+    "plausible faceValueShare (5) → bookValuePerShare = 117239.89/(994.11/5) ≈ 589.6726",
+    num(goodFaceValue.bookValuePerShare) !== null && Math.abs(num(goodFaceValue.bookValuePerShare)! - 589.6726) < 0.001,
+    num(goodFaceValue.bookValuePerShare),
+  );
+
   // determinism
-  const a = deriveBankingAnnual(raw, prior).columns;
-  const b = deriveBankingAnnual(raw, prior).columns;
+  const a = deriveBankingAnnual(raw, prior, TAG).columns;
+  const b = deriveBankingAnnual(raw, prior, TAG).columns;
   check("determinism: re-derive == re-derive (prior-dependent)", PRIOR_DEP.every((c) => String(a[c]) === String(b[c])));
 }
 
@@ -99,7 +133,7 @@ function rawOf(r: Row): BankingAnnualRaw {
   return {
     interestEarned: num(r.interestEarned), interestExpended: num(r.interestExpended), otherIncome: num(r.otherIncome),
     expenditureExclProvisions: num(r.expenditureExclProvisions), capital: num(r.capital), reservesAndSurplus: num(r.reservesAndSurplus),
-    paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShare: num(r.faceValueShare), gnpaAbsolute: num(r.gnpaAbsolute),
+    paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(num(r.faceValueShare)), gnpaAbsolute: num(r.gnpaAbsolute),
     nnpaAbsolute: num(r.nnpaAbsolute), cet1Ratio: num(r.cet1Ratio), additionalTier1Ratio: num(r.additionalTier1Ratio),
     provisions: num(r.provisions), advances: num(r.advances), investments: num(r.investments), deposits: num(r.deposits),
     netProfit: num(r.netProfit), totalAssets: num(r.totalAssets),
@@ -126,7 +160,7 @@ async function bulkDiff() {
 
   for (const r of rows) {
     const priorRow = byKey.get(`${r.stockId}|${decrementFY(r.fiscalYear)}|${r.resultType}`) ?? null;
-    const d = deriveBankingAnnual(rawOf(r), priorRow ? priorOf(priorRow) : null).columns;
+    const d = deriveBankingAnnual(rawOf(r), priorRow ? priorOf(priorRow) : null, `${r.stockId}|${r.fiscalYear}|${r.resultType}`).columns;
     for (const c of NON_PRIOR) {
       const stored = (r as unknown as Record<string, Prisma.Decimal | null>)[c];
       const got = d[c]; const t = tol[c];

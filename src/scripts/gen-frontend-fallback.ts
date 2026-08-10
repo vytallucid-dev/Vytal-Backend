@@ -43,6 +43,12 @@ import {
   STOCK_FINDINGS,
   STOCK_FINDING_KEYS,
 } from "../catalogue/index.js";
+// ★ THE EVIDENCE-KEY VOCABULARY. Bundled rather than served, for the same reason GEN_LM_CATALOG is:
+//   the pips need a label for EVERY card on the page, so a cold catalogue endpoint would mean a page
+//   of unlabelled findings — and the whole point of this vocabulary is that a key never renders as
+//   its own name. Generated from the one backend home like every other string in the bundle.
+import { EVIDENCE_FACTS, READER_EVIDENCE_FACTS } from "../catalogue/evidence-facts.js";
+import { FINDING_FACTS } from "../catalogue/finding-facts.js";
 
 /**
  * WHERE THE FRONTEND LIVES. Defaults to the sibling checkout — the layout both of the operator's
@@ -64,6 +70,18 @@ function stable(value: unknown): string {
 }
 
 function build(): string {
+  // ── the evidence vocabulary, split into the two halves a renderer needs ──
+  const readerEvidence = Object.fromEntries(
+    Object.entries(READER_EVIDENCE_FACTS).map(([k, f]) => [k, { label: f.label, unit: f.unit, precision: f.precision }]),
+  );
+  const internalEvidence = Object.entries(EVIDENCE_FACTS)
+    .filter(([, f]) => f.kind === "internal")
+    .map(([k]) => k)
+    .sort();
+  const precisions = Object.fromEntries(
+    Object.entries(FINDING_FACTS).map(([k, f]) => [k, (f as { displayPrecision: number }).displayPrecision]),
+  );
+
   // ── the finding descriptions map, in the frontend's own shape ──
   const descriptions: Record<string, { description: string; family: string; concern: string; doesntMean: string }> = {};
   const names: Record<string, string> = {};
@@ -117,6 +135,30 @@ function build(): string {
  *  which the provider reports loudly rather than rendering two vocabularies at once. */
 export const GENERATED_FROM_VERSION = ${JSON.stringify(CATALOGUE_DOCUMENT.version)};
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ THE CLOSED KEY VOCABULARY, AS A TYPE — the frontend mirror of the backend's \`StockFindingKey\`.
+//
+// ── WHY A TYPE AND NOT JUST THE MAPS ABOVE ────────────────────────────────────────────────────────
+// The frontend does not only LOOK UP keys, it NAMES them: prefix tests in classify.ts, one renderer
+// per key in verdicts.ts, hand-written key lists on screener and briefing surfaces. Every one of
+// those was a bare \`string\`, so retiring a rule backend-side left the frontend still naming it —
+// and a name that matches nothing fails SILENTLY. It does not throw, it just never fires: a mask
+// that never masks, a caveat that never appears, a screener row nobody can select. Exactly the
+// class that shipped \`divergence_C1_price_ahead\` (retired in the C/G rebuild) as a live constant in
+// the hot-pond mask, where it sat unreachable and unnoticed.
+//
+// Annotating those references \`StockFindingKey\` converts that silence into a compile error the next
+// time this file regenerates without the key. Retirement becomes a build break in the repo that
+// still names it — which is the only moment anyone is actually looking.
+//
+// ⚠ THIS IS THE VOCABULARY, NOT THE LOOKUP TYPE. The resolvers keep taking \`string\`: they must stay
+// callable with keys that are legitimately outside this union — the runtime-composed \`lens_*\` keys
+// (unbounded by construction, see catalogue/lens-faces.ts) and any key from a backend newer than
+// this bundle. Narrowing the lookups would trade a silent miss for a false compile error.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+export type StockFindingKey =
+${[...STOCK_FINDING_KEYS].sort().map((k) => `  | ${JSON.stringify(k)}`).join("\n")};
+
 /** key → display name. */
 export const GEN_FINDING_NAMES: Record<string, string> = ${stable(names)};
 
@@ -137,6 +179,29 @@ export const GEN_LM_CATALOG = ${stable(lm)} as const;
 
 /** Pillar-level three-lens faces (LP1–LP6). */
 export const GEN_LP_CATALOG = ${stable(lp)} as const;
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ THE EVIDENCE-KEY VOCABULARY — what each key inside a finding's evidence bag MEANS.
+//
+// The pips used to render \`humanizeKey(k): String(v)\`, so "pledgeRatioQ" shipped as "Pledgeratioq"
+// and 51.367518980187285 shipped unformatted. There was no display name for these keys anywhere in
+// either repo — the label was authored by a string transform. These two constants replace it.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Evidence key → how to render it. A key ABSENT from here is never rendered — see
+ *  GEN_INTERNAL_EVIDENCE_KEYS for the ones that are absent deliberately. */
+export const GEN_EVIDENCE_FACTS: Record<
+  string,
+  { label: string; unit: "%" | "pp" | "pts" | "x" | "cr" | "days" | null; precision: number | null }
+> = ${stable(readerEvidence)};
+
+/** Keys withheld from the reader ON PURPOSE — thresholds, back-test statistics, routing tokens,
+ *  prose, structural blobs, and values already rendered elsewhere on the card. Carried so a surface
+ *  can tell a DELIBERATE omission from an unclassified key, which is a gap worth reporting. */
+export const GEN_INTERNAL_EVIDENCE_KEYS: readonly string[] = ${stable(internalEvidence)};
+
+/** Finding key → the precision its numbers print at, when the evidence key does not override. */
+export const GEN_FINDING_PRECISION: Record<string, number> = ${stable(precisions)};
 `;
 }
 

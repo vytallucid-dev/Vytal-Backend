@@ -171,6 +171,13 @@ export async function computeAndPersistPhs(userId: string): Promise<PersistOutco
       // and the thing that makes the cutover auditable after the fact. STOP WRITING; NEVER DROP — you
       // cannot un-drop history. New rows carry NULL, which is honest: "this row was never scored by
       // S-rules." A reader can tell the two eras apart, which is what an append-only table is for.
+      // The Signals ledger, verbatim off the engine. Each entry now carries BOTH denominators: `weight`
+      // (wSig — what the deduction was computed over) and `bookWeight` (the whole-book share the Health
+      // tab prints as "% of book"). Both are frozen here because the read is pure — it has no holdings
+      // array to divide by, so a weight it does not persist is a weight nobody can serve.
+      // ⚠ Rows written before CONSTANT_VERSION 2.1 have no `bookWeight` key at all. That is why the
+      // version was bumped (see constants.ts): a ledger-shape change is invisible to `fingerprintOf`, so
+      // only the churn + the deploy backfill get the field onto every live row.
       signalsLedger: r.signalsLedger as unknown as Prisma.InputJsonValue,
       firedFindings: findings as unknown as Prisma.InputJsonValue, // Part B — fired PF findings
       // (1.2 Change 4/5) health-read enrichments — position-weighted pillar means +

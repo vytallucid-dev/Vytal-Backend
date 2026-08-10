@@ -25,11 +25,18 @@
 
 import { isDistortedOpm } from "../guards/exceptional-opm.js";
 import { annualExceptionalLatest } from "../guards/annual-exceptional.js";
-import { notEvaluable, type FireRule, type QuarterlyOpmPoint } from "../types.js";
+import { notEvaluable, type FilingRule, type QuarterlyOpmPoint } from "../types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const P12_MIN_RISES = 2;
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.momentum_P12_margin_recovery.facts;
 
-export const ruleP12: FireRule = (ctx) => {
+export const P12_MIN_RISES = FACTS.thresholds.minRises;
+
+export const ruleP12: FilingRule = (ctx) => {
   const series = ctx.quarterlyOpm;
   if (!series) return notEvaluable("opm_unavailable"); // ⚠ Phase 2
   if (series.length < P12_MIN_RISES + 1) return notEvaluable("insufficient_quarters"); // ⚠ Phase 2
@@ -69,6 +76,5 @@ export const ruleP12: FireRule = (ctx) => {
       // File 1's locked copy, realized with the real series.
       verbatim: `Operating margin recovering from trough: ${opmStr}.`,
     },
-    metricRefs: ["operatingMargin"],
   };
 };

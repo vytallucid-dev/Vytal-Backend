@@ -17,6 +17,7 @@ import { prisma } from "../../db/prisma.js";
 import {
   refreshFiscalYearEnds,
   refreshIndustryTypes,
+  findIndustryTaxonomyDisagreements,
 } from "../../seed/industry-types.js";
 
 // ── Shared constants ─────────────────────────────────────────
@@ -135,10 +136,31 @@ export const runRefreshIndustryTypes = async (req: Request, res: Response) => {
   try {
     const result = await refreshIndustryTypes({ dryRun: parsed.data.dryRun });
     const fyResult = await refreshFiscalYearEnds();
+
+    // ★ VALIDATION, NOT AUTO-CORRECTION. refreshIndustryTypes() only re-derives from
+    // SYMBOL_OVERRIDES / SECTOR_INDUSTRY_MAP — a hand-maintained map that can itself be
+    // wrong (BAJAJHLDNG was, confidently, for a long time). This checks the DERIVED
+    // result against what each stock's own filed XBRL has actually declared
+    // (result_fetch_logs), so a bad entry in the map — or a sector/taxonomy the map
+    // never covered, like HDFCAMC falling through the capital_markets gap the AMC
+    // block was meant to close — surfaces on every admin click instead of staying
+    // silent until someone thinks to go looking. Never auto-applied: the fix is
+    // still a human edit to SYMBOL_OVERRIDES, on purpose (see the map's own header).
+    const taxonomyDisagreements = await findIndustryTaxonomyDisagreements();
+    if (taxonomyDisagreements.length > 0) {
+      console.warn(
+        `[refresh-industry-types] ${taxonomyDisagreements.length} stock(s) disagree with their own filed XBRL taxonomy: ` +
+          taxonomyDisagreements
+            .map((d) => `${d.symbol} (classified ${d.currentIndustryType}, files ${d.filedTaxonomy})`)
+            .join("; "),
+      );
+    }
+
     return res.json({
       success: true,
       data: result,
       fiscalYearEndResult: fyResult,
+      taxonomyDisagreements,
     });
   } catch (err) {
     return res

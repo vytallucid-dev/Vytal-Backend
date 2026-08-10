@@ -38,6 +38,9 @@ import type {
   GeneralInsuranceAnnual,
 } from "./fundamentals-view.types.js";
 import type { InsiderEvent, BlockEvent } from "./ownership-series.types.js";
+// ★ THE SECOND FINDING CHANNEL. Forwarded straight off each entity's health view, which the
+//   comparison service already holds in memory — see the field note on Comparee.filingFindings.
+import type { FilingFindingsSection } from "../../filing/read.types.js";
 import type {
   LabelBand,
   PillarKey,
@@ -210,6 +213,21 @@ export interface Comparee {
    *  cross-family pair's two lists are honest with NO extra gating here — each entity simply
    *  shows what it fired. A pattern present for one and absent for the other is just absent. */
   findings: FindingsSection | null;
+  /**
+   * ★ THE FILING CHANNEL for this entity — and the comparison needs it more than any other surface.
+   *
+   * `findings` above is SCORE-derived, so it is null for an unscored entity, and 409 of 504 stocks
+   * are unscored. A comparison is the one place a reader deliberately puts an unscored name beside a
+   * scored one; before this field the unscored column had literally nothing in it, and the column
+   * rendering an empty finding list was indistinguishable from a column rendering a clean one.
+   *
+   * `coverage.quietNote` is what closes that: it states which of the 22 filing checks ran and which
+   * could not, in the reader's own words, for a stock with no snapshot anywhere.
+   *
+   * Not merged into `findings` — the two carry different denominators (504 filed vs 95 scored). The
+   * frontend renders them as ONE list per column, which is a display decision, not a payload one.
+   */
+  filingFindings: FilingFindingsSection | null;
   /** Composite-score HISTORY on the universal 0–100 scale. Both entities' series live on the
    *  same axis, so they overlay directly on one shared time axis (the trajectory overlay) —
    *  the temporal shape of difference a static side-by-side can't show. Factual: the score

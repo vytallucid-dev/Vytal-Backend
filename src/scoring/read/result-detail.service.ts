@@ -10,11 +10,26 @@
 // unscaled. We never read the fraction-stored ratios here. NO verdicts, NO fabricated
 // expense line-items / commentary — absent data is stated by the empty/`null` shape.
 
+// ── C26 · TOP-LINE LABELS COME FROM THE GLOSS CATALOGUE ────────────────────────────────────────
+// `metricGloss(TOP_LINE_KEY[family]).label` is now the ONE source of the reader-facing name for a
+// family's top line, on every surface. Two surfaces disagreeing about what to call one number is
+// exactly the class src/catalogue exists to fix — and the plainer words win, because this card is
+// written for someone who has never read a statement: "Premiums kept" says what "Net premium"
+// only names. Banking and the two non-financial families are unchanged; life and general
+// insurance move.
+import { metricGloss } from "../../catalogue/quarter-metrics.js";
 import { prisma } from "../../db/prisma.js";
 import { toNum, round } from "./fundamentals-normalize.js";
 import { buildHealthSnapshotView } from "./health-view.service.js";
 import { buildFundamentalsView } from "./fundamentals-view.service.js";
 import { readVerdict } from "../../insight/quarter-brief/verdict.js";
+import { buildPersonalSection } from "../../insight/quarter-brief/personal.js";
+import type { BriefPayload } from "../../insight/quarter-brief/schema.js";
+import {
+  buildGuardForStock,
+  screenStoredNews,
+  MAX_WINDOW_ROWS,
+} from "../../ingestions/news_and_announcements/relevance.js";
 import type {
   ResultDetailData,
   ViewerQuarter,
@@ -71,7 +86,7 @@ async function spineNonFinancial(stockId: string, basis: string): Promise<Viewer
   return rows.map((q) => ({
     periodKey: `${q.fiscalYear}${q.quarter}`, quarter: q.quarter, fiscalYear: q.fiscalYear,
     reportDate: ymd(q.reportDate), filingDate: ymd(q.filingDate), resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.revenue), revenueLabel: "Revenue", revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
+    revenue: money(q.revenue), revenueLabel: metricGloss("revenue").label, revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
     operatingProfit: money(q.operatingProfit), profitBeforeTax: money(q.profitBeforeTax), tax: money(q.tax),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.profitYoy), profitQoq: pctPass(q.profitQoq),
     operatingMargin: pctPass(q.operatingMargin), netMargin: pctPass(q.netMargin),
@@ -93,7 +108,7 @@ async function spineBanking(stockId: string, basis: string): Promise<ViewerQuart
   return rows.map((q) => ({
     periodKey: `${q.fiscalYear}${q.quarter}`, quarter: q.quarter, fiscalYear: q.fiscalYear,
     reportDate: ymd(q.reportDate), filingDate: ymd(q.filingDate), resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.nii), revenueLabel: "Net interest income", revenueYoy: pctPass(q.niiYoy), revenueQoq: pctPass(q.niiQoq),
+    revenue: money(q.nii), revenueLabel: metricGloss("netInterestIncome").label, revenueYoy: pctPass(q.niiYoy), revenueQoq: pctPass(q.niiQoq),
     operatingProfit: null, profitBeforeTax: money(q.profitBeforeTax), tax: money(q.tax),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     operatingMargin: null, netMargin: pctPass(q.netMargin),
@@ -115,7 +130,7 @@ async function spineNbfc(stockId: string, basis: string): Promise<ViewerQuarter[
   return rows.map((q) => ({
     periodKey: `${q.fiscalYear}${q.quarter}`, quarter: q.quarter, fiscalYear: q.fiscalYear,
     reportDate: ymd(q.reportDate), filingDate: ymd(q.filingDate), resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.revenue), revenueLabel: "Revenue", revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
+    revenue: money(q.revenue), revenueLabel: metricGloss("revenue").label, revenueYoy: pctPass(q.revenueYoy), revenueQoq: pctPass(q.revenueQoq),
     operatingProfit: null, profitBeforeTax: money(q.profitBeforeTax), tax: money(q.tax),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     operatingMargin: null, netMargin: pctPass(q.netMargin),
@@ -137,7 +152,7 @@ async function spineLifeInsurance(stockId: string, basis: string): Promise<Viewe
   return rows.map((q) => ({
     periodKey: `${q.fiscalYear}${q.quarter}`, quarter: q.quarter, fiscalYear: q.fiscalYear,
     reportDate: ymd(q.reportDate), filingDate: ymd(q.filingDate), resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.netPremiumIncome), revenueLabel: "Net premium", revenueYoy: pctPass(q.premiumYoy), revenueQoq: pctPass(q.premiumQoq),
+    revenue: money(q.netPremiumIncome), revenueLabel: metricGloss("netPremiumIncome").label, revenueYoy: pctPass(q.premiumYoy), revenueQoq: pctPass(q.premiumQoq),
     operatingProfit: null, profitBeforeTax: money(q.profitBeforeTax), tax: money(q.tax),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     operatingMargin: null, netMargin: pctPass(q.netMargin),
@@ -159,7 +174,7 @@ async function spineGeneralInsurance(stockId: string, basis: string): Promise<Vi
   return rows.map((q) => ({
     periodKey: `${q.fiscalYear}${q.quarter}`, quarter: q.quarter, fiscalYear: q.fiscalYear,
     reportDate: ymd(q.reportDate), filingDate: ymd(q.filingDate), resultType: q.resultType, xbrlUrl: q.xbrlUrl,
-    revenue: money(q.grossPremiumsWritten), revenueLabel: "Gross premium", revenueYoy: pctPass(q.gpwYoy), revenueQoq: pctPass(q.gpwQoq),
+    revenue: money(q.grossPremiumsWritten), revenueLabel: metricGloss("grossPremiumsWritten").label, revenueYoy: pctPass(q.gpwYoy), revenueQoq: pctPass(q.gpwQoq),
     operatingProfit: null, profitBeforeTax: money(q.profitBeforeTax), tax: money(q.tax),
     netProfit: money(q.netProfit), profitYoy: pctPass(q.patYoy), profitQoq: pctPass(q.patQoq),
     operatingMargin: null, netMargin: pctPass(q.netMargin),
@@ -291,31 +306,50 @@ async function buildReaction(stockId: string, filingDate: string): Promise<Marke
 }
 
 // ── News in the filing window ───────────────────────────────────────────────────
+//
+// ★ SCREENED BY THE SAME RULES AS THE DISCLOSURES TAB, AND FOR THE SAME REASON. Both surfaces read
+// stock_news for one stock; only ~30% of the press rows are about the company they are filed under.
+// Leaving this path unscreened would put a Sensex wrap next to a quarter's real coverage on the
+// Results page while the stock's own Disclosures tab correctly hid it — the same stock, two answers.
+// Filings pass through untouched (see relevance.ts). The `take` is applied AFTER screening, so the
+// 15-item cap now means 15 relevant items rather than 15 rows of which four might be relevant.
 async function buildNews(stockId: string, filingDate: string): Promise<ViewerNews[]> {
   const filingMs = new Date(filingDate).getTime();
   const from = new Date(filingMs - 3 * DAY_MS);
   const to = new Date(filingMs + 10 * DAY_MS);
 
-  const rows = await prisma.stockNews.findMany({
+  const stock = await prisma.stock.findUnique({
+    where: { id: stockId },
+    select: { symbol: true, name: true },
+  });
+
+  const windowRows = await prisma.stockNews.findMany({
     where: { stockId, publishedAt: { gte: from, lte: to } },
     orderBy: { publishedAt: "desc" },
-    take: 15,
+    take: MAX_WINDOW_ROWS,
+    // ⚠ `sentiment` IS DELIBERATELY NOT SELECTED — see ViewerNews in result-detail.types.ts.
+    //    Nothing writes the column, and the Context tab used to render it unlabelled.
     select: {
       id: true, headline: true, summary: true, category: true, sourceType: true,
-      publishedAt: true, externalUrl: true, pdfUrl: true, sentiment: true,
+      publishedAt: true, externalUrl: true, pdfUrl: true, publisherDomain: true,
     },
   });
 
+  const rows = stock
+    ? screenStoredNews(windowRows, await buildGuardForStock(stock.symbol, stock.name)).kept.slice(0, 15)
+    : windowRows.slice(0, 15);
+
   return rows.map((n) => ({
     id: n.id,
+    sourceType: n.sourceType === "nse_announcement" ? "nse_announcement" : "google_news",
     headline: n.headline,
     summary: n.summary,
-    source: n.category ?? (n.sourceType === "nse_announcement" ? "NSE Announcement" : "News"),
+    source: n.publisherDomain ?? n.category ?? (n.sourceType === "nse_announcement" ? "NSE filing" : "Press"),
     category: n.category,
+    publisherDomain: n.publisherDomain,
     publishedAt: n.publishedAt.toISOString(),
     url: n.externalUrl ?? n.pdfUrl,
     pdfUrl: n.pdfUrl,
-    sentiment: n.sentiment,
   }));
 }
 
@@ -326,11 +360,23 @@ async function buildNews(stockId: string, filingDate: string): Promise<ViewerNew
 // the NEWEST brief against that older quarter's figures. The bug never fired only because the table
 // it read was empty; it is fixed here before anything writes a row.
 // Only `live` rows are served: a brief whose inputs changed is HIDDEN, never shown stale.
+//
+// ── ★ STAGE 5 · TWO SOURCES, ONE BLOCK, AND ONLY ONE OF THEM IS STORED ─────────────────────────
+// `payload` comes out of the database and is the same bytes for every reader. `personal` is computed
+// HERE, per reader, and is never written anywhere. They meet on the response and nowhere earlier —
+// see the note on ViewerAi.personal.
+const ABSENT_AI: ViewerAi = {
+  available: false, payload: null, verdictKey: null, verdictLabel: null,
+  scoredAsOf: null, modelVersion: null, generatedAt: null, personal: null,
+};
+
 async function buildQuarterBrief(
   stockId: string,
+  symbol: string,
   quarter: string,
   fiscalYear: string,
   resultType: string,
+  userId: string | null,
 ): Promise<ViewerAi> {
   const row = await prisma.quarterBrief.findUnique({
     where: {
@@ -342,22 +388,42 @@ async function buildQuarterBrief(
     },
   });
 
-  if (!row || row.status !== "live") {
-    return { available: false, content: null, verdictKey: null, verdictLabel: null, scoredAsOf: null, modelVersion: null, generatedAt: null };
+  if (!row || row.status !== "live") return ABSENT_AI;
+
+  // ⚠ DEFENCE IN DEPTH, NOT THE PLAN. Rows written before Stage 5 held PROSE in `content` and do not
+  // parse; the table was purged on 2026-08-09 so none remain. This catch is what happens if a row in
+  // an older shape ever appears again: the card renders as ABSENT — a state the reader already
+  // understands — rather than throwing a 500 on a page with nine other sections working.
+  let payload: BriefPayload;
+  try {
+    payload = JSON.parse(row.content) as BriefPayload;
+    if (!payload || typeof payload !== "object" || !Array.isArray(payload.gaps)) throw new Error("not a payload");
+  } catch {
+    console.warn(`[results/brief] ${symbol} ${fiscalYear}${quarter}: stored content is not a BriefPayload — serving absent. Clear the row (scripts/purge-quarter-briefs.ts) and regenerate.`);
+    return ABSENT_AI;
   }
 
-  // ★ A BRIEF WITH NO VERDICT IS A REAL, RENDERABLE STATE — prose present, badge absent. The stored
+  // ★ A BRIEF WITH NO VERDICT IS A REAL, RENDERABLE STATE — payload present, badge absent. The stored
   // sentinel becomes a true null here so the renderer branches on the contract, not on a magic string.
   const verdict = readVerdict(row.verdictKey, row.verdictLabel);
 
   return {
     available: true,
-    content: row.content,
+    payload,
     verdictKey: verdict?.key ?? null,
     verdictLabel: verdict?.label ?? null,
     scoredAsOf: row.scoredAsOf ? ymd(row.scoredAsOf) : null,
     modelVersion: row.model,
     generatedAt: row.generatedAt.toISOString(),
+    // ⚠ AWAITED HERE RATHER THAN IN THE Promise.all ABOVE, DELIBERATELY. It must not run when the
+    // brief is absent or unreadable: a reader looking at a card that does not exist should not be
+    // costing a query to describe their position in it. Anonymous readers cost ZERO — buildPersonalSection
+    // returns null on a null userId without touching the database.
+    // ★ STAGE 4 — the PERIOD is now passed. It is what lets the section say how the quarter moved the
+    // reader's position rather than only what the position is; without it this module can describe a
+    // holding but not a change. Composed from the same two parts this function was called with, so it
+    // cannot name a different quarter than the brief row above it.
+    personal: await buildPersonalSection(stockId, symbol, userId, `${fiscalYear}${quarter}`),
   };
 }
 
@@ -481,6 +547,9 @@ function buildHealthBlock(
           }
         : null,
     findings: health.findings,
+    // ★ Resolved in buildHealthSnapshotView's FIRST layer, before its not-scored guard — so this is
+    //   real on a stock that has no snapshot, which is the branch this block used to close entirely.
+    filingFindings: health.filingFindings,
   };
 }
 
@@ -642,6 +711,7 @@ function buildAnnualBlock(
 export async function buildResultDetail(
   symbol: string,
   periodKey?: string,
+  userId: string | null = null,
 ): Promise<ResultDetailData | null> {
   const stock = await prisma.stock.findUnique({
     where: { symbol },
@@ -669,7 +739,7 @@ export async function buildResultDetail(
     await Promise.all([
       buildReaction(stock.id, current.filingDate),
       buildNews(stock.id, current.filingDate),
-      buildQuarterBrief(stock.id, current.quarter, current.fiscalYear, current.resultType),
+      buildQuarterBrief(stock.id, stock.symbol, current.quarter, current.fiscalYear, current.resultType, userId),
       buildCorpEvents(stock.id, current.filingDate),
       buildPeers(stock.id, family, current.quarter, current.fiscalYear),
       buildHealthSnapshotView(stock.symbol),

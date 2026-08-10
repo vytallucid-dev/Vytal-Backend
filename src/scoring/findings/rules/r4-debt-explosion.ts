@@ -13,11 +13,18 @@
 // The findings hook passes empty annualFundamentals for banks, so this returns null there;
 // the explicit industry guard documents the intent.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const R4_DE_THRESHOLD = 3.0; // 3× (ratio, not percent)
-const R4_WINDOW_YEARS = 5;
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_R4_debt_explosion.facts;
+
+export const R4_DE_THRESHOLD = FACTS.thresholds.deRatio; // 3× (ratio, not percent)
+const R4_WINDOW_YEARS = FACTS.thresholds.windowYears;
 
 /** D/E ratio from the balance sheet, or null when debt or net worth is unavailable. */
 function deRatio(r: FoundationAnnual): number | null {
@@ -27,8 +34,8 @@ function deRatio(r: FoundationAnnual): number | null {
   return debt / nw;
 }
 
-export const ruleR4: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // non-financials only (File 1)
+export const ruleR4: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // non-financials only (File 1) — D/E is not a leverage read for a lender
   const f = ctx.annualFundamentals;
   if (f.length < 2) return notEvaluable("insufficient_annual_history"); // ⚠ Phase 2: need history to assert "first time"
 
@@ -64,6 +71,5 @@ export const ruleR4: FireRule = (ctx) => {
         `Debt explosion — debt-to-equity reached ${latestDe.toFixed(2)}× in ${latest.fiscalYear}, ` +
         `crossing 3× for the first time in 5 years (prior peak ${Math.max(...knownPriors.map((p) => p.de as number)).toFixed(2)}×).`,
     },
-    metricRefs: ["debtToEquity"],
   };
 };

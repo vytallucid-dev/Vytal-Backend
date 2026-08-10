@@ -13,6 +13,7 @@
 // data is null with the key PRESENT; BigInt share counts are stringified.
 
 import type { FlowCategoryView } from "./health-view.types.js";
+import type { OwnershipTell } from "./stocks-list.types.js";
 
 /** The holding split at a point in time (the ShareholdingPattern with the latest
  *  asOnDate ≤ the period's asOfDate — no lookahead).
@@ -111,6 +112,16 @@ export interface OwnershipSeriesView {
   hasScoredPeriod: boolean; // true → flow-lane sub-scores / baseline / R1 verdict are populated.
   // The raw ledger (holding split, pledging, insider, block) populates whenever its rows
   // exist, INDEPENDENT of this flag — the UI gates only the score-derived sections on it.
+  /** ★ THE TELL — the ownership tool's categorical reading, from the SAME classifier the landing
+   *  scan ranks by (read/ownership-tell.ts). Served here so the stock page and the landing card can
+   *  never label one stock two ways; before this, the page ran its own weaker client-side copy.
+   *
+   *  ⚠ NOT A FINDING, and only one of its six values has one behind it (`pledge_r1` ⇔
+   *  ownership_R1_pledge). Ownership fires no tool-facing findings — see catalogue/tool-families.ts.
+   *
+   *  ⚠ `null` IS A FIRST-CLASS ANSWER: fewer than two filings, so the flow tells are not readable
+   *  and "flat" would be a claim about a move nobody can see. Render no tell, never a calm one. */
+  tell: OwnershipTell | null;
   series: OwnershipSeriesPoint[]; // oldest → newest
   pledging: PledgingPoint[]; // oldest → newest
   current: OwnershipAnatomy | null;

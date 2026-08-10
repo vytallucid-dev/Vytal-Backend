@@ -93,6 +93,63 @@ function unitChecks() {
   check("netMargin null when revenue null", sparse.netMargin === null);
   check("inventoryTurnover null when inventories 0", sparse.inventoryTurnover === null);
   check("assetTurnover null when totalAssets null", sparse.assetTurnover === null);
+
+  // ★ REGRESSION — 2026-08-11 PB-3 CLOSED, last of five *_fundamentals tables.
+  // ITCHOTELS FY25 consolidated (faceValueShare=paidUpEquityCapital=208.12) and JKTYRE
+  // FY26 both bases (=57.66) were live and uncontained: both sit UNDER
+  // PLAUSIBLE_FACE_VALUE_MAX (1000), so the magnitude gate on the INPUT never fired, and
+  // their resulting bookValuePerShare (₹10,692 / ₹5,283–6,061) sits well UNDER
+  // meaningfulBookValue's ₹1,00,000 ceiling too — proportionally wrong (~50–200×) but
+  // not absolutely extreme, because paid-up capital on both (₹208cr, ₹54–58cr) is far
+  // smaller than KOTAKBANK's ₹994cr. Applying meaningfulBookValue ALONE, exactly as
+  // instructed, does NOT correct either — verified empirically before this fix (both
+  // values checked to be < 100,000). What actually closes it: plausibleFaceValue's NEW
+  // 2nd parameter — a face value byte-equal to the row's own paidUpEquityCapital is
+  // rejected regardless of magnitude (the fingerprint of this exact corruption).
+  const itchotelsShape = deriveIndAsAnnual(
+    { ...raw, totalEquity: 10692.17, equityAttributableToOwners: null, equityShareCapital: null, otherEquity: null,
+      paidUpEquityCapital: 208.12, faceValueShareSane: plausibleFaceValue(208.12, 208.12) },
+    null, "unit",
+  ).columns;
+  check(
+    "ITCHOTELS shape: faceValue byte-equal to paidUp (208.12), UNDER the 1000 cutoff AND under the 100k output ceiling → still nulled, not ₹10,692",
+    itchotelsShape.bookValuePerShare === null,
+    num(itchotelsShape.bookValuePerShare),
+  );
+  const jktyreShape = deriveIndAsAnnual(
+    { ...raw, totalEquity: 6060.82, equityAttributableToOwners: null, equityShareCapital: null, otherEquity: null,
+      paidUpEquityCapital: 57.66, faceValueShareSane: plausibleFaceValue(57.66, 57.66) },
+    null, "unit",
+  ).columns;
+  check(
+    "JKTYRE shape: faceValue byte-equal to paidUp (57.66), UNDER the 1000 cutoff AND under the 100k output ceiling → still nulled, not ₹6,060.82",
+    jktyreShape.bookValuePerShare === null,
+    num(jktyreShape.bookValuePerShare),
+  );
+  check("plausibleFaceValue(208.12, 208.12) itself is null (byte-equal to paidUp)", plausibleFaceValue(208.12, 208.12) === null);
+  // a genuinely distinct, plausible face value must still pass even with paidUp present
+  check("plausibleFaceValue(10, 208.12) passes through (not byte-equal)", plausibleFaceValue(10, 208.12) === 10);
+  // the 2nd arg is OPTIONAL — every pre-existing 1-arg caller keeps its old behaviour
+  check("plausibleFaceValue(10) — no 2nd arg, unaffected (backward compatible)", plausibleFaceValue(10) === 10);
+
+  // MIRROR SHAPE — the CANFINHOME/ICICIBANK side (confirmed on NBFC/BankingFundamental,
+  // not yet observed live on this table): an ORDINARY, correctly-formed face value, but
+  // paidUpEquityCapital itself is the corrupt figure, collapsing sharesCr to a handful.
+  // plausibleFaceValue's new 2nd arg does NOT catch this — faceValueShareSane (10) is
+  // not equal to the corrupt paidUp (0.02), so it passes the input gate untouched. Only
+  // meaningfulBookValue (the OUTPUT bound, unchanged from the banking/insurance fix)
+  // catches this side.
+  const mirrorShape = deriveIndAsAnnual(
+    { ...raw, totalEquity: 999900 + 100 + 200, equityAttributableToOwners: null, equityShareCapital: 100, otherEquity: 999900,
+      paidUpEquityCapital: 0.02, faceValueShareSane: plausibleFaceValue(10, 0.02) },
+    null, "unit",
+  ).columns;
+  check(
+    "mirror shape: ordinary faceValue (10) + corrupt paidUpEquityCapital (0.02) → bookValuePerShare nulled by meaningfulBookValue, not a lakh-plus figure",
+    mirrorShape.bookValuePerShare === null,
+    num(mirrorShape.bookValuePerShare),
+  );
+  check("plausibleFaceValue(10, 0.02) passes the input gate (not byte-equal) — proves the mirror shape needs the OUTPUT bound, not the input one", plausibleFaceValue(10, 0.02) === 10);
 }
 
 // ── (B) Full re-derive vs stored ──
@@ -123,7 +180,7 @@ function rawOf(r: Row): IndAsAnnualRaw {
     borrowingsCurrent: num(r.borrowingsCurrent), borrowingsNoncurrent: num(r.borrowingsNoncurrent),
     cashFromOperating: num(r.cashFromOperating), capex: num(r.capex),
     paidUpEquityCapital: num(r.paidUpEquityCapital),
-    faceValueShareSane: plausibleFaceValue(num(r.faceValueShare)),
+    faceValueShareSane: plausibleFaceValue(num(r.faceValueShare), num(r.paidUpEquityCapital)),
     tradeReceivablesCurrent: num(r.tradeReceivablesCurrent),
     tradeReceivablesNoncurrent: num(r.tradeReceivablesNoncurrent),
     inventories: num(r.inventories), totalAssets: num(r.totalAssets), basicEps: num(r.basicEps),

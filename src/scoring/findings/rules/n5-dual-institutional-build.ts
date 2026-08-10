@@ -25,11 +25,18 @@
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
 import { computeCategoryB } from "../../ownership/flow.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { notEvaluable, type FilingRule } from "../types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const N5_MIN_MOVE_PP = 0.5; // each of FII / DII must rise ≥ 0.5pp (P4-symmetric)
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.ownership_N5_dual_institutional_build.facts;
 
-export const ruleN5: FireRule = (ctx) => {
+export const N5_MIN_MOVE_PP = FACTS.thresholds.minMovePp; // each of FII / DII must rise ≥ 0.5pp (P4-symmetric)
+
+export const ruleN5: FilingRule = (ctx) => {
   const rows = ctx.shareholding;
   if (rows.length < 2) return notEvaluable("insufficient_shareholding_history");
 
@@ -71,6 +78,5 @@ export const ruleN5: FireRule = (ctx) => {
         `Dual institutional build — FII (+${r2(fiiDelta).toFixed(2)}pp) and DII (+${r2(diiDelta).toFixed(2)}pp) ` +
         `both added in the same quarter (${cur.fiscalYear}${cur.quarter}).`,
     },
-    metricRefs: ["fiiPct", "diiPct"],
   };
 };

@@ -11,12 +11,19 @@
 
 import type { FireRule } from "../types.js";
 import { INSIDER_WINDOW_DAYS, INSIDER_ELIGIBLE_CR } from "./p6-insider-conviction.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const P5_MIN_NET_SELL_CR = 2;   // material net sell — FLAG: provisional
-export const P5_MIN_SELLERS = 1;       // ≥1 insider making a MATERIAL sell on an already-weak name
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.ownership_P5_insider_distress.facts;
+
+export const P5_MIN_NET_SELL_CR = FACTS.thresholds.minNetSellCr;   // material net sell — FLAG: provisional
+export const P5_MIN_SELLERS = FACTS.thresholds.minSellers;       // ≥1 insider making a MATERIAL sell on an already-weak name
 // (a single insider dumping a distressed stock IS the confirmation; the composite-weak gate
 // already qualifies it as "distress"). FLAG: provisional.
-export const P5_DISTRESS_COMPOSITE = 62; // composite < Below-par top ⇒ genuinely distressed
+export const P5_DISTRESS_COMPOSITE = FACTS.thresholds.distressComposite; // composite < Below-par top ⇒ genuinely distressed
 
 export const ruleP5: FireRule = (ctx) => {
   const txns = ctx.feeds.insiderTxns;
@@ -45,6 +52,5 @@ export const ruleP5: FireRule = (ctx) => {
       windowDays: INSIDER_WINDOW_DAYS, netSellCr: r0(netSellCr), distinctSellers, composite: Math.round(ctx.current.composite),
       verdict: `Insider-confirmed distress — ${distinctSellers} insider${distinctSellers > 1 ? "s" : ""} sold a net ₹${r0(netSellCr)} Cr on an already-weak name (composite ${Math.round(ctx.current.composite)}).`,
     },
-    metricRefs: ["insiderTxns"],
   };
 };

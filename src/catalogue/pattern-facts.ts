@@ -249,6 +249,27 @@ export interface PatternFacts {
   readonly confidence: PatternConfidence;
   /** Decimals. THE ONLY precision this pattern's numbers are ever formatted at, on any surface. */
   readonly displayPrecision: number;
+  /**
+   * ★ A COPY-REGISTER CUT — OPTIONAL, because exactly one pattern has one today.
+   *
+   * Not a firing gate and not `evidencedTier` (T7 already has its own: Momentum's native weak mark,
+   * 54 — the ceiling the pattern sits beneath). This is a SECOND, independent cut some patterns need:
+   * a size above which the study's own evidence says the move already happened in price before the
+   * finding could have been read (Part 4 · R3 — "For large positive Momentum moves, the copy must not
+   * imply the user is early"). D3/D4's `evidencedTier` (±8pp) is the precedent for a non-firing,
+   * register-selecting number living on this interface rather than beside the rule; this field is the
+   * same idea for a cut that isn't `evidencedTier` itself, because T7's `evidencedTier` is already
+   * spoken for.
+   *
+   * ⚠ OPTIONAL, NOT `number | null`. Widening every other field the way `gapFloor`/`movementFloor`
+   * are `T | null` would force the other seventeen records to carry an explicit `null` for a fact
+   * none of them has — the exact "one flat shape with every field nullable" this module's header (see
+   * finding-facts.ts) already rejected once, one level up, for measured-vs-unmeasured. An optional key
+   * lets it be ABSENT on every record but T7's, which is what "no other pattern has this cut" actually
+   * means, and it changes nothing about how `gapFloor`/`movementFloor`/`evidencedTier`/etc. are typed
+   * at the sixteen existing call sites that already read them as non-optional on their own record.
+   */
+  readonly largeMoveCutPp?: number;
 }
 
 /** See {@link PatternFacts.confidence}. */
@@ -830,6 +851,11 @@ export const PATTERN_FACTS = {
     evidenceStats: { n: 19, hitRatePct: 63, effectPct: 5.8, basis: "measured" },
     confidence: "robust",
     displayPrecision: 1,
+    // ★ THE R3 COPY CUT (Part 4 · R3) — at or above this rise, price has already run and the reader is
+    //   late; see `largeMoveCutPp`'s note on PatternFacts above for why it is a distinct field from
+    //   `evidencedTier`. RELOCATION, NOT RECALIBRATION: this was a bare `T7_LARGE_MOVE_PP = 15` in
+    //   rules/t7-momentum-improving-while-weak.ts with no declared home — the value is unchanged.
+    largeMoveCutPp: 15,
   },
 
   // ───────────────────────────────────────────────────────────────────────────────────────────────

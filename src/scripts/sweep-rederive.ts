@@ -80,7 +80,7 @@ const CFG: TableCfg[] = [
     fetch: () => prisma.fundamental.findMany({ include: { stock: { select: { symbol: true } } } }) as unknown as Promise<Row[]>,
     derive: (r, prior) =>
       deriveIndAsAnnual(
-        { revenue: N(r.revenue), netProfit: N(r.netProfit), financeCosts: N(r.financeCosts), depreciation: N(r.depreciation), profitBeforeTax: N(r.profitBeforeTax), equityShareCapital: N(r.equityShareCapital), otherEquity: N(r.otherEquity), totalEquity: N(r.totalEquity), equityAttributableToOwners: N(r.equityAttributableToOwners), borrowingsCurrent: N(r.borrowingsCurrent), borrowingsNoncurrent: N(r.borrowingsNoncurrent), cashFromOperating: N(r.cashFromOperating), capex: N(r.capex), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), tradeReceivablesCurrent: N(r.tradeReceivablesCurrent), tradeReceivablesNoncurrent: N(r.tradeReceivablesNoncurrent), inventories: N(r.inventories), totalAssets: N(r.totalAssets), basicEps: N(r.basicEps) },
+        { revenue: N(r.revenue), netProfit: N(r.netProfit), financeCosts: N(r.financeCosts), depreciation: N(r.depreciation), profitBeforeTax: N(r.profitBeforeTax), equityShareCapital: N(r.equityShareCapital), otherEquity: N(r.otherEquity), totalEquity: N(r.totalEquity), equityAttributableToOwners: N(r.equityAttributableToOwners), borrowingsCurrent: N(r.borrowingsCurrent), borrowingsNoncurrent: N(r.borrowingsNoncurrent), cashFromOperating: N(r.cashFromOperating), capex: N(r.capex), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare), N(r.paidUpEquityCapital)), tradeReceivablesCurrent: N(r.tradeReceivablesCurrent), tradeReceivablesNoncurrent: N(r.tradeReceivablesNoncurrent), inventories: N(r.inventories), totalAssets: N(r.totalAssets), basicEps: N(r.basicEps) },
         prior ? { revenue: N(prior.revenue), netProfit: N(prior.netProfit), basicEps: N(prior.basicEps), totalEquity: N(prior.totalEquity), equityAttributableToOwners: N(prior.equityAttributableToOwners), equityShareCapital: N(prior.equityShareCapital), otherEquity: N(prior.otherEquity) } : null,
         `sweep ${String(r.fiscalYear)}/${r.resultType}`,
       ).columns as unknown as Cols,
@@ -106,8 +106,9 @@ const CFG: TableCfg[] = [
     fetch: () => prisma.bankingFundamental.findMany({ include: { stock: { select: { symbol: true } } } }) as unknown as Promise<Row[]>,
     derive: (r, prior) =>
       deriveBankingAnnual(
-        { interestEarned: N(r.interestEarned), interestExpended: N(r.interestExpended), otherIncome: N(r.otherIncome), expenditureExclProvisions: N(r.expenditureExclProvisions), capital: N(r.capital), reservesAndSurplus: N(r.reservesAndSurplus), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), gnpaAbsolute: N(r.gnpaAbsolute), nnpaAbsolute: N(r.nnpaAbsolute), cet1Ratio: N(r.cet1Ratio), additionalTier1Ratio: N(r.additionalTier1Ratio), provisions: N(r.provisions), advances: N(r.advances), investments: N(r.investments), deposits: N(r.deposits), netProfit: N(r.netProfit), totalAssets: N(r.totalAssets) },
+        { interestEarned: N(r.interestEarned), interestExpended: N(r.interestExpended), otherIncome: N(r.otherIncome), expenditureExclProvisions: N(r.expenditureExclProvisions), capital: N(r.capital), reservesAndSurplus: N(r.reservesAndSurplus), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), gnpaAbsolute: N(r.gnpaAbsolute), nnpaAbsolute: N(r.nnpaAbsolute), cet1Ratio: N(r.cet1Ratio), additionalTier1Ratio: N(r.additionalTier1Ratio), provisions: N(r.provisions), advances: N(r.advances), investments: N(r.investments), deposits: N(r.deposits), netProfit: N(r.netProfit), totalAssets: N(r.totalAssets) },
         prior ? { capital: N(prior.capital), reservesAndSurplus: N(prior.reservesAndSurplus), advances: N(prior.advances), investments: N(prior.investments), nii: N(prior.nii), netProfit: N(prior.netProfit), deposits: N(prior.deposits), totalAssets: N(prior.totalAssets) } : null,
+        `sweep ${String(r.fiscalYear)}/${r.resultType}`,
       ).columns as unknown as Cols,
     update: (id, data) => prisma.bankingFundamental.update({ where: { id }, data }).then(() => undefined),
   },
@@ -131,8 +132,9 @@ const CFG: TableCfg[] = [
     fetch: () => prisma.nbfcFundamental.findMany({ include: { stock: { select: { symbol: true } } } }) as unknown as Promise<Row[]>,
     derive: (r, prior) =>
       deriveNbfcAnnual(
-        { interestIncome: N(r.interestIncome), financeCosts: N(r.financeCosts), loans: N(r.loans), totalIncome: N(r.totalIncome), feeAndCommissionIncome: N(r.feeAndCommissionIncome), netGainOnFairValueChanges: N(r.netGainOnFairValueChanges), otherIncome: N(r.otherIncome), employeeBenefitExpense: N(r.employeeBenefitExpense), depreciation: N(r.depreciation), otherExpenses: N(r.otherExpenses), feeAndCommissionExpense: N(r.feeAndCommissionExpense), impairmentOnFinancialInstruments: N(r.impairmentOnFinancialInstruments), debtSecurities: N(r.debtSecurities), borrowings: N(r.borrowings), subordinatedLiabilities: N(r.subordinatedLiabilities), depositsLiabilities: N(r.depositsLiabilities), totalEquity: N(r.totalEquity), equityShareCapital: N(r.equityShareCapital), otherEquity: N(r.otherEquity), totalAssets: N(r.totalAssets), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), netProfit: N(r.netProfit), revenue: N(r.revenue) },
+        { interestIncome: N(r.interestIncome), financeCosts: N(r.financeCosts), loans: N(r.loans), totalIncome: N(r.totalIncome), feeAndCommissionIncome: N(r.feeAndCommissionIncome), netGainOnFairValueChanges: N(r.netGainOnFairValueChanges), otherIncome: N(r.otherIncome), employeeBenefitExpense: N(r.employeeBenefitExpense), depreciation: N(r.depreciation), otherExpenses: N(r.otherExpenses), feeAndCommissionExpense: N(r.feeAndCommissionExpense), impairmentOnFinancialInstruments: N(r.impairmentOnFinancialInstruments), debtSecurities: N(r.debtSecurities), borrowings: N(r.borrowings), subordinatedLiabilities: N(r.subordinatedLiabilities), depositsLiabilities: N(r.depositsLiabilities), totalEquity: N(r.totalEquity), equityShareCapital: N(r.equityShareCapital), otherEquity: N(r.otherEquity), totalAssets: N(r.totalAssets), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), netProfit: N(r.netProfit), revenue: N(r.revenue) },
         prior ? { revenue: N(prior.revenue), netProfit: N(prior.netProfit), loans: N(prior.loans), totalEquity: N(prior.totalEquity), equityShareCapital: N(prior.equityShareCapital), otherEquity: N(prior.otherEquity), debtSecurities: N(prior.debtSecurities), borrowings: N(prior.borrowings), subordinatedLiabilities: N(prior.subordinatedLiabilities), depositsLiabilities: N(prior.depositsLiabilities) } : null,
+        `sweep ${String(r.fiscalYear)}/${r.resultType}`,
       ).columns as unknown as Cols,
     update: (id, data) => prisma.nbfcFundamental.update({ where: { id }, data }).then(() => undefined),
   },
@@ -156,8 +158,9 @@ const CFG: TableCfg[] = [
     fetch: () => prisma.lifeInsuranceFundamental.findMany({ include: { stock: { select: { symbol: true } } } }) as unknown as Promise<Row[]>,
     derive: (r, prior) =>
       deriveLiAnnual(
-        { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), incomeFirstYearPremium: N(r.incomeFirstYearPremium), grossPremiumIncome: N(r.grossPremiumIncome), totalOperatingExpenses: N(r.totalOperatingExpenses), netProfit: N(r.netProfit) },
+        { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), incomeFirstYearPremium: N(r.incomeFirstYearPremium), grossPremiumIncome: N(r.grossPremiumIncome), totalOperatingExpenses: N(r.totalOperatingExpenses), netProfit: N(r.netProfit) },
         prior ? { shareCapital: N(prior.shareCapital), reservesAndSurplus: N(prior.reservesAndSurplus), fairValueChangeAccount: N(prior.fairValueChangeAccount), grossPremiumIncome: N(prior.grossPremiumIncome), netProfit: N(prior.netProfit) } : null,
+        `sweep ${String(r.fiscalYear)}/${r.resultType}`,
       ).columns as unknown as Cols,
     update: (id, data) => prisma.lifeInsuranceFundamental.update({ where: { id }, data }).then(() => undefined),
   },
@@ -181,8 +184,9 @@ const CFG: TableCfg[] = [
     fetch: () => prisma.generalInsuranceFundamental.findMany({ include: { stock: { select: { symbol: true } } } }) as unknown as Promise<Row[]>,
     derive: (r, prior) =>
       deriveGiAnnual(
-        { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShare: N(r.faceValueShare), combinedRatio: N(r.combinedRatio), netProfit: N(r.netProfit), grossPremiumsWritten: N(r.grossPremiumsWritten) },
+        { shareCapital: N(r.shareCapital), reservesAndSurplus: N(r.reservesAndSurplus), fairValueChangeAccount: N(r.fairValueChangeAccount), paidUpEquityCapital: N(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(N(r.faceValueShare)), combinedRatio: N(r.combinedRatio), netProfit: N(r.netProfit), grossPremiumsWritten: N(r.grossPremiumsWritten) },
         prior ? { shareCapital: N(prior.shareCapital), reservesAndSurplus: N(prior.reservesAndSurplus), fairValueChangeAccount: N(prior.fairValueChangeAccount), grossPremiumsWritten: N(prior.grossPremiumsWritten), netProfit: N(prior.netProfit) } : null,
+        `sweep ${String(r.fiscalYear)}/${r.resultType}`,
       ).columns as unknown as Cols,
     update: (id, data) => prisma.generalInsuranceFundamental.update({ where: { id }, data }).then(() => undefined),
   },

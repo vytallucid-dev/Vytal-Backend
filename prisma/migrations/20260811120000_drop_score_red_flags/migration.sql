@@ -1,0 +1,50 @@
+-- ═══════════════════════════════════════════════════════════════════════════════════════════════
+-- DROP score_red_flags — the score channel's red-flag table.
+--
+-- ── WHY IT CAN GO ───────────────────────────────────────────────────────────────────────────────
+-- NO WRITER, structurally and not merely observationally: all six red-flag rules (R1…R6) live in
+-- FILING_RULES (scoring/findings/engine.ts), `runFindings` defaults to SCORING_RULES, and the
+-- scoring pass registers no red-flag rule at all — so no `kind: "red_flag"` finding can reach
+-- `persistFindings`. That branch is now a throw rather than an insert, so the impossibility is
+-- enforced rather than assumed.
+--
+-- NO READER: every one of the ten read sites was repointed or removed on 2026-08-11 (see below).
+--
+-- ── WHAT THE 215 ROWS WERE ──────────────────────────────────────────────────────────────────────
+-- 215 rows · 4 keys (R1 pledge 57, R2 promoter exit 42, R5 interest coverage 36, R6 distribution 80)
+-- · 13 symbols · spanning 2025-03-30 → 2026-08-06. NOT one snapshot's state at the cutover: by
+-- reachability, 193 sat on SUPERSEDED snapshot versions (unreachable by any reader), 0 on any stock's
+-- current period, 6 on the in-force PRIOR period and 16 on older in-force periods. Every finding in
+-- them is represented in stock_findings, which is where all six rules have written since 20260809120000.
+--
+-- ── ⚠ THE 22 REACHABLE ROWS WERE NOT INERT ──────────────────────────────────────────────────────
+-- The prior/older-period rows were live inputs to two surfaces that diff against an earlier period:
+--   · quarter-brief/fact-block.ts diffed red flags between the current and prior snapshot. The current
+--     side had decayed to zero while the prior side still held frozen rows, so every frozen row read
+--     as having just stopped — a false "no longer flagging" on DIXON, GLENMARK, INFY, NHPC and SBIN.
+--     GLENMARK's had already been written into a persisted brief.
+--   · relational/reader-context.ts compared the last-seen snapshot's flags against the current key
+--     set, with the same shape of error ("this cleared since you last looked").
+-- Both now read the filing channel's own standing states, which are transitions by construction.
+--
+-- ── THE TEN READ SITES ──────────────────────────────────────────────────────────────────────────
+-- REPOINTED to filing/read.ts's readStandingRedFlags (same shape, same population, live source):
+--   scoring/read/universe-view.service.ts    UniverseMemberView.firedFlags + the pathology census
+--   scoring/read/peer-group-view.service.ts  the firesAnyRedFlag marker → redFlagMemberCount, both views
+--   insight/quarter-brief/fact-block.ts      findingsFired / findingsCleared, via newly-standing + resolved
+-- REMOVED (the query returned nothing that survived its own suppression, and the filing channel
+-- already serves that surface — repointing would have rendered every red flag twice):
+--   scoring/read/health-view.service.ts      findings.redFlags stays [] beside filingFindings
+--   controllers/me/watchlist-enrich.ts       same, per pinned row
+--   alerts/eval-pass.ts · alerts/finding-catalog.ts
+--   scoring/read/symbol-findings.service.ts · relational/object-state.ts · relational/reader-context.ts
+--
+-- Verified by scripts/verify-red-flag-repoint.ts, before and after: nothing lost (55 red flags still
+-- served), live-fed (universe firedFlags 0 → 6, pond markers 0 → 6), nothing widened (94 members,
+-- 23 ponds, 6+88 screener split all unchanged — the 45 unscored red-flag stocks stay out), and no key
+-- in both channels on any of 140 stock pages.
+--
+-- Applied with: npx tsx src/scripts/apply-migration-direct.ts 20260811120000_drop_score_red_flags
+-- ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+DROP TABLE "score_red_flags";

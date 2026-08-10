@@ -136,6 +136,22 @@ const PLAIN: Record<string, Builder> = {
   ownership_R6_distribution: () =>
     "Promoters and foreign investors both sold down their stake in the same quarter, and small shareholders picked it up.",
 
+  // "Promoter exit — promoter holding fell 7.00pp into FY27Q1 (past the 5pp line), a genuine sell-down —
+  //  not a QIP/rights dilution." ⚠ "exit" and "sell-down" both trip the deny lists — descriptive here
+  // (what the promoter did), the same shape as R6's "reduced" above. "Sold down" states the same fact
+  // with no verb the reader could read as a suggestion. The 5pp line is dropped from the rendered form —
+  // it's an internal bar, not a company fact, and naming it invites "so 4.9pp is fine?", a question about
+  // the model rather than the stock.
+  ownership_R2_promoter_exit: (ev) => {
+    const drop = num(ev.promoterPctDropPp);
+    const period = str(ev.currentPeriod);
+    if (drop === null || !period) return null;
+    const clause = ev.dilutionVerdict === "indeterminate"
+      ? "unexplained by any fresh share issue, so we're treating it as a real cut"
+      : "a real cut, not shares diluted by a fresh issue";
+    return `Promoters sold down their stake by ${n1(drop)}pp in ${period} — ${clause}.`;
+  },
+
   // "Interest coverage collapse — TTM interest coverage held below 1.5× for 2 straight quarters …"
   foundation_R5_interest_coverage: (ev) => {
     const q = num(ev.consecutiveQuarters);

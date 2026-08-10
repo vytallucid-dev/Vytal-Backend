@@ -99,25 +99,63 @@ export interface StockFindingEntry extends EntryBase<"stock_finding"> {
   readonly concern: FindingConcern;
   readonly status: KeyStatus;
   /**
-   * ★ THE PATTERN-DEFINING FACTS — which pillars, what threshold, what the regime does, how many
+   * ★ THE FINDING-DEFINING FACTS — which pillars, what threshold, what the regime does, how many
    * decimals. See pattern-facts.ts for why they are declared rather than derived.
    *
-   * NON-NULL for every divergence (S1, D1–D7, S2) and trajectory (T1–T9) pattern; NULL everywhere
-   * else, because a red flag or an ownership event has no pillar pair, no gap floor and no regime map,
-   * and inventing one would be authoring a fact rather than moving it.
+   * ── ⚠ NEVER NULL. IT USED TO BE, FOR 35 OF THE 53. ───────────────────────────────────────────────
+   * The old declaration was `PatternFacts | null`, non-null only for the studied divergence (S1,
+   * D1–D7, S2) and trajectory (T1–T9) patterns. The reasoning was sound as far as it went — a red flag
+   * has no pillar pair, no gap floor and no regime map, and inventing one would author a fact rather
+   * than move it.
+   *
+   * But it read the absence too widely. R1 has no REGIME MAP; it does have two bars (50% of the
+   * promoter holding, +10pp in a quarter) and a display precision, and those had nowhere to live —
+   * so they sat as bare `export const`s in pledging.ts, and R1 shipped as the one rule of 53 with no
+   * declared precision, stamping 51.367518980187285 where every sibling stamped a rounded number.
+   *
+   * So the shape is a union, not a nullable: {@link UnmeasuredFacts} carries what EVERY finding has,
+   * and PatternFacts extends that with what only a STUDIED one has. Absence is still expressible —
+   * an unmeasured record simply has no `evidenceStats` field to fill in — but it is now the absence
+   * of a study, not the absence of a record.
    *
    * ⚠ The REGISTRY type narrows this per key (see stock-findings.ts's StockFindingRegistry): a rule
    * reading `STOCK_FINDINGS.divergence_S2_sticky_divergence.facts.gapFloor` gets a `number` with no
-   * null-check, and `STOCK_FINDINGS.ownership_R1_pledge.facts` is `null` and cannot be dereferenced.
-   * That narrowing IS the compile-time binding; this widened declaration is the shape a generic
-   * consumer sees.
+   * null-check, and `STOCK_FINDINGS.ownership_R1_pledge.facts.gapFloor` is a COMPILE ERROR while
+   * `.facts.thresholds.pledgeRatioPct` is a `number`. That narrowing IS the compile-time binding;
+   * this widened declaration is the shape a generic consumer sees.
    *
    * ⚠ PARTIALLY SERVED. serialise.ts narrows this to `{ pillarPair, basis, displayPrecision }`
    * (pattern-facts.ts's `ServedPatternFacts`) before the document is built — display geometry a chart
    * needs, never a threshold. Every gapFloor / movementFloor / evidencedTier / leg value /
-   * sustainReadings / regimeMap / evidenceStats is a scoring bar and stays engine-side only.
+   * sustainReadings / regimeMap / evidenceStats / thresholds bag is a scoring bar and stays
+   * engine-side only.
    */
-  readonly facts: PatternFacts | null;
+  readonly facts: PatternFacts | UnmeasuredFacts;
+}
+
+/**
+ * ★ THE FACTS EVERY FINDING HAS, studied or not — the universal half of the record.
+ *
+ * Declared HERE rather than in finding-facts.ts because `StockFindingEntry` above references it and
+ * finding-facts.ts imports this module's siblings; homing the interface with the entry it belongs to
+ * keeps the catalogue's type graph acyclic. The VALUES (all 53 records) live in finding-facts.ts.
+ */
+export interface UnmeasuredFacts {
+  /** THE only precision this finding's numbers are formatted at, unless a specific evidence key
+   *  overrides it — see catalogue/evidence-facts.ts. */
+  readonly displayPrecision: number;
+  /**
+   * The rule's own bars, by name: `{ pledgeRatioPct: 50, qoqRisePp: 10 }`.
+   *
+   * ⚠ A NAMED BAG rather than typed fields because the 35 unmeasured findings do not share a bar
+   * SHAPE the way the studied families do — R4 fires on a debt multiple, N6 on a count of quarters,
+   * H on a rupee value. See finding-facts.ts's header for why a union wide enough to type all of
+   * them would be all-nullable and therefore worse than this.
+   *
+   * `{}` is a real record: P1 and P4 declare no bars of their own (both read the shared ownership
+   * flow helpers, which own their materiality floors). It is not "we have not filled this in".
+   */
+  readonly thresholds: Readonly<Record<string, number>>;
 }
 
 export interface LensFaceEntry extends EntryBase<"lens_face"> {

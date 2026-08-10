@@ -41,8 +41,11 @@
 //   3. It would hide the rows from audit and migration tooling, where the honest question "how many
 //      stale retired rows are still out there" must remain answerable.
 // So the predicate lives here, once, and is applied EXPLICITLY at each read boundary. The list of
-// boundaries is enumerated in the build report and guarded by scripts/verify-retirement.ts, which
-// fails if a file that reads score_patterns does not also reference this module.
+// boundaries is enumerated in the build report and guarded by scripts/verify-sql-predicates.ts, which
+// asserts the fragment's shape and checks that every raw-SQL caller splices it correctly.
+// ⚠ An earlier version of this comment named `scripts/verify-retirement.ts`. That file was never
+//   written, so the "guarded" claim was false for the whole life of this module — which is precisely
+//   how the reader-context.ts parameter-binding defect survived undetected.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 /**
@@ -124,13 +127,30 @@ export function dropRetired<T>(rows: readonly T[], keyOf: (row: T) => string): T
 export const dropRetiredPatterns = <T extends { patternKey: string }>(rows: readonly T[]): T[] =>
   dropRetired(rows, (r) => r.patternKey);
 
-/** Convenience for the many sites holding `{ flagKey }` rows. */
-export const dropRetiredFlags = <T extends { flagKey: string }>(rows: readonly T[]): T[] =>
-  dropRetired(rows, (r) => r.flagKey);
+// ⚠ `dropRetiredFlags` LIVED HERE AND WAS REMOVED 2026-08-11, with score_red_flags. Every persisted
+//   red-flag row now comes from the filing pass, which writes one row per REGISTERED rule — and the
+//   two retired flag keys (P2 → R6, P3 → R1) are unregistered by construction, so a retired key can
+//   no longer reach a red-flag row at all. The suppression is enforced by the writer, not the reader.
+//   `dropRetired` and `dropRetiredPatterns` are untouched: score_patterns DOES still carry retired rows.
 
-/** A SQL fragment for the two raw-SQL readers, so they enforce the same list rather than a copy of it.
- *  Returns e.g. `p.pattern_key NOT IN ('a','b')`. Keys are compile-time literals from the array above
- *  — no user input reaches this, and the quoting is asserted by verify-retirement.ts. */
+/**
+ * A SQL fragment for the two raw-SQL readers, so they enforce the same list rather than a copy of it.
+ * Returns e.g. `p.pattern_key NOT IN ('a','b')`. Keys are compile-time literals from the array above
+ * — no user input reaches this, and the quoting is asserted by scripts/verify-sql-predicates.ts.
+ *
+ * ⚠ THE RETURN IS SQL TEXT, AND `string` IS NOT SELF-ENFORCING. How a caller must splice it depends
+ * entirely on which raw API it is feeding, and the two look identical on the page:
+ *
+ *   $queryRawUnsafe  — build a PLAIN template literal. `${predicate}` splices SQL text.   ✅
+ *   $queryRaw / $executeRaw (TAGGED template) — `${predicate}` BINDS A PARAMETER. The statement
+ *                      becomes `WHERE $1`, Postgres wants a boolean where a text value arrived, and
+ *                      the query dies with 22P02. Wrap it: `${Prisma.raw(predicate)}`.              ⚠
+ *
+ * This is not hypothetical. relational/reader-context.ts shipped the unwrapped form on 2026-08-02 and
+ * silently dropped the whole UE echo family for seven days — the census catches its own error and
+ * returns null, so the card kept rendering and nothing surfaced. Callers are held to the rule by
+ * scripts/verify-sql-predicates.ts, which statically checks every reference to this helper.
+ */
 export function retiredKeysSqlPredicate(column: string): string {
   const list = RETIRED_FINDING_KEYS.map((k) => `'${k}'`).join(", ");
   return `${column} NOT IN (${list})`;

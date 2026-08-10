@@ -21,11 +21,18 @@
 // finding; moves no score.
 
 import { annualExceptionalLatest } from "../guards/annual-exceptional.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
 import type { FoundationAnnual } from "../../metrics/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const N1_MIN_YEARS = 3;      // ≥3 consecutive annual periods
-export const N1_OCF_NP_MIN = 1.0;   // operating cash ≥ 100% of profit each year
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_N1_cash_backed_earnings.facts;
+
+export const N1_MIN_YEARS = FACTS.thresholds.minYears;      // ≥3 consecutive annual periods
+export const N1_OCF_NP_MIN = FACTS.thresholds.ocfToNetProfitMin;   // operating cash ≥ 100% of profit each year
 
 /** Length + detail of the trailing run of consecutive annual periods (newest-anchored) in
  *  which netProfit > 0 AND OCF/NP ≥ 1.0. A missing input, a non-positive NP, a sub-1.0 ratio,
@@ -44,8 +51,8 @@ function trailingCashBackedRun(sortedAsc: FoundationAnnual[]) {
   return { years: detail.length, detail };
 }
 
-export const ruleN1: FireRule = (ctx) => {
-  if (ctx.industry === "banking") return null; // inherited exclusion (mirror of P7)
+export const ruleN1: FilingRule = (ctx) => {
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // inherited exclusion (mirror of P7)
   const f = ctx.annualFundamentals;
   if (f.length < N1_MIN_YEARS) return notEvaluable("insufficient_annual_history");
 
@@ -91,6 +98,5 @@ export const ruleN1: FireRule = (ctx) => {
         `Cash-backed earnings — operating cash flow has fully covered net profit for ${run.years} ` +
         `straight years (${first.fy}–${last.fy}); earnings converting to cash rather than accumulating as accruals.`,
     },
-    metricRefs: ["cashFromOperating", "netProfit"],
   };
 };

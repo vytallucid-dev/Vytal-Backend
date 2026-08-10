@@ -81,6 +81,5 @@ export const ruleT4: FireRule = (ctx) => {
       stressedPct: 22.1,
       calibration: CALIBRATION_NOTE,
     },
-    metricRefs: ["composite"],
   };
 };

@@ -13,6 +13,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import type { Verdict } from "./verdict.js";
+import type { QuarterSection } from "./quarter-section.js";
+import type { AnnualSection } from "./annual-section.js";
+import type { DriverFact } from "./driver.js";
+import type { ContrastFact } from "./contrasts.js";
+import type { AnnualContrastFact } from "./annual-contrasts.js";
 
 export type Family = "non_financial" | "banking" | "nbfc" | "life_insurance" | "general_insurance";
 export type Basis = "consolidated" | "standalone";
@@ -26,16 +31,20 @@ export interface Fact {
 }
 
 /** A period-over-period movement.
- *  · percent     — both sides positive; a percentage is meaningful.
- *  · turnaround  — prior ≤ 0, current > 0 (loss → profit). NEVER expressed as a percentage.
+ *  · percent     — both sides positive and the move is readable as a percentage.
+ *  · large_move  — both sides positive but the move exceeds LARGE_MOVE_PCT; stated as two absolutes,
+ *                  because "up 31346%" off a ₹1.68 crore base tells the reader nothing. `value` IS
+ *                  carried so direction still reads — only the rendering changes.
+ *  · nil         — both sides exactly zero. NOT a loss: a line reported as nothing is nothing.
+ *  · turnaround  — prior ≤ 0, current > 0 (loss or nil → profit). NEVER expressed as a percentage.
  *  · to_loss     — prior > 0, current ≤ 0.
- *  · both_loss   — both sides ≤ 0; stated as two absolutes.
+ *  · both_loss   — both sides ≤ 0 and not both nil; stated as two absolutes.
  *  A percentage computed off a zero or negative base is the classic invented number; it is
  *  structurally impossible here because `kind` decides the rendering, not the caller. */
 export interface ChangeFact {
   key: string;
-  kind: "percent" | "turnaround" | "to_loss" | "both_loss";
-  /** Signed percent — populated ONLY when kind === "percent". */
+  kind: "percent" | "large_move" | "nil" | "turnaround" | "to_loss" | "both_loss";
+  /** Signed percent — populated for `percent` and `large_move`, null for every other kind. */
   value: number | null;
   /** "against the previous quarter" | "against the same quarter last year" */
   reference: string;
@@ -180,12 +189,52 @@ export interface BriefIdentity {
   filingDate: string;
 }
 
+// ★ STAGE 2 — PeerContextFact MOVED TO peer-shape.ts AND IS RE-EXPORTED HERE.
+//
+// It lived in this file for one reason: peers.ts imports the DB client, and this file must stay
+// reachable from the PURE build gates. That reason still holds — and peer-shape.ts is now the pure
+// module that satisfies it, carrying the METRIC SET, the COUNTING and the WORDS beside the type they
+// describe, so a gate can assert all four together on synthetic rows. The re-export keeps every
+// existing `import type { PeerContextFact } from "./types.js"` working.
+export type { PeerComparison, PeerContextFact } from "./peer-shape.js";
+import type { PeerContextFact } from "./peer-shape.js";
+
 export interface QuarterBriefFactBlock {
   identity: BriefIdentity;
   /** Computed by the backend from the written-down ruleset in verdict.ts. Null ONLY when there is no
    *  comparison period on file at all — a genuine absence, rendered as nothing. */
   verdict: Verdict | null;
+  /** ★ SECTION 1 — every metric this family files, including the ones that did not move. THE change
+   *  the redesign exists for: 2–4 metrics became 12–24. */
+  quarter: QuarterSection;
+  /** ★ SECTION 2 — THE ANNUAL SECTION, AND THE ONLY ROUTE TO A BALANCE-SHEET FACT.
+   *
+   *  ⚠ NULL ON Q1, Q2 AND Q3 ALWAYS, AND ON ANY Q4 WITH NO ANNUAL ROW ON THIS BASIS. Both are
+   *  presence, not assumption — see annual-section.ts's three gates. A reader on a Q1 card is told, in
+   *  `gaps`, that the balance sheet is a once-a-year figure and is not shown; they are never shown one
+   *  that is up to twelve months older than the quarter beside it. */
+  annual: AnnualSection | null;
+  /** Retained as a COMPUTATION INPUT, not as prose. Two things need both comparisons and neither is a
+   *  sentence: the verdict's direction inputs, and the QoQ-vs-YoY disagreement rule. Section 1 already
+   *  carries the top line and net profit with one comparison, so rendering this too would print them twice. */
   headline: HeadlineSection;
+  /** The line that explains the profit move, pre-attributed with its share. Null is the common case —
+   *  no bridge for the family, the identity did not close on both rows, or no nameable line reached
+   *  half the move. The model phrases it; it never derives causation. */
+  driver: DriverFact | null;
+  /** Named contrast rules that fired. Empty is normal and renders as nothing — there is no free-form
+   *  "insight" field, deliberately. */
+  contrasts: ContrastFact[];
+  /** ★ THE FULL YEAR'S NAMED RULES. Q4 only, and empty whenever `annual` is null.
+   *
+   *  ⚠ A SEPARATE FIELD FROM `contrasts`, NOT A FLAG ON IT. The two are computed by two modules that
+   *  cannot see each other's figures — annual-contrasts.ts carries the reason — and one array holding
+   *  both would be a place for a twelve-month fact and a three-month fact to be joined by whatever
+   *  reads it. Empty is normal on every Q1, Q2 and Q3 card by construction. */
+  annualContrasts: AnnualContrastFact[];
+  /** How this quarter's growth sat against same-family peers that filed the same period. Null on
+   *  roughly four cards in five; a comparison against one peer is not a comparison. */
+  peers: PeerContextFact | null;
   profitSource: ProfitSourceSection | null;
   margins: MarginsSection | null;
   healthMovement: HealthMovementSection | null;

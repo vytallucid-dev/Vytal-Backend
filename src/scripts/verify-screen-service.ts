@@ -37,7 +37,7 @@ async function main() {
   const off = prisma.$on?.bind(prisma);
   void off;
   const before = Date.now();
-  const freeOnly = screenUniverse(view, values, null, {
+  const freeOnly = await screenUniverse(view, values, null, {
     conditions: [{ field: "health", min: 70 }, { field: "foundation", min: 60 }, { field: "momentum", min: 50 },
                  { field: "market", min: 40 }, { field: "ownership", min: 70 }],
     band: undefined, sector: undefined,
@@ -47,11 +47,16 @@ async function main() {
   ok("free-tier screen returns matches", freeOnly.kind === "matches");
 
   // Ten filters cost what one costs.
+  // ⚠ THE redFlags FILTER IS WARMED FIRST, AND THE WARM-UP IS NOT PART OF THE MEASUREMENT. That filter
+  //   now unions the LIVE standing filing red flags, which is one round trip behind a five-minute
+  //   cache. Timing the cold read here would measure Postgres, not the cost of adding filters — which
+  //   is the only thing this assertion is about.
+  await screenUniverse(view, values, null, { conditions: [], redFlags: "none" });
   const t1 = Date.now();
-  for (let i = 0; i < 200; i++) screenUniverse(view, values, null, { conditions: [{ field: "health", min: 60 }] });
+  for (let i = 0; i < 200; i++) await screenUniverse(view, values, null, { conditions: [{ field: "health", min: 60 }] });
   const one = Date.now() - t1;
   const t2 = Date.now();
-  for (let i = 0; i < 200; i++) screenUniverse(view, values, null, {
+  for (let i = 0; i < 200; i++) await screenUniverse(view, values, null, {
     conditions: [{ field: "health", min: 60 }, { field: "foundation", min: 40 }, { field: "momentum", min: 30 },
                  { field: "market", min: 20 }, { field: "ownership", min: 60 }],
     band: "Healthy", sector: "Pharma & Healthcare", redFlags: "none",
@@ -139,17 +144,17 @@ async function main() {
      `${Object.values(SCREEN_FIELDS).filter((f) => f.tier === "score").length} score + ${Object.values(SCREEN_FIELDS).filter((f) => f.tier === "metric").length} metric`);
 
   console.log(`\n═══ 1e · SELECTIVITY — against the recon's measured combinations ═══`);
-  const count = (r: ReturnType<typeof screenUniverse>) => (r.kind === "matches" ? r.matches.total : -1);
-  const syms = (r: ReturnType<typeof screenUniverse>) => (r.kind === "matches" ? r.matches.shown.map((x) => x.symbol) : []);
+  const count = (r: Awaited<ReturnType<typeof screenUniverse>>) => (r.kind === "matches" ? r.matches.total : -1);
+  const syms = (r: Awaited<ReturnType<typeof screenUniverse>>) => (r.kind === "matches" ? r.matches.shown.map((x) => x.symbol) : []);
 
-  const pristinePharma = screenUniverse(view, values, null, { conditions: [], band: "Pristine", sector: "Pharma & Healthcare", redFlags: "none" });
+  const pristinePharma = await screenUniverse(view, values, null, { conditions: [], band: "Pristine", sector: "Pharma & Healthcare", redFlags: "none" });
   ok("Pristine + Pharma + no red flags = 2", count(pristinePharma) === 2, syms(pristinePharma).join(", "));
   ok("  …and they are DIVISLAB, LUPIN", JSON.stringify(syms(pristinePharma).sort()) === JSON.stringify(["DIVISLAB", "LUPIN"]));
 
-  const pristineClean = screenUniverse(view, values, null, { conditions: [], band: "Pristine", redFlags: "none" });
+  const pristineClean = await screenUniverse(view, values, null, { conditions: [], band: "Pristine", redFlags: "none" });
   ok("Pristine + no red flags = 21", count(pristineClean) === 21, `${count(pristineClean)}`);
 
-  const roeDe = screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }, { field: "debtToEquity", max: 0.5 }] });
+  const roeDe = await screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }, { field: "debtToEquity", max: 0.5 }] });
   ok("ROE>20 + D/E<0.5 = 29", count(roeDe) === 29, `${count(roeDe)}`);
 
   // ★ THE ONE PLACE THE SERVICE AND THE RECON DISAGREE, AND WHY THE SERVICE IS RIGHT.
@@ -157,7 +162,7 @@ async function main() {
   //   25. The entire difference is AUROPHARMA and NHPC, which sit at Ownership exactly 70.0000 — they
   //   genuinely do have "Ownership of at least 70". Asserted as a DELTA rather than a corrected
   //   constant, so this stays a proof of the convention instead of a number quietly moved to fit.
-  const ownFoundIncl = screenUniverse(view, values, null, { conditions: [{ field: "ownership", min: 70 }, { field: "foundation", max: 60 }] });
+  const ownFoundIncl = await screenUniverse(view, values, null, { conditions: [{ field: "ownership", min: 70 }, { field: "foundation", max: 60 }] });
   ok("Ownership≥70 + Foundation≤60 = 25 (inclusive bounds)", count(ownFoundIncl) === 25, `${count(ownFoundIncl)}`);
   const boundaryNames = view.members
     .filter((m) => m.pillars.ownership === 70 && m.pillars.foundation <= 60)
@@ -166,7 +171,7 @@ async function main() {
      count(ownFoundIncl) - 23 === boundaryNames.length && JSON.stringify(boundaryNames) === JSON.stringify(["AUROPHARMA", "NHPC"]),
      `${boundaryNames.join(", ")} — Ownership exactly 70.0000`);
 
-  const roe20 = screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }] });
+  const roe20 = await screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }] });
   ok("ROE above 20% = 32 matches", count(roe20) === 32, `${count(roe20)}`);
   if (roe20.kind === "matches") {
     ok("  …evaluable denominator is 82, not 94", roe20.evaluable.evaluable === 82 && roe20.evaluable.considered === 94,
@@ -175,13 +180,13 @@ async function main() {
        roe20.evaluable.reasons[0]?.reason ?? "(none)");
   }
 
-  const gnpaLike = screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }], sector: "Banks" });
+  const gnpaLike = await screenUniverse(view, values, null, { conditions: [{ field: "returnOnEquity", min: 20 }], sector: "Banks" });
   ok("ROE screen scoped to Banks: 0 evaluable, all 12 explained", gnpaLike.kind === "matches" && gnpaLike.evaluable.evaluable === 0 && gnpaLike.evaluable.considered === 12,
      gnpaLike.kind === "matches" ? `considered ${gnpaLike.evaluable.considered}, evaluable ${gnpaLike.evaluable.evaluable}` : "");
 
   console.log(`\n═══ CROSS-CHECK — every emitted value against the DB, independently ═══`);
   // Re-read raw values straight from Postgres and compare to what the service put on the rows.
-  const sample = screenUniverse(view, values, null, {
+  const sample = await screenUniverse(view, values, null, {
     conditions: [{ field: "returnOnEquity", min: 20 }, { field: "debtToEquity", max: 0.5 }], sort: "field",
   });
   let checked = 0, wrong = 0;

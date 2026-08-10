@@ -96,6 +96,5 @@ export const ruleD7: FireRule = (ctx) => {
       bareBreakN: 22,
       baseDoesNotCushion: true,
     },
-    metricRefs: ["momentum", "foundation"],
   };
 };

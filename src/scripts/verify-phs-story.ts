@@ -1,10 +1,18 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // CONSTRUCTION v2 — STAGE 10b — THE COMPOSER. PROVEN, NOT REVIEWED.
 //
-// ★ §1 IS THE LIVE THESIS AND IT RUNS FIRST. `4c5ca537` is the book the distinct-subjects rule exists
-// for: TCS is 100% of it, so PC2 ("dominant position", subject TCS) and PC4 ("single-sector book",
+// ★ §1 IS THE THESIS BOOK AND IT RUNS FIRST. THE book the distinct-subjects rule exists for: 100% one
+// stock (TCS, it_technology), so PC2 ("dominant position", subject TCS) and PC4 ("single-sector book",
 // subject it_technology) are ONE HOLDING DESCRIBED TWICE — and §11.1's suppression cannot see it,
 // because they sit on different axes. Built against the book that breaks it.
+//
+// ★ SYNTHETIC, NOT LIVE (retired 2026-08-11). This was originally the live user `4c5ca537`, pinned by
+// id — that user's book HAPPENED to be 100% TCS. The user no longer exists (deleted, same cohort as
+// `EXP_HEALTH` in verify-cv2-stage6.ts / verify-cv2-stage7.ts), and pinning a scenario to a user id that
+// can be deleted is the same mistake as pinning a period count. The property this section proves needs
+// only the SHAPE — exactly one holding, 100% of the book, one sector — which is built directly below.
+// Ruling ②: synthetic (fixed weights) → EXACT, drift-immune. Confirmed byte-identical to the old live
+// run's numbers (gross 51, net 21, gap 30, "TCS" once) — this is not an approximation, it IS that book.
 //
 // WHAT THIS ASSERTS:
 //   1. ★ LIVE — `4c5ca537`'s movement 4 does NOT say the same thing twice.
@@ -31,12 +39,10 @@ import type { PfFinding } from "../portfolio/phs/patterns.js";
 import { firePortfolioFindings } from "../portfolio/phs/patterns.js";
 import { fireDisclosureFindings, fireInstrumentFindings } from "../portfolio/phs/read-time-findings.js";
 import type { HeldInstrumentFacts } from "../portfolio/phs/read-time-catalog.js";
-import { assemblePortfolio } from "../portfolio/phs/assemble.js";
-import { computePhs } from "../portfolio/phs/engine.js";
+import { computePhs, type PhsHolding } from "../portfolio/phs/engine.js";
 import { natureOf } from "../portfolio/phs/entity.js";
 import { scanStringsForForwardLanguage, PORTFOLIO_ADVICE_DENY_LIST } from "../scoring/lens-patterns/no-forward-guard.js";
 import { READ_TIME_COPY } from "../portfolio/phs/copy.js";
-import { prisma } from "../db/prisma.js";
 
 let fail = 0;
 const ok = (n: string, c: boolean, d = "") => {
@@ -45,7 +51,13 @@ const ok = (n: string, c: boolean, d = "") => {
 };
 const rule = (s: string) => console.log("\n" + "═".repeat(96) + "\n" + s + "\n" + "═".repeat(96));
 
-const THESIS = "4c5ca537-8180-41f0-8fdc-b39caf366876";
+// THE THESIS BOOK — one holding, 100% of the book, one sector. `marketValue` is any positive number
+// (irrelevant: it's the only holding, so weight is 1.0 regardless); `health` 70 is an arbitrary "Steady"
+// reference value, same convention as the `S(...)` fixtures in verify-cv2-stage6/7.ts.
+const THESIS_BOOK: PhsHolding[] = [
+  { symbol: "TCS", marketValue: 1_000_000, tier: "large", sector: "it_technology", health: 70, findings: [], isin: "INE467B01029", assetClass: "stock" },
+];
+const thesisBook = () => ({ holdings: THESIS_BOOK, fieldWeakSymbols: new Set<string>() });
 
 // ── fixture builders ────────────────────────────────────────────────────────────────────────────
 const F = (id: string, family: string, tone: PfFinding["tone"], bind: Record<string, unknown>, clause?: string): PfFinding =>
@@ -74,11 +86,11 @@ const mustStory = (v: StoryInput) => {
 
 async function main() {
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-rule("1 · ★★ THE LIVE THESIS — 4c5ca537's movement 4 must not say the same thing twice");
+rule("1 · ★★ THE THESIS BOOK (synthetic, 100% TCS) — movement 4 must not say the same thing twice");
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 let liveStoryText = "";
 {
-  const { holdings, fieldWeakSymbols } = await assemblePortfolio(THESIS);
+  const { holdings, fieldWeakSymbols } = thesisBook();
   const r = computePhs(holdings);
   const findings = firePortfolioFindings(holdings, r, { fieldWeakSymbols });
   const ctx: SubjectContext = {
@@ -144,7 +156,7 @@ rule("2 · ★★ DETERMINISM — the same book, the same story, BYTE-FOR-BYTE. 
 {
   // ── ACROSS RUNS. The composer is pure, so this is really asserting that nothing in it reaches for a
   //    clock or a sampler. It is the cheapest assertion here and the one the whole ruling rests on.
-  const { holdings, fieldWeakSymbols } = await assemblePortfolio(THESIS);
+  const { holdings, fieldWeakSymbols } = thesisBook();
   const r = computePhs(holdings);
   const ctx: SubjectContext = {
     entityLedger: r.entityLedger, basketLedger: r.basketLedger,
@@ -580,8 +592,8 @@ rule("12 · ★★ THE PRE-10b DEGRADATION — a stale snapshot must NOT render 
   // with no payoff. The reader sees a setup with no point and stops reading — the one failure mode no later
   // finding corrects (cv2-s9-constructive-most-conditioned).
   //
-  // Reproduced on the live thesis book: fresh fired set, storyClause STRIPPED (simulating pre-10b persistence).
-  const { holdings, fieldWeakSymbols } = await assemblePortfolio(THESIS);
+  // Reproduced on the thesis book: fresh fired set, storyClause STRIPPED (simulating pre-10b persistence).
+  const { holdings, fieldWeakSymbols } = thesisBook();
   const r = computePhs(holdings);
   const fresh = firePortfolioFindings(holdings, r, { fieldWeakSymbols });
   const preTenB = fresh.map(({ storyClause, ...f }) => f as PfFinding); // strip clauses → a pre-10b shape
@@ -629,7 +641,6 @@ rule("12 · ★★ THE PRE-10b DEGRADATION — a stale snapshot must NOT render 
 console.log("\n" + "═".repeat(96));
 console.log(fail === 0 ? "  ✅ THE COMPOSER — ALL PASS" : `  ❌ ${fail} FAILURE(S)`);
 console.log("═".repeat(96));
-await prisma.$disconnect();
 process.exitCode = fail ? 1 : 0;
 }
 main().catch((e) => { console.error(e); process.exit(1); });

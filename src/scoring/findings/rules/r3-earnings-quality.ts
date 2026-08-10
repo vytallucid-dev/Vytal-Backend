@@ -17,14 +17,21 @@
 // universe-wide until deeper annual history lands. Implemented faithfully (returns null on
 // insufficient depth) — a needs-data outcome, not a silent gap.
 
-import { notEvaluable, type FireRule } from "../types.js";
+import { isFinancialIndustry, notEvaluable, type FilingRule } from "../types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const R3_MIN_CONSECUTIVE = 4;
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.foundation_R3_earnings_quality.facts;
 
-export const ruleR3: FireRule = (ctx) => {
+export const R3_MIN_CONSECUTIVE = FACTS.thresholds.minConsecutiveYears;
+
+export const ruleR3: FilingRule = (ctx) => {
   // NOT a data gap — a SCOPE decision. Cash-flow earnings quality is a non-financial read and is not
   // defined for a bank, so this is "does not apply", which is not_fired. Stays `null` deliberately.
-  if (ctx.industry === "banking") return null;
+  if (isFinancialIndustry(ctx.industry)) return notEvaluable("industry_not_applicable"); // banking · nbfc · life/general insurance — OCF-vs-NP does not transfer
   const f = ctx.annualFundamentals;
   // ⚠ MIGRATED (Phase 2): was a bare `null`, which collapsed "we could not check" into "we checked and
   // it is false". This is the DEPTH GATE — the check never ran — so it is not_evaluable with its reason.
@@ -56,6 +63,5 @@ export const ruleR3: FireRule = (ctx) => {
         `Earnings quality breakdown — net profit has exceeded operating cash flow for ` +
         `${run.length} straight years (${run[0].fy}–${run[run.length - 1].fy}).`,
     },
-    metricRefs: ["netProfit", "cashFromOperating"],
   };
 };

@@ -1,3 +1,67 @@
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★★★ THIS FILE HAS ONE AUTHOR AT A TIME. NOT A STYLE PREFERENCE — A CONCURRENCY RULE. ★★★
+//
+// One session OWNS schema.prisma from its first edit until that change is committed AND migrated.
+// Any other session stays out of the file entirely, and does not run `prisma generate` or any
+// `prisma migrate` command while someone else holds it.
+//
+// ── WHY, FROM WHAT ACTUALLY HAPPENED (2026-08-09) ──────────────────────────────────────────────────
+// Two sessions edited this file the same afternoon — one adding `StockFinding`, one adding
+// `stock_news.publisher_domain`. Every other file in the repo tolerated that; this one produced four
+// distinct failures, none of which the build caught:
+//
+//   1. A `prisma generate` from either side compiles the OTHER side's half-finished model into
+//      src/generated/. The generated client is a single global — there is no per-session view of it.
+//   2. It did exactly that: a generate ran while `publisher_domain` was declared but UNMIGRATED, so
+//      the client shipped a column the database did not have. Every read of it threw
+//      "The column stock_news.publisher_domain does not exist in the current database" — at RUNTIME,
+//      with `tsc --noEmit` passing clean, because the drift is between the client and the DB, not
+//      inside TypeScript.
+//   3. The other session's commit carried the first session's un-migrated field along with it, so the
+//      field entered version control without its migration and looked deliberate.
+//   4. An "it was migrated with the other work" handover was FALSE — the landed migration created
+//      stock_findings and dropped score_stock_states and never mentioned publisher_domain. The column
+//      had to be verified against information_schema before anything could be built on it.
+//
+// ── THE OPERATIONAL RULES THAT FOLLOW ────────────────────────────────────────────────────────────
+//   · NEVER run `prisma format` on a shared file mid-change — it reflows doc-comments and reorders
+//     fields across unrelated models, burying the real diff. (Done once here; reverted by hand.)
+//   · ★ APPLY MIGRATIONS WITH `npx tsx src/scripts/apply-migration-direct.ts <migration_dir>` AND
+//     NOTHING ELSE. Never `migrate dev` / `migrate deploy`. Never a hand-rolled
+//     `prisma db execute` followed by a hand-run `migrate resolve` — that is the exact hand-chaining
+//     the script was written to replace, and its own header says so. The script runs the SQL over
+//     DIRECT_URL in ONE transaction and writes the history record ONLY behind a witnessed COMMIT.
+//   · ⚠ WHY THAT IS NOT PEDANTRY — BOTH HALVES HAVE NOW FAILED IN PRODUCTION.
+//     `migrate resolve` WRITES THE LEDGER WITHOUT RUNNING ANYTHING, so any path where the execute step
+//     silently no-ops produces a migration recorded as applied against a database that never received
+//     it. On 2026-08-03 that was resolve-chained-after-a-ROLLBACK (fixed by moving resolve inside the
+//     script). On 2026-08-09 it was `prisma db execute` with a mis-ordered flag pair: it PRINTED ITS
+//     USAGE TEXT AND EXITED 0, the following `migrate resolve` marked the migration applied, and
+//     `publisher_domain` did not exist. Caught only by querying information_schema.
+//     The script has no such door. Going around the script is the door.
+//   · So: after ANY migration, verify the object exists in information_schema. The ledger asserts; it
+//     does not evidence.
+//
+// ── ★★ THE SAME RULE APPLIES TO TWO MORE DIRECTORIES, FOR THE SAME REASON ────────────────────────
+//   src/scoring/findings/    and    src/catalogue/
+//
+// These are a SHARED GATE SURFACE. `npm run verify:copy` — the build gate, 19 scripts — reads the rule
+// registry and the catalogue, so a half-landed refactor there turns the gate RED FOR EVERY SESSION, not
+// just the one doing the work. Measured on 2026-08-09: `engine.ts` stopped exporting `ALL_RULES` and
+// `FAMILY_N_RULES` mid-refactor, and `verify:copy` plus 8 tsc errors appeared in
+// familyN-findings-proof.ts / verify-filed-context.ts / catalogue/stock-findings.ts. A concurrent
+// session working on an unrelated feature then had no green gate to verify its own work against, and
+// had to prove by file mtime and `git status` that the breakage was not its own.
+//
+// So: one session owns src/scoring/findings/ and src/catalogue/ until its change is committed and the
+// gate is green again. The other stays out — and, crucially, does not treat a red verify:copy as
+// evidence about its own work.
+//
+// The general principle behind all three: A FILE OR DIRECTORY THAT A SHARED GATE READS CANNOT HAVE TWO
+// AUTHORS AT ONCE. Everything else in this repo can be worked around; these cannot, because the thing
+// that would tell you something is wrong is the thing that is already broken.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -94,10 +158,12 @@ model Stock {
   // These are virtual Prisma relation fields; the FK constraints live on the
   // score_* child tables. Required so the per-stock scoring relations validate
   // with onDelete: Cascade (per scoring-schema-design §0).
-  scoringStates   StockScoringState[]
   scoreSnapshots  ScoreSnapshot[]
   pillarScores    PillarScore[]
   guardrailEvents GuardrailEvent[]
+
+  // ── FILED-DATA findings (stock-grain, snapshot-free — see model StockFinding) ──
+  stockFindings StockFinding[]
 
   // ── Manual supplementary banking figures (CASA, Tier-1 history) ──
   bankSupplementary BankSupplementary[]
@@ -923,6 +989,15 @@ model StockNews {
   // "nse_announcement" | "google_news"
   sourceId   String @map("source_id")
   // NSE seqId | Google News RSS GUID
+  // ⚠ THE GOOGLE GUID DRIFTS. The same article comes back with a NEW guid, so the unique index on
+  // (stock_id, source_id) below does NOT dedupe press items. That is what `dedupe_key` is for.
+
+  dedupeKey String? @map("dedupe_key")
+  // ★ PRESS ONLY — "{published_at ms}|{normalised headline, first 60 chars}". Built by
+  // ingestions/news_and_announcements/dedupe-key.ts, which carries the calibration in full.
+  // NULL on every nse_announcement row: filings are keyed by NSE's seq_id, which does not drift, and a
+  // NULL is exempt from the unique index below (Postgres treats NULLs as distinct). Also NULL for a
+  // row with an empty headline — unkeyable means STORED, never silently dropped.
 
   // ── Raw content (always populated) ──────
   headline String
@@ -956,6 +1031,23 @@ model StockNews {
   externalUrl String? @map("external_url")
   // Google News article URL (may be paywalled)
   // Always stored for reference even if article wasn't scraped
+  // ⚠ THIS IS A news.google.com REDIRECT, NOT THE PUBLISHER. It no longer 302s to the article
+  // either — followed live, it returns Google's own JS shell. Never treat it as a publisher URL.
+
+  publisherDomain String? @map("publisher_domain")
+  // ★ The PUBLISHER'S REAL HOST, from the RSS `<source url="https://www.moneycontrol.com">` element.
+  //
+  // WHY IT EXISTS: the relevance screen (chat/web/news-filter.ts) bans hosts that publish quote pages
+  // and recommendation listicles rather than news — tradingview, goodreturns, equitymaster,
+  // simplywall.st, Yahoo/Google quote paths. Every one of those rules was DEAD on this table, because
+  // the only URL stored is the Google redirect above and `category` holds a display name ("The
+  // Economic Times"), not a domain. The field was in the feed all along and the parser dropped it.
+  //
+  // NULL on every row ingested before 2026-08-09, and on the 70.6% of those whose `category` is a
+  // display name rather than a domain (no name→domain map exists and inventing one would be guessing).
+  // That blindness is time-boxed, not permanent: stock_news is pruned at 90 days by published_at, so
+  // the whole backfill gap rotates out. A null domain simply skips the host rules — the entity guard
+  // and the title rules, which do the bulk of the work, are unaffected.
 
   // ── Classification ────────────────────────
   category String?
@@ -966,8 +1058,30 @@ model StockNews {
   // NSE sub_category field
 
   sentiment String?
-  // "positive" | "negative" | "neutral"
-  // Filled by AI in Phase 2, null at ingest time
+  // ⚠⚠ NOTHING WRITES THIS, AND THAT IS A DECISION — NOT AN UNFINISHED PHASE 2. (2026-08-09)
+  //
+  // 0 of 30,083 rows have ever carried a value. The column is KEPT (dropping it would need a
+  // migration for no gain, and a licensed source with real article text could reopen the
+  // question), but every PATH to a reader has been removed: the "AI sentiment · Phase 2" chip
+  // on the Disclosures tab, the field on the ViewerNews read-model, and the UNLABELLED renderer
+  // on the Results Context tab that would have displayed a value the moment one was written.
+  //
+  // ★ WHY NOT "LATER". Sentiment is a VERDICT, and a chip is the one shape a verdict cannot
+  // honestly take:
+  //   · A chip is not text. `scanExplanationText` (src/ai/guardrail.ts) runs on DELIVERED PROSE
+  //     at exactly two call sites. An enum on a row passes through no scanner at all — so this
+  //     would BYPASS the evaluative tier silently rather than be exempted from it, and an
+  //     absence is not something a reviewer can argue with. That tier exists precisely because
+  //     "a strong dividend record" and "the payout is impressive" cleared every other guard.
+  //   · That tier's `attributed` flag is what makes a verdict acceptable — reporting someone
+  //     else's judgement is description. A chip has no room for a source, so it is structurally
+  //     incapable of the one thing that would justify it.
+  //   · There is nothing to judge FROM. A google_news row holds a headline; `summary` is that
+  //     same headline with the publisher appended (22,870 of 23,150 rows byte-exactly), and
+  //     `content_text` is either null or a copy of `summary`. Article bodies are unreachable.
+  //
+  // The checkable answers are EVENT TYPE and RELEVANCE, both derivable with no model.
+  // Do not re-add a writer, a read-model field, or a renderer.
 
   isHighImpact Boolean @default(false) @map("is_high_impact")
 
@@ -987,9 +1101,11 @@ model StockNews {
   fetchedAt   DateTime  @default(now()) @map("fetched_at")
   extractedAt DateTime? @map("extracted_at")
 
-  stock       Stock       @relation(fields: [stockId], references: [id], onDelete: Cascade)
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
 
   @@unique([stockId, sourceId])
+  /// ★ The real dedupe for press items — see `dedupeKey`. NULL-exempt, so filings are unaffected.
+  @@unique([stockId, dedupeKey])
   @@index([stockId])
   @@index([publishedAt(sort: Desc)])
   @@index([stockId, publishedAt(sort: Desc)])
@@ -1059,8 +1175,8 @@ model QuarterBrief {
   factsFingerprint String @map("facts_fingerprint")
 
   model        String
-  promptTokens Int? @map("prompt_tokens")
-  outputTokens Int? @map("output_tokens")
+  promptTokens Int?   @map("prompt_tokens")
+  outputTokens Int?   @map("output_tokens")
 
   generatedAt DateTime @default(now()) @map("generated_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
@@ -2270,34 +2386,19 @@ model BandMappingVersion {
 
 // ─────────────────────────────────────────────────────────────
 // GROUP 2 — PER-STOCK SCORING STATE (satellite of the off-limits Stock)
+//
+// ⚠ DELIBERATELY EMPTY. `score_stock_states` (model StockScoringState, enum CoverageState) was
+// DROPPED on 2026-08-09. It was created with the scoring layer, never written by anything — no
+// create / update / upsert / job / seed / migration anywhere in the codebase — and held 0 rows for
+// its entire life. Its single reader (`resolveCoverage`) therefore returned `null` identically for
+// a fully-scored stock and a never-scored one, which is the ONE distinction a coverage state exists
+// to make.
+//
+// Coverage is DERIVED instead, from inputs that work: src/relational/coverage.ts (`deriveCoverage`)
+// reads the in-force snapshot ref, the persisted declined-check set, and peer-group membership.
+// That is the correct implementation and is untouched. Do not revive this table — write the
+// derivation's inputs, not a state column that nothing maintains.
 // ─────────────────────────────────────────────────────────────
-
-enum CoverageState {
-  scored
-  covered
-  off_platform
-}
-
-// Coverage state, independent of PG assignment. Lives here because Stock is
-// input-layer and off-limits.
-// APPEND-ONLY (ruling 1): NOT 1:1 — a coverage change writes a NEW row;
-// newest-by-createdAt wins on read. (The draft proposed @@unique([stockId])
-// 1:1, but a single mutable row contradicts the no-update rule.)
-model StockScoringState {
-  id              String        @id @default(uuid())
-  stockId         String        @map("stock_id")
-  symbol          String // denormalised for join-free coverage scans
-  coverageState   CoverageState @map("coverage_state")
-  coverageReason  String?       @map("coverage_reason")
-  lastScoredRunId String?       @map("last_scored_run_id") // plain ref (run id)
-  createdAt       DateTime      @default(now()) @map("created_at")
-
-  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
-
-  @@index([stockId, createdAt(sort: Desc)]) // latest coverage per stock
-  @@index([coverageState])
-  @@map("score_stock_states")
-}
 
 // ─────────────────────────────────────────────────────────────
 // GROUP 3 — THE SCORE SPINE (composite → pillar → leaf)
@@ -2531,7 +2632,8 @@ model ScoreSnapshot {
   supersededBy ScoreSnapshot? @relation("SnapshotSupersede")
 
   patterns        ScorePattern[]
-  redFlags        RedFlag[]
+  // `redFlags RedFlag[]` was here — score_red_flags DROPPED 2026-08-11. Every red-flag rule
+  // (R1…R6) is a FILING rule writing to stock_findings, which is stock-grain and has no snapshot FK.
   guardrailEvents GuardrailEvent[]
 
   @@unique([stockId, snapshotType, periodKey, version]) // immutability + version history retained
@@ -2784,7 +2886,10 @@ model ScorePattern {
   // numeric impact. The base catalog magnitude is reconstructable from patternKey.
   magnitude    Decimal? @db.Decimal(6, 2)
   evidence     Json? // the underlying values (the UI reads this to build the verdict sentence)
-  metricRefs   Json?    @map("metric_refs") // array of metricKeys
+  // ⚠ `metric_refs` (Json, array of metric/pillar codes) was DROPPED 2026-08-10. Every rule stamped
+  //    one and no consumer ever read a value back — the lens separation section takes its metric off
+  //    the composed key, every other surface off `evidence`. Its only live reader printed the raw
+  //    codes into the model's fact block. Dropped from stock_findings in the same migration.
   createdAt    DateTime @default(now()) @map("created_at")
 
   snapshot ScoreSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
@@ -2794,26 +2899,152 @@ model ScorePattern {
   @@map("score_patterns")
 }
 
-// First-class red flags, universe-queryable.
-model RedFlag {
-  id               String        @id @default(uuid())
-  snapshotId       String        @map("snapshot_id")
-  symbol           String // denormalised
-  asOfDate         DateTime      @map("as_of_date") @db.Date // denormalised
-  flagKey          String        @map("flag_key")
-  severity         String?
-  tier             GuardrailTier
-  triggeringValues Json?         @map("triggering_values")
-  guardrailEventId String?       @map("guardrail_event_id") // set when the flag came from a guardrail
-  createdAt        DateTime      @default(now()) @map("created_at")
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// FILED-DATA FINDINGS — stock-grain, snapshot-free, peer-group-free.
+//
+// GOVERNING PRINCIPLE: a finding about a FILING belongs to the STOCK; a finding about a SCORE
+// belongs to the SNAPSHOT. score_patterns / score_red_flags above are the second kind — they FK a
+// ScoreSnapshot because what they assert is a property of that scored reading. The ~22 rules that
+// read nothing but filed data (shareholding, annual fundamentals, quarterly results, insider
+// transactions, block deals) assert the first kind: "promoters sold 4.1% this quarter" is true of
+// the company and its filing, and stays true whether or not anyone ever computed a Health Score.
+//
+// ── ★ WHY THERE IS NO snapshot_id COLUMN, AND WHY THAT IS NOT AN OVERSIGHT ────────────────────────
+// Not nullable. ABSENT. A nullable FK would read as "usually attached, occasionally not", and the
+// first consumer to write `WHERE snapshot_id = ?` would silently serve a subset of the truth.
+//
+// Only 95 of 504 stocks are scored, because scoring requires a peer group and 355 stocks have none
+// (the display-only firewall). A filing finding MUST be storable for a stock that has never been
+// scored and never will be. Attaching it to a snapshot would make its existence depend on the
+// score's plumbing — a peer group with ≥5 comparable members, committed bars, a composite that
+// survived — none of which is a logical dependency of "did promoters sell". The same reasoning
+// decoupled GuardrailEvent from its snapshot on 2026-07-31 (see that model's header): identity moved
+// to (stockId, period, key) precisely so the row could exist when no ScoreSnapshot does.
+//
+// There is no peer_group_id column for the same reason, one step further: the peer group is the
+// score's plumbing, not the filing's context. A pond reshuffle must not change what a company filed.
+//
+// ── PERIOD KEY — ONE COLUMN, THREE FILING GRAINS, PREFIXED SO THEY CANNOT BE CONFUSED ────────────
+// `periodKey` is the FILING period that produced the finding. It is NOT a scoring period and must
+// never be compared against ScoreSnapshot.periodKey. The three grains carry a one-letter prefix:
+//
+//   A:FY26      ANNUAL — fiscal year. Rules over annual fundamentals: R3, R4, P7, P8, N1, N2, N3.
+//   Q:FY26Q3    RESULTS QUARTER — the quarter of the results filing. R5, N4, P11, P12, P13.
+//   S:FY26Q3    SHAREHOLDING QUARTER — the quarter of the shareholding pattern (asOnDate's
+//               fiscal quarter). R2, R6, P1, P4, N5, N6, N7 — and P5/P6/P10/H, whose insider and
+//               block-deal windows are already ANCHORED on the latest shareholding filing date
+//               (see those rules), so the shareholding quarter is their period too.
+//
+// The prefix is load-bearing: a results quarter and a shareholding quarter are the same calendar
+// span but DIFFERENT filings, arriving weeks apart. Without it, "FY26Q3" would mean two things and
+// the unique key would depend on the reader knowing which rule wrote it.
+//
+// ⚠ A prefixed key does NOT sort chronologically across grains ("A:FY26" < "Q:FY25Q1" lexically),
+// which is why `periodEnd` exists as a real DATE. Ordering reads use periodEnd; periodKey is the
+// identity, never the sort.
+//
+// ── ROWS ARE WRITTEN FOR EVERY RULE THAT EVALUATED, NOT ONLY FOR THOSE THAT FIRED ────────────────
+// `evaluationState` is three-valued and is NOT a boolean. "We checked and it is clean" (not_fired)
+// and "we could not check" (not_evaluable) are different statements, both renderable, and collapsing
+// them is the exact defect the engine's RuleResult contract already refuses to make (see
+// src/scoring/findings/types.ts). Row ABSENCE means "this rule has not been run for this period" —
+// a third thing again, and the only thing it means.
+//
+// ── NOT APPEND-ONLY, UNLIKE THE score_* TABLES ────────────────────────────────────────────────────
+// The scoring layer is append-only and forbids `updatedAt` outright. This table is not part of that
+// layer and deliberately breaks the convention: its identity is (stock, rule, filing period), and a
+// restated or re-ingested filing must CORRECT that row, not stack a second one behind it. The unique
+// constraint is what makes the write an upsert, so `updatedAt` here records a real event — the
+// filing was re-read — rather than being the bug it would be on a score row.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
-  snapshot       ScoreSnapshot   @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
-  guardrailEvent GuardrailEvent? @relation(fields: [guardrailEventId], references: [id], onDelete: Cascade)
+/// Three outcomes, never two. Mirrors the engine's RuleResult arms exactly:
+/// FiredFinding → fired · `null` → not_fired · NotEvaluable → not_evaluable.
+enum FindingEvaluationState {
+  fired
+  not_fired
+  not_evaluable
+}
 
-  @@index([asOfDate, flagKey]) // QP5: "every red flag this quarter"
-  @@index([snapshotId]) // QP1
-  @@index([tier])
-  @@map("score_red_flags")
+/// Whether the finding is newly standing, continuing, or resolved AS OF this period — made explicit
+/// rather than inferred from row absence. N7 already needs "did R1 stand in the prior quarter", and
+/// inferring that from a missing row conflates "it was clean" with "we never ran".
+///
+/// CONSTRAINED BY evaluationState, and the pairing is total:
+///   fired         ⇒ newly_standing | continuing
+///   not_fired     ⇒ resolved | not_standing
+///   not_evaluable ⇒ NULL — we could not check, so we cannot claim standing either way.
+/// NULL therefore means exactly one thing. `not_standing` exists so it does not also have to mean
+/// "clean, and clean last period too".
+enum FindingStandingState {
+  newly_standing
+  continuing
+  resolved
+  not_standing
+}
+
+/// Which of the two finding shapes this rule emits — a rule's fixed property, true whether or not it
+/// fired this period. Red flags map onto score_red_flags' shape, patterns onto score_patterns'.
+enum StockFindingKind {
+  red_flag
+  pattern
+}
+
+model StockFinding {
+  id      String @id @default(uuid())
+  stockId String @map("stock_id")
+  symbol  String // denormalised for join-free universe scans (score_patterns / score_red_flags precedent)
+
+  /// The CATALOGUE key ("foundation_P8_receivables") — the identity a reader and the copy register
+  /// both speak. 1:1 with the rule, so it identifies the rule even on a not_fired row.
+  ruleKey String @map("rule_key")
+  /// The engine's short stable ref ("P8"), denormalised from engine.ts RULE_REFS. The declined-check
+  /// surface (relational/coverage.ts CAPABILITY_BY_RULE) is keyed on this; carrying it avoids a
+  /// key→ref lookup table on the read path.
+  ruleRef String @map("rule_ref")
+
+  /// "<grain>:<period>" — A:FY26 | Q:FY26Q3 | S:FY26Q3. See the header. Identity, never the sort.
+  periodKey String   @map("period_key")
+  /// Last calendar day of `periodKey`. The ONLY chronological ordering key — the prefixed periodKey
+  /// does not sort across grains.
+  periodEnd DateTime @map("period_end") @db.Date
+
+  evaluationState    FindingEvaluationState @map("evaluation_state")
+  standingState      FindingStandingState?  @map("standing_state")
+  /// The machine token from NotEvaluableReason (findings/types.ts). Set iff
+  /// evaluationState = not_evaluable; NULL on every other row.
+  notEvaluableReason String?                @map("not_evaluable_reason")
+
+  // ── The evidence payload, shaped to match score_patterns / score_red_flags EXACTLY so a
+  //    downstream consumer needs no translation layer. `evidence` is score_patterns' name;
+  //    score_red_flags called the same JSON `triggering_values`. severity/direction/displayState/
+  //    magnitude are column-for-column the score_patterns set, with the same types
+  //    (magnitude Decimal(6,2) — a dampened pattern halves −3 to −1.5).
+  //
+  //    ★ SEVERITY IS STAMPED BY THE RULE AT EVALUATION TIME, NEVER RE-DERIVED AT READ TIME. A
+  //    severity recomputed later would be a severity computed against data the rule never saw.
+  //    NULL on a not_fired / not_evaluable row: a rule that did not fire has no severity, and a
+  //    default would be a claim.
+  kind         StockFindingKind
+  severity     String?
+  direction    String?
+  magnitude    Decimal?         @db.Decimal(6, 2)
+  displayState String           @default("active") @map("display_state")
+  evidence     Json?
+  // ⚠ `metric_refs` DROPPED 2026-08-10 alongside score_patterns' — see that model's note.
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  stock Stock @relation(fields: [stockId], references: [id], onDelete: Cascade)
+
+  /// One row per (stock, rule, filing period). Restating a filing UPDATES it; it never stacks.
+  @@unique([stockId, ruleKey, periodKey])
+  /// THE DOMINANT READ: every finding for one stock, latest period first.
+  @@index([stockId, periodEnd(sort: Desc)])
+  /// Universe scans — "every stock where R2 fired this quarter".
+  @@index([ruleKey, periodKey, evaluationState])
+  @@map("stock_findings")
 }
 
 // Every guardrail signature that fired: triggering values + outcome (O1–O6) +
@@ -2838,12 +3069,16 @@ model RedFlag {
 model GuardrailEvent {
   id               String           @id @default(uuid())
   stockId          String           @map("stock_id")
-  /** The PERIOD this detection belongs to ("FY27Q1"). Always known at gate time — no FK, no
-   *  snapshot required. This is the identity column; snapshotId is not. */
+  /**
+   * The PERIOD this detection belongs to ("FY27Q1"). Always known at gate time — no FK, no
+   * snapshot required. This is the identity column; snapshotId is not.
+   */
   snapshotKey      String           @map("snapshot_key")
-  /** The snapshot this run created for the stock, when it created one. NULL ⇒ the score did not
-   *  change (skipped_identical) or was unavailable, so no snapshot was written this run. NULL is a
-   *  normal, expected state — NOT a defect, and NOT "unscreened". */
+  /**
+   * The snapshot this run created for the stock, when it created one. NULL ⇒ the score did not
+   * change (skipped_identical) or was unavailable, so no snapshot was written this run. NULL is a
+   * normal, expected state — NOT a defect, and NOT "unscreened".
+   */
   snapshotId       String?          @map("snapshot_id")
   signatureKey     String           @map("signature_key")
   triggeringValues Json?            @map("triggering_values")
@@ -2856,7 +3091,9 @@ model GuardrailEvent {
 
   reviews               GuardrailReview[]
   suppressionDirectives SuppressionDirective[]
-  redFlags              RedFlag[]
+  // `redFlags RedFlag[]` dropped 2026-08-11 with score_red_flags. A guardrail-raised red flag was
+  // the only thing that ever set `tier: "review"`; no such row has been written since the filing
+  // cutover and the table it pointed at no longer exists.
 
   // A signature fires at most once per stock per PERIOD. Re-running a scoring pass is
   // get-or-create on this key, so a rescore never duplicates (A-3 alone fires on 91 of 95
@@ -3272,10 +3509,10 @@ model User {
   behaviorRollups    BehaviorRollup[]
 
   // ── Chat (Stage 2): the user's own conversations (discuss sidebar + chat page) ──
-  chatSessions ChatSession[]
+  chatSessions      ChatSession[]
+  chatReaderProfile ChatReaderProfile?
 
   @@map("users")
-  chatReaderProfile ChatReaderProfile?
 }
 
 /// Durable onboarding FACTS. One row per user; columns nullable so
@@ -4835,19 +5072,19 @@ model ChatReaderProfile {
   userId String @map("user_id")
 
   /// "en" | "hi-latin" | "devanagari" | "mixed" (CHECK-constrained in SQL). null ⇔ not yet established.
-  preferredRegister String? @map("preferred_register")
+  preferredRegister String?  @map("preferred_register")
   /// -1 simpler / 0 neutral / +1 denser. Feeds tone.ts's EXISTING axes, clamped by aiLevel's bounds —
   /// it can only refine within what the reader's stated level permits, exactly like the ledger facts.
-  depthNudge   Int      @default(0) @map("depth_nudge")
+  depthNudge        Int      @default(0) @map("depth_nudge")
   /// Vytal-vocabulary keys the reader has shown they don't know. Max 8, CHECK-enforced; the values come
   /// from a fixed allowlist in code, bounded because Vytal's own vocabulary is closed.
-  glossaryGaps String[] @default([]) @map("glossary_gaps")
+  glossaryGaps      String[] @default([]) @map("glossary_gaps")
   /// ONLY if explicitly stated ("call me Arman"). NEVER inferred. Max 40 chars, CHECK-enforced.
   /// ★ KEEP. This was pencilled in for removal as an unread column; it is now the ONE profile field with a
   /// live reader. Two writers (the nightly distiller, and the reader asking outright through rememberThis),
   /// one reader (chat/compose.ts §readOrientation), and it is deliberately OUTSIDE AI_PROFILE_INJECT
   /// because a form of address the reader typed is an instruction, not an inference.
-  statedName   String?  @map("stated_name")
+  statedName        String?  @map("stated_name")
 
   /// ★ USER-DIRECTED MEMORY — what the reader ASKED to be remembered, as
   /// `[{ id, text, source: "stated", createdAt }]`. Max 30 items, each ≤200 chars, both CHECK-enforced.
@@ -4859,19 +5096,19 @@ model ChatReaderProfile {
   statedMemories Json @default("[]") @map("stated_memories")
 
   // ── Provenance. No stamps ⇒ no decay, and no way to answer "why does it think that". ──
-  registerFirstSeenAt DateTime? @map("register_first_seen_at")
-  registerLastSeenAt  DateTime? @map("register_last_seen_at")
-  registerSessionCount Int      @default(0) @map("register_session_count")
-  depthFirstSeenAt    DateTime? @map("depth_first_seen_at")
-  depthLastSeenAt     DateTime? @map("depth_last_seen_at")
-  depthSessionCount   Int       @default(0) @map("depth_session_count")
+  registerFirstSeenAt  DateTime? @map("register_first_seen_at")
+  registerLastSeenAt   DateTime? @map("register_last_seen_at")
+  registerSessionCount Int       @default(0) @map("register_session_count")
+  depthFirstSeenAt     DateTime? @map("depth_first_seen_at")
+  depthLastSeenAt      DateTime? @map("depth_last_seen_at")
+  depthSessionCount    Int       @default(0) @map("depth_session_count")
   /// { "<vocabKey>": { firstSeenAt, lastSeenAt, sessionCount } } — a stamp sidecar for the bounded
   /// array above. JSON here and nowhere else: the KEYS are allowlisted, so it cannot hold prose.
-  gapStamps           Json?     @map("gap_stamps")
-  nameStatedAt        DateTime? @map("name_stated_at")
+  gapStamps            Json?     @map("gap_stamps")
+  nameStatedAt         DateTime? @map("name_stated_at")
 
   /// Total sessions ever folded into this profile — drives the decay windows.
-  sessionsDistilled Int @default(0) @map("sessions_distilled")
+  sessionsDistilled Int       @default(0) @map("sessions_distilled")
   /// ★ Set when the reader clears their activity data. The distiller reads ONLY sessions whose
   /// lastMessageAt is AFTER this, so a cleared profile cannot re-form from surviving transcripts.
   profileClearedAt  DateTime? @map("profile_cleared_at")

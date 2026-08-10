@@ -1,0 +1,35 @@
+-- ═══════════════════════════════════════════════════════════════════════════════════════════════
+-- DROP metric_refs — from BOTH finding channels.
+--
+-- A write-only column on both tables. 53 rules stamped one; four read sites narrowed it (health
+-- view, filing read, watchlist enrich, and the shared asMetricRefs narrower) and served it on the
+-- payload; nothing anywhere read a value back. The frontend declared the field in three type
+-- positions and never destructured it in a single component.
+--
+-- Its ONE live consumer was ai/grounding.ts, which printed the array into the model's fact block as
+-- `metricRefs=["market","foundation"]` — unlabelled raw identifiers, from three unrelated
+-- vocabularies sharing one field: pillar names ("foundation"), raw camelCase source fields
+-- ("tradeReceivablesCurrent"), and the three-lens metric-slot codes (F1–F8, M1, M5, NII, NIM,
+-- NPyoy, PPOP, Tier1, CASA).
+--
+-- ★ THE LENS VOCABULARY WAS CHECKED SEPARATELY BEFORE THIS RAN, because it is the only one of the
+--   three that resolves against a catalogue (CANONICAL_METRICS). It does not depend on this column:
+--   the peer-group separation section takes its metric from the composed KEY's suffix
+--   (peer-group-view.service.ts, via catalogue/lens-faces.ts faceIdOfLensKey), and evidence.metricKey
+--   carries the same coordinate a second time. Both survive this drop untouched.
+--
+-- ── WHAT GOES WITH IT (censused on the live DB immediately before this migration) ───────────────
+--   score_patterns   11,399 rows · 11,222 carried a value across 58 distinct pattern keys
+--                    · 4,267 of those rows belong to EIGHT RETIRED keys (C1, C2, C3, C_over_time,
+--                      G_convergence, B_deterioration, D_recovery, I_band_transition) — already
+--                      filtered out of every read by dropRetiredPatterns
+--                    · 1,997 belong to the 19-key lens namespace
+--                    · the 177 not-covered rows carried NULL, as designed
+--   stock_findings   11,024 rows · 482 carried a value (the 481 fired rows + 1)
+-- Both sets are intended losses: no reader loses a field it was reading.
+--
+-- Applied with: npx tsx src/scripts/apply-migration-direct.ts 20260810120000_drop_metric_refs
+-- ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE "score_patterns" DROP COLUMN "metric_refs";
+ALTER TABLE "stock_findings" DROP COLUMN "metric_refs";

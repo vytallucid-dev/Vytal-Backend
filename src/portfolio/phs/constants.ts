@@ -27,7 +27,30 @@
 // the cutover would compute Net but never show it. The bump churns every fingerprint → the next
 // compute (or the deploy backfill) re-persists one fresh Net row per user. `cv2-s3-version-defer`
 // parked exactly this for "Stage 5/6"; the condition (C-rules feed the displayed score) is now met.
-export const CONSTANT_VERSION = "portfolio-spec 2.0";
+//
+// ── BUMPED 2.0 → 2.1 (signals-ledger bookWeight) ─────────────────────────────────────────────────
+// ⚠ NOT A RECALIBRATION. Every constant in this file is byte-unchanged and NO NUMBER MOVES: Health,
+// Quality, Signals, Construction and every `points` in the ledger are identical before and after. The
+// bump exists for the one thing only this constant can do — CHURN EVERY FINGERPRINT.
+//
+// `SignalsDeduction` gained `bookWeight` (the whole-book share the Health tab prints as "% of book";
+// it was printing wSig, the finding-capable share, which excludes bonds/REITs/gold/T-bills/funds). The
+// ledger is persisted JSON, so an existing row simply DOES NOT HAVE the key — and nothing else would
+// ever rewrite it: `fingerprintOf` hashes weights, entities, natures, sectors, houses, score/finding
+// ids, tier, matcher and cv. A ledger SHAPE change touches none of them, so without this bump every
+// book that has not otherwise moved would serve a key-less ledger forever, and the display would have
+// to guess. This is the same argument Stage 5 made for the Net cutover, on a display field instead of
+// a score: A NEW FACT THAT NO FINGERPRINT INPUT CAN SEE NEEDS THE VERSION, or it never lands.
+//
+// DEPLOY STEP: run `npx tsx src/scripts/backfill-phs-snapshots.ts` once, exactly as at 1.2 and 2.0 —
+// the normal triggers (transaction write / rescore) only revisit books a change intersects, and this
+// change intersects none of them. Until it runs, a stale row's rows render WITHOUT the "of book" chip
+// (see the FE) rather than with a substituted number.
+//
+// ⚠ `verify-cv2-stage5-postbackfill.ts` pins the literal "portfolio-spec 2.0". It is a one-off Stage-5
+// post-backfill gate (not in `verify:copy`); it is now historical and will fail if re-run. Left alone
+// deliberately — rewriting a dated gate to pass against a later era is how a gate stops being evidence.
+export const CONSTANT_VERSION = "portfolio-spec 2.1";
 
 // (Construction v2 Stage 7 — §12) THE §14 MATCHER'S VERSION — a fingerprint input that ships BEFORE the
 // thing it versions. The fund-sector matcher does not exist yet (Stage 8), so this is a sentinel; the

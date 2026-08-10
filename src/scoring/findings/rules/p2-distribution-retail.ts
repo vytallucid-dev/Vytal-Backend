@@ -54,6 +54,5 @@ export const ruleP2: RetiredRule = (ctx) => {
         `Distribution to retail — institutions cut ${r2(-instDelta).toFixed(2)}pp while retail absorbed ` +
         `+${r2(retailDelta).toFixed(2)}pp into ${cur.fiscalYear}${cur.quarter}.`,
     },
-    metricRefs: ["fiiPct", "diiPct", "retailPct"],
   };
 };

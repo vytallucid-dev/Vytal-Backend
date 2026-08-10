@@ -189,6 +189,19 @@ export const JobTypes = {
   // costs a FULL quota unit (the cap counts calls, not tokens) — acceptable for now.
   CHAT_TITLE_GENERATE: "chat_title_generate",
   CHAT_PROFILE_DISTILL: "chat_profile_distill",
+  // ── The filing pass (step 6) ─────────────────────────────
+  // FILING_RECOMPUTE — ENQUEUED BY THE WORKER HOOK, never by a cron. Recomputes the rules ONE ingestion
+  // moved, for the stocks in THAT batch. Filing-keyed by construction: the payload carries the feeds
+  // and the symbols, and both come from the ingestion result that triggered it.
+  FILING_RECOMPUTE: "filing_recompute",
+  // FILING_ROLLING_DAILY — the ONE clock-keyed exception, and it is a narrow one. P6 and H evaluate a
+  // trailing 90-day window, so they can stop being true with NO new data: yesterday's deal leaves the
+  // window tomorrow whether or not anything is ingested. Everything else in the pass is filing-keyed.
+  FILING_ROLLING_DAILY: "filing_rolling_daily",
+  // FILING_BACKFILL — all 22 rules, all 504 stocks. THE STANDING LAW (src/scoring/findings/rules/
+  // BACKFILL-LAW.md): any change to a rule's logic or constants requires this, because a
+  // filing-triggered row freezes until the next filing — up to eleven months for an annual rule.
+  FILING_BACKFILL: "filing_backfill",
 } as const;
 
 export type JobType = (typeof JobTypes)[keyof typeof JobTypes];
@@ -427,6 +440,28 @@ export interface RetentionPrunePayload {
 export interface BehaviorRollupReconcilePayload {}
 /** Base-rate warm — no input; the whole in-force snapshot set IS the worklist. */
 export interface BaseRatesWarmPayload {}
+/** Filing recompute — the SCOPE, carried from the ingestion that triggered it. Both fields are
+ *  required: a payload with no feeds would recompute all 22 rules, and one with no symbols would
+ *  recompute the universe. Either would silently undo the whole point of a filing-keyed trigger. */
+export interface FilingRecomputePayload {
+  /** Which feeds moved — resolved from the triggering job type (filing/triggers.ts). */
+  feeds: string[];
+  /** The stocks in that ingestion batch. Never the universe. */
+  symbols: string[];
+  triggeredBy?: string;
+  reason?: string;
+}
+/** The daily rolling-window pass — no input. Its worklist is "stocks with any insider or block-deal
+ *  row", resolved by the handler, because that is the set whose window can move under them. */
+export interface FilingRollingDailyPayload {}
+/** The full backfill. Both fields optional: the law's default is everything. */
+export interface FilingBackfillPayload {
+  /** Restrict to these symbols — a targeted re-run, never the law's discharge. */
+  symbols?: string[];
+  /** Restrict to these feeds' rules — same caveat. */
+  feeds?: string[];
+  reason?: string;
+}
 /** Chat title generation — the ONE session whose title to (re)write from its first exchange. */
 export interface ChatTitleGeneratePayload {
   sessionId: string;
@@ -524,6 +559,9 @@ export type JobPayload =
   | { type: typeof JobTypes.RETENTION_PRUNE; data: RetentionPrunePayload }
   | { type: typeof JobTypes.BEHAVIOR_ROLLUP_RECONCILE; data: BehaviorRollupReconcilePayload }
   | { type: typeof JobTypes.BASE_RATES_WARM; data: BaseRatesWarmPayload }
+  | { type: typeof JobTypes.FILING_RECOMPUTE; data: FilingRecomputePayload }
+  | { type: typeof JobTypes.FILING_ROLLING_DAILY; data: FilingRollingDailyPayload }
+  | { type: typeof JobTypes.FILING_BACKFILL; data: FilingBackfillPayload }
   | { type: typeof JobTypes.CHAT_TITLE_GENERATE; data: ChatTitleGeneratePayload }
   | { type: typeof JobTypes.CHAT_PROFILE_DISTILL; data: ChatProfileDistillPayload }
   | { type: typeof JobTypes.REMINDERS_DELIVER_DAILY; data: RemindersDeliverDailyPayload };
@@ -639,6 +677,15 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   // Base-rate warm — one read-only aggregate, no writes. A failure costs nothing (the read path
   // computes on demand and the previous snapshot keeps serving), so a retry buys nothing either.
   [JobTypes.BASE_RATES_WARM]: { maxAttempts: 1 },
+  // The filing pass — all three are IDEMPOTENT (upsert on (stock, rule, period), prior-period
+  // comparison read strictly earlier than what is being written), so a retry re-does the same work
+  // rather than compounding it. One retry each: the failure mode worth retrying is a transient DB
+  // blip mid-batch, and the batch is cheap enough to redo. The backfill gets one too — it is the
+  // discharge of the standing law, and leaving the universe half-recomputed is the state it exists
+  // to prevent.
+  [JobTypes.FILING_RECOMPUTE]: { maxAttempts: 2 },
+  [JobTypes.FILING_ROLLING_DAILY]: { maxAttempts: 2 },
+  [JobTypes.FILING_BACKFILL]: { maxAttempts: 2 },
   // Chat title — a tiny cosmetic model call. NEVER auto-retry: a retry spends a second quota unit for a
   // cosmetic title, and a failed title just leaves the provisional (truncated-first-message) one in place.
   [JobTypes.CHAT_TITLE_GENERATE]: { maxAttempts: 1 },

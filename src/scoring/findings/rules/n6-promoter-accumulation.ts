@@ -27,12 +27,19 @@
 // DISPLAY-ONLY: green · positive · magnitude null (explicit) · CONDITION.
 
 import { isPriorQuarterGap } from "../../ownership/dilution.js";
-import { notEvaluable, type FireRule } from "../types.js";
+import { notEvaluable, type FilingRule } from "../types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const N6_MIN_QUARTERS = 2;      // ≥2 consecutive quarters of rising count
-export const N6_MIN_CUMULATIVE_PP = 1.0; // cumulative promoter-% rise ≥ 1.0pp (materiality)
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.ownership_N6_promoter_accumulation.facts;
 
-export const ruleN6: FireRule = (ctx) => {
+export const N6_MIN_QUARTERS = FACTS.thresholds.minQuarters;      // ≥2 consecutive quarters of rising count
+export const N6_MIN_CUMULATIVE_PP = FACTS.thresholds.minCumulativePp; // cumulative promoter-% rise ≥ 1.0pp (materiality)
+
+export const ruleN6: FilingRule = (ctx) => {
   const rows = ctx.shareholding;
   if (rows.length < N6_MIN_QUARTERS + 1) return notEvaluable("insufficient_shareholding_history");
 
@@ -94,6 +101,5 @@ export const ruleN6: FireRule = (ctx) => {
         `Promoter accumulation — the promoter's absolute shareholding rose for ${quarters} straight ` +
         `quarters, lifting the stake ${r2(cumulativePp).toFixed(2)}pp (${r2(oldest.promoterPct)}% → ${r2(latest.promoterPct)}%).`,
     },
-    metricRefs: ["promoterShares", "promoterPct"],
   };
 };

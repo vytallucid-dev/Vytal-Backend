@@ -238,7 +238,6 @@ export function computeLensFindings(args: LensFindingsArgs): LensFindingsResult 
           leg: pillar, // integrates with the leg-keyed read layer (harmless for lens cards)
           verdict: metricVerdict(fired, atom, t),
         },
-        metricRefs: [atom.metricKey],
       });
     }
 
@@ -278,7 +277,6 @@ export function computeLensFindings(args: LensFindingsArgs): LensFindingsResult 
           leg: pillar,
           verdict: pillarVerdict(lp, pillar, shares),
         },
-        metricRefs: [pillar],
       });
     }
   }

@@ -271,7 +271,7 @@ export const screenStocksTool: ChatTool<ScreenStocksArgs> = {
         ctx.once("universeMetricValues", () => getUniverseMetricValues()),
       ]);
       const symbols = scope === "universe" ? null : await symbolsForScope(scope, ctx);
-      const projection = screenUniverse(view, metricValues, symbols, {
+      const projection = await screenUniverse(view, metricValues, symbols, {
         conditions: parsed.conditions,
         scope,
         band,

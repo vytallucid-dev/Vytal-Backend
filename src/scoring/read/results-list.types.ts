@@ -48,8 +48,6 @@ export interface ReportedResultItem {
 
   // Honest extras — present only when a REAL backing row exists, else null.
   healthScore: number | null; // composite health score (0–100) when the stock is scored
-  /** The COMPUTED verdict label of the live Quarter in Brief for THIS period, if one exists. */
-  quarterBriefVerdict: string | null;
 }
 
 /** One UPCOMING result — a real earnings/board-meeting date with no numbers yet. */

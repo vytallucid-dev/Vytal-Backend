@@ -158,13 +158,21 @@ export const getStockNewsTool: ChatTool<Args> = {
       if (!stock) return { ok: true, content: notInUniverse(symbol) };
 
       const shortName = shortenCompanyName(stock.name) || stock.name;
-      // Listed siblings whose names extend ours ("Cyient DLM" would be one, were it covered) — an exact,
-      // free source of sibling markers for the entity guard. Two small indexed reads, memoised per turn.
-      const siblings = await ctx.once(`news:siblings:${shortName.toLowerCase()}`, () =>
+      // Covered companies sharing our FIRST WORD. Two jobs from one indexed read: sibling markers for
+      // the entity guard ("Cyient DLM" would be one, were it covered), AND the collision test that
+      // decides whether a SHORTER alias is safe to admit — see prefixAliasesFor in news-filter.ts.
+      //
+      // ⚠ WIDENED from `startsWith: "${shortName} "` on 2026-08-09, and the widening is what makes the
+      // shorter aliases safe. Matching only names that extend our FULL short name cannot see that
+      // "Adani" is shared by five listings — it would have admitted "Adani" as an alias for every one
+      // of them. A first-word read sees all five and refuses. Over-matching here is the safe direction:
+      // a spurious candidate only ever REFUSES an alias, never admits one.
+      const firstWord = shortName.split(/\s+/)[0];
+      const siblings = await ctx.once(`news:siblings:${firstWord.toLowerCase()}`, () =>
         prisma.stock.findMany({
-          where: { name: { startsWith: `${shortName} `, mode: "insensitive" }, NOT: { symbol } },
+          where: { name: { startsWith: firstWord, mode: "insensitive" }, NOT: { symbol } },
           select: { name: true },
-          take: 20,
+          take: 60,
         }),
       );
       const guard = buildEntityGuard(stock.symbol, stock.name, siblings.map((s) => s.name));

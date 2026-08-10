@@ -102,6 +102,5 @@ export const ruleD4: FireRule = (ctx) => {
       disclosureAnchoredN: 3,
       caveat: "n=11, and n=3 on the short-window check. Sample-starved — a reason to investigate, never a verdict.",
     },
-    metricRefs: ["ownership", "foundation"],
   };
 };

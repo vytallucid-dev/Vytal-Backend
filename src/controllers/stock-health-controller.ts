@@ -7,6 +7,23 @@
 
 import type { Request, Response } from "express";
 import { buildHealthSnapshotView } from "../scoring/read/health-view.service.js";
+import { OMITTABLE_SECTIONS, type HealthSection } from "../scoring/read/health-view.types.js";
+
+/**
+ * ★ `?omit=pillars,peerStanding` — THE PROJECTION, PARSED AGAINST THE OMITTABLE SET.
+ *
+ * ⚠ AN UNKNOWN TOKEN IS DROPPED, NOT REJECTED, AND THAT IS SAFE BECAUSE THE RESPONSE DECLARES WHAT
+ * IT ACTUALLY OMITTED. A 400 would break a client for a harmless typo; silently honouring a
+ * misspelling would be worse. `omitted: []` coming back on a request that asked for a projection is
+ * the client's own signal that it asked for something this build does not know about.
+ */
+function parseOmit(raw: unknown): HealthSection[] {
+  const tokens = String(raw ?? "")
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return OMITTABLE_SECTIONS.filter((s) => tokens.includes(s));
+}
 
 export const getStockHealth = async (req: Request, res: Response) => {
   try {
@@ -20,7 +37,7 @@ export const getStockHealth = async (req: Request, res: Response) => {
     const windowQuarters =
       Number.isFinite(rawWindow) && rawWindow > 0 ? Math.min(40, Math.floor(rawWindow)) : 12;
 
-    const view = await buildHealthSnapshotView(symbol, windowQuarters);
+    const view = await buildHealthSnapshotView(symbol, windowQuarters, { omit: parseOmit(req.query.omit) });
     if (!view) {
       return res.status(404).json({ message: `Stock ${symbol} not found in universe` });
     }

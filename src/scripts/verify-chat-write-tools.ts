@@ -609,6 +609,48 @@ async function main() {
       const hidden = await prisma.chatMessage.count({ where: { sessionId, kind: { in: ["tool_call", "tool_result"] } } });
       ok("tool turns ARE persisted for the model's history", hidden > 0, `${hidden} hidden tool turns`);
     }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    section("16 · a confirmed write leaves DURABLE provenance on its tool turn");
+    // ★ WHY THIS MATTERS BEYOND TIDINESS. `ctx.effects` tells the live response what changed and then dies
+    //   with the request. `AiToolResult.effects` is the copy that survives on the row — and it is the ONLY
+    //   evidence that a given conversation caused a given change, because none of the tables a chat write
+    //   touches (transactions, alerts, reminders, watchlist, the reader profile) carries a session
+    //   reference. Two features read it: a client recovering a reply whose response it never received, and
+    //   the edit warning that must say "a transaction recorded in them will not be undone" before deleting
+    //   the turn. If this ever stops being written, BOTH degrade silently — the recovery stops refreshing
+    //   caches, and the warning stops warning. Neither throws.
+    {
+      const results = await prisma.chatMessage.findMany({
+        where: { sessionId, kind: "tool_result" },
+        orderBy: { createdAt: "asc" },
+        select: { toolPayload: true },
+      });
+      const confirms = results
+        .map((r) => r.toolPayload as any)
+        .filter((p) => p?.name === "confirmPendingAction" && typeof p?.response?.output === "string" && p.response.output.startsWith("=== DONE"));
+      ok("this run performed at least one confirmed write", confirms.length > 0, `${confirms.length} confirm(s)`);
+      const withEffects = confirms.filter((p) => Array.isArray(p.effects) && p.effects.length > 0);
+      ok(
+        "★ every EXECUTED confirm records the domain it changed, on the persisted row",
+        confirms.length > 0 && withEffects.length === confirms.length,
+        `${withEffects.length}/${confirms.length} — domains seen: ${[...new Set(withEffects.flatMap((p) => p.effects))].join(", ") || "none"}`,
+      );
+      // ⚠ AND IT MUST NOT REACH THE MODEL. `effects` sits beside `response`, never inside it, because the
+      //   adapter maps a tool result field by field (name/response/id) — so a field outside `response` is
+      //   persisted and never sent. Assert the placement, since "it happens to work" and "it cannot leak"
+      //   are different properties and only the second one survives a refactor.
+      const leakedIntoPrompt = confirms.filter((p) => p?.response?.effects !== undefined);
+      ok("…and it is NOT inside `response`, so it never becomes prompt content", leakedIntoPrompt.length === 0);
+      const failedConfirms = results
+        .map((r) => r.toolPayload as any)
+        .filter((p) => p?.name === "confirmPendingAction" && p?.response?.error !== undefined);
+      ok(
+        "a confirm that FAILED records no effect (a write that didn't happen is never claimed)",
+        failedConfirms.every((p) => p.effects === undefined),
+        `${failedConfirms.length} failed confirm(s)`,
+      );
+    }
   } finally {
     server.close();
     __setDefaultChatProviderForTests(null);

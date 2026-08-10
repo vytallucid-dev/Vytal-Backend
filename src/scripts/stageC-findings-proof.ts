@@ -27,7 +27,7 @@ const PGS: PgRef[] = [
 class Rollback extends Error {}
 
 async function main() {
-  const before = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const before = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log("════ STAGE-C PROOF (dry-run, rolled back) ════");
   console.log("BEFORE red_flags:", before.rf, "patterns:", before.pat, "\n");
 
@@ -94,13 +94,13 @@ async function main() {
       console.log(`  wrote redFlags=${rf} patterns=${pat} across ${ids.length} snapshots`);
       const sp = await tx.scorePattern.findMany({ where: { snapshotId: { in: ids }, patternKey: { in: ["momentum_P12_margin_recovery", "foundation_P7_accruals"] } }, take: 3, select: { symbol: true, patternKey: true, severity: true, magnitude: true, displayState: true } });
       for (const p of sp) console.log(`     readback ${p.symbol.padEnd(11)} ${p.patternKey} sev=${p.severity} mag=${p.magnitude} state=${p.displayState}`);
-      const sr = await tx.redFlag.findMany({ where: { snapshotId: { in: ids }, flagKey: { startsWith: "foundation_R" } }, take: 3, select: { symbol: true, flagKey: true, severity: true } });
+      const sr: { symbol: string; flagKey: string; severity: string | null }[] = /* score_red_flags dropped 2026-08-11 */ [];
       for (const r of sr) console.log(`     readback ${r.symbol.padEnd(11)} ${r.flagKey} sev=${r.severity}`);
       throw new Rollback("rb");
     }, { timeout: 30000, maxWait: 10000 });
   } catch (e) { if (!(e instanceof Rollback)) throw e; console.log("  ⟲ rolled back"); }
 
-  const after = { rf: await prisma.redFlag.count(), pat: await prisma.scorePattern.count() };
+  const after = { rf: /* score_red_flags dropped 2026-08-11 */ 0, pat: await prisma.scorePattern.count() };
   console.log(`\nAFTER red_flags ${after.rf} patterns ${after.pat} — ZERO RESIDUE: ${after.rf === before.rf && after.pat === before.pat ? "✅" : "❌"}`);
   await prisma.$disconnect();
 }

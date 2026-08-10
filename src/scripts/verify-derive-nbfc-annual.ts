@@ -15,6 +15,9 @@ import {
   type NbfcAnnualRaw,
   type NbfcAnnualPrior,
 } from "../ingestions/quaterly-results/derive/derive-nbfc-annual.js";
+import { plausibleFaceValue } from "../ingestions/quaterly-results/derive/derive-indas-annual.js";
+
+const TAG = "verify";
 
 const num = (d: Prisma.Decimal | null) => (d == null ? null : d.toNumber());
 const NON_PRIOR = ["costToIncomeRatio", "capitalToAssetsRatio", "borrowingsToEquity", "netWorth", "bookValuePerShare"] as const;
@@ -41,14 +44,14 @@ function unitChecks() {
     impairmentOnFinancialInstruments: 20, debtSecurities: 500, borrowings: 800,
     subordinatedLiabilities: 200, depositsLiabilities: 0, totalEquity: 1000,
     equityShareCapital: null, otherEquity: null, totalAssets: 2500,
-    paidUpEquityCapital: 100, faceValueShare: 10, netProfit: 150, revenue: 500,
+    paidUpEquityCapital: 100, faceValueShareSane: 10, netProfit: 150, revenue: 500,
   };
   const prior: NbfcAnnualPrior = {
     revenue: 400, netProfit: 120, loans: 1800, totalEquity: 900,
     equityShareCapital: null, otherEquity: null, debtSecurities: 400, borrowings: 700,
     subordinatedLiabilities: 200, depositsLiabilities: 0,
   };
-  const d = deriveNbfcAnnual(raw, prior).columns;
+  const d = deriveNbfcAnnual(raw, prior, TAG).columns;
   check("netWorth = totalEquity 1000", num(d.netWorth) === 1000);
   check("costToIncomeRatio = 80/(400-120) = 0.285714", num(d.costToIncomeRatio) === 0.285714);
   check("capitalToAssetsRatio = 1000/2500 = 0.4", num(d.capitalToAssetsRatio) === 0.4);
@@ -63,18 +66,87 @@ function unitChecks() {
   check("patGrowthYoy = (150-120)/120*100 = 25", num(d.patGrowthYoy) === 25);
 
   // netWorth fallback to esc+oe when totalEquity null
-  const fb = deriveNbfcAnnual({ ...raw, totalEquity: null, equityShareCapital: 100, otherEquity: 850 }, prior).columns;
+  const fb = deriveNbfcAnnual({ ...raw, totalEquity: null, equityShareCapital: 100, otherEquity: 850 }, prior, TAG).columns;
   check("netWorth fallback = esc+oe = 950", num(fb.netWorth) === 950);
   // costToIncome null-gated on nii (interestIncome null → nii null → costToIncome null)
-  const noNii = deriveNbfcAnnual({ ...raw, interestIncome: null }, prior).columns;
+  const noNii = deriveNbfcAnnual({ ...raw, interestIncome: null }, prior, TAG).columns;
   check("costToIncomeRatio null when nii null (preserved quirk)", noNii.costToIncomeRatio === null);
   // no prior → avg denominators fall back to current (avgNonNull)
-  const noP = deriveNbfcAnnual(raw, null).columns;
+  const noP = deriveNbfcAnnual(raw, null, TAG).columns;
   check("no prior: nim = 180/2000 = 0.09", num(noP.nim) === 0.09);
   check("no prior: roe = 150/1000 = 0.15", num(noP.roe) === 0.15);
   check("no prior: revenueGrowthYoy null", noP.revenueGrowthYoy === null);
+
+  // ★ REGRESSION — 2026-08-11 TATAINVEST FY25 numeric overflow. avgLoans
+  // non-zero but negligible (an NBFC-taxonomy filer that isn't a lender) must
+  // null the four "flow ÷ avg balance-sheet stock" ratios instead of storing
+  // a division artifact that overflows Decimal(8,6). Shape: real
+  // interestIncome (41.96) against a near-zero loans line (0.04).
+  const tinyLoans = deriveNbfcAnnual(
+    { ...raw, interestIncome: 41.96, financeCosts: 0.16, loans: 0.04, impairmentOnFinancialInstruments: 0 },
+    null,
+    TAG,
+  ).columns;
+  check("tiny avgLoans: nim nulled, not 1045", tinyLoans.nim === null, num(tinyLoans.nim));
+  check("tiny avgLoans: creditCostPct stays 0 (impairment=0, not gated out)", num(tinyLoans.creditCostPct) === 0);
+  const tinyLoansAndBorrowings = deriveNbfcAnnual(
+    { ...raw, interestIncome: 41.96, financeCosts: 5, loans: 0.04, borrowings: 0.02, debtSecurities: null, subordinatedLiabilities: null, depositsLiabilities: null },
+    { ...prior, loans: null, borrowings: null, debtSecurities: null, subordinatedLiabilities: null, depositsLiabilities: null },
+    TAG,
+  ).columns;
+  check("tiny avgBorrowings: spread nulled (costOfFunds artifact), not stored", tinyLoansAndBorrowings.spread === null, num(tinyLoansAndBorrowings.spread));
+  // a legitimate, ordinary NIM (single-digit %) must survive the gate unchanged
+  check("ordinary nim unaffected by the gate", num(d.nim) === 0.094737);
+
+  // ★ REGRESSION — 2026-08-11 MOTILALOFS FY26 standalone bookValuePerShare
+  // implausible (₹7.95 lakh/share). Root cause: the source XBRL's
+  // FaceValueOfEquityShareCapital tag reads 6018.6 (real value is 1, per every
+  // other MOTILALOFS fiscal year/basis) — a bad filed value, not an extraction
+  // bug. The CALLER is responsible for running plausibleFaceValue() before it
+  // ever reaches deriveNbfcAnnual, exactly as the Ind-AS path already does.
+  const badFaceValue = deriveNbfcAnnual(
+    { ...raw, totalEquity: 7950.56, paidUpEquityCapital: 60.19, faceValueShareSane: plausibleFaceValue(6018.6) },
+    null,
+    TAG,
+  ).columns;
+  check(
+    "implausible faceValueShare (6018.6) → bookValuePerShare nulled, not ₹7.95 lakh",
+    badFaceValue.bookValuePerShare === null,
+    num(badFaceValue.bookValuePerShare),
+  );
+  // a legitimate face value (₹1, MOTILALOFS' real one) must still produce a sane bvps
+  const goodFaceValue = deriveNbfcAnnual(
+    { ...raw, totalEquity: 7950.56, paidUpEquityCapital: 60.19, faceValueShareSane: plausibleFaceValue(1) },
+    null,
+    TAG,
+  ).columns;
+  check(
+    "plausible faceValueShare (1) → bookValuePerShare = 7950.56/60.19 ≈ 132.0910",
+    num(goodFaceValue.bookValuePerShare) !== null && Math.abs(num(goodFaceValue.bookValuePerShare)! - 132.091) < 0.001,
+    num(goodFaceValue.bookValuePerShare),
+  );
+  check("plausibleFaceValue(6018.6) itself is null (>1000 cap)", plausibleFaceValue(6018.6) === null);
+  check("plausibleFaceValue(1) itself passes through", plausibleFaceValue(1) === 1);
+
+  // ★ REGRESSION — 2026-08-11 CANFINHOME FY25 standalone: bookValuePerShare
+  // stored as 506749.37 (₹5.07 lakh/share) with an ORDINARY faceValueShare (2)
+  // — plausibleFaceValue lets it through because the corrupt figure this time
+  // is paidUpEquityCapital (0.02cr), not the face value. Proves the output-side
+  // meaningfulBookValue() bound is load-bearing, not redundant with the input-side
+  // plausibleFaceValue() gate — same LTF/MOTILALOFS failure through the other door.
+  const badPaidUp = deriveNbfcAnnual(
+    { ...raw, totalEquity: 5067.49, paidUpEquityCapital: 0.02, faceValueShareSane: plausibleFaceValue(2) },
+    null,
+    TAG,
+  ).columns;
+  check(
+    "plausible faceValue but corrupt paidUpEquityCapital → bookValuePerShare nulled, not ₹5.07 lakh",
+    badPaidUp.bookValuePerShare === null,
+    num(badPaidUp.bookValuePerShare),
+  );
+
   // determinism
-  const a = deriveNbfcAnnual(raw, prior).columns, b2 = deriveNbfcAnnual(raw, prior).columns;
+  const a = deriveNbfcAnnual(raw, prior, TAG).columns, b2 = deriveNbfcAnnual(raw, prior, TAG).columns;
   check("determinism (prior-dependent)", PRIOR_DEP.every((c) => String(a[c]) === String(b2[c])));
 }
 
@@ -104,7 +176,7 @@ function rawOf(r: Row): NbfcAnnualRaw {
     borrowings: num(r.borrowings), subordinatedLiabilities: num(r.subordinatedLiabilities),
     depositsLiabilities: num(r.depositsLiabilities), totalEquity: num(r.totalEquity),
     equityShareCapital: num(r.equityShareCapital), otherEquity: num(r.otherEquity), totalAssets: num(r.totalAssets),
-    paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShare: num(r.faceValueShare),
+    paidUpEquityCapital: num(r.paidUpEquityCapital), faceValueShareSane: plausibleFaceValue(num(r.faceValueShare)),
     netProfit: num(r.netProfit), revenue: num(r.revenue),
   };
 }
@@ -130,7 +202,7 @@ async function bulkDiff() {
 
   for (const r of rows) {
     const priorRow = byKey.get(`${r.stockId}|${decrementFY(r.fiscalYear)}|${r.resultType}`) ?? null;
-    const d = deriveNbfcAnnual(rawOf(r), priorRow ? priorOf(priorRow) : null).columns;
+    const d = deriveNbfcAnnual(rawOf(r), priorRow ? priorOf(priorRow) : null, `${r.stockId}|${r.fiscalYear}|${r.resultType}`).columns;
     for (const c of NON_PRIOR) {
       const stored = (r as unknown as Record<string, Prisma.Decimal | null>)[c];
       const got = d[c]; const t = tol[c];

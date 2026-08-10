@@ -1,16 +1,51 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-// THE SCREEN SERVICE — numeric conditions over the universe. PURE: view in, values in, result out.
+// THE SCREEN SERVICE — numeric conditions over the universe. View in, values in, result out.
 //
 // Sibling of universe-projection.service.ts and shares its spine deliberately: the same `buildReadSet`
 // (so scoping is one implementation), the same `periodContract` (so a filtered list still cannot be
 // relayed as a single-quarter claim), the same `capped` and `LIST_CAP`, the same `parseBand`, the same
 // `percentile` as slice=overview, and the same no-internal-identifiers assertion on the way out.
 //
+// ── ★ THE ONE PLACE THIS IS NO LONGER PURE, AND WHY IT HAD TO STOP BEING ──────────────────────────
+// Everything below `run` is still pure. `screenUniverse` itself is now async, and reads one table, for
+// exactly one filter: `redFlags`.
+//
+// `m.firedFlags` is projected from score_red_flags. NOTHING WRITES THAT TABLE ANY MORE — every
+// red-flag rule (R1…R6) is a filing rule and moved to stock_findings at migration 20260809120000. The
+// 215 rows still in it are frozen on whatever head each stock was sitting on at cutover, and no
+// rescore un-writes them. Measured on live data, the frozen set and the live one AGREE TODAY: the same
+// six companies, on the same four keys. That agreement is a coincidence of timing and nothing holds it:
+//
+//   · a scored stock whose R1 fires for the FIRST time writes only to stock_findings, so it would
+//     never appear in `redFlags: "any"` — and would be counted as clean by `redFlags: "none"`.
+//   · one of today's six resolving writes only to stock_findings too, so its frozen row sits there as
+//     a false positive permanently. NAZARA and ATHERENERG have already resolved R6 this way; neither
+//     is scored, so neither is visible here yet, but the mechanism is live.
+//
+// So the filter reads BOTH: the frozen flags on the member row, UNIONED with the live standing filing
+// red flags. It is a union rather than a swap because `firedFlags` may also carry a SCORE-channel red
+// flag, which the filing channel does not serve and which dropping would erase.
+//
+// ── ★ THE PREDICATE IS filing/channel.ts's, INVERTED. THERE IS NO KEY LIST HERE. ──────────────────
+// Every surface that serves both channels drops filing keys from the score channel with
+// `isFilingChannelKey`. This is the same predicate read the other way round — the keys the LIVE side
+// owns — so "what the filing pass writes" and "what this filter unions in" cannot drift apart. A
+// second hardcoded list is the failure that predicate exists to prevent.
+//
+// ── ⚠ THE DENOMINATOR DID NOT CHANGE, AND THAT IS THE KNOWN GAP ──────────────────────────────────
+// The union is applied to the members this screen can already see — the ~94 SCORED stocks. Filing
+// findings exist on all 504, and 51 stocks carry a standing filing red flag today; 45 of them are
+// unscored and stay invisible here. Reaching them needs a 504-stock denominator, which is step 5's
+// base rates, and is deliberately NOT attempted by widening this filter over a population the rest of
+// the projection (composite, band, pillars, percentile) cannot describe.
+//
 // ── ★ THE TWO TIERS, AND WHY ONLY ONE OF THEM COSTS ANYTHING ───────────────────────────────────────
 // Score-level and structural conditions (health, the four pillars, band, sector, red-flag presence)
 // read fields ALREADY on the cached UniverseHealthView member row. Ten of them cost exactly what one
 // costs: a single pass over ~94 objects. Metric conditions need `metricValues`, which is one extra
-// round trip for ALL keys at once (metric-values.cache.ts) — never one per condition.
+// round trip for ALL keys at once (metric-values.cache.ts) — never one per condition. The red-flag
+// read is a third, paid ONLY when the redFlags filter is actually asked for, behind the same
+// five-minute stale-while-revalidate policy as its two siblings.
 //
 // ── ★ AND-COMPOSITION, WITH THE DENOMINATOR CARRIED ────────────────────────────────────────────────
 // Conditions compose with AND. The subtlety is not the boolean — it is that "did not match" and
@@ -20,6 +55,8 @@
 // { matched, did-not-match, not-evaluable-and-why } and the counts ship with the result.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
+import { prisma } from "../../db/prisma.js";
+import { isFilingChannelKey } from "../../filing/channel.js";
 import { CANONICAL_METRICS } from "../bars-loader/label-map.js";
 import { METRIC_DEFINITIONS } from "../metric-scoring/definition-guard.js";
 import { percentile } from "./scope-aggregate.js";
@@ -198,26 +235,109 @@ function matchSector(m: UniverseMemberView, wanted: string): boolean {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE LIVE RED-FLAG CHANNEL — the only read in this module. See the header for why it exists.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** Same five minutes as universe-view.cache.ts and metric-values.cache.ts, for the same reason: the
+ *  underlying rows change when a pass runs, not per request, and one cache policy in the read layer
+ *  means one failure mode to reason about. */
+export const LIVE_RED_FLAGS_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Every symbol carrying a CURRENTLY-STANDING filing red flag.
+ *
+ * ★ THE CURRENT ROW PER (stock, rule), NOT EVERY ROW. stock_findings accumulates one row per filing
+ * period, so a rule that fired last quarter and resolved this one still has its fired row on file.
+ * Rows arrive period_end DESC per stock — period_end is the ONLY chronological key, because the
+ * grain-prefixed period_key does not sort across A:/Q:/S: — so the FIRST row for a pair is its current
+ * state and every later one is history. Exactly the reduction filing/read.ts's `readStandingRedFlags`
+ * performs for the portfolio's PS1 input, which is the same question asked of the same table.
+ *
+ * ★ GROUPED BY stockId, EMITTED BY symbol. The reduction cannot key on `symbol` — two stocks sharing
+ * one would interleave their periods and resolve both to whichever filed last. `symbol` is carried
+ * only because it is what a member row is identified by here; nothing in this module has a stockId.
+ *
+ * ⚠ NO ARGUMENTS, and it must not gain any. What it holds is public product data — the same standing
+ * red flags the stock page already prints — and a per-scope or per-user variant would put a reader's
+ * own scope into a process-wide cache. The scope is applied AFTER this, against `set.members`.
+ */
+async function loadStandingFilingRedFlagSymbols(): Promise<ReadonlySet<string>> {
+  const rows = await prisma.stockFinding.findMany({
+    where: { kind: "red_flag" },
+    orderBy: [{ stockId: "asc" }, { periodEnd: "desc" }],
+    select: { stockId: true, symbol: true, ruleKey: true, evaluationState: true },
+  });
+
+  const resolved = new Set<string>();
+  const out = new Set<string>();
+  for (const r of rows) {
+    const pair = `${r.stockId}|${r.ruleKey}`;
+    if (resolved.has(pair)) continue; // an older period for a rule already answered
+    resolved.add(pair);
+    if (r.evaluationState !== "fired") continue;
+    // ★ THE REGISTRY, INVERTED — see the header. A red-flag row whose key the filing pass does not own
+    //   would be some other channel's, and unioning it here would serve it from a surface that has no
+    //   denominator for it.
+    if (!isFilingChannelKey(r.ruleKey)) continue;
+    out.add(r.symbol);
+  }
+  return out;
+}
+
+let liveCache: { symbols: ReadonlySet<string>; builtAt: number } | null = null;
+let liveInFlight: Promise<ReadonlySet<string>> | null = null;
+
+function rebuildLive(): Promise<ReadonlySet<string>> {
+  if (liveInFlight) return liveInFlight;
+  liveInFlight = loadStandingFilingRedFlagSymbols()
+    .then((symbols) => {
+      liveCache = { symbols, builtAt: Date.now() };
+      return symbols;
+    })
+    .finally(() => {
+      liveInFlight = null;
+    });
+  return liveInFlight;
+}
+
+/** Cold → builds and waits. Warm → cached. Stale → cached NOW, rebuild behind it; a failed rebuild
+ *  keeps serving the last good set rather than turning a DB blip into a failed screen. */
+async function standingFilingRedFlagSymbols(): Promise<ReadonlySet<string>> {
+  if (!liveCache) return rebuildLive();
+  if (Date.now() - liveCache.builtAt > LIVE_RED_FLAGS_TTL_MS) {
+    rebuildLive().catch(() => {
+      /* the last good set keeps serving; the next caller retries */
+    });
+  }
+  return liveCache.symbols;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // THE ENTRY POINT
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 /**
  * Run a screen. `symbols === null` is the whole scored universe; a set is the caller's OWN scope,
  * resolved one layer up from ctx.userId and never named here.
+ *
+ * ★ ASYNC FOR ONE FILTER ONLY. The live red-flag read is skipped entirely unless `redFlags` was
+ * actually asked for, so a screen with only metric conditions costs exactly what it always did.
  */
-export function screenUniverse(
+export async function screenUniverse(
   view: UniverseHealthView,
   metricValues: UniverseMetricValues,
   symbols: ReadonlySet<string> | null,
   req: ScreenRequest,
-): ScreenProjection {
+): Promise<ScreenProjection> {
   const scope: UniverseScopeId = req.scope ?? "universe";
   const set = buildReadSet(view, symbols, scope);
   if (!set) {
     const reason = !view.scored || !view.aggregate ? "universe-unscored" : "scope-empty";
     return { kind: "empty", scope, reason };
   }
-  const out = run(set, metricValues, req, scope);
+  const live =
+    req.redFlags === "none" || req.redFlags === "any" ? await standingFilingRedFlagSymbols() : null;
+  const out = run(set, metricValues, req, scope, live);
   assertNoInternalIdentifiers(out);
   return out;
 }
@@ -227,6 +347,7 @@ function run(
   values: UniverseMetricValues,
   req: ScreenRequest,
   scope: UniverseScopeId,
+  live: ReadonlySet<string> | null,
 ): ScreenProjection {
   const period = periodContract(set);
 
@@ -256,7 +377,19 @@ function run(
 
   if (req.redFlags === "none" || req.redFlags === "any") {
     structural.redFlags = req.redFlags;
-    members = members.filter((m) => (req.redFlags === "none" ? m.firedFlags.length === 0 : m.firedFlags.length > 0));
+    // ★ THE UNION — BOTH HALVES ARE NOW LIVE, AND THAT IS THE POINT OF THE 2026-08-11 REPOINT.
+    //   `m.firedFlags` used to be the FROZEN score channel, which is why this union existed at all: a
+    //   decayed half had to be propped up by a live one. `firedFlags` is now fed by
+    //   `readStandingRedFlags` over the same `stock_findings` rows `live` reads, so the two halves
+    //   agree by construction rather than by coincidence.
+    //
+    //   It is kept rather than collapsed to one side, for one reason that is not redundancy: `live`
+    //   additionally filters on `isFilingChannelKey` (the registry, inverted), so a red-flag row whose
+    //   key the filing pass does not own is admitted by `firedFlags` and rejected by `live`. No such
+    //   row exists today. `redFlags: "none"` must still clear BOTH before calling a company clean.
+    const firesRedFlag = (m: UniverseMemberView): boolean =>
+      m.firedFlags.length > 0 || live?.has(m.symbol) === true;
+    members = members.filter((m) => (req.redFlags === "none" ? !firesRedFlag(m) : firesRedFlag(m)));
   }
 
   // ── the conditions ─────────────────────────────────────────────────────────────────────────────

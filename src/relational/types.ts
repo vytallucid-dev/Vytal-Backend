@@ -97,7 +97,13 @@ export interface ReaderDelta {
   /** True when the object's in-force snapshot differs from the one the reader last saw (UD9). */
   newSnapshotSinceLastLook: boolean;
   /** patternKeys whose fired instance is NEWLY standing since the last look — i.e. present now and
-   *  absent from the snapshot the reader last saw (UD1). Empty when not evaluable. */
+   *  absent from the snapshot the reader last saw (UD1). Empty when not evaluable.
+   *
+   *  ★ TWO SUBSTRATES, MERGED. Score-channel keys are diffed against the last-seen SNAPSHOT (above);
+   *  filing-channel keys have no snapshot to diff against and are instead gated on `since` — a filing
+   *  key only lands here when its transition's own `createdAt` postdates this reader's last look (see
+   *  `resolveDelta` in reader-context.ts). The two never collide (channel-exclusive namespaces) and
+   *  buildUD1 does not care which produced a given key. */
   newlyStandingKeys: string[];
   /** patternKeys present at the last look and ABSENT now (UD2). Empty when not evaluable. */
   clearedKeys: string[];
@@ -108,11 +114,43 @@ export interface ReaderDelta {
 /** §Phase 6 — the reader's book-wide fired-finding census, for the UE (echo) family. ONE indexed query
  *  over the in-force snapshots of the reader's scored holdings — never per-holding fan-out (§5.7). */
 export interface ReaderEcho {
-  /** Scored holdings folded into this census — the observedShare DENOMINATOR. */
+  /** Scored holdings folded into this census — the observedShare DENOMINATOR for SCORE keys. */
   scoredHoldingsCount: number;
   /** patternKey → the reader's holdings (display names) whose in-force snapshot carries that key.
-   *  Names, never symbols or ids, so an echo claim can list them without a lookup (§0.9). */
+   *  Names, never symbols or ids, so an echo claim can list them without a lookup (§0.9).
+   *  ⚠ SCORE KEYS ONLY as of step 5 — filing keys live in `filing` below, with their own denominator. */
   byPatternKey: Map<string, string[]>;
+  /** ★ THE FILING CHANNEL'S HALF OF THE SAME RATIO (step 5). See {@link ReaderFilingEcho}. */
+  filing: ReaderFilingEcho;
+}
+
+/**
+ * §Phase 6 · step 5 — the filing channel's book census.
+ *
+ * ★ WHY THIS IS A SECOND CENSUS AND NOT MORE ENTRIES IN `byPatternKey`.
+ * The echo's whole arithmetic is `lift = observedShare / expectedShare`. Step 5 moved a filing key's
+ * expectedShare onto the population in which its RULE evaluated. If observedShare stayed on the
+ * scored-holdings denominator, lift would divide a share of one population by a share of another and
+ * the multiple would mean nothing — worse than before the split, because before it at least compared
+ * two numbers drawn from the same frozen basis.
+ *
+ * So both halves move together. A filing key's book share is `holdings where the rule fired` over
+ * `holdings where the rule EVALUATED` — the same fired/not_fired distinction the universe side uses,
+ * for the same reason: a holding whose rule declined is not a clean observation of that holding.
+ *
+ * ★ AND IT REACHES HOLDINGS WITH NO SNAPSHOT. The old census joined score_patterns to a head
+ * snapshot, so an unscored holding contributed to neither numerator nor denominator. A book holding
+ * 360ONE at 90% promoter pledge counted zero holdings showing pledging.
+ */
+export interface ReaderFilingEcho {
+  /** ruleKey → the reader's holdings (display names) whose CURRENT filing row for that rule is fired. */
+  byRuleKey: Map<string, string[]>;
+  /** ruleKey → how many of the reader's holdings that rule EVALUATED on (fired + not_fired). The
+   *  observedShare DENOMINATOR for that key. Absent ⇒ the rule evaluated on none of them. */
+  evaluatedByRuleKey: Map<string, number>;
+  /** Holdings with at least one evaluated filing row — the family's minimum-book gate for filing
+   *  keys, standing in for `scoredHoldingsCount`. */
+  coveredHoldingsCount: number;
 }
 
 /** §Phase 4 — the reader's exposure to THIS object's neighbourhood (peer group + sector). Resolved
@@ -238,7 +276,36 @@ export interface ResolvedEntry {
   standingSince: { label: string; snapshotCount: number } | null; // null this slice (absent prerequisite)
   isNewSinceLastLook: boolean;
   weight: { ladderRung: number; relationalWeight: number }; // self-describing (§6.3)
+  /**
+   * ★ THE MODE'S FLOOR RANK — 0-based, in the order `floorIds` declared, or `null` for an entry the
+   * ladder placed by global rung. STAMPED BY ARBITRATION (absent on pre-assembly candidates).
+   *
+   * ⚠ THIS IS NOT SLOT INDEX, AND THE DIFFERENCE IS THE WHOLE POINT (§4.2). Rung is a GLOBAL ordering;
+   * a mode's floor is a READER-DEPENDENT one. Identity sits at rung 14 because for a reader with
+   * context it is the least useful line on the card — and it is the FIRST thing M9/M10 rank because
+   * for a stranger it is the most useful. A consumer that wants "how relevant is this, for this
+   * reader" needs the second statement, and slot index is only a proxy for it: the echo merge below
+   * removes entries from `slots`, so index shifts under a rearrangement that says nothing about
+   * relevance. Published so no consumer has to count array positions to recover a fact this layer
+   * already decided.
+   */
+  floorRank?: number | null;
   arithmetic: Record<string, unknown> | null; // structured numbers behind the claim (echo/exposure/position)
+  /**
+   * ★ THE TWO VERBATIM HALVES OF `claim`, WHERE ONE EXISTS. Present on exactly the entries whose claim
+   * is a finding's own sentence FOLLOWED BY the echo family's book-and-market counts — the UE entries
+   * that render standalone, and every host `attachEchoAnnotations` merged an echo into. Both are
+   * slices of the SAME bytes as `claim` (`claim === claimHead + " " + claimTail`), so a consumer that
+   * shows them separately is still rendering the copy verbatim (§0.10).
+   *
+   * ⚠ PUBLISHED BECAUSE THE SPLIT CANNOT BE RECOVERED FROM THE STRING. `__arithmeticOnlyClaim` is the
+   * annotation form, not the appended one: UE1 joins with an em-dash where the annotation uses a
+   * semicolon, and UE6 opens "This is showing" where the annotation opens "Showing". A consumer
+   * matching one against the other gets the right answer on some entries and silently the wrong one
+   * on others. Absent (both undefined) when the claim has no such split.
+   */
+  claimHead?: string;
+  claimTail?: string;
   interpretationCeiling: string | null; // hard AI instruction boundary (§6.3) — echo/exposure entries
   doesntMean: string;
   sourceRef: string; // stable, opaque reference for AI/telemetry — NEVER rendered
@@ -267,6 +334,20 @@ export interface RelationalState {
    *  entryId this names and must not re-derive the priority itself (§4). Always a slots[] entryId (never
    *  overflow) when slots is non-empty. */
   boundaryEntryId: string | null;
+  /**
+   * The ONE slot entry that OPENS the card — the first slot at rung 1–4 (the ladder's urgent floor),
+   * else the first slot. THE BACKEND PICKS, for the same reason it picks `boundaryEntryId`: this is a
+   * relevance call, arbitration already makes exactly this class of call once, and a consumer
+   * re-deriving it from `weight.ladderRung` is a second copy of the ladder living outside the ladder.
+   *
+   * ⚠ WHY NOT SIMPLY "HIGHEST RUNG LEADS". A mode's floor ranks identity first for a stranger BECAUSE
+   * that is what a stranger needs (§4.2). Reading rung alone would open a watched stock on its
+   * watchlist date and an uncovered stock on its coverage gap. Rungs 1–4 are the one band that
+   * outranks the mode's own statement of relevance; everything else defers to arbitration's order.
+   *
+   * Always a `slots[]` entryId (never `overflow`) when `slots` is non-empty.
+   */
+  leadEntryId: string | null;
   meta: {
     resolvedAt: string; // ISO
     snapshotGeneration: string | null;

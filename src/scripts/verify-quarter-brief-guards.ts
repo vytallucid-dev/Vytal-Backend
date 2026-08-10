@@ -124,12 +124,18 @@ async function live(symbols: string[]): Promise<void> {
       continue;
     }
 
-    console.log(res.text.split("\n").map((l) => `  | ${l}`).join("\n"));
+    // ★ THE AUTHORED TEXT IS THE BULLETS. Everything else in the payload is a display string
+
+    // the backend rendered; printing that back would report the fact block, not the generation.
+
+    const authored: string[] = res.payload.takeaway.bullets;
+
+    console.log(authored.map((l) => `  | ${l}`).join("\n"));
     console.log(`\n  [audit] numbers checked=${res.audit.numbersChecked} skipped=${res.audit.numbersSkipped} attempts=${res.audit.attempts} tokens=${res.promptTokens}/${res.outputTokens}`);
 
     // Re-scan the ACCEPTED text and report what the tiers saw, including the channels that did NOT
     // block — a fire on correct text is the finding, and it is invisible if only refusals are printed.
-    const g = scanExplanationText(res.text);
+    const g = scanExplanationText(authored.join(" "));
     console.log(`  [tiers] hard=${g.hardHits.length} soft=${g.softHits.length} evaluative=${g.evaluativeHits.length}`);
     for (const h of g.softHits) console.log(`    SOFT  ${h.term}: "${h.match}" — ${h.context}`);
     for (const h of g.evaluativeHits) console.log(`    EVAL  ${h.term}: "${h.match}"`);

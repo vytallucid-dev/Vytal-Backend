@@ -94,7 +94,7 @@ async function main() {
     console.log(`  ScoringRun ${scaffold.runId.slice(0, 8)}…  spec ${scaffold.specVersionId.slice(0, 8)}…\n`);
   }
 
-  let totalCreated = 0, totalSkippedExisting = 0, totalNoSnap = 0, totalR1 = 0;
+  let totalCreated = 0, totalSkippedExisting = 0, totalNoSnap = 0;
   const allPgs = [...NONFIN_PGS, ...BANK_PGS];
 
   for (const ref of allPgs) {
@@ -115,25 +115,25 @@ async function main() {
       }
 
       const writeOne = async (tx: any) => {
-        const out: { action: string; r1: boolean; composite: number | null }[] = [];
+        const out: { action: string; composite: number | null }[] = [];
         for (const m of requireFindingsEvaluated(computed)) {
           // SKIP any already-existing (stock, periodKey) — protects FY26Q4 & re-runs (append-only).
           const exists = await tx.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: "quarterly", periodKey: pk }, select: { id: true } });
-          if (exists) { out.push({ action: "skipped_existing", r1: false, composite: null }); continue; }
-          if (m.composite.state !== "scored" || m.composite.composite == null) { out.push({ action: "no_snapshot", r1: false, composite: null }); continue; }
+          if (exists) { out.push({ action: "skipped_existing", composite: null }); continue; }
+          if (m.composite.state !== "scored" || m.composite.composite == null) { out.push({ action: "no_snapshot", composite: null }); continue; }
           // A snapshot needs an Ownership pillar (and a Market pillar) row — both FKs are
           // NOT NULL. Point-in-time, a member may have NO shareholding (or no Market result)
           // as-of P (its history is shallower than its financials). That period genuinely
           // can't be persisted with a real Ownership pillar → record as no_snapshot, never
           // fabricate one. (persistMember would otherwise throw and abort the PG.)
-          if (!m.own || !m.market) { out.push({ action: "no_snapshot", r1: false, composite: null }); continue; }
+          if (!m.own || !m.market) { out.push({ action: "no_snapshot", composite: null }); continue; }
           const res: MemberWriteResult = await persistMember(tx, m, scaffold!, computed.asOf, computed.peerGroupId, ref.pgId, computed.industry, computed.peerStats);
-          out.push({ action: res.action, r1: res.r1Written, composite: res.composite });
+          out.push({ action: res.action, composite: res.composite });
         }
         return out;
       };
 
-      let res: { action: string; r1: boolean; composite: number | null }[];
+      let res: { action: string; composite: number | null }[];
       if (COMMIT) {
         res = await prisma.$transaction(writeOne, { timeout: 180000, maxWait: 30000 });
       } else {
@@ -141,10 +141,10 @@ async function main() {
         res = [];
         for (const m of computed.members) {
           const exists = await prisma.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: "quarterly", periodKey: pk }, select: { id: true } });
-          if (exists) res.push({ action: "skipped_existing", r1: false, composite: null });
-          else if (m.composite.state !== "scored" || m.composite.composite == null) res.push({ action: "no_snapshot", r1: false, composite: null });
-          else if (!m.own || !m.market) res.push({ action: "no_snapshot", r1: false, composite: null });
-          else res.push({ action: "would_create", r1: false, composite: m.composite.composite });
+          if (exists) res.push({ action: "skipped_existing", composite: null });
+          else if (m.composite.state !== "scored" || m.composite.composite == null) res.push({ action: "no_snapshot", composite: null });
+          else if (!m.own || !m.market) res.push({ action: "no_snapshot", composite: null });
+          else res.push({ action: "would_create", composite: m.composite.composite });
         }
       }
 
@@ -152,7 +152,6 @@ async function main() {
       pgCreated += created.length;
       pgSkip += res.filter((r) => r.action === "skipped_existing").length;
       pgNoSnap += res.filter((r) => r.action === "no_snapshot").length;
-      totalR1 += res.filter((r) => r.r1).length;
       const comps = created.map((r) => r.composite!).filter((x) => x != null);
       perPeriod.push(`${pk}:${created.length}${comps.length ? `(${f(Math.min(...comps))}–${f(Math.max(...comps))})` : ""}`);
     }
@@ -170,7 +169,7 @@ async function main() {
 
   const afterSnap = await prisma.scoreSnapshot.count();
   console.log(`\n  ${COMMIT ? "CREATED" : "WOULD CREATE"}: ${totalCreated} historical snapshots`);
-  console.log(`  skipped-existing: ${totalSkippedExisting} | no-snapshot (composite unavailable): ${totalNoSnap} | R1 flags: ${totalR1}`);
+  console.log(`  skipped-existing: ${totalSkippedExisting} | no-snapshot (composite unavailable): ${totalNoSnap}`);
   console.log(`  score_snapshots: ${beforeSnap} → ${afterSnap}${COMMIT ? "" : " (unchanged — dry)"}`);
   await prisma.$disconnect();
 }

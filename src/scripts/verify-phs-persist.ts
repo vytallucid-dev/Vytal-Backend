@@ -63,7 +63,16 @@ async function main() {
     ok("signalsLedger is still an array (Signals is untouched by §15)", Array.isArray(snap?.signalsLedger), "json");
     // (Construction v2 Stage 5 — the CUTOVER) bumped 1.2 → 2.0: the displayed `structure` is now C1–C6
     // Net, so the fingerprint (which stamps this) MUST change to re-persist every book. See ruling ②.
-    ok("constant_version stamped (2.0 — the cutover bump)", snap?.constantVersion === "portfolio-spec 2.0", `${snap?.constantVersion}`);
+    //
+    // ⚠ (cv 2.1, bookWeight bump) DE-PINNED FROM THE LITERAL, and the reason is this gate's own subject.
+    // The check was `=== "portfolio-spec 2.0"`. But what persist owes a caller is that it stamps THE
+    // VERSION THE ENGINE IS RUNNING — not one particular digit — and pinning a digit turns the very
+    // mechanism this file verifies into something you must edit a test to use. It failed on the next
+    // legitimate bump, which is the failure mode of a padlock, not of a gate. Asserting equality with
+    // CONSTANT_VERSION is STRICTLY STRONGER: the old form passed on a row stamped by a stale import, this
+    // one cannot. (Two sibling pins in verify-cv2-stage5/7 broke `tsc` outright for the same reason.)
+    ok("constant_version stamped == the engine's CONSTANT_VERSION (the fingerprint's own input)",
+      snap?.constantVersion === K.CONSTANT_VERSION, `${snap?.constantVersion} (engine: ${K.CONSTANT_VERSION})`);
     // structure COLUMN is the C1–C6 Net now (not the S-composite) — a valid Construction number ≤ 100.
     ok("structure column = the C1–C6 Net (cutover), a valid Construction ≤ 100", Number(snap?.structure) >= 0 && Number(snap?.structure) <= 100, `net=${snap?.structure}`);
     // ── (Stage 9 §15 · corrected in Stage 10a batch 3) THE COPY INPUTS — AND WHAT IS NO LONGER ONE ────

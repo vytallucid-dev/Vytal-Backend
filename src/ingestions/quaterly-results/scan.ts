@@ -307,18 +307,22 @@ async function processGroup(
       addLog(r.quarter, pick.basis, r.outcome);
       // ★ QUARTER IN BRIEF — the only place a discrete (stock, quarter) identity exists. The
       // RESULTS_SCAN job payload carries `changedSymbols` with no quarter, so it cannot drive this.
-      // await enqueueQuarterBriefIfWritten(stock.symbol, r);
+      // Gated by BRIEF_ENQUEUE_ON_INGEST, together with the annual hook below.
+      await enqueueQuarterBriefIfWritten(stock.symbol, r, "result_ingested");
       continue;
     }
 
     // ── Annual: write BOTH fundamentals AND derived Q4 quarterly, per basis ──
     // The same Mar-31 XBRL contains both annual (FourD) and Q4 (OneD) data.
     const annual = await ingestAnnual(stock, filing, xml, taxonomy, ctx, options);
-    // NOTE: no brief enqueue here. The ANNUAL row is not a brief input — a brief carries no
-    // balance-sheet fact and does no annual read. The Q4 QUARTERLY row derived from this same filing
-    // is enqueued below, where it is written.
+    // ★ 4f — THE SECOND HOOK. This note used to read "no brief enqueue here: the ANNUAL row is not a
+    // brief input — a brief carries no balance-sheet fact and does no annual read." That stopped being
+    // true when the annual section shipped, and the 24 NBFC filings whose annual lands up to 89 days
+    // after their own Q4 are exactly the rows that would otherwise keep a brief with the section
+    // permanently missing. See enqueueQuarterBriefIfWritten's header.
     bump(annual.outcome, annual.scoreRelevantChanged);
     addLog("Y", pick.basis, annual.outcome);
+    await enqueueQuarterBriefIfWritten(stock.symbol, annual, "annual_ingested");
 
     // Derive Q4 from the same Mar-31 filing. Log only (don't double-count in the
     // tally) and never fail the whole group if Q4 P&L is absent.
@@ -445,8 +449,88 @@ async function ingestQuarterly(
 }
 
 /**
- * Enqueue a brief for a quarter we ACTUALLY WROTE. Fire-and-forget: ingestion must never block on an
+ * ★★ THE INGEST → BRIEF TRIGGER, ON OR OFF, FOR BOTH HOOKS AT ONCE.
+ *
+ * ⚠ THIS REPLACES A COMMENTED-OUT CALL, AND THE REPLACEMENT IS THE POINT. The quarterly hook was
+ * disabled by commenting the call site out ("blocked quaterly ai summary on ingest for now"). Stage 4
+ * adds a SECOND hook, for the annual filing, and a comment cannot express "these two turn on together"
+ * — the next person to re-enable one would have had no way to see the other existed, and the annual
+ * half would have started spending on ingest while the quarterly half stayed dark, or the reverse.
+ *
+ * So the decision is a named constant that both call sites read. Flip it to `true` and ingestion begins
+ * enqueueing briefs again — BOTH kinds, together, which is the only combination that makes sense: a Q4
+ * brief without its annual hook is permanently missing the annual section for any company whose annual
+ * lands after its Q4, and an annual hook without the quarterly one has no brief to add the section to.
+ *
+ * ⚠ THE GUARD IS INSIDE enqueueQuarterBriefIfWritten, NOT AT THE TWO CALL SITES. One `if`, read by
+ * both, so the hooks cannot be half-enabled by editing one branch — and a third call site added later
+ * inherits the gate by construction rather than by the author remembering.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ WHY IT IS FALSE — 2026-08-09. THE REASON, NOT THE STATE.
+ *
+ * ⚠ THE LAST TIME THIS WAS TURNED OFF, THE REASON LIVED IN A COMMIT MESSAGE ("blocked quaterly ai
+ * summary on ingest for now") AND THE NEXT READER HAD NO WAY TO SEE IT. Turning the decision into a
+ * constant fixed WHERE the decision lives; this block is the other half — WHAT the decision was.
+ *
+ * NOT DISABLED. NOT BROKEN. NOT TEMPORARY-AND-FORGOTTEN. The feature is built, tested and proven end
+ * to end: twelve cards were generated through the real path, stored, read on the page and reviewed.
+ * It is off for exactly one reason:
+ *
+ *     BILLING IS NOT ENABLED, AND THE FREE-TIER DAILY CAP IS SMALLER THAN ONE SEASON OF BRIEFS.
+ *
+ * AI_BUDGET_FLASH_LITE is 480 calls/day. A single results season enqueues roughly 350–450 briefs in a
+ * few weeks (measured: FY27Q1 = 352 (stock, period) pairs, FY26Q4 = 440), and every one of them is one
+ * call. That is not "a bit over budget" — it is the entire day's allowance for the whole product,
+ * chat included, spent on one feature's backlog, on the days it happens to land.
+ *
+ * ── WHAT HAS TO BE TRUE TO FLIP IT, IN ORDER ────────────────────────────────────────────────────
+ *   1 · BILLING ENABLED on the Google project, and AI_BUDGET_FLASH_LITE raised past the free-tier RPD.
+ *       Until then the cap is not a policy choice, it is a wall.
+ *   2 · DEPLOY FIRST. The read path JSON.parses `content`; anything stored in the old prose shape
+ *       serves as absent. quarter_briefs is currently EMPTY (purged 2026-08-09, 908 rows), so there is
+ *       nothing to migrate — but if rows exist again in an older shape when this is next touched, they
+ *       go before the flag moves, not after.
+ *   3 · THEN A DELIBERATE BACKFILL, run and watched, not inferred from this flag. Flipping it does
+ *       NOTHING retroactively: the hooks fire on an ingest WRITE, so only stocks that file AFTER the
+ *       flip get a brief. Every prior quarter stays blank until something enqueues it on purpose.
+ *
+ * ── WHAT IT COSTS, COSTED ONCE SO IT IS NOT RE-DERIVED ──────────────────────────────────────────
+ * Measured 2026-08-09. One brief = one call, ~2,300–2,850 prompt + ~150–260 output tokens.
+ *
+ *   ONGOING, once flipped     ~350–450 calls per results season, arriving in bursts over 2–3 weeks.
+ *                             Roughly 1 day of the current cap, concentrated on the heaviest days.
+ *   BACKFILL, 1 quarter       352 calls · ~25 min at the 4.2 s pacing · ~1.0M tokens
+ *   BACKFILL, 4 quarters      1,686 calls · ~2.0 h · ~4.9M tokens
+ *   BACKFILL, everything      5,082 calls · ~5.9 h · ~14.8M tokens
+ *
+ * ⚠ AND THE CAP IS A HARD STOP, NOT A THROTTLE. checkAndConsumeAiCall refuses once the day's budget is
+ * gone, so a backfill larger than the cap does not slow down — it starts REFUSING with
+ * `quota_exhausted`, and those briefs are simply not written until something enqueues them again.
+ * A backfill must therefore be sized under the day's remaining budget, or run across days on purpose.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ */
+export const BRIEF_ENQUEUE_ON_INGEST = false;
+
+/**
+ * Enqueue a brief for a period we ACTUALLY WROTE. Fire-and-forget: ingestion must never block on an
  * AI call, and it must never fail because a queue insert failed.
+ *
+ * ── ★ 4f · WHY THERE IS A SECOND CALL SITE, ON THE ANNUAL PATH ────────────────────────────────────
+ * A Q4 brief carries an ANNUAL SECTION read from the *_fundamentals tables. The annual row and the Q4
+ * quarterly row usually arrive in the SAME Mar-31 filing — median gap zero days on every family — so
+ * the quarterly hook alone would usually be enough. Usually is not always: MEASURED, 24 NBFC filings
+ * and 193 non-financial ones carry an annual row that lands AFTER its own Q4 quarterly row, by up to
+ * 89 days for the NBFCs and 325 for the widest non-financial case.
+ *
+ * On those, the Q4 brief is generated first, WITHOUT the annual section — correctly, because at that
+ * moment there is no annual row and the section is presence-gated. Nothing else would ever fire, so
+ * without this second hook that brief stays permanently short of a balance sheet the database has held
+ * for three months. This hook is the self-heal.
+ *
+ * ⚠ THE ANNUAL ROW HAS NO QUARTER OF ITS OWN. ingestAnnual returns the sentinel `quarter: "Y"`; the
+ * brief it feeds is that year's Q4, and the mapping happens here rather than at the call site so a
+ * third caller cannot get it wrong.
  *
  * ⚠ THE GATE IS DELIBERATELY GENEROUS. It fires on any write (ingested OR refreshed), including the
  * ~19×-rewritten re-filings that carry identical numbers. That is not sloppiness — writeQuarterBrief
@@ -464,16 +548,20 @@ async function ingestQuarterly(
 async function enqueueQuarterBriefIfWritten(
   symbol: string,
   r: { outcome: BasisOutcome; quarter: string; fiscalYear: string },
+  trigger: "result_ingested" | "annual_ingested",
 ): Promise<void> {
+  if (!BRIEF_ENQUEUE_ON_INGEST) return;
   if (r.outcome !== "ingested" && r.outcome !== "refreshed") return;
+  const quarter = r.quarter === "Y" ? "Q4" : r.quarter;
+  const periodKey = `${r.fiscalYear}${quarter}`;
   try {
     await enqueueJob({
       type: JobTypes.QUARTER_BRIEF,
-      payload: { symbol, periodKey: `${r.fiscalYear}${r.quarter}` },
-      triggeredBy: "hook:result_ingested",
+      payload: { symbol, periodKey },
+      triggeredBy: `hook:${trigger}`,
     });
   } catch (e) {
-    console.warn(`[quarter-brief] enqueue failed for ${symbol} ${r.fiscalYear}${r.quarter}: ${(e as Error).message}`);
+    console.warn(`[quarter-brief] enqueue failed for ${symbol} ${periodKey}: ${(e as Error).message}`);
   }
 }
 

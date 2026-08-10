@@ -218,11 +218,11 @@ async function main() {
 
   // (e) DRY-RUN: snapshot write plan produced, references 4 pillar FKs, commits NOTHING
   {
-    const before = { snap: await prisma.scoreSnapshot.count(), run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), flag: await prisma.redFlag.count() };
+    const before = { snap: await prisma.scoreSnapshot.count(), run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), flag: /* score_red_flags dropped 2026-08-11 */ 0 };
     const ow = ownPillar.get(subject.stockId);
     const r1Fired = !!ow?.primary.redFlags.find((f) => f.flagKey === "ownership_R1_pledge");
     const plan = await writeComposite(subject, { peerGroupId: pg.id, barPath: pg.id, industryPath: "non_financial", asOfDate: asOf, dryRun: true, pillarScoreIds: { foundation: null, momentum: null, market: null, ownership: null }, r1: { fired: r1Fired, triggeringValues: null } });
-    const after = { snap: await prisma.scoreSnapshot.count(), run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), flag: await prisma.redFlag.count() };
+    const after = { snap: await prisma.scoreSnapshot.count(), run: await prisma.scoringRun.count(), pillar: await prisma.pillarScore.count(), flag: /* score_red_flags dropped 2026-08-11 */ 0 };
     const unchanged = before.snap === after.snap && before.run === after.run && before.pillar === after.pillar && before.flag === after.flag;
     const hasAllFks = !!plan.snapshotRow && !!plan.snapshotRow.foundationPillarId && !!plan.snapshotRow.momentumPillarId && !!plan.snapshotRow.marketPillarId && !!plan.snapshotRow.ownershipPillarId;
     checks.push({ name: "(e) DRY-RUN: snapshot planned with 4 pillar FKs; tables UNCHANGED (commits nothing)", ok: unchanged && hasAllFks && plan.action.startsWith("would"), detail: `action=${plan.action}; rows snap ${before.snap}→${after.snap} run ${before.run}→${after.run} pillar ${before.pillar}→${after.pillar}; 4 FKs present=${hasAllFks}` });

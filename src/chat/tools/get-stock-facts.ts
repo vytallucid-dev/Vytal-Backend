@@ -20,6 +20,7 @@
 // universe but unscored → inUniverseButUnscored(). Neither fabricates.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { groundStockHealth, scoreStr, pctStr, isNum, NA } from "../../ai/grounding.js";
+import { renderFilingFacts } from "../../ai/filing-facts.js";
 import type { HealthSnapshotView } from "../../scoring/read/health-view.types.js";
 import { notInUniverse, inUniverseButUnscored } from "./boundary.js";
 import type { ChatTool, ToolResult } from "./types.js";
@@ -36,7 +37,9 @@ interface GetStockFactsArgs {
 const DESCRIPTION =
   "Fetch Vytal's computed health facts for ONE Indian stock by its NSE ticker: the 0–100 health score and " +
   "its four pillars (Foundation, Momentum, Market, Ownership), the band, any fired findings, and peer " +
-  "standing. Call this whenever the reader asks about a specific stock that is NOT the subject this " +
+  "standing — plus the FILING findings, which are read straight off the company's own filings and " +
+  "exist even when Vytal has not scored it, so a stock with no health score can still come back with a " +
+  "standing red flag. Call this whenever the reader asks about a specific stock that is NOT the subject this " +
   "conversation was opened on — the current subject's facts are already in your context, so do not call " +
   "the tool for it. Returns a LEAN summary by default; pass full=true ONLY when the reader drills into the " +
   "detailed pillar / metric / lens breakdown (it is large). Vytal covers a defined universe of Indian " +
@@ -93,20 +96,29 @@ function renderLean(v: HealthSnapshotView): string {
   }
 
   L.push("Pillars (each its own 0–100 subtotal; the four combine with Vytal's proprietary internal weights, which are NOT disclosed):");
-  for (const p of v.pillars) {
+  for (const p of v.pillars ?? []) {  // null only under a projection this caller never requests
     L.push(`  · ${cap(p.pillar)}: ${isNum(p.subtotal) ? scoreStr(p.subtotal) : NA} (state: ${p.state})`);
   }
 
   const rf = v.findings?.redFlags ?? [];
   const pt = v.findings?.patterns ?? [];
   if (!rf.length && !pt.length) {
-    L.push("Findings: none fired.");
+    // ⚠ NAMED TO ITS CHANNEL. "Findings: none fired" was a clean bill of health over whatever the
+    //   filing channel is carrying — and since the 22 filing rules left the score pass, a scored
+    //   company can reach this line with a critical pledging flag standing against it.
+    L.push("Score-channel findings: none fired (see the filing findings below — a separate channel).");
   } else {
     const items: string[] = [];
     for (const r of rf) items.push(`"${findingName(r.flagKey)}" (RedFlag${r.severity ? `, ${r.severity}` : ""})`);
     for (const p of pt) items.push(`"${findingName(p.patternKey)}" (Pattern${p.direction ? `, ${p.direction}` : ""}${p.severity ? `, ${p.severity}` : ""})`);
-    L.push(`Findings: ${items.length} fired — ${items.join("; ")}.`);
+    L.push(`Score-channel findings: ${items.length} fired — ${items.join("; ")}.`);
   }
+
+  // ★ THE SECOND CHANNEL, IN THE LEAN READ TOO — otherwise the same tool answers two different ways
+  //   for one company depending on `full`, and the cheap default is the one that omits a red flag.
+  //   PROJECTED, like everything else here: findings NAMED, no verdicts — the same shape the score
+  //   channel takes one line above. The full block is what full=true already returns.
+  L.push(...renderFilingFacts(v.filingFindings, { subject: id.symbol, scope: "lean" }));
 
   const ps = v.peerStanding;
   L.push(
@@ -142,7 +154,15 @@ export const getStockFactsTool: ChatTool<GetStockFactsArgs> = {
     }
 
     if (!grounding) return { ok: true, content: notInUniverse(symbol) }; // null ⇒ outside the universe
-    if (!grounding.data.scored) return { ok: true, content: inUniverseButUnscored(symbol, grounding.data.identity.name) };
+    // ★ THE FILING SECTION TRAVELS WITH THE BOUNDARY MESSAGE. It is populated on the not-scored branch
+    //   by construction (health-view.service.ts resolves it before the head-snapshot guard), so the
+    //   message can report what the company filed instead of claiming it has no findings.
+    if (!grounding.data.scored) {
+      return {
+        ok: true,
+        content: inUniverseButUnscored(symbol, grounding.data.identity.name, grounding.data.filingFindings),
+      };
+    }
     if (full) return { ok: true, content: grounding.factBlock }; // drill-down: the canonical closed-world block
     return { ok: true, content: renderLean(grounding.data) };
   },

@@ -13,8 +13,15 @@
 
 import { notEvaluable, type FireRule } from "../types.js";
 import type { Pillar } from "../../composite/types.js";
+import { STOCK_FINDINGS } from "../../../catalogue/stock-findings.js";
 
-export const F1_DEVIATION_PP = 25; // a pillar ≥ 25pp off its band-typical ⇒ genuinely atypical. 15pp
+// ★ THE BAR THIS RULE FIRES AT, READ FROM THE CATALOGUE — never a literal here. Same binding the
+//   D/S/T rules already use (`const FACTS = ENTRY.facts`); see catalogue/finding-facts.ts for why the
+//   35 unstudied findings now carry a record too. Relocation only: every value is what this file
+//   declared before, and the evidence-parity gate re-derives all 504 stocks to prove it.
+const FACTS = STOCK_FINDINGS.composition_F1_atypical.facts;
+
+export const F1_DEVIATION_PP = FACTS.thresholds.deviationPp; // a pillar ≥ 25pp off its band-typical ⇒ genuinely atypical. 15pp
 // fired on ~half the universe (a 15pp deviation off a median is common); 25pp isolates the truly
 // unusual shapes. FLAG: provisional + see the band-vs-class note above (band-typical pools sectors,
 // so a sector-characteristic shape — IT's low Market — can read atypical for the band).
@@ -58,6 +65,5 @@ export const ruleF1: FireRule = (ctx) => {
         `A ${r0(ctx.current.composite)} that isn't a typical ${bandLabel} — ` +
         `${high.pillar} runs ${r0(high.dev)}pp above its band-typical (masking) while ${low.pillar} sits ${r0(-low.dev)}pp below.`,
     },
-    metricRefs: [high.pillar, low.pillar],
   };
 };

@@ -1,0 +1,23 @@
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
+-- stock_news.dedupe_key — the real dedupe for PRESS items.
+--
+-- @@unique([stock_id, source_id]) does not dedupe press rows, because Google News REISSUES the GUID
+-- for the same article. Verified: two CUMMINSIND rows, same publisher, same published_at to the
+-- second, same headline bar a truncation — two different GUIDs, both stored, both rendered.
+--
+-- The key is "{published_at ms}|{normalised headline, first 60 chars}", built by
+-- src/ingestions/news_and_announcements/dedupe-key.ts (which carries the full calibration: why the
+-- key is time-bound, and the LICI counterexample that rules out a bare prefix).
+--
+-- ⚠⚠ THIS MIGRATION ADDS THE COLUMN ONLY. The UNIQUE INDEX is a SEPARATE migration
+-- (20260809200100_add_stock_news_dedupe_unique) because 678 duplicate rows already exist and the
+-- index cannot be created until they are collapsed. REQUIRED ORDER:
+--
+--   1. this migration                                        (adds the nullable column)
+--   2. npx tsx src/scripts/backfill-news-dedupe-key.ts        (--dry first: computes keys, collapses)
+--   3. 20260809200100_add_stock_news_dedupe_unique            (adds the constraint)
+--
+-- Creating the index before step 2 fails loudly rather than silently, which is the intended
+-- behaviour — but it leaves the ingest without its guard, so do not skip step 2.
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
+ALTER TABLE "stock_news" ADD COLUMN IF NOT EXISTS "dedupe_key" TEXT;

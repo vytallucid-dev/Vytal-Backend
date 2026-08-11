@@ -313,7 +313,11 @@ async function main() {
   // member: a real catalogue key with no rule and no read-layer composition ever producing it — see
   // types.ts's KeyStatus. The gate reads the status field to decide this, exactly as asked: adding a
   // status the gate does not recognise fails loud here, rather than silently passing.
-  const NO_EMITTER_STATUSES = new Set(["synthesised", "never_emitted"]);
+  // ★ `coalesced` JOINS THE EXPLAINED SET. A coalesced entry IS emitted and IS persisted — but by the
+  //   coalescer, not by a rule file, and this reconciliation discovers emitters by scanning the
+  //   registered rule sources. Naming the status keeps the rule "explained by status, never by a
+  //   wildcard" intact: a status this gate did not recognise would still fail loud.
+  const NO_EMITTER_STATUSES = new Set(["synthesised", "never_emitted", "coalesced"]);
   const explained = noEmitter.filter((k) => NO_EMITTER_STATUSES.has(STOCK_FINDINGS[k as keyof typeof STOCK_FINDINGS].status));
   ok(
     "every catalogue key with no emitter is EXPLAINED by status, never by a wildcard",

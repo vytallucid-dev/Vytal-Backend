@@ -203,9 +203,11 @@ export interface RegisterViolation {
  * too). Returns every violation (empty ⇒ clean).
  *
  * ★ CELEBRATION IS NOT SCANNED HERE — it is a UO6-STRENGTH register rule (§3.1), scoped by `scanStrength`.
- * A word like "healthy"/"strong" is a factual BAND LABEL in UO2 ("Health is about 82 — healthy"), not a
- * verdict; denying it over all output would false-positive on legitimate band copy. Celebration is
- * forbidden only where strength is STATED (UO6), which is exactly what `scanStrength` guards.
+ * A word like "healthy"/"strong" is a factual BAND LABEL wherever a snapshot's band renders (e.g. a UD7
+ * header stating the current band, or the page's own health section) — not a verdict; denying it over
+ * all output would false-positive on legitimate band copy. Celebration is forbidden only where strength
+ * is STATED (UO6), which is exactly what `scanStrength` guards. (UO2, the entry this note originally
+ * cited, is deleted — the band label it used to render now lives only in the page's own health section.)
  *
  * ★ `businessLeadStrings` (UO1) AND `uo6Strings` (UO6) ARE SCANNED SEPARATELY, against
  * BUSINESS_LEAD_DENY_LIST instead of the full guard — ruled: third-person description ("selling

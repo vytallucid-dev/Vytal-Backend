@@ -203,6 +203,15 @@ const VALUE_SPEC = {
   trajectory_D_T4_recovering_out_of_below_par: { kind: "distance_from_mark", levelField: "compositeNow", markField: "crossedAbove", subject: "composite", side: "above" },
   trajectory_D_T5_foundation_out_of_weak: { kind: "distance_from_mark", levelField: "foundationNow", markField: "crossedAbove", subject: "foundation", side: "above" },
   trajectory_B_T6_momentum_breaking_into_weak: { kind: "distance_from_mark", levelField: "momentumNow", markField: "crossedBelow", subject: "momentum", side: "below" },
+  // ── ★ COALESCED ENTRIES. Each tracks the SPAN's far side — the mark that completes the move — because
+  //    that is the quantity the entry is about. A multi-mark move has no single "the gap"; what it has
+  //    is a level and the boundary it ended up past, which is exactly `distance_from_mark`.
+  //    The fields are the CONSTITUENTS' own (the coalescing rule copies them onto the merged evidence),
+  //    so nothing here reads a quantity the constituent rules do not already write.
+  divergence_D6_D7_trajectory_collapse: { kind: "distance_from_mark", levelField: "momentum", markField: "crossedBelow", subject: "momentum", side: "below" },
+  trajectory_B_T2_T3_deterioration_out_of_top_band: { kind: "distance_from_mark", levelField: "compositeNow", markField: "crossedBelow", subject: "composite", side: "below" },
+  trajectory_D_T1_T4_recovery_out_of_low_zone: { kind: "distance_from_mark", levelField: "compositeNow", markField: "crossedAbove", subject: "composite", side: "above" },
+  trajectory_D_T5_T8_foundation_weak_to_strong: { kind: "distance_from_mark", levelField: "foundationNow", markField: "crossedAbove", subject: "foundation", side: "above" },
 } satisfies { [K in PatternKey]: ValueSpecFor<(typeof PATTERN_FACTS)[K]["basis"]> };
 
 const BASIS_OF: Record<ValueSpec["kind"], LifecycleValueBasis> = {

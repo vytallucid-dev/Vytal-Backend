@@ -40,9 +40,16 @@ export function composeRelationalState(
   // entry is not known until slots are decided. Merges each key-tied echo into its ELEVATED host.
   const { slots, overflow } = attachEchoAnnotations(assembled.slots, assembled.overflow);
 
-  // ── Guaranteed-resolve backstop (§0.4 / Part X): the floor is reserved, so this is unreachable — if it
-  //    is ever reached it is a BUG, not an empty state. Log loud (the card still carries its header). ──
-  if (slots.length === 0) {
+  // ── Guaranteed-resolve backstop (§0.4 / Part X), AMENDED — an empty slot list is legal in exactly one
+  //    case: header is UD7 ("Nothing new since {date}.") and the mode's floor was intentionally left
+  //    UNRESERVED (mode-contract.ts's ud7AwareFloor — a RECURRING reader with a genuinely empty delta, on
+  //    M2/M3/M4/M10/M11/M12). This is INTERNAL PLUMBING, not a claim that the rendered card is ever
+  //    literally empty — under realistic inputs it never is: clearing the floor only removes the
+  //    reservation, and the ladder still fills freed room from whatever else is genuinely eligible (on
+  //    M3, led by UH1; on M11, by UO1/UG7-class content). `header.entryId === "UD7"` still matters as the
+  //    discriminator between "floor intentionally unreserved" and "floor genuinely failed to resolve" —
+  //    those are different events and only one is a defect — but the distinction is not user-visible. ──
+  if (slots.length === 0 && built.header.entryId !== "UD7") {
     console.error(`[relational] EMPTY CARD for stock ${obj.stockId} mode ${mode.mode} — floor failed to resolve`);
   }
 
@@ -69,11 +76,15 @@ export function composeRelationalState(
 
   // ── THE BOUNDARY PICK (§3) — the ONE inline doesntMean the card shows. UO6 (strength) is the
   // highest-misread-risk claim ("sound for six years" reads as a buy unless its already-priced
-  // boundary is visible), then UO2 (health), then UO3 (flags), else the first slot. The backend picks
-  // so the frontend never re-derives this priority (§4). ──
+  // boundary is visible), else the first slot as arbitration ranked it. The backend picks so the
+  // frontend never re-derives this priority (§4).
+  //
+  // ⚠ NO UO2/UO3 SPECIAL CASE (deleted with those entries). UO2/UO3 used to be the next-safest fallback
+  // after UO6; dropping straight to `slots[0]` is deliberate, not a gap — UO1 was considered as a
+  // replacement middle step but rejected: UO1 is ineligible on every returning-holder mode (M2/M3/M4)
+  // under the mode contract, so a UO1-shaped fallback would silently collapse to `slots[0]` there anyway
+  // — one path on some modes and a different one on others, for no gain. One rule everywhere. ──
   const boundaryEntryId = slots.find((s) => s.entryId === "UO6")?.entryId
-    ?? slots.find((s) => s.entryId === "UO2")?.entryId
-    ?? slots.find((s) => s.entryId === "UO3")?.entryId
     ?? slots[0]?.entryId
     ?? null;
 

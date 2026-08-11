@@ -161,16 +161,25 @@ async function main() {
   ok(
     "every record carries the tested_not_shipped basis, and only that",
     NOT_COVERED_RECORDS.every((r) => r.evidenceBasis === "tested_not_shipped"),
-    `${NOT_COVERED_RECORDS.length}/10`,
+    `${NOT_COVERED_RECORDS.length}/${NOT_COVERED_IDS.length}`,
   );
-  ok("all ten ids have a record", NOT_COVERED_IDS.length === 10 && NOT_COVERED_RECORDS.length === 10, `${NOT_COVERED_RECORDS.length}`);
+  // ⚠ COUNTED FROM THE REGISTRY, NOT AGAINST A LITERAL. This asserted `=== 10` on both sides, so adding
+  //   NC11 (the coalesced two-band slip) failed a gate that was checking arithmetic rather than the
+  //   invariant. The invariant is TOTALITY — every declared id has a record and nothing else does — and
+  //   that is what is checked now, so the next id costs no gate edit.
+  ok(
+    "every declared id has a record, and the registry holds no others",
+    NOT_COVERED_RECORDS.length === NOT_COVERED_IDS.length &&
+      NOT_COVERED_IDS.every((id) => NOT_COVERED[id]?.id === id),
+    `${NOT_COVERED_RECORDS.length} ids, all resolved`,
+  );
 
   // ★ THE PERSISTED-KEY NAMESPACE — notCoveredPatternKey / isNotCoveredKey / dropNotCoveredPatterns /
   //   notCoveredKeysSqlPredicate, the helpers every read boundary must use.
   ok(
     "notCoveredPatternKey round-trips through isNotCoveredKey for every id",
     NOT_COVERED_IDS.every((id) => isNotCoveredKey(notCoveredPatternKey(id))),
-    "10/10",
+    `${NOT_COVERED_IDS.length}/${NOT_COVERED_IDS.length}`,
   );
   ok(
     "a real finding key is NOT caught by isNotCoveredKey (the prefix test discriminates)",

@@ -791,6 +791,26 @@ export interface PatternView {
   /** This finding's own pair, high/low resolved. Null for a pattern whose subject is not two real
    *  pillars (the composite patterns T1–T4, and the single-pillar T5–T9). */
   pair: DivergencePair | null;
+  /**
+   * ★ DEMOTED TO THE PAIR'S CONTEXT SECTION rather than leading its card. Set only where the ruling
+   * demotes a reading — today, sticky divergence beside any other occupant of Foundation↔Momentum.
+   *
+   * ⚠ A PRESENTATION FACT, NOT A SUPPRESSION. The finding travels in FULL: same evidence, same
+   * lifecycle, same clauses. It fired and it is on the wire; what this says is that the pair's card
+   * gives it a line beneath the lead reading instead of a hero. Absent (undefined) on every reading
+   * that leads — the optional-key discipline PatternFacts.largeMoveCutPp states at length.
+   */
+  demoted?: boolean;
+  /**
+   * ★ THE ONE-LINE FORM FOR THE CONTEXT SECTION — purpose-written, never the card copy cut down.
+   *
+   * Set with `demoted`. A demoted reading's full copy was written for a headline slot and is wrong
+   * beneath another reading, where the OTHER reading is the verdict and this one qualifies it. For
+   * sticky the line states persistence as fact and carries the direction of travel, because a fixed
+   * line asserting non-convergence would contradict a D5 card about convergence sitting above it.
+   * See read/pair-presentation.ts.
+   */
+  contextLine?: string;
 }
 
 export interface FindingsSection {

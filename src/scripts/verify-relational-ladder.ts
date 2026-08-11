@@ -36,6 +36,7 @@ import { writeFileSync } from "node:fs";
 import { prisma } from "../db/prisma.js";
 import { resolveRelationalState } from "../relational/service.js";
 import { URGENT_RUNG_CEILING } from "../relational/arbitration.js";
+import { MODE_CONTRACTS, HONEST_NULL_SLOTS, type EntrySlot } from "../relational/mode-contract.js";
 import type { RelationalState, ResolvedEntry } from "../relational/types.js";
 
 let pass = 0;
@@ -86,11 +87,33 @@ function checkCard(label: string, s: RelationalState): void {
     s.overflow.every((e) => e.floorRank == null),
     s.overflow.filter((e) => e.floorRank != null).map((e) => e.entryId).join(" "));
 
-  // ── 3 · LADDER ORDER, ACROSS BOTH ARRAYS ────────────────────────────────────────────────────────
-  const tail = entries.filter((e) => e.floorRank == null);
-  ok(`${label} · non-floor run is non-decreasing in rung across slots++overflow`,
-    tail.every((e, i) => i === 0 || tail[i - 1].weight.ladderRung <= e.weight.ladderRung),
-    tail.map((e) => `${e.entryId}@${e.weight.ladderRung}`).join(" "));
+  // ── 3 · LADDER ORDER ─────────────────────────────────────────────────────────────────────────────
+  // ⚠ RE-DERIVED for fill-if-room (arbitration.ts). The invariant used to be ONE continuous sequence,
+  // non-decreasing across slots++overflow. That is no longer what the mechanism promises: fill-if-room's
+  // own rule is "real content always wins a contested SLOT over an honest-null, even at a worse rung" —
+  // confirmed live (BANDHANBNK: UO1@14 correctly wins the last slot over UG5@13, a HONEST_NULL_SLOTS
+  // member, putting a LOWER rung behind a HIGHER one across the seam). Asserting strict monotonicity
+  // across the whole sequence would be asserting the mechanism away, the same class of error this file's
+  // own header warns against (an assertion written against behaviour would have hidden this by hardening
+  // itself around whatever the code did; the fix here is describing what's ACTUALLY guaranteed instead).
+  //
+  // What IS still guaranteed, and is what this now checks: `slots` alone is non-decreasing by rung
+  // (excluding floor), and `overflow` alone is non-decreasing by rung — each array is internally honest
+  // about its own order. Only the SEAM between them is no longer required to be monotonic, and only
+  // because an honest-null legitimately lost a slot to real content there.
+  const slotsTail = s.slots.filter((e) => e.floorRank == null);
+  ok(`${label} · slots' non-floor run is non-decreasing in rung`,
+    slotsTail.every((e, i) => i === 0 || slotsTail[i - 1].weight.ladderRung <= e.weight.ladderRung),
+    slotsTail.map((e) => `${e.entryId}@${e.weight.ladderRung}`).join(" "));
+  ok(`${label} · overflow is non-decreasing in rung`,
+    s.overflow.every((e, i) => i === 0 || s.overflow[i - 1].weight.ladderRung <= e.weight.ladderRung),
+    s.overflow.map((e) => `${e.entryId}@${e.weight.ladderRung}`).join(" "));
+  // The seam CAN invert, but only in the one direction fill-if-room permits: an overflow entry that
+  // sorts ahead of a slot's tail must be a HONEST_NULL_SLOTS member (real content is never displaced).
+  const slotsTailWorst = slotsTail.at(-1)?.weight.ladderRung ?? -Infinity;
+  const seamOffenders = s.overflow.filter((e) => e.weight.ladderRung < slotsTailWorst && !HONEST_NULL_SLOTS.has(e.entryId as EntrySlot));
+  ok(`${label} · any seam inversion is an honest-null, never real content`, seamOffenders.length === 0,
+    seamOffenders.map((e) => `${e.entryId}@${e.weight.ladderRung}`).join(" "));
   ok(`${label} · every floor entry precedes every non-floor entry`,
     entries.findIndex((e) => e.floorRank == null) === -1 ||
       entries.slice(entries.findIndex((e) => e.floorRank == null)).every((e) => e.floorRank == null));
@@ -131,6 +154,30 @@ function checkCard(label: string, s: RelationalState): void {
     if (e.family === "UE" || e.arithmetic?.__arithmeticOnlyClaim === undefined) continue;
     ok(`${label} · host ${e.entryId} that absorbed an echo publishes the seam`, hasSeam(e));
   }
+
+  // ── 7 · THE MODE CONTRACT (new) ─────────────────────────────────────────────────────────────────
+  // A real-data trip-wire for contract/implementation drift — no new queries, reads only what already
+  // resolved. Deliberately an ASSERTION here (not printed like the mode spread below): eligibility is a
+  // closed set declared per mode, so "did today's data happen to need every slot" isn't at stake the way
+  // "which modes occur" is — a resolved entry outside its mode's contract is unconditionally a bug.
+  const baseSlotFor = (entryId: string): EntrySlot | string => {
+    if (entryId.startsWith("ELEVATED:")) return "elevated";
+    if (entryId.startsWith("UD")) return "UD";
+    if (entryId.startsWith("UE")) return "UE";
+    if (["UH1", "UH2", "UH3", "UH4", "UH10"].includes(entryId)) return "heldPositionFamily";
+    return entryId;
+  };
+  const contract = MODE_CONTRACTS[s.mode];
+  const offenders = entries
+    .map((e) => e.entryId)
+    .filter((id) => !contract.eligible.has(baseSlotFor(id) as EntrySlot));
+  ok(`${label} · every resolved entry is eligible under its mode's contract (${s.mode})`, offenders.length === 0, offenders.join(", "));
+
+  // Empty slots is legal only alongside a UD7 header (mode-contract.ts's ud7AwareFloor) — everywhere
+  // else it is the guaranteed-resolve backstop firing, which service.ts already logs as a bug. Restated
+  // here as a real-data assertion, not just a log line, since this file's whole purpose is catching on
+  // live data what the synthetic fixtures cannot guarantee reaches production inputs.
+  ok(`${label} · empty slots only alongside a UD7 header`, s.slots.length > 0 || s.header.entryId === "UD7", `mode=${s.mode} header=${s.header.entryId}`);
 }
 
 async function main() {

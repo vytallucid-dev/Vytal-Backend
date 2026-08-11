@@ -64,12 +64,23 @@ export type RegistryId = "stock_finding" | "lens_face" | "guardrail_signature" |
  *                   emitter-reconciliation gate (verify-catalogue.ts §4) reads THIS FIELD to decide
  *                   whether a catalogued-but-unemitted key is explained, rather than hand-listing keys
  *                   itself — a status the gate did not know about would fail loud, not silently pass.
+ *   coalesced       ★ NEW. Emitted by the COALESCER (scoring/findings/coalesce.ts), not by a rule: it
+ *                   is what several constituent rules become when ONE move satisfies all of them, and
+ *                   it IS persisted to score_patterns like any fired finding. So it is emitted — just
+ *                   never by a rule file, which is the only reason the emitter reconciliation cannot
+ *                   see it (that gate discovers emitters by scanning the registered rule sources).
+ *
+ *                   ⚠ NOT `synthesised`, AND THE DIFFERENCE IS LOAD-BEARING. A synthesised key is
+ *                   composed by the READ layer and never persisted; a coalesced key is written at
+ *                   SCORE time and is a row in the table. Filing one under the other would make the
+ *                   persist path's own set disagree with the catalogue's account of it.
+ *                   ⚠ AND NOT `never_emitted`, which means exactly the opposite: no emitter anywhere.
  *
  * RETIRED keys (P2 → R6, P3 → R1) are NOT a status: they are ABSENT. A deregistered rule cannot fire
  * again, so carrying copy for it would be carrying a lie. alerts/finding-catalog.ts takes the same
  * line — it recognises them only to refuse them.
  */
-export type KeyStatus = "live" | "dormant" | "synthesised" | "never_emitted";
+export type KeyStatus = "live" | "dormant" | "synthesised" | "never_emitted" | "coalesced";
 
 // ── stock findings (Master Spec XII–XIII · StockPage Rules Spec §5 · Family N Amendment) ───────────
 

@@ -12,6 +12,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import {
+  NOT_COVERED,
   NOT_COVERED_RECORDS,
   type NotCoveredId,
   type NotCoveredReason,
@@ -35,7 +36,19 @@ const at = (r: SubjectReadings, s: PatternSubject): number | null => r[s];
 export type NotCoveredTriggerDetail =
   | { kind: "levels"; legs: { subject: PatternSubject; value: number }[] }
   | { kind: "level_and_move"; level: { subject: PatternSubject; value: number }; move: { subject: PatternSubject; now: number; prior: number; delta: number } }
-  | { kind: "crossing"; subject: PatternSubject; direction: "down" | "up"; mark: number; prior: number; now: number };
+  | {
+      kind: "crossing";
+      subject: PatternSubject;
+      direction: "down" | "up";
+      mark: number;
+      prior: number;
+      now: number;
+      /** ★ COALESCED FIRINGS ONLY — every mark this one move passed, ascending. Absent on an ordinary
+       *  single-mark crossing, which is what "one mark" actually means. This is the anti-suppression
+       *  guarantee in data form: the note can state how many boundaries were crossed and where the
+       *  reading landed, so consolidating never makes a constituent invisible. */
+      marksCrossed?: readonly number[];
+    };
 
 export interface NotCoveredFiring {
   id: NotCoveredId;
@@ -57,6 +70,10 @@ export interface NotCoveredFiring {
 export function notCoveredFirings(now: SubjectReadings, prior: SubjectReadings | null): NotCoveredFiring[] {
   const out: NotCoveredFiring[] = [];
   for (const r of NOT_COVERED_RECORDS) {
+    // ★ NC11 IS NEVER MATCHED DIRECTLY. It is the COALESCED form of a multi-mark move and is emitted
+    //   only by `coalesceCrossings` below, in place of the constituents it stands for. Matching it on
+    //   its own declared trigger would double-report the far mark.
+    if (r.id === COALESCED_ID) continue;
     const detail = matchDetail(r, now, prior);
     if (!detail) continue;
     const values: Partial<Record<PatternSubject, number>> = {};
@@ -69,7 +86,68 @@ export function notCoveredFirings(now: SubjectReadings, prior: SubjectReadings |
     }
     out.push({ id: r.id, reason: r.reason, values, triggerDetail: detail });
   }
-  return out;
+  return coalesceCrossings(out);
+}
+
+/** The registry id that stands for a single move passing several marks. */
+const COALESCED_ID = "NC11" as NotCoveredId;
+
+/**
+ * ★ ONE MOVE, ONE ENTRY — the not-covered half of the coalescing ruling (§1).
+ *
+ * Two notes firing on the SAME subject, in the SAME direction, from the SAME prior reading to the SAME
+ * current one are not two findings; they are one move that happened to pass two of our marks. BDL is
+ * the live case: the composite fell 69.1 → 60.95, passing 68 and 62, and produced NC3 and NC4 carrying
+ * word-for-word identical bodies distinguished only by which number they named.
+ *
+ * ⚠ MATCHED ON TRIGGER SHAPE, NOT ON IDS. The pair {NC3, NC4} is not hard-coded — any future pair of
+ * same-subject crossings inherits this for free, which is what "applies to the composite and to any
+ * pillar" requires. A hard-coded id list would have to be revisited every time a mark is added.
+ *
+ * ⚠ CONSOLIDATE, NEVER SUPPRESS. The constituent marks travel on the emitted firing's `triggerDetail`
+ * (`marksCrossed`), so the note can name how many boundaries were passed and where the reading landed.
+ * Nothing becomes invisible; what is removed is one event rendered as several notes.
+ */
+function coalesceCrossings(firings: readonly NotCoveredFiring[]): NotCoveredFiring[] {
+  // Group the crossing firings by the move they describe: subject + direction + the two endpoints.
+  const groups = new Map<string, NotCoveredFiring[]>();
+  for (const f of firings) {
+    if (f.triggerDetail.kind !== "crossing") continue;
+    const d = f.triggerDetail;
+    const key = `${d.subject}|${d.direction}|${d.prior}|${d.now}`;
+    groups.set(key, [...(groups.get(key) ?? []), f]);
+  }
+
+  const merged = new Set<NotCoveredId>();
+  const replacements = new Map<NotCoveredId, NotCoveredFiring>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue; // one mark is one crossing — nothing to coalesce
+    const first = group[0].triggerDetail as Extract<NotCoveredTriggerDetail, { kind: "crossing" }>;
+    const marks = group
+      .map((g) => (g.triggerDetail as Extract<NotCoveredTriggerDetail, { kind: "crossing" }>).mark)
+      .sort((a, b) => a - b);
+    for (const g of group) merged.add(g.id);
+    // The coalesced firing reports the FAR side of the span — the mark that completes the move — and
+    // carries every mark passed as a fact.
+    replacements.set(group[0].id, {
+      id: COALESCED_ID,
+      reason: NOT_COVERED[COALESCED_ID].reason,
+      values: group[0].values,
+      triggerDetail: {
+        ...first,
+        mark: first.direction === "down" ? Math.min(...marks) : Math.max(...marks),
+        marksCrossed: marks,
+      },
+    });
+  }
+
+  if (!merged.size) return [...firings];
+  // Registry order is preserved: the coalesced entry takes the position of the first constituent.
+  return firings.flatMap((f) => {
+    const rep = replacements.get(f.id);
+    if (rep) return [rep];
+    return merged.has(f.id) ? [] : [f];
+  });
 }
 
 /** Does the record's trigger match, and if so, what were the raw numbers? Returns null on no match —

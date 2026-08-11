@@ -150,6 +150,33 @@ export type PatternState = "formed" | "building" | "absent";
  */
 export type EvidenceBasis = "measured" | "inherited" | "described" | "tested_not_shipped";
 
+/**
+ * ★ THE COALESCED ENTRY'S OWN MARKING (Coalescing ruling §6).
+ *
+ * One move that crosses several marks is ONE event, and it renders as one entry. The constituents that
+ * fired are not discarded — they are named as facts inside it — so two questions must stay separately
+ * answerable, and one field cannot hold both:
+ *
+ *   coalescedFrom   WHAT FIRED. Every constituent whose trigger was satisfied, in registry order.
+ *   claimSource     WHAT WAS MEASURED. The single constituent whose claim is spoken, or null when
+ *                   none earned the right to speak.
+ *
+ * ⚠ `claimSource: null` IS NOT "WE HAVEN'T DECIDED". It is the ruled state for D6+D7 and T5+T8: the
+ * combined configuration falls outside the observed range of every constituent, so the entry describes
+ * the mechanism and stops. Paired with `evidenceStats.basis: "described"` and `confidence: "described"`,
+ * which together mean no consequence clause may be composed — see PatternFacts.confidence.
+ *
+ * ⚠ AND IT IS NOT THE SAME AS AN EMPTY `coalescedFrom`. A reader of the catalogue must be able to see
+ * that three rules produced one entry and that none of the three earned the right to speak; collapsing
+ * those into one field would lose exactly that.
+ */
+export interface CoalescedFacts {
+  /** The constituent pattern keys whose triggers fired, in registry order. Never empty. */
+  readonly coalescedFrom: readonly PatternKey[];
+  /** The one constituent whose claim is spoken, or null when the entry is `described`. */
+  readonly claimSource: PatternKey | null;
+}
+
 export interface EvidenceStats {
   readonly n: number | null;
   readonly hitRatePct: number | null;
@@ -270,10 +297,78 @@ export interface PatternFacts {
    * at the sixteen existing call sites that already read them as non-optional on their own record.
    */
   readonly largeMoveCutPp?: number;
+  /**
+   * ★ PRESENT ONLY ON A COALESCED ENTRY — the four keys that describe one move across several marks.
+   *
+   * ⚠ OPTIONAL, NOT `CoalescedFacts | null`, for `largeMoveCutPp`'s reason one field up: the eighteen
+   * single-pattern records have no constituents, and "absent" is what that actually means. A nullable
+   * field would make every one of them carry an explicit `null` for a fact none of them has.
+   *
+   * Its presence is also the discriminator the read layer switches on — `facts.coalesced !== undefined`
+   * is "this entry stands for several fired rules", which is a question no other field answers.
+   */
+  readonly coalesced?: CoalescedFacts;
 }
 
 /** See {@link PatternFacts.confidence}. */
 export type PatternConfidence = "robust" | "directional" | "described";
+
+/**
+ * ★ THE CONFIDENCE BOUNDARY — the sample size at or above which a pattern speaks in the ROBUST
+ * register, and below which it speaks DIRECTIONAL. The study's own standing convention, ruled.
+ *
+ * ⚠ IT WAS NEVER POPULATED, AND THAT WAS THE DEFECT. `confidence` was declared per record by hand with
+ * no stated boundary, so four records disagreed with the convention they were supposedly following
+ * (D3 at n=26 declared directional; T6/T7/T8 at n=15/19/17 declared robust). An unspecified boundary
+ * is not a small gap — it is the class of defect where every individual record looks defensible and
+ * the set is inconsistent. Declaring the number makes the inconsistency mechanically checkable, which
+ * is what scripts/verify-copy-register.ts §5 now does.
+ *
+ * ⚠ IT IS NOT A FIRING GATE AND NOTHING IS SUPPRESSED BY IT. It selects the VOCABULARY a card may use
+ * — "in most cases of this" against "in the few cases of this we have" — which, since the figures were
+ * stripped from cards, is the reader's only signal of how much evidence stands behind a claim.
+ *
+ * ⚠ `n: null` IS NOT "BELOW THE BOUNDARY". A pattern whose sample was never preserved (T4) cannot be
+ * tiered at all and therefore may not speak — see its record. Absence of a count and a small count are
+ * different facts, and collapsing them would let an unmeasured pattern borrow the directional register.
+ */
+export const CONFIDENCE_ROBUST_MIN_N = 20;
+
+/**
+ * ★ ONE REGISTER PHRASE PER ENTRY — where it goes, and how a qualifier carries it. (ruled)
+ *
+ * The register phrase belongs on the CLAIM CLAUSE (`size`). A REGIME QUALIFIER inherits the claim's
+ * register but expresses it through HEDGING ADVERBS rather than by repeating the phrase:
+ *
+ *   claim      "In the few cases of this we have, …"        ← the register phrase, once
+ *   qualifier  "…in a hot sector it has TENDED TO be masked" ← the same register, hedged
+ *
+ * Two register phrases in one entry read clumsily and double-count the signal. T6 is the pattern for
+ * every regime qualifier: its masked-in-HOT clause says "has tended to be masked", not "has
+ * consistently been masked" (which spoke robust while the record is directional) and not a second
+ * "in the few cases of this we have".
+ *
+ * ⚠ RECORDED, NOT BLOCKING — T6's HOT cell is n=3 against the pattern's own n=15, so that sub-clause is
+ * thinner than its parent. "Has tended to be" is the strongest form it can carry, which makes the
+ * hedged wording correct and arguably generous. If sub-clauses are ever tiered independently of their
+ * parent pattern, that one sits BELOW its parent's tier.
+ */
+
+/**
+ * ⚠⚠ KNOWN GAP — REGISTER SIGNALS SAMPLE SIZE, NOT EFFECT STRENGTH. NOTHING SIGNALS THE LATTER. ⚠⚠
+ *
+ * `confidence` is derived from n alone (see CONFIDENCE_ROBUST_MIN_N), so it answers "how many cases
+ * did we observe?" and nothing else. It does NOT answer "how reliably did they go the same way?"
+ *
+ * D3 is the worked example: n=26 puts it above the boundary and it speaks the robust register — "in
+ * most cases of this" — while its honest sector-excess hit-rate is 58%. That phrase reads to a reader
+ * as both PLENTIFUL and RELIABLE, and only the first is backed by the number behind it.
+ *
+ * ⚠ DELIBERATELY NOT FIXED IN THIS PASS. A second axis (an effect-strength register beside the
+ * sample-size one) is a real design question with its own copy consequences on every card, and adding
+ * one as a side effect of the coalescing build would be exactly the unruled widening this catalogue
+ * exists to prevent. Recorded here so the next reader knows the gap is KNOWN rather than missed.
+ */
 
 /** The subset of {@link PatternFacts} the catalogue endpoint serves — see catalogue/serialise.ts.
  *  Display geometry only: which pillars a chart draws, what shape the trigger is, how many decimals
@@ -369,6 +464,29 @@ export const PATTERN_KEYS = [
   "trajectory_D_T7_momentum_improving_while_weak",
   "trajectory_D_T8_foundation_strong_improving",
   "trajectory_B_T9_foundation_weak_declining",
+  // ── ★ COALESCED ENTRIES (Coalescing ruling §1, §5) ────────────────────────────────────────────────
+  // One move that crosses several marks is ONE event and renders as ONE entry. These four keys are the
+  // reachable multi-crossing combinations from the ruling's §5 table. They are FIRST-CLASS KEYS, not a
+  // read-layer composition: `FiredFindingKey` is a closed union, so an entry the engine emits must be
+  // catalogued or it does not compile — and `divergence_consolidated` is the standing precedent for a
+  // merged entry carrying its own key.
+  //
+  // Each declares `coalesced: { coalescedFrom, claimSource }`. The constituents are NOT suppressed —
+  // they are named as facts inside the entry (`evidence.constituents`), so nothing becomes invisible;
+  // what is removed is one event rendered as several findings.
+  //
+  // ⚠ THE UNREACHABLE COMBINATIONS, RECORDED SO THEY ARE NOT RE-CHECKED (ruling §5):
+  //     T3+T4 and T1+T2   — require opposite directions on the composite.
+  //     T5+T9 and T8+T9   — mutually exclusive by zone (weak-and-falling vs the two rising reads).
+  //     T6+T7             — require Momentum both falling and rising.
+  //     D3+D4             — opposite ownership movements (and F<60 vs F>=72 legs).
+  //     D5 against D6/D7  — requires Momentum both rising (D5's +5 floor) and falling (the crossings).
+  //   Market↔Foundation and Market↔Momentum each carry a single pattern (D1, D2), so neither pair can
+  //   produce a combination at all.
+  "divergence_D6_D7_trajectory_collapse",
+  "trajectory_B_T2_T3_deterioration_out_of_top_band",
+  "trajectory_D_T1_T4_recovery_out_of_low_zone",
+  "trajectory_D_T5_T8_foundation_weak_to_strong",
 ] as const;
 
 export type PatternKey = (typeof PATTERN_KEYS)[number];
@@ -509,7 +627,7 @@ export const PATTERN_FACTS = {
     // HOT/NORMAL were not split out; the pooled reading (+1.9%, 58% positive) is carried across.
     regimeMap: { HOT: "reads_true", NORMAL: "reads_true", STRESSED: "reads_true" },
     evidenceStats: { n: 26, hitRatePct: 58, effectPct: 1.9, basis: "measured" },
-    confidence: "directional",
+    confidence: "robust",
     displayPrecision: 1,
   },
 
@@ -656,6 +774,59 @@ export const PATTERN_FACTS = {
     displayPrecision: 1,
   },
 
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // ★ D6 + D7 · TRAJECTORY COLLAPSE — the coalesced entry. Momentum ≥75 → <54 with Foundation ≥72.
+  //
+  // ONE MOVE, ONE ENTRY. D6 and D7 are both crossings on the SAME subject (Momentum) against the SAME
+  // single prior reading, at different marks. A fall from exceptional to weak passes both in one step —
+  // so the business had one event, and rendering it as two cards would report our gate structure rather
+  // than the company. D6's Foundation floor (72) is stricter than D7's (60), so any state satisfying D6
+  // satisfies D7's base leg too; the resulting F−M gap is ≥19, which also clears S2's floor, and S2
+  // demotes beside this entry like it does beside anything else on its pair.
+  //
+  // ★ `described`, AND THE REASON IS MEASUREMENT, NOT CAUTION (ruling §2). D6's trigger ADMITS a fall
+  //   to 53 — the definition is satisfied — but whether the combined move sits inside D6's observed
+  //   eleven is unknown, and definition is not evidence. The adjacent measurement we DO hold argues
+  //   against escalating: a Momentum fall of this span lands in the 15+ deterioration bucket, which was
+  //   measured and showed no clean negative reaction. Speaking either constituent's negative claim more
+  //   loudly for a move of double their span would run against the one measurement that bears on
+  //   collapses of this size. So: claimSource null, basis described, confidence described, no `size`.
+  //
+  // ⚠ THE QUERY THAT WOULD UPGRADE THIS (ruling §2, recorded so it is not re-derived): within D6's
+  //   measured population, how many observations ALSO fell below 54 in the same reading, and what were
+  //   their outcomes? Zero ⇒ `described` stands permanently. Non-zero ⇒ those outcomes ARE the answer
+  //   and this may inherit from D6, marked `inherited`, exactly as D1/D2 are.
+  //
+  // evidencedTier is D7's mark (54) — the LOWER of the two boundaries and the one that completes the
+  // span. gapFloor stays null: like both its constituents, this is a crossing, and the §1.2 severity
+  // gradient is what crossings lack.
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  divergence_D6_D7_trajectory_collapse: {
+    pillarPair: ["foundation", "momentum"],
+    basis: "crossing",
+    gapFloor: null,
+    movementFloor: null,
+    floorBasis: null,
+    gateType: null,
+    evidencedTier: 54, // D7's mark — the far side of the span
+    relaxedTier: null,
+    legs: [
+      { pillar: "foundation", op: ">=", value: 72 }, // D6's floor, the stricter of the two
+      { pillar: "momentum", op: "<", value: 54 },
+    ],
+    sustainReadings: null,
+    // No claim is spoken in ANY phase, so no phase can mask or license one. `no_directional_read` is
+    // the honest map for an entry whose evidence basis is `described` — not a claim we are withholding.
+    regimeMap: { HOT: "no_directional_read", NORMAL: "no_directional_read", STRESSED: "no_directional_read" },
+    evidenceStats: { n: null, hitRatePct: null, effectPct: null, basis: "described" },
+    confidence: "described",
+    displayPrecision: 1,
+    coalesced: {
+      coalescedFrom: ["divergence_D6_quality_rolling_over", "divergence_D7_trajectory_breaking_base_holds"],
+      claimSource: null, // ★ none earned the right to speak — see the header
+    },
+  },
+
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   // THE TRAJECTORY FAMILY. ONE score along its own path.
   //
@@ -760,6 +931,18 @@ export const PATTERN_FACTS = {
   //   Treat as directional and re-verify before giving it prominence." So n is null and hitRatePct is
   //   null — the spec quotes neither. `measured: true` because the effect WAS measured (+6.6%); it is
   //   the sample behind it that is missing, and collapsing those two into one flag would lose which.
+  //
+  // ★★ AND THEREFORE IT SPEAKS NO CLAIM AT ALL — `described`, ruled. ★★
+  //   This carried `directional` on the spec's "treat as directional" instruction, which was written
+  //   when cards still printed their figures. They no longer do, and the REGISTER is now the reader's
+  //   only signal of how much evidence stands behind a claim — so a register is itself an evidence
+  //   statement. T4 has no sample to make one from: `n: null` is not a small count, it is an ABSENT
+  //   count, and a pattern that cannot be tiered cannot honestly speak in either register.
+  //
+  //   ⚠ THE EFFECT SIZE SURVIVES ON THE RECORD (`effectPct: 6.6`) AND IS STILL TRUE. What changed is
+  //     that it may not be SPOKEN, because we cannot say how many observations it rests on. Mechanism
+  //     only, until the sample is recovered — at which point `confidence` is decided by
+  //     CONFIDENCE_ROBUST_MIN_N like every other record, and this comment is what says so.
   // ───────────────────────────────────────────────────────────────────────────────────────────────
   trajectory_D_T4_recovering_out_of_below_par: {
     pillarPair: ["composite"],
@@ -774,7 +957,7 @@ export const PATTERN_FACTS = {
     sustainReadings: null,
     regimeMap: { HOT: "reads_true", NORMAL: "reads_true", STRESSED: "reads_true" },
     evidenceStats: { n: null, hitRatePct: null, effectPct: 6.6, basis: "measured" },
-    confidence: "directional",
+    confidence: "described", // ★ no sample ⇒ no register ⇒ no claim. See the header.
     displayPrecision: 1,
   },
 
@@ -822,7 +1005,7 @@ export const PATTERN_FACTS = {
     sustainReadings: null,
     regimeMap: { HOT: "masked", NORMAL: "reads_true", STRESSED: "no_directional_read" },
     evidenceStats: { n: 15, hitRatePct: 40, effectPct: -1.9, basis: "measured" },
-    confidence: "robust",
+    confidence: "directional",
     displayPrecision: 1,
   },
 
@@ -849,7 +1032,7 @@ export const PATTERN_FACTS = {
     sustainReadings: null,
     regimeMap: { HOT: "reads_true", NORMAL: "reads_true", STRESSED: "reads_true" },
     evidenceStats: { n: 19, hitRatePct: 63, effectPct: 5.8, basis: "measured" },
-    confidence: "robust",
+    confidence: "directional",
     displayPrecision: 1,
     // ★ THE R3 COPY CUT (Part 4 · R3) — at or above this rise, price has already run and the reader is
     //   late; see `largeMoveCutPp`'s note on PatternFacts above for why it is a distinct field from
@@ -877,7 +1060,7 @@ export const PATTERN_FACTS = {
     sustainReadings: null,
     regimeMap: { HOT: "reads_true", NORMAL: "reads_true", STRESSED: "reads_true" },
     evidenceStats: { n: 17, hitRatePct: 69, effectPct: 5.8, basis: "measured" },
-    confidence: "robust",
+    confidence: "directional",
     displayPrecision: 1,
   },
 
@@ -906,6 +1089,128 @@ export const PATTERN_FACTS = {
     evidenceStats: { n: 22, hitRatePct: 36, effectPct: 0.6, basis: "measured" },
     confidence: "robust",
     displayPrecision: 1,
+  },
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // ★ T2 + T3 · DETERIORATION OUT OF THE TOP BAND — the coalesced entry, and the elegant case.
+  //
+  // Composite ≥74 falling ≥6 to below 74: the fall and the band exit are one move. THE REGIME MAPS
+  // RESOLVE THE CLAIM WITHOUT A QUERY (ruling §5), because they are complementary rather than merely
+  // different — T3 reads true in HOT ONLY and is blank otherwise; T2 is MASKED in HOT (it showed a
+  // false positive in the bank bull) and reads true in two-sided markets. There is therefore exactly
+  // one constituent permitted to speak in every phase, and never two.
+  //
+  // ⚠ `claimSource` IS NOT STATIC HERE, AND THAT IS THE POINT. The record declares T3 — the HOT source
+  //   — because a static field must name one; the RULE selects per firing against the stamped phase and
+  //   writes the resolved source into evidence. See coalesce.ts's `claimSourceFor`, which is the single
+  //   place that resolution happens. Reading this field as "always T3" would speak a masked claim in
+  //   NORMAL, which is the one thing T2's regime map exists to prevent.
+  //
+  // evidencedTier is the Pristine floor (74) — the boundary both constituents are about.
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  trajectory_B_T2_T3_deterioration_out_of_top_band: {
+    pillarPair: ["composite"],
+    basis: "crossing",
+    gapFloor: null,
+    movementFloor: 6, // T2's magnitude floor — the fall that must accompany the crossing
+    floorBasis: "measured",
+    gateType: "firing",
+    evidencedTier: 74, // the Pristine floor, T3's mark
+    relaxedTier: null,
+    legs: null,
+    sustainReadings: null,
+    // Inherited from the constituents and NOT flattened: HOT is where T3 speaks, and the other two are
+    // where T2 does. Both are `reads_true` because in every phase SOME constituent may speak — which
+    // is exactly what makes this case different from D6+D7.
+    regimeMap: { HOT: "reads_true", NORMAL: "reads_true", STRESSED: "reads_true" },
+    evidenceStats: { n: null, hitRatePct: null, effectPct: null, basis: "inherited" },
+    confidence: "directional",
+    displayPrecision: 1,
+    coalesced: {
+      coalescedFrom: [
+        "trajectory_B_T2_deterioration_high_base",
+        "trajectory_B_T3_falling_out_of_pristine",
+      ],
+      claimSource: "trajectory_B_T3_falling_out_of_pristine", // the HOT source; resolved per phase at fire time
+    },
+  },
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // ★ T1 + T4 · RECOVERY OUT OF THE LOW ZONE — the coalesced entry.
+  //
+  // Composite ≤58 rising ≥6 up through 62: the move and the band crossing are one event.
+  //
+  // ★ T1 SPEAKS, AND EVIDENCE STRENGTH DECIDES IT (ruling §5). T1 carries n=26 and `robust`; T4's
+  //   sample "was not preserved in the retrieved output" — its `evidenceStats.n` is null while its
+  //   effect was measured. A missing n independently disqualifies T4 from speaking, so this is not a
+  //   close call between two comparable claims.
+  //
+  // evidencedTier is T1's low-zone mark (58) — the level the move must start from, which is what makes
+  // this a recovery rather than an ordinary rise.
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  trajectory_D_T1_T4_recovery_out_of_low_zone: {
+    pillarPair: ["composite"],
+    basis: "crossing",
+    gapFloor: null,
+    movementFloor: 6, // T1's own floor — a material trajectory event
+    floorBasis: "measured",
+    gateType: "firing",
+    evidencedTier: 58, // the low zone the move starts from
+    relaxedTier: null,
+    legs: null,
+    sustainReadings: null,
+    regimeMap: { HOT: "reads_true", NORMAL: "reads_true", STRESSED: "reads_true" },
+    evidenceStats: { n: null, hitRatePct: null, effectPct: null, basis: "inherited" },
+    confidence: "robust", // T1's register — the constituent that speaks
+    displayPrecision: 1,
+    coalesced: {
+      coalescedFrom: [
+        "trajectory_D_T1_recovery_low_zone",
+        "trajectory_D_T4_recovering_out_of_below_par",
+      ],
+      claimSource: "trajectory_D_T1_recovery_low_zone",
+    },
+  },
+
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  // ★ T5 + T8 · FOUNDATION WEAK TO STRONG — the coalesced entry, `described` on R1 grounds.
+  //
+  // Foundation below 60 rising through 60 and landing ≥72 in ONE reading. T5 is the crossing up out of
+  // weak; T8 is strong-and-still-improving. A single reading can satisfy both, and then the move is a
+  // 12+ point jump on a pillar drawn from statements that ordinarily move in small increments.
+  //
+  // ★ WHY NEITHER CLAIM SURVIVES THE MAGNITUDE (ruling §5). Both T5 and T8 carry POSITIVE claims
+  //   measured on ORDINARY-SIZED moves. Foundation's large-gain buckets show those claims do not hold
+  //   at this span — the largest gains carried no drift at all. R1's finding applies directly: reaction
+  //   does not scale with move size, and inverts at the extremes. So the entry describes what changed
+  //   and stops. Same state as D6+D7, reached from the opposite direction (a positive move, not a
+  //   collapse), which is why it is worth stating twice rather than cross-referencing.
+  //
+  // Rare in practice — Foundation moves slowly — but structurally reachable, and it must not speak
+  // T5's or T8's claim when it occurs.
+  // ───────────────────────────────────────────────────────────────────────────────────────────────
+  trajectory_D_T5_T8_foundation_weak_to_strong: {
+    pillarPair: ["foundation"],
+    basis: "crossing",
+    gapFloor: null,
+    movementFloor: null,
+    floorBasis: null,
+    gateType: null,
+    evidencedTier: 72, // Foundation's native strong mark — where the move LANDS
+    relaxedTier: null,
+    legs: [{ pillar: "foundation", op: ">=", value: 72 }],
+    sustainReadings: null,
+    regimeMap: { HOT: "no_directional_read", NORMAL: "no_directional_read", STRESSED: "no_directional_read" },
+    evidenceStats: { n: null, hitRatePct: null, effectPct: null, basis: "described" },
+    confidence: "described",
+    displayPrecision: 1,
+    coalesced: {
+      coalescedFrom: [
+        "trajectory_D_T5_foundation_out_of_weak",
+        "trajectory_D_T8_foundation_strong_improving",
+      ],
+      claimSource: null, // ★ neither claim survives the magnitude — see the header
+    },
   },
 } satisfies Readonly<Record<PatternKey, PatternFacts>>;
 

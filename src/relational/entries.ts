@@ -1,4 +1,4 @@
-// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+﻿// ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // RELATIONAL L4 — ENTRY RESOLUTION (families UO + UH · §3.1 / §3.2), plus the negatives (§6.2) and the
 // degradations (§6). Each builder is a pure function of (ReaderContext, ObjectState, mode) and returns a
 // candidate ResolvedEntry or null; the assembler (arbitration.ts) reserves the floor and fills the rest
@@ -11,7 +11,7 @@
 //   · magnitude is never read (§0.7.1) — it is not carried into ObjectFinding
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
-import { RUNG } from "./arbitration.js";
+import { RUNG, byRung } from "./arbitration.js";
 import {
   UH_LARGE_POSITION_PCT,
   UH_TOP_N,
@@ -47,9 +47,24 @@ import type {
   ResolvedEntry,
   NegativeFact,
   Degradation,
-  ModeId,
 } from "./types.js";
 import type { ResolvedMode } from "./mode.js";
+// ⚠ CIRCULAR BY DESIGN, SAFE. mode-contract.ts imports `ud7HeaderClaim` (a plain function) from this
+// file; this file imports `resolveHeaderAndFloor`/`MODE_CONTRACTS` back. Both are function declarations
+// (hoisted) called only from inside `buildEntries`/`resolveHeaderAndFloor`'s bodies, never at module-eval
+// time — ESM resolves the cycle to live bindings and neither side is read before both modules finish
+// evaluating.
+import { resolveHeaderAndFloor, MODE_CONTRACTS, type EntrySlot } from "./mode-contract.js";
+
+/** Thrown when the mode contract's declared held-family eligibility and the live `ctx.heldThisObject`
+ *  fact disagree — see the throw sites in `buildEntries`. A drift bug you cannot reproduce from the log
+ *  is one you will not fix, so the message always carries stockId/userId/mode and BOTH signal values. */
+export class ModeContractDriftError extends Error {
+  constructor(message: string) {
+    super(`[relational] MODE CONTRACT DRIFT: ${message}`);
+    this.name = "ModeContractDriftError";
+  }
+}
 
 // ── Doesn't-mean strings (inherited per entry, §0.10 — the relational layer adds no verdict). ─────────
 const DM = {
@@ -60,8 +75,10 @@ const DM = {
   //   one glossing a thing the other says does not exist. Says the same thing about grouping, minus the
   //   object that isn't there.
   UO1_NO_PG: "identity only — what the company is and what it does, never a judgement about it.",
-  UO2: "higher is not a better investment, not more upside, and not a prediction — it means sounder and calmer, and already priced.",
-  UO3: "nothing flagged is not an endorsement; a flag is a place to look, not a verdict.",
+  // ⚠ UO2 ("Health is about X — Band.") and UO3 ("N things standing." / "Nothing flagged.") DELETED.
+  // Both were reader-invariant summary lines: the page states the health score directly, in its own
+  // section, above this card, and UO3 counted findings that ELEVATED/UD1 already list individually two
+  // entries below it. Removing the redundancy, not the fact — the score still renders, once, elsewhere.
   UO4: "absence of a connection is not a reason to acquire one — it is a statement about your current book, nothing more.",
   UO6: "already-strong is already priced — sound, and sound for a while, is not upside, not a forecast of continuation, and not a buy.",
   UH1: "a statement of exposure, not of whether the exposure is right — no implication about adding, trimming, or holding.",
@@ -204,72 +221,6 @@ function buildUO1(obj: ObjectState, level: ReaderContext["identity"]["aiLevel"])
     interpretationCeiling: null,
     doesntMean: obj.peerGroup ? DM.UO1 : DM.UO1_NO_PG,
     sourceRef: OPAQUE("UO1", obj.stockId),
-  };
-}
-
-function buildUO2(obj: ObjectState, level: ReaderContext["identity"]["aiLevel"]): ResolvedEntry | null {
-  if (!obj.isScored || !obj.snapshot) return null; // not scored → UG1 carries it (out of slice) → absent
-  return {
-    entryId: "UO2",
-    family: "UO",
-    // The BAND LABEL, never the raw enum (§0.9). `below_par` rendered verbatim on a live card until this.
-    claim: `Health is about ${scoreStr(obj.snapshot.composite)} — ${bandLabel(obj.snapshot.band)}.`,
-    gloss: glossFor("health score", level),
-    temporalClass: "CONDITION",
-    standingSince: null,
-    isNewSinceLastLook: false,
-    weight: { ladderRung: RUNG.ORIENTATION, relationalWeight: 0.11 },
-    arithmetic: { composite: Math.round(obj.snapshot.composite), band: obj.snapshot.band },
-    interpretationCeiling: null,
-    doesntMean: DM.UO2,
-    sourceRef: OPAQUE("UO2", obj.stockId),
-  };
-}
-
-/** UO3 — flags state. Counted by CONCERN (a positive finding is not "a thing standing"). Uses the weaker
- *  copy variant only: evaluability is not served this slice (UG9 unreachable), so "nothing flagged"
- *  cannot be qualified by history depth — recorded as a degradation. */
-function buildUO3(obj: ObjectState): ResolvedEntry | null {
-  if (!obj.isScored) return null;
-  const concerns = obj.findings.filter((f) => f.polarity !== "positive").length;
-
-  // ⚠ PHASE 2 — "Nothing flagged." is now QUALIFIED by what could actually be checked (§3.1 UO3's
-  // second copy variant, previously unreachable). The three states are genuinely different claims:
-  //   · declined === null → we do not know what ran. Use the WEAK variant, claim no completeness.
-  //   · declined.length 0 → every registered rule was evaluable. Full-strength "Nothing flagged."
-  //   · declined.length n → n checks could not run. Say so; silence about them would be misleading.
-  // Only stated on the CLEAN branch: when something IS standing, the count is the fact and the
-  // declined set is UG9's business, not a qualifier on a positive count.
-  const declined = obj.notEvaluable;
-  let claim: string;
-  if (concerns > 0) {
-    claim = `${plural(concerns, "thing")} standing.`;
-  } else if (declined === null) {
-    claim = "Nothing flagged.";
-  } else if (declined.length === 0) {
-    // ⚠ NARROWED (§Phase 8). This read "every check we run has run here", which over-claims on a bank:
-    // R3/R5/P7/P8 are SCOPE-EXCLUDED for banking (they return `null`, a genuine not-fired, not a
-    // decline), so they never appear in the declined set and the sentence implied they had run. The
-    // honest claim is about what we COULD check here, which is exactly what an empty declined set means.
-    claim = "Nothing flagged — and every check that applies to this company was able to run.";
-  } else {
-    claim = `Nothing flagged — though ${plural(declined.length, "check")} ${declined.length === 1 ? "needs" : "need"} more history than this stock has yet.`;
-  }
-  return {
-    entryId: "UO3",
-    family: "UO",
-    claim,
-    gloss: null,
-    temporalClass: "CONDITION",
-    standingSince: null,
-    isNewSinceLastLook: false,
-    weight: { ladderRung: RUNG.ORIENTATION, relationalWeight: 0.1 },
-    // `declinedCount: null` ⇒ unknown (not zero). The frontend must not render a "0 declined" badge
-    // from an absent record — it is the same null/[] distinction the column preserves.
-    arithmetic: { concernCount: concerns, declinedCount: declined === null ? null : declined.length },
-    interpretationCeiling: null,
-    doesntMean: DM.UO3,
-    sourceRef: OPAQUE("UO3", obj.stockId),
   };
 }
 
@@ -970,7 +921,7 @@ function buildUD3(ctx: ReaderContext, obj: ObjectState, held: boolean): Resolved
  * all: "nothing new since July" asserted without a comparison basis is the falsehood this family is
  * most prone to. Returned as a header claim rather than a slot entry (§2.3).
  */
-function ud7HeaderClaim(ctx: ReaderContext): string | null {
+export function ud7HeaderClaim(ctx: ReaderContext): string | null {
   const d = ctx.delta;
   if (!d?.evaluable || !d.sinceLabel) return null;
 
@@ -1333,9 +1284,31 @@ export function attachEchoAnnotations(slots: ResolvedEntry[], overflow: Resolved
     return k !== null && absorbed.has(k);
   };
 
+  const slotsAfterDrop = slotsMerged.filter((e) => !wasAbsorbed(e));
+  const overflowAfterDrop = overflowMerged.filter((e) => !wasAbsorbed(e));
+
+  // ⚠ BACKFILL. A standalone echo (e.g. UE6) can itself occupy a SLOT, be absorbed into its host's claim
+  // (the host was ALSO in slots — both rendered the same key), and vanish here. That shrinks `slots`
+  // below the cap arbitration originally filled it to, and — since fill-if-room (arbitration.ts) can
+  // leave an honest-null waiting at the head of `overflow` specifically because it lost the room
+  // competition — an un-backfilled gap reproduces exactly the ordering violation fill-if-room exists to
+  // prevent: a lower-rung entry stranded in overflow while a higher-rung slot sits empty. Promote from
+  // `overflow`, in the SAME rung order `assemble` used (`byRung`, exported for exactly this reuse), until
+  // slots is back to its original width or overflow is exhausted. This never touches the floor (floors
+  // are position/orientation facts, never echo hosts, and always precede the non-floor tail by
+  // `floorRank`) and never changes which key WON a slot — only refills a width the merge reduced, and
+  // re-sorts the non-floor TAIL so a promoted entry lands in rung order, not just appended at the end.
+  const targetWidth = slots.length;
+  const shortfall = targetWidth - slotsAfterDrop.length;
+  const promoted = shortfall > 0 ? [...overflowAfterDrop].sort(byRung).slice(0, shortfall) : [];
+  const promotedIds = new Set(promoted.map((e) => e.entryId));
+
+  const floorPart = slotsAfterDrop.filter((e) => e.floorRank != null);
+  const tailPart = [...slotsAfterDrop.filter((e) => e.floorRank == null), ...promoted].sort(byRung);
+
   return {
-    slots: slotsMerged.filter((e) => !wasAbsorbed(e)),
-    overflow: overflowMerged.filter((e) => !wasAbsorbed(e)),
+    slots: [...floorPart, ...tailPart],
+    overflow: overflowAfterDrop.filter((e) => !promotedIds.has(e.entryId)),
   };
 }
 
@@ -1723,6 +1696,20 @@ export const SLICE_DEGRADATIONS: Degradation[] = [
   // an honest header only when the delta is evaluable and empty.
 ];
 
+/** Module-level, per-slot invocation counter — reset at the top of every `buildEntries` call. Exists
+ *  solely so the verify suite can prove the DYNAMIC half of "construction is gated, not filtered": that
+ *  an ineligible slot's builder was never actually called, not merely that its result was dropped
+ *  afterward. The STATIC half of that proof is the `if (has(slot))` textual adjacency below — a reader
+ *  can see, by inspection, that a slot absent from `contract.eligible` never reaches its `push(...)`.
+ *  Never read by production code; internal to the verify scripts only. */
+export const _debugCallCounts: Partial<Record<EntrySlot, number>> = {};
+function resetDebugCallCounts() {
+  for (const k of Object.keys(_debugCallCounts)) delete _debugCallCounts[k as EntrySlot];
+}
+function tick(slot: EntrySlot) {
+  _debugCallCounts[slot] = (_debugCallCounts[slot] ?? 0) + 1;
+}
+
 export function buildEntries(
   ctx: ReaderContext,
   obj: ObjectState,
@@ -1731,63 +1718,95 @@ export function buildEntries(
    *  family is DROPPED WHOLE and a degradation is recorded. Never a partial echo (§5.7). */
   rates: BaseRateSnapshot | null = null,
 ): BuiltEntries {
+  resetDebugCallCounts();
   const level = ctx.identity.aiLevel;
   const held = matchHeldEntity(ctx, obj);
+  const contract = MODE_CONTRACTS[mode.mode];
+  const has = (slot: EntrySlot) => contract.eligible.has(slot);
 
   const candidates: ResolvedEntry[] = [];
   const push = (e: ResolvedEntry | null) => {
     if (e) candidates.push(e);
   };
 
-  // Orientation (eligible in the stranger modes; UO6 eligible everywhere).
-  push(buildUO1(obj, level));
-  push(buildUO2(obj, level));
-  push(buildUO3(obj));
-  push(buildUO4(ctx, obj, mode));
-  push(buildUO6(obj));
+  // ── Every family below is now gated by the MODE CONTRACT (mode-contract.ts) BEFORE its builder is
+  // called — not assembled then filtered. A slot absent from `contract.eligible` never reaches its
+  // `push(...)`; both directions (eligible-but-skipped, ineligible-but-called) are checkable by
+  // inspection here, and by `_debugCallCounts` at runtime (verify suite). ──
+
+  // Orientation. UO2/UO3 deleted (redundant with the page's own health section and the findings already
+  // listed individually via ELEVATED/UD1) — no slot, no builder, no EntrySlot member for either.
+  if (has("UO1")) { tick("UO1"); push(buildUO1(obj, level)); }
+  if (has("UO4")) { tick("UO4"); push(buildUO4(ctx, obj, mode)); }
+  if (has("UO6")) { tick("UO6"); push(buildUO6(obj)); }
 
   // Watchlist membership — the WATCHED floor fact, and a minor note in any other mode where it holds.
-  push(buildUW1(ctx, obj));
+  if (has("UW1")) { tick("UW1"); push(buildUW1(ctx, obj)); }
 
-  // Neighbourhood (§3.3) — the reader's pond + sector exposure. Eligible in EVERY mode: it is the
-  // family that gives a non-holder something reader-specific, which is the census's main gap.
-  push(buildUN1(ctx, obj));
-  push(buildUN2(ctx, obj));
-  push(buildUN3(ctx, obj));
-  push(buildUN6(ctx, obj));
-  push(buildUN7(ctx, obj));
-  push(buildUN8(ctx, obj, mode));
+  // Neighbourhood (§3.3) — the reader's pond + sector exposure.
+  if (has("UN1")) { tick("UN1"); push(buildUN1(ctx, obj)); }
+  if (has("UN2")) { tick("UN2"); push(buildUN2(ctx, obj)); }
+  if (has("UN3")) { tick("UN3"); push(buildUN3(ctx, obj)); }
+  if (has("UN6")) { tick("UN6"); push(buildUN6(ctx, obj)); }
+  if (has("UN7")) { tick("UN7"); push(buildUN7(ctx, obj)); }
+  if (has("UN8")) { tick("UN8"); push(buildUN8(ctx, obj, mode)); }
 
-  // Gap (§3.6) — the honesty family. Eligible in every mode; UG7 self-gates on authentication so an
-  // anonymous reader is never told about an account they do not have (UG8).
-  push(buildUG1(obj, mode_isHeld(ctx)));
-  push(buildUG5(ctx, obj));
-  push(buildUG7(ctx, obj));
-  push(buildUG9(obj));
+  // Gap (§3.6) — the honesty family. UG7 self-gates on authentication so an anonymous reader is never
+  // told about an account they do not have (UG8).
+  if (has("UG1")) { tick("UG1"); push(buildUG1(obj, mode_isHeld(ctx))); }
+  if (has("UG5")) { tick("UG5"); push(buildUG5(ctx, obj)); }
+  if (has("UG7")) { tick("UG7"); push(buildUG7(ctx, obj)); }
+  if (has("UG9")) { tick("UG9"); push(buildUG9(obj)); }
 
   // Delta (§3.4) — what changed since the last look. Silent when not evaluable (UD8).
-  for (const e of buildUD1(ctx, obj, mode_isHeld(ctx))) candidates.push(e);
-  push(buildUD3(ctx, obj, mode_isHeld(ctx)));
+  if (has("UD")) {
+    tick("UD");
+    for (const e of buildUD1(ctx, obj, mode_isHeld(ctx))) candidates.push(e);
+    push(buildUD3(ctx, obj, mode_isHeld(ctx)));
+  }
 
-  // Echo (§3.5) — book-wide co-occurrence. Requires NO pond or sector overlap, so it reaches readers
-  // the UN family cannot. Dropped whole when the base-rate aggregate is unavailable.
-  for (const e of buildEcho(ctx, obj, rates)) candidates.push(e);
-  push(buildUE5(ctx, obj, rates));
+  // Echo (§3.5) — book-wide co-occurrence. Dropped whole when the base-rate aggregate is unavailable.
+  if (has("UE")) {
+    tick("UE");
+    for (const e of buildEcho(ctx, obj, rates)) candidates.push(e);
+    push(buildUE5(ctx, obj, rates));
+  }
 
-  // Holding (only when held).
-  if (mode_isHeld(ctx)) {
+  // Holding (only when held). The contract's declared eligibility and the live reader fact must agree —
+  // mode already encodes held-ness 1:1 (resolvePosition and mode_isHeld read the same underlying signal),
+  // so a disagreement here means mode.ts and mode-contract.ts have drifted apart. That is exactly the bug
+  // class this whole redesign exists to make impossible, so it is never silently tolerated with `&&`.
+  if (has("heldPositionFamily")) {
+    tick("heldPositionFamily");
+    if (!mode_isHeld(ctx)) {
+      throw new ModeContractDriftError(
+        `mode ${mode.mode} declares "heldPositionFamily" eligible but ctx.heldThisObject is false ` +
+          `(stockId=${obj.stockId}, userId=${ctx.identity.userId ?? "ANON"}, mode=${mode.mode}, ` +
+          `contract.eligible.has("heldPositionFamily")=true, ctx.heldThisObject=false)`,
+      );
+    }
     push(buildUH1(ctx, obj, held));
     push(buildUH2(ctx, obj, held));
     push(buildUH3(ctx, obj, held));
     push(buildUH4(ctx, obj, held));
     push(buildUH10(ctx, obj));
+  } else if (mode_isHeld(ctx)) {
+    // The converse mismatch: the reader DOES hold this object but the mode declares the family
+    // ineligible — equally a drift bug (a held reader should never resolve to a mode that excludes
+    // heldPositionFamily; every HELD-position mode M1-M4 declares it eligible).
+    throw new ModeContractDriftError(
+      `mode ${mode.mode} declares "heldPositionFamily" ineligible but ctx.heldThisObject is true ` +
+        `(stockId=${obj.stockId}, userId=${ctx.identity.userId ?? "ANON"}, mode=${mode.mode}, ` +
+        `contract.eligible.has("heldPositionFamily")=false, ctx.heldThisObject=true)`,
+    );
   }
 
   // Elevated standing findings (the object's own concerns, by reference) — feed M1/M3's standing list.
-  for (const e of buildElevated(ctx, obj)) candidates.push(e);
+  if (has("elevated")) { tick("elevated"); for (const e of buildElevated(ctx, obj)) candidates.push(e); }
 
-  // ── Header + floor + cap per mode (§2.3). The floor always resolves (guaranteed-resolve, §0.4). ──
-  const { header, floorIds, cap } = headerAndFloor(mode.mode, ctx, obj);
+  // ── Header + floor + cap per mode (§2.3). The floor always resolves (guaranteed-resolve, §0.4). This
+  // now reads the MODE CONTRACT (mode-contract.ts) — one declaration per mode, not a switch living here. ──
+  const { header, floorIds, cap } = resolveHeaderAndFloor(mode, ctx, obj);
 
   return {
     candidates,
@@ -1815,134 +1834,6 @@ export function buildEntries(
         : []),
     ],
   };
-}
-
-/** The mode's header state + reserved floor + cap (§2.3). Every header resolves (never empty). */
-function headerAndFloor(
-  mode: ModeId,
-  ctx: ReaderContext,
-  obj: ObjectState,
-): { header: BuiltEntries["header"]; floorIds: string[]; cap: number } {
-  switch (mode) {
-    case "M1":
-      // ⚠ NO NOVELTY ASSERTION IN A HEADER (§1.1). This header used to read "You own this — first time
-      // you're reading it." M1 is selected purely by the ABSENCE of a BehaviorRollup row (mode.ts), and
-      // the attention beacon is lossy by design — it discards its whole buffer when no token is present
-      // and its failures are unobservable server-side. So a holder who has read the stock ten times could
-      // be told it was their first. The reader is the one party who can disprove a claim from memory,
-      // which made it the most damaging line on the card.
-      //
-      // M1 KEEPS ITS ROUTING ROLE (orientation-weighted shape, cap 3) and loses the assertion. The new
-      // header is true whether or not the rollup exists. Novelty may still be ANNOTATED per entry where
-      // lastViewedAt is actually known — it may never be asserted from a missing row.
-      return {
-        header: { entryId: "UH6", claim: "You own this — here's what's standing on it.", gloss: null },
-        floorIds: ["UH1"],
-        cap: 3,
-      };
-    case "M3":
-      // The standing-framed header. With UD built, UD7's "nothing new since …" is available — but only
-      // when the delta is EVALUABLE and genuinely empty, which M2 handles. M3 (recurring) keeps the
-      // standing framing: a reader who checks often does not need a novelty verdict every visit.
-      return {
-        header: { entryId: "UH1-standing", claim: "Your position, and what's standing on it.", gloss: null },
-        floorIds: ["UH1"],
-        cap: 4,
-      };
-
-    // ── M2 · HOLDING DELTA (§Phase 7, unfolded) ──────────────────────────────────────────────────
-    // The reader holds this and has returned. UD7 is the honest header when the delta is evaluable and
-    // empty; otherwise the delta entries carry the news and the header frames them. Falls back to M3's
-    // shape (same floor, same cap) when nothing changed — a fallback, never a fabricated delta claim.
-    case "M2": {
-      const ud7 = ud7HeaderClaim(ctx);
-      return {
-        header: ud7
-          ? { entryId: "UD7", claim: ud7, gloss: null }
-          : { entryId: "UH1-standing", claim: "Your position, and what's changed on it.", gloss: null },
-        floorIds: ["UH1"],
-        cap: 4,
-      };
-    }
-
-    // ── M4 · HOLDING DORMANT-RETURN (§Phase 7, unfolded) ─────────────────────────────────────────
-    // A long gap since the last look. The header states the RETURN, never the gap length as a fact
-    // about the reader (§0.6 — attention is a router, and "you haven't looked since March" is
-    // behaviour-mirroring). Falls back to M3's shape when no delta resolves.
-    case "M4": {
-      const ud7 = ud7HeaderClaim(ctx);
-      return {
-        header: ud7
-          ? { entryId: "UD7", claim: ud7, gloss: null }
-          : { entryId: "UH1-standing", claim: "Your position, and where it stands now.", gloss: null },
-        floorIds: ["UH1"],
-        cap: 4,
-      };
-    }
-
-    // ── WATCHED (§1.2) — built. Floor = UO1 + the dated membership fact (UW1), which always resolves in
-    //    these modes because the position axis only reaches WATCHED via a real watchlist row. UO2 joins
-    //    the floor when scored. NEVER the stranger header: that was the falsehood. ──
-    case "M5":
-    case "M6":
-    case "M7":
-    case "M8": {
-      const floorIds = ["UW1", "UO1"];
-      if (obj.isScored && obj.snapshot) floorIds.push("UO2");
-      // A single neutral header across the watched cells. The per-cell delta framings (M6/M7 "since you
-      // last looked", M8 "you haven't looked since …") belong to the UD family and are NOT asserted here
-      // — an un-verifiable delta claim is exactly the class of error §1.1 exists to prevent.
-      return {
-        header: { entryId: "UW-watching", claim: "You're watching this — here's where it stands.", gloss: null },
-        floorIds,
-        cap: 4,
-      };
-    }
-
-    // ── M10 / M11 / M12 · NEITHER, with prior contact (§Phase 8, unfolded) ───────────────────────
-    // The reader does not hold or watch this, but HAS looked before. M9's "New to you." would be a
-    // falsehood here — the last one of its class in the build.
-    //
-    // The header states no novelty and no visit count: attention is a ROUTER, never content (§0.6 /
-    // Part IX·5), so "you've looked 9 times" and "you haven't been here since March" are both
-    // prohibited. UD7 supplies a dated frame ONLY when a real comparison basis exists; otherwise the
-    // header is neutral and claims nothing about time at all.
-    case "M10":
-    case "M11":
-    case "M12": {
-      const ud7 = ud7HeaderClaim(ctx);
-      const floorIds = ["UO1"];
-      if (obj.isScored && obj.snapshot) floorIds.push("UO2");
-      return {
-        header: ud7
-          ? { entryId: "UD7", claim: ud7, gloss: null }
-          : { entryId: "UG-whereItStands", claim: "Where this stands.", gloss: null },
-        floorIds,
-        cap: 4,
-      };
-    }
-
-    case "M9":
-    default: {
-      // Floor = UO1 + (UO2 when scored) + (UO4 when it honestly resolves). UO1 always resolves, so the
-      // floor is guaranteed. Anonymous gets the SAME orientation floor with no signed-in mention (UG8).
-      // ⚠ UO4 IS NOT FLOOR (§2.3 M9 floor fix). It used to be reserved here, which made M9's floor
-      // UO1 + UO2 + UO4 against a cap of 4 — three guaranteed entries leaving ONE contested slot,
-      // which ELEVATED always won at rungs 3–9. Nothing at rung 10+ could ever appear on an M9 card:
-      // echo resolved 25 times and won a single slot across the whole live matrix.
-      //
-      // The cause was the floor, not the ladder. UO4 says "nothing in your portfolio or watchlist
-      // connects to this name or its sector" — a NULL reader fact whose entire purpose is to fill
-      // space when nothing better exists. Guaranteeing it regardless of what else is true is exactly
-      // backwards. Its low rung (14) already produces the intended behaviour: it appears when the card
-      // has nothing reader-relative to say, and yields the moment it does.
-      //
-      // Floor is now UO1 + UO2 — two guaranteed, two contested. No rung and no cap was changed.
-      const floorIds = ["UO1"];
-      if (obj.isScored && obj.snapshot) floorIds.push("UO2");
-      return { header: { entryId: "UG-newToYou", claim: "New to you.", gloss: null }, floorIds, cap: 4 };
-    }
-  }
 }
 
 /** The negatives for the AI layer (§6.2) — everything that did NOT resolve, because absence is as useful

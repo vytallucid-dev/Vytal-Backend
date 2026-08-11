@@ -182,86 +182,28 @@ export interface FiringContext extends FilingContext {
  */
 export const isFinancialIndustry = (industry: IndustryType): boolean => industry !== "non_financial";
 
-export type FindingKind = "red_flag" | "pattern";
-/** File 1 §5E — the three mandatory pattern display states. */
-export type FindingDisplayState = "active" | "pending_data_integration" | "dampened";
-
-/** A RULE's inherent good/bad classification, published as a rule property (Family N
- *  Amendment §1). Distinct from a fired instance's {@link FiredFinding.direction}: a
- *  rule has a polarity even when it does not fire, and a rule may FIRE with a null
- *  direction yet still be `neutral` polarity (e.g. F2's mix-shift). Family N is
- *  `positive`. */
-export type Polarity = "positive" | "negative" | "neutral";
-
-/** Amendment §2.4 temporal class. `CONDITION` = a standing fact about the COMPANY that
- *  does not age out on a clock (all of Family N). `EVENT` = a dated occurrence. This is
- *  a semantic marker only — it does NOT imply any dependency on `standing_since` (§4);
- *  a CONDITION rule still counts its own run length from the underlying data at fire time. */
-export type TemporalClass = "CONDITION" | "EVENT";
-
-/**
- * The emit shape every rule returns. ONE finding = one card. `evidence` is the JSON the
- * UI reads to build the verdict sentence (it MUST carry the real breaching stat). The
- * persist layer maps `evidence` → RedFlag.triggeringValues (red_flag) or
- * ScorePattern.evidence (pattern).
- *
- * ⚠ `metricRefs` WAS A FIELD HERE and is gone (2026-08-10, with its column). Every rule stamped one —
- * 53 of them — and nothing ever read the value back: the peer-group separation section takes the
- * metric off the composed lens KEY, every other surface takes it off `evidence`. It held three
- * unrelated vocabularies under one name (pillar names, raw camelCase source fields, lens metric-slot
- * codes) and its only live consumer was the grounding block, which printed the raw codes at the model.
- */
-/**
- * ★ THE ONE NAMESPACE NO STATIC LIST CAN ENUMERATE. Three-lens findings compose their key at runtime
- * — `lens_${faceId}_${metricKey}` — one key per (lens × metric) combination that has ever fired. The
- * catalogue says so in as many words ("unbounded, and no static list can enumerate it"), which is why
- * lens COPY is keyed on the FACE rather than on the composed key.
- *
- * So the composed shape is admitted as a template-literal type rather than widening the whole field
- * back to `string`: an arbitrary string still fails, and a typo in a REGISTRY key still fails.
- */
-export type LensComposedKey = `lens_${string}`;
-
-/**
- * ★ WHAT MAY GO ON THE WIRE AS A FINDING KEY. Either a catalogued stock finding or a composed lens
- * key — never a free string.
- *
- * Before this, `key: string` meant a rule hand-wrote `"divergence_S2_sticky_divergence"`, the
- * catalogue independently hand-wrote the same characters, and scripts/verify-catalogue.ts §4 diffed
- * the two AFTER THE FACT by regex-scanning the rule sources. A typo was a runtime finding with no
- * copy, caught by a script somebody had to run. Now it does not compile.
- */
-export type FiredFindingKey = StockFindingKey | LensComposedKey;
-
-export interface FiredFinding {
-  kind: FindingKind;
-  /** RedFlag.flagKey (red flags) or ScorePattern.patternKey (patterns). See {@link FiredFindingKey}:
-   *  a rule takes this from its own catalogue entry (`ENTRY.key`), never from a re-typed literal. */
-  key: FiredFindingKey;
-  /** Red flags: "critical" (File 1 §5A). Patterns: the family-native severity token —
-   *  E-patterns use red/amber/green (§5E), structural cards use high/medium/low/recovery
-   *  (§5B–I). The read layer maps token → accent colour. FLAG: File 1 doesn't explicitly
-   *  reconcile the two palettes — a read-layer concern to confirm. */
-  severity: string;
-  /** Pattern polarity (positive/negative); null/absent for red flags. */
-  direction?: "positive" | "negative" | null;
-  /** Pattern effective score impact (§5E: +5/−3/−8/±5). Null for red flags AND for the
-   *  structural cards (B/C/D/F/G/H/I) which carry no §5E magnitude. A dampened pattern
-   *  stores the HALVED value. */
-  magnitude?: number | null;
-  displayState?: FindingDisplayState; // patterns; defaults "active"
-  /** RULE polarity (positive/negative/neutral) — a rule property published on the fired
-   *  instance (Amendment §1). Set explicitly on Family N (`positive`). Distinct from
-   *  `direction` (the fired instance's good/bad, which can be null). Optional so existing
-   *  rules are untouched; back-filling them is deferred to the evaluability migration. */
-  polarity?: Polarity;
-  /** Amendment §2.4 temporal class. Family N sets `CONDITION` explicitly. Optional →
-   *  existing rules unaffected. Not persisted (no column; reconstructable from the key,
-   *  like the base catalog magnitude) — an in-code legibility marker for this build. */
-  temporalClass?: TemporalClass;
-  /** UI-facing evidence JSON — the breaching stat(s) for the verdict sentence. */
-  evidence: Record<string, unknown>;
-}
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ THE FIRED-FINDING SHAPE IS DEFINED IN A LEAF MODULE AND RE-EXPORTED HERE.
+//
+// It moved to `fired-finding.types.ts` so that modules a BUILD GATE imports (coalesce.ts, reached by
+// verify-coalescing.ts and verify-copy-register.ts) can name it WITHOUT pulling in this file — which
+// carries a type-only import of the generated Prisma client. verify-build-gate-hygiene.ts walks the
+// import graph without distinguishing type-only edges, deliberately, so "erased at runtime" is not an
+// argument it accepts.
+//
+// ⚠ RE-EXPORT, NOT A COPY. There is exactly one declaration of each of these, in the leaf module.
+// Every existing `from "./types.js"` import site is unchanged.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+export type {
+  FindingKind,
+  FindingDisplayState,
+  Polarity,
+  TemporalClass,
+  LensComposedKey,
+  FiredFindingKey,
+  FiredFinding,
+} from "./fired-finding.types.js";
+import type { FiredFinding } from "./fired-finding.types.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // THE EVALUABILITY CONTRACT (Family N Amendment §1) — three outcomes, not two.

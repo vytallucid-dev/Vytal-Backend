@@ -34,8 +34,9 @@
 // PURE. No DB.
 //   npx tsx src/scripts/verify-copy-register.ts
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-import { PATTERN_KEYS, PATTERN_FACTS, type PatternKey } from "../catalogue/pattern-facts.js";
+import { PATTERN_KEYS, PATTERN_FACTS, CONFIDENCE_ROBUST_MIN_N, type PatternKey } from "../catalogue/pattern-facts.js";
 import { NOT_COVERED_RECORDS, NOT_COVERED_SILENT_LINE } from "../catalogue/not-covered.js";
+import { claimantOf } from "../scoring/findings/coalesce.js";
 import { composeVerdict } from "../scoring/findings/verdicts.js";
 import { doesntMean } from "../catalogue/index.js";
 import { scanForwardLanguage } from "../scoring/findings/trajectory/regime-tier.js";
@@ -228,15 +229,62 @@ async function main() {
 
   const mismatches: string[] = [];
   const silent: string[] = [];
+  // ★ `described` IS A THIRD CASE, NOT A VARIANT OF THE OTHER TWO. A record declaring it has no
+  //   measured population to speak from, so NEITHER register may appear — the same rule already applied
+  //   to Building instances and the not-covered registry below, now applied to records that declare it
+  //   statically (the coalesced `described` entries: D6+D7 and T5+T8).
+  //   ⚠ This block previously cast `confidence` to `"robust" | "directional"`, which was true of every
+  //     record at the time and became false the moment a static `described` record existed — the cast
+  //     produced `REGISTER_VOCAB["described"] → undefined` and the gate crashed rather than failing.
+  const describedMismatches: string[] = [];
   for (const key of PATTERN_KEYS) {
-    const mine = PATTERN_FACTS[key].confidence as "robust" | "directional";
-    const other = mine === "robust" ? "directional" : "robust";
-    // Every phase branch — T3's HOT variant carries a register its calm variant does not.
+    const confidence = PATTERN_FACTS[key].confidence;
+    if (confidence === "described") {
+      for (const phase of [null, "HOT", "NORMAL", "STRESSED"]) {
+        const text = formedCopyOf(key, phase);
+        const anyRegister = [...hits(text, "robust"), ...hits(text, "directional")];
+        if (anyRegister.length) {
+          describedMismatches.push(`${key} declares described but says "${anyRegister[0]}"`);
+        }
+      }
+      silent.push(key);
+      continue;
+    }
+    // ★★ THE REGISTER BELONGS TO THE CLAIM, NOT TO THE ENTRY. ★★ (ruled)
+    //
+    // A coalesced entry has no evidence of its own — that is precisely what `claimSource` encodes. So
+    // `confidence` TRAVELS WITH `claimSource`, always: the register a card may speak in is the SPEAKING
+    // CONSTITUENT'S, and where there is no claim source there is no claim and no register question.
+    //
+    // This is stated as the general rule rather than as a T2+T3 carve-out, because it is the general
+    // rule. A single pattern is simply the case where the speaker IS the entry — `claimantOf` returns
+    // the key itself — so both kinds go through one code path and a future coalesced entry inherits
+    // the behaviour without a second special case being written for it.
+    //
+    // For an entry whose speaker is phase-dependent (T2+T3, whose constituents' maps are
+    // complementary), the speaker legitimately differs between phases on the same entry. Judging that
+    // copy against the entry's own static `confidence` would ask the HOT branch to speak T2's register
+    // while T2 is masked — the opposite of the rule. `claimSourceFor` is the single resolver
+    // (coalesce.ts), read here rather than re-derived, so the gate cannot drift from the engine.
     let sawOwn = false;
     for (const phase of [null, "HOT", "NORMAL", "STRESSED"]) {
+      const speaker = claimantOf(key, phase);
+      // No licensed speaker in this phase ⇒ no claim is emitted ⇒ no register to judge.
+      if (speaker === null) continue;
+      const speakerConfidence = PATTERN_FACTS[speaker].confidence;
+      // A `described` speaker may not speak at all; its silence is asserted separately, above.
+      if (speakerConfidence === "described") continue;
+      const mine = speakerConfidence;
+      const other = mine === "robust" ? "directional" : "robust";
       const text = formedCopyOf(key, phase);
       const wrong = hits(text, other);
-      if (wrong.length) mismatches.push(`${key} declares ${mine} but says "${wrong[0]}" (${other} register)`);
+      if (wrong.length) {
+        mismatches.push(
+          speaker === key
+            ? `${key} declares ${mine} but says "${wrong[0]}" (${other} register)`
+            : `${key} in ${phase ?? "unknown"} speaks for ${speaker} (${mine}) but says "${wrong[0]}" (${other} register)`,
+        );
+      }
       if (hits(text, mine).length) sawOwn = true;
     }
     if (!sawOwn) silent.push(key);
@@ -245,6 +293,12 @@ async function main() {
     "no pattern's copy speaks in a register other than the one its record declares",
     mismatches.length === 0,
     mismatches.join(" · ") || `${PATTERN_KEYS.length} patterns, every branch`,
+  );
+  ok(
+    "a record declaring `described` speaks in NEITHER register — it has no population to speak from",
+    describedMismatches.length === 0,
+    describedMismatches.join(" · ") ||
+      `${PATTERN_KEYS.filter((k) => PATTERN_FACTS[k].confidence === "described").length} described record(s), no register phrase`,
   );
   console.log(`     carry no register phrase at all (permitted — the copy makes no strength claim): ${silent.join(", ") || "none"}`);
 
@@ -308,13 +362,75 @@ async function main() {
   const VALID = ["robust", "directional", "described"];
   const missing = PATTERN_KEYS.filter((k) => !VALID.includes(PATTERN_FACTS[k].confidence));
   ok("every pattern declares a confidence in {robust, directional, described}", missing.length === 0, missing.join(",") || `${PATTERN_KEYS.length}/${PATTERN_KEYS.length}`);
+  // ★ THIS ASSERTION WAS INVERTED BY THE COALESCING RULING, AND THE INVERSION IS THE POINT.
+  //
+  // It read "no STATIC record declares `described` — it is the register of a Building instance and of
+  // the not-covered registry, both runtime facts". That was true of every record when it was written.
+  // The coalescing ruling (§6) makes `described` an ENTRY-LEVEL MARKING: a coalesced entry whose
+  // combined configuration falls outside the observed range of every constituent carries
+  // `claim_source: null` with `evidence: described`, declared statically on the record because it is a
+  // property of the CONFIGURATION, not of one firing.
+  //
+  // So the invariant is no longer "never static" — it is "static `described` iff the record is a
+  // coalesced entry that names no claim source". A single-pattern record still may not declare it:
+  // a pattern with its own measured population has a register to speak in.
+  const staticDescribed = PATTERN_KEYS.filter((k) => (PATTERN_FACTS[k].confidence as string) === "described");
+  // ★ A STATIC `described` RECORD HAS EXACTLY ONE HONEST CAUSE: NOTHING TO SPEAK FROM. Two shapes
+  //   reach it, and both are legitimate —
+  //     · a COALESCED entry naming no claim source — the combined configuration was never observed
+  //       (D6+D7, T5+T8), so no constituent earned the right to speak;
+  //     · a SINGLE pattern whose sample was never preserved — `evidenceStats.n === null`, so it cannot
+  //       be tiered against CONFIDENCE_ROBUST_MIN_N and therefore cannot pick a register (T4).
+  //   What remains forbidden is the case this assertion was written to catch: a pattern WITH a measured
+  //   sample declaring `described` anyway, which would withhold a register it has the evidence to speak.
+  const illegalDescribed = staticDescribed.filter((k) => {
+    const f = PATTERN_FACTS[k];
+    const coalesced = "coalesced" in f ? f.coalesced : undefined;
+    if (coalesced) return coalesced.claimSource !== null; // coalesced ⇒ must name no claim source
+    return f.evidenceStats.n !== null; // single ⇒ must have no sample to tier
+  });
   ok(
-    "no STATIC record declares `described` — it is the register of a Building instance and of the not-covered registry, both runtime facts",
-    PATTERN_KEYS.every((k) => (PATTERN_FACTS[k].confidence as string) !== "described"),
-    "0 static `described`",
+    "a STATIC `described` record has nothing to speak from — no claim source, or no preserved sample",
+    illegalDescribed.length === 0,
+    illegalDescribed.join(",") || `${staticDescribed.length} static: ${staticDescribed.join(", ") || "none"}`,
   );
+  // ⚠ AND THE CONVERSE, so the two fields cannot drift apart: an entry that names no claim source must
+  //   declare `described`, or it would be a card with no speaker and a register to speak in.
+  const claimlessNotDescribed = PATTERN_KEYS.filter((k) => {
+    const f = PATTERN_FACTS[k];
+    const coalesced = "coalesced" in f ? f.coalesced : undefined;
+    return coalesced && coalesced.claimSource === null && (f.confidence as string) !== "described";
+  });
+  ok(
+    "…and every coalesced entry with `claimSource: null` declares `described` (the two cannot drift)",
+    claimlessNotDescribed.length === 0,
+    claimlessNotDescribed.join(",") || "consistent",
+  );
+  // ★ THE BOUNDARY IS DECLARED, SO ASSERT AGAINST IT — this is the defect class that produced four
+  //   inconsistent records (D3 directional at n=26; T6/T7/T8 robust at n=15/19/17). `confidence` was
+  //   hand-declared per record against an unwritten convention, so every record looked defensible on
+  //   its own and the SET disagreed. With CONFIDENCE_ROBUST_MIN_N declared, the tier is derivable and
+  //   a future edit that contradicts it fails here rather than shipping a wrong strength signal.
+  //
+  //   ⚠ `n === null` IS EXEMPT AND MUST BE. An absent sample cannot be tiered at all — those records
+  //     declare `described` and are asserted separately above. Treating null as "below the boundary"
+  //     would let an unmeasured pattern borrow the directional register, which is the T4 case.
+  const tierLeaks = PATTERN_KEYS.filter((k) => {
+    const f = PATTERN_FACTS[k];
+    const n = f.evidenceStats.n;
+    if (n === null) return false; // no sample ⇒ no tier ⇒ governed by the `described` assertions
+    const expected = n >= CONFIDENCE_ROBUST_MIN_N ? "robust" : "directional";
+    return f.confidence !== expected;
+  }).map((k) => `${k} n=${PATTERN_FACTS[k].evidenceStats.n} declares ${PATTERN_FACTS[k].confidence}`);
+  ok(
+    `every measured pattern's confidence matches the declared boundary (n >= ${CONFIDENCE_ROBUST_MIN_N} ⇒ robust)`,
+    tierLeaks.length === 0,
+    tierLeaks.join(" · ") || `boundary n=${CONFIDENCE_ROBUST_MIN_N}, every measured record consistent`,
+  );
+
   const robust = PATTERN_KEYS.filter((k) => PATTERN_FACTS[k].confidence === "robust");
-  console.log(`     robust (${robust.length}) · directional (${PATTERN_KEYS.length - robust.length})`);
+  const directional = PATTERN_KEYS.filter((k) => PATTERN_FACTS[k].confidence === "directional");
+  console.log(`     robust (${robust.length}) · directional (${directional.length}) · described (${staticDescribed.length})`);
 
   console.log(`\n${fail === 0 ? "✅ COPY REGISTER GATES PASS — pillars not price, typical case not average, no figures, no advisory" : `❌ ${fail} FAILURE(S)`}`);
   process.exit(fail === 0 ? 0 : 1);

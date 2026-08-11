@@ -116,6 +116,15 @@ export const STOCK_FINDING_KEYS = [
   "trajectory_D_T7_momentum_improving_while_weak",
   "trajectory_D_T8_foundation_strong_improving",
   "trajectory_B_T9_foundation_weak_declining",
+  // ★ COALESCED ENTRIES — one move across several marks, rendered as ONE entry (Coalescing ruling
+  //   §1/§5). Registered here because `FiredFindingKey` is closed over this array: an entry the engine
+  //   emits must be catalogued or it does not compile. They carry `facts.coalesced` naming the
+  //   constituents that fired and which one (if any) speaks. See pattern-facts.ts for the records and
+  //   the unreachable-combination list.
+  "divergence_D6_D7_trajectory_collapse",
+  "trajectory_B_T2_T3_deterioration_out_of_top_band",
+  "trajectory_D_T1_T4_recovery_out_of_low_zone",
+  "trajectory_D_T5_T8_foundation_weak_to_strong",
   // N · Notable (constructive twins)
   "foundation_N1_cash_backed_earnings",
   "foundation_N2_working_capital",
@@ -656,6 +665,53 @@ const COPY: Readonly<Record<StockFindingKey, StockFindingCopy>> = {
     family: "C",
     concern: "trajectory",
     status: "live",
+  },
+
+  // ── ★ COALESCED ENTRIES (Coalescing ruling §1/§5; copy ruling §1–§3) ────────────────────────────
+  // ONE MOVE, ONE ENTRY. Each stands for several constituent rules that fired on a single move across
+  // several marks. The `description` is the static, rule-level line (it renders on evidence-free
+  // surfaces like the Hub census); the per-firing MECHANISM sentences live in findings/verdicts.ts,
+  // where every other pattern's clause copy lives.
+  //
+  // ⚠ ALL COPY BELOW IS VERBATIM AS RULED. Do not rewrite, re-punctuate or "tighten" any of it.
+
+  // D6+D7 · Trajectory Collapse — `described`, claimSource null. No consequence clause anywhere.
+  divergence_D6_D7_trajectory_collapse: {
+    name: "Trajectory Collapse",
+    description:
+      "The trajectory fell from exceptional to weak in a single reading while the balance sheet still reads as strong. One set of results carried it across the whole ordinary range.",
+    family: "C",
+    concern: "trajectory",
+    status: "coalesced",
+  },
+
+  // T2+T3 · Deterioration out of the top band — regime-conditional claim (T3 in HOT, T2 otherwise).
+  trajectory_B_T2_T3_deterioration_out_of_top_band: {
+    name: "Deterioration out of the top band",
+    description: "The overall reading fell materially from a high base and left the top band in the same move.",
+    family: "B",
+    concern: "trajectory",
+    status: "coalesced",
+  },
+
+  // T1+T4 · Recovery out of the low zone — T1's claim speaks; T4 is named as a fact.
+  trajectory_D_T1_T4_recovery_out_of_low_zone: {
+    name: "Recovery out of the low zone",
+    description:
+      "The overall reading rose materially from the low zone and crossed up into steady territory in the same move.",
+    family: "D",
+    concern: "trajectory",
+    status: "coalesced",
+  },
+
+  // T5+T8 · Foundation weak to strong — `described` on R1 grounds, claimSource null.
+  trajectory_D_T5_T8_foundation_weak_to_strong: {
+    name: "Balance-sheet reading crossed from weak to strong",
+    description:
+      "The balance-sheet reading rose from below its weak mark to at or above its strong mark in a single reading.",
+    family: "D",
+    concern: "fundamentals",
+    status: "coalesced",
   },
 
   // C · Divergence (consolidated) — ★ SYNTHESISED, never emitted. See divergence.ts for the §5C rule

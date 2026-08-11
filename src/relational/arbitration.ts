@@ -14,6 +14,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import type { ResolvedEntry } from "./types.js";
+import { HONEST_NULL_SLOTS, type EntrySlot } from "./mode-contract.js";
 
 /** The fifteen rungs (§4.1). Lower number = higher precedence. In-slice entries populate a subset; the
  *  out-of-slice rungs (2/4/6/10/11/12) are named so the ladder is complete and legible. */
@@ -106,12 +107,50 @@ export interface Assembled {
  * statement of relevance for that reader state (M9: identity, then health). `candidates` is every
  * eligible entry, floor included. Stability (§2.3): with unchanged state the result is a pure function
  * of floor order + rung + relationalWeight + severity + standingSince.
+ *
+ * ── FILL-IF-ROOM (the honest-null tier). ──────────────────────────────────────────────────────────────
+ * `UO4`/`UN8`/`UG5`/`UE5` say "nothing connects you to this" / "no lift" / "can't see inside funds" — a
+ * reader-relative NULL, worth saying on a sparse card and noise on a crowded one (UN8 alone resolved on
+ * 8 of 10 M1 cards in the live census, at rung 15, competing on equal footing with real content for the
+ * same slot). `HONEST_NULL_SLOTS` (mode-contract.ts) names exactly these four — not the wider UG family,
+ * whose members are a DIFFERENT kind of honesty statement ("we could not check this", coverage doctrine)
+ * that does not yield to a crowded card and is never split out of the primary pool.
+ *
+ * Mechanism, reusing the existing rung/cap machinery rather than a parallel system: assemble floor +
+ * every NON-null candidate exactly as before (the "primary" pass). Only if slots remain under `cap` after
+ * that pass does a second pass fill them from the honest-null candidates, sorted by the same rung
+ * comparator. An honest-null can therefore never DISPLACE a non-null candidate, even one that would have
+ * lost a same-rung tiebreak to it under a single pass — it can only occupy room nothing else claimed.
+ * Floor entries are never honest-nulls today (the historical M9-floor incident above removed the one case
+ * that was); the assertion below is a defensive trip-wire, not a live path.
  */
-export function assemble(floorIds: string[], candidates: ResolvedEntry[], cap: number): Assembled {
-  const byRung = (a: ResolvedEntry, b: ResolvedEntry): number =>
-    (a.weight.ladderRung - b.weight.ladderRung) || withinRung(a, b);
+/** The full slot-ordering comparator (§4.2 step 4): global rung, then relational weight, then severity,
+ *  then older-standing-first. Exported so any post-assembly step that needs to re-rank or backfill entries
+ *  (e.g. entries.ts's `attachEchoAnnotations`, which can shrink `slots` after a key's echo is absorbed
+ *  into its host) uses the IDENTICAL rule `assemble` used — never a second, drifting copy of the ladder. */
+export const byRung = (a: ResolvedEntry, b: ResolvedEntry): number =>
+  (a.weight.ladderRung - b.weight.ladderRung) || withinRung(a, b);
 
-  const byId = new Map(candidates.map((c) => [c.entryId, c]));
+export function assemble(floorIds: string[], candidates: ResolvedEntry[], cap: number): Assembled {
+  const isHonestNull = (e: ResolvedEntry): boolean => HONEST_NULL_SLOTS.has(e.entryId as EntrySlot);
+
+  // ⚠ A floored honest-null would bypass fill-if-room entirely — the same failure shape as the historical
+  // UO4-in-M9-floor incident (a near-always-resolving floor entry starving everything below it), just
+  // relocated to a different mechanism. No mode declares one today; this makes a future regression loud
+  // instead of silent.
+  for (const id of floorIds) {
+    if (HONEST_NULL_SLOTS.has(id as EntrySlot)) {
+      throw new Error(
+        `[relational] arbitration: floorIds declares "${id}", an honest-null slot — floored honest-nulls ` +
+          `bypass fill-if-room and reproduce the historical M9 floor-starvation shape. Fix the mode contract.`,
+      );
+    }
+  }
+
+  const primaryCandidates = candidates.filter((c) => !isHonestNull(c));
+  const nullCandidates = candidates.filter(isHonestNull);
+
+  const byId = new Map(primaryCandidates.map((c) => [c.entryId, c]));
 
   // The floor, in DECLARED order — that order is the mode's relevance statement, not a rung. A declared
   // id with no candidate is simply absent (§2.3); it is never a hole.
@@ -131,12 +170,37 @@ export function assemble(floorIds: string[], candidates: ResolvedEntry[], cap: n
     }
   }
 
-  // Everything else, by GLOBAL rung. The ladder governs here and is never overridden.
-  const rest = candidates
+  // Everything else NON-NULL, by GLOBAL rung. The ladder governs here and is never overridden.
+  const rest = primaryCandidates
     .filter((c) => !floorSet.has(c.entryId))
     .sort(byRung)
     .map((c) => ({ ...c, floorRank: null }));
 
-  const ordered = [...floor, ...rest];
-  return { slots: ordered.slice(0, cap), overflow: ordered.slice(cap) };
+  // ⚠ HOW MANY SLOTS THE PRIMARY (non-null) TAIL WOULD OCCUPY UNDER CAP, computed WITHOUT yet deciding
+  // whether an honest-null gets to ride alongside it. This is the "room" fill-if-room fills — the slots
+  // the primary pass leaves free — but it must be computed BEFORE merging, not by slicing a primary-only
+  // array and appending nulls after: appending after produces exactly the bug this comment replaces
+  // (an honest-null tacked on the END of `slots` regardless of its own rung, which can violate
+  // non-decreasing rung order the moment a rung-15 non-null entry is ALSO within cap — e.g. floor(2) +
+  // rest(UO1@14, ELEVATED@15) fills 3 of 4 slots; a naive "append UG5@13 after" puts 13 after 15).
+  const room = Math.max(0, cap - floor.length - rest.length);
+  const nullFill = room > 0
+    ? [...nullCandidates].sort(byRung).slice(0, room).map((c) => ({ ...c, floorRank: null }))
+    : [];
+  const nullFillIds = new Set(nullFill.map((c) => c.entryId));
+  const nullOverflow = nullCandidates
+    .filter((c) => !nullFillIds.has(c.entryId))
+    .map((c) => ({ ...c, floorRank: null }));
+
+  // Merge the non-null tail and its null-fill into ONE rung-ordered sequence before slicing to cap — this
+  // is what guarantees non-decreasing rung order across the whole non-floor run, not just within each
+  // half separately. The floor still leads unconditionally (that ordering is the mode's own statement of
+  // relevance, never a rung); only the TAIL (rest + nullFill) needs the merge.
+  const tail = [...rest, ...nullFill].sort(byRung);
+  const ordered = [...floor, ...tail];
+
+  const slots = ordered.slice(0, cap);
+  const overflow = [...ordered.slice(cap), ...nullOverflow].sort(byRung);
+
+  return { slots, overflow };
 }

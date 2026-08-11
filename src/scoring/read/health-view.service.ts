@@ -59,7 +59,8 @@ import { dropRetiredPatterns } from "../../catalogue/retired-findings.js";
 import { dropFilingPatterns } from "../../filing/channel.js";
 // ★ RETIREMENT SUPPRESSION's sibling — a persisted `notcovered_*` row (this turn's Part 2) must never
 //   reach a finding-facing surface either. Same guard shape, applied at the same three boundaries.
-import { dropNotCoveredPatterns, notCoveredPatternKey, NOT_COVERED_SILENT_LINE } from "../../catalogue/not-covered.js";
+import { dropNotCoveredPatterns, notCoveredPatternKey, isNotCoveredKey, NOT_COVERED, NOT_COVERED_SILENT_LINE } from "../../catalogue/not-covered.js";
+import { pairKeyOf, isSupersededOnPair, stickyContextLine, gapDirectionOf, STICKY_KEY } from "./pair-presentation.js";
 import { GAP_MATERIAL, GAP_STRETCHED } from "../findings/divergence/bands.js";
 import { NATIVE_ZONES } from "../findings/thresholds.js";
 import { COMPOSITE_MOVE_DEADBAND } from "./display-constants.js";
@@ -1280,10 +1281,70 @@ async function buildHealthSnapshotViewInScope(
   //   no assumption about key namespace (see finding-lifecycle.service.ts), so a persisted
   //   `notcovered_*` row resolves through it exactly like a real finding's row does; `null` only when
   //   this is the FIRST period the configuration has matched (nothing persisted yet to walk).
-  const notCovered = notCoveredFor(ncNow, ncPrior).map((n) => ({
-    ...n,
-    lifecycle: lifecycles.firing.get(notCoveredPatternKey(n.id)) ?? null,
-  }));
+  // ── ★ PAIR PRESENTATION · which reading leads its pair, and which drop to context ─────────────
+  //
+  // A TAB IS A PILLAR PAIR, so the question "lead or context?" is answered per pair, after both
+  // channels are assembled — it is the one question no finding can answer on its own, because it
+  // depends on what ELSE occupies the pair. See read/pair-presentation.ts for the two ruled rules.
+  //
+  // ⚠ NOTHING IS TRIMMED FROM THE PAYLOAD. A demoted reading travels in full, flagged; the surface
+  //   decides how to render it. Suppressing the data here would make the wire disagree with what fired.
+  const notCoveredRaw = notCoveredFor(ncNow, ncPrior);
+
+  // The occupants of each pair, from BOTH channels — a note occupies a pair exactly as a pattern does.
+  const occupantsByPair = new Map<string, string[]>();
+  for (const p of patterns) {
+    const subjects = p.facts?.pillarPair;
+    if (!subjects?.length) continue;
+    const k = pairKeyOf(subjects);
+    occupantsByPair.set(k, [...(occupantsByPair.get(k) ?? []), p.patternKey]);
+  }
+  for (const n of notCoveredRaw) {
+    const k = pairKeyOf(NOT_COVERED[n.id].subjects);
+    occupantsByPair.set(k, [...(occupantsByPair.get(k) ?? []), notCoveredPatternKey(n.id)]);
+  }
+
+  // ★ RULE 2 — a note beside the exact pattern that supersedes it is dropped, not demoted. It is the
+  //   same measurement, weaker; showing it in context would be redundancy dressed as extra evidence.
+  const notCovered = notCoveredRaw
+    .filter((n) => {
+      const k = pairKeyOf(NOT_COVERED[n.id].subjects);
+      const patternKeysOnPair = (occupantsByPair.get(k) ?? []).filter((key) => !isNotCoveredKey(key));
+      return !isSupersededOnPair(n.id, patternKeysOnPair);
+    })
+    .map((n) => ({
+      ...n,
+      lifecycle: lifecycles.firing.get(notCoveredPatternKey(n.id)) ?? null,
+    }));
+
+  // ★ RULE 1 — S2 demotes whenever ANYTHING else occupies its pair (broader than coalescing: it
+  //   applies beside D5, beside the coalesced D6+D7 entry, and beside a note). Recomputed against the
+  //   POST-SUPPRESSION occupant set, so a note dropped by rule 2 cannot be what demotes sticky.
+  const survivingOnPair = new Map<string, string[]>();
+  for (const p of patterns) {
+    const subjects = p.facts?.pillarPair;
+    if (!subjects?.length) continue;
+    const k = pairKeyOf(subjects);
+    survivingOnPair.set(k, [...(survivingOnPair.get(k) ?? []), p.patternKey]);
+  }
+  for (const n of notCovered) {
+    const k = pairKeyOf(NOT_COVERED[n.id].subjects);
+    survivingOnPair.set(k, [...(survivingOnPair.get(k) ?? []), notCoveredPatternKey(n.id)]);
+  }
+  for (const p of patterns) {
+    if (p.patternKey !== STICKY_KEY) continue;
+    const subjects = p.facts?.pillarPair;
+    if (!subjects?.length) continue;
+    const others = (survivingOnPair.get(pairKeyOf(subjects)) ?? []).filter((k) => k !== STICKY_KEY);
+    if (!others.length) continue; // alone on its pair ⇒ it headlines, unchanged
+    p.demoted = true;
+    // The gap's direction at THIS reading, from the lifecycle's own value series — the same numbers
+    // the chart draws, never a second derivation. Null when there is no prior point to compare.
+    const series = p.lifecycle?.valueSeries ?? [];
+    const now = series.length ? series[series.length - 1]?.value ?? null : p.pair?.gap ?? null;
+    const prior = series.length >= 2 ? series[series.length - 2]?.value ?? null : null;
+    p.contextLine = stickyContextLine(gapDirectionOf(now, prior));
+  }
 
   // ── THE THIRD SILENT STATE — a scored stock, nothing firing, and no not-covered configuration
   //   matched either. `patterns` is built above; `notCovered` just above this. Both empty is the ONLY

@@ -23,6 +23,9 @@
 import { composeRelationalState } from "../relational/service.js";
 import { anonymousContext } from "../relational/reader-context.js";
 import { scanAssembled } from "../relational/copy.js";
+import { assemble } from "../relational/arbitration.js";
+import { MODE_CONTRACTS } from "../relational/mode-contract.js";
+import { _debugCallCounts } from "../relational/entries.js";
 import type { BaseRateSnapshot } from "../relational/base-rates.js";
 import type { ReaderContext, ObjectState, ObjectFinding, ReaderHolding, RelationalState } from "../relational/types.js";
 import { EMPTY_FILING_ECHO } from "../relational/constants.js";
@@ -149,13 +152,17 @@ section("3 · NO STRANGER HEADER FOR A READER WITH PRIOR CONTACT (§2.2 grid)");
 section("4 · THE LADDER (§4.1/§4.2) — floor takes mode rank; the tail is strict global rung");
 {
   const s = composeRelationalState(reader(), obj({ findings: [CRITICAL, MEDIUM] }), NOW, RATES);
-  const floorIds = new Set(["UO1", "UO2"]); // M9's declared floor
+  // Floor derived from the CONTRACT itself (mode-contract.ts), not restated — M9's floor is now just
+  // ["UO1"] (UO2 deleted), and deriving it from the contract means this assertion tracks whatever the
+  // contract declares rather than rotting silently if the floor's shape ever changes again.
+  const floorIds = new Set(MODE_CONTRACTS.M9.floorIds(null as any, null as any, obj({ findings: [CRITICAL, MEDIUM] })));
   const tail = s.slots.filter((x) => !floorIds.has(x.entryId));
   ok("non-floor tail is in non-decreasing rung order", tail.every((x, i, a) => i === 0 || a[i - 1].weight.ladderRung <= x.weight.ladderRung),
     tail.map((x) => `${x.entryId}@${x.weight.ladderRung}`).join(" "));
   ok("a critical finding outranks every orientation entry", (() => {
     const c = s.slots.findIndex((x) => x.family === "ELEVATED");
-    const o = s.slots.findIndex((x) => x.entryId === "UO3" || x.entryId === "UO4");
+    // UO3 deleted — UO4 is the only remaining orientation-rung entry this check needs to watch for.
+    const o = s.slots.findIndex((x) => x.entryId === "UO4");
     return c === -1 || o === -1 || s.slots[c].weight.ladderRung < s.slots[o].weight.ladderRung;
   })());
 }
@@ -221,8 +228,9 @@ section("8 · UG9 — SYNTHETIC (⚠ unverifiable live: the evaluability column 
 {
   const s = composeRelationalState(reader(), obj({ notEvaluable: null }), NOW, RATES);
   ok("UG9 is SILENT when the declined set is null (unknown ≠ nothing)", !allIds(s).includes("UG9"));
-  const uo3 = [...s.slots, ...s.overflow].find((x) => x.entryId === "UO3");
-  ok("UO3 uses its unqualified variant when evaluability is unknown", Boolean(uo3 && uo3.claim === "Nothing flagged."), uo3?.claim);
+  // UO3 deleted — it used to carry the "Nothing flagged." unqualified variant here. No replacement:
+  // the redundancy this entry existed to remove (with ELEVATED/UD1's individual listings) is exactly
+  // why it's gone; there is no longer a "nothing flagged" claim to qualify at all.
 }
 
 section("9 · ECHO (§3.5) — both numbers, framing switch, no clock-events, no positive echo");
@@ -260,7 +268,10 @@ section("10 · UO6 (§3.1) — never manufactured from an absence of flags");
 {
   const clean = composeRelationalState(reader(), obj({ findings: [] }), NOW, RATES);
   ok("no positive finding ⇒ UO6 does NOT fire", !allIds(clean).includes("UO6"));
-  ok("UO3 carries the clean state instead", allIds(clean).includes("UO3"));
+  // UO3 deleted — it used to carry the clean state here. Per Part IX·19 (manufacturing strength from
+  // silence is fabrication in the constructive direction), the assertion that matters is the negative:
+  // nothing on the card fabricates a "nothing flagged" verdict in UO3's absence.
+  ok("no entry fabricates a clean/strength verdict in UO3's absence", !claims(clean).some((c) => /nothing flagged/i.test(c)));
   const strong = composeRelationalState(reader(), obj({ findings: [POSITIVE] }), NOW, RATES);
   const uo6 = [...strong.slots, ...strong.overflow].find((x) => x.entryId === "UO6");
   ok("a positive self-dating finding ⇒ UO6 fires with its duration", Boolean(uo6?.standingSince));
@@ -346,6 +357,98 @@ section("16 · HONEST-EMPTY (§0.9 / IX·11) — a missing input never becomes a
   const anon = composeRelationalState(anonymousContext(), obj(), NOW, null);
   ok("anonymous never mentions an account or signing in (UG8)", !/sign ?in|signed.?in|log ?in|your account|connect a portfolio/i.test(claims(anon).join(" ")));
   ok("anonymous renders UO-family only (no reader-side entry)", !allIds(anon).some((i) => /^(UH|UW|UN|UE|UD)/.test(i)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE MODE CONTRACT (new). §2.3/§4.2 as amended by this build: mode declares eligibility, not just
+// header/floor/cap, and the declaration is enforced BEFORE construction. Every assertion below is
+// derived from the contract's own stated rules (mode-contract.ts's comments), not from what the code
+// happens to output — the same discipline this file's own header insists on for everything else.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+section("17 · CONTRACT — eligibility is DECLARED per mode, not filtered after assembly");
+{
+  // Static half: read the contract directly for a spread of modes and confirm every resolved entry maps
+  // to a slot the contract declares. Complements section 18's dynamic (call-count) proof.
+  const watched = reader({ watchlist: { exists: true, count: 1, thisAddedAt: daysAgo(30), peersInPeerGroup: [] } });
+  const neitherReturning = reader({ attention: { ...NO_ATTN, hasHistory: true, viewCount: 3, lastViewedAt: daysAgo(10) } });
+  const baseSlotFor = (entryId: string): string => {
+    if (entryId.startsWith("ELEVATED:")) return "elevated";
+    if (entryId.startsWith("UD")) return "UD";
+    if (entryId.startsWith("UE")) return "UE";
+    if (["UH1", "UH2", "UH3", "UH4", "UH10"].includes(entryId)) return "heldPositionFamily";
+    return entryId;
+  };
+  const fixtures: [string, RelationalState][] = [
+    ["M1 (first-view holder)", composeRelationalState(holder(), obj({ findings: [CRITICAL, MEDIUM, POSITIVE] }), NOW, RATES)],
+    ["M9 (stranger)", composeRelationalState(reader(), obj({ findings: [CRITICAL, MEDIUM] }), NOW, RATES)],
+    ["watched", composeRelationalState(watched, obj({ findings: [MEDIUM] }), NOW, RATES)],
+    ["NEITHER, returning", composeRelationalState(neitherReturning, obj({ findings: [MEDIUM] }), NOW, RATES)],
+  ];
+  for (const [label, s] of fixtures) {
+    const contract = MODE_CONTRACTS[s.mode];
+    const offenders = allIds(s).filter((id) => !contract.eligible.has(baseSlotFor(id) as any));
+    ok(`${label} [${s.mode}]: every resolved entry is contract-eligible`, offenders.length === 0, offenders.join(", "));
+  }
+}
+
+section("18 · CONTRACT — construction is gated, not filtered (dynamic proof via _debugCallCounts)");
+{
+  // A returning holder (M2) never even INVOKES buildUO1 — not merely drops its result. Re-resolve and
+  // read the counter immediately after, since buildEntries resets it at the top of every call.
+  const returningHolder = holder({ attention: { ...NO_ATTN, hasHistory: true, viewCount: 3, lastViewedAt: daysAgo(10) } });
+  composeRelationalState(returningHolder, obj({ findings: [MEDIUM] }), NOW, RATES);
+  ok("returning holder (M2): UO1's builder was never called", !_debugCallCounts.UO1);
+
+  composeRelationalState(reader(), obj({ findings: [MEDIUM] }), NOW, RATES); // M9, FIRST attention
+  ok("stranger, first view (M9): UD's builder was never called (no delta possible)", !_debugCallCounts.UD);
+  ok("stranger, first view (M9): UO1's builder WAS called", (_debugCallCounts.UO1 ?? 0) > 0);
+}
+
+section("19 · FILL-IF-ROOM — an honest-null candidate never displaces real content for a contested slot");
+{
+  // Direct unit test of assemble()'s two-pass fill, independent of any full card resolution — the
+  // arithmetic is the thing under test here, not a specific mode's composition.
+  const mkEntry = (entryId: string, ladderRung: number): RelationalState["slots"][number] => ({
+    entryId, family: "UN" as const, claim: entryId, gloss: null, temporalClass: "CONDITION",
+    standingSince: null, isNewSinceLastLook: false, weight: { ladderRung, relationalWeight: 0.5 },
+    arithmetic: null, interpretationCeiling: null, doesntMean: "x", sourceRef: "x",
+  });
+  const honestNull = mkEntry("UN8", 15); // a real HONEST_NULL_SLOTS member
+  const realContent = mkEntry("UN2", 6); // real content, better rung
+  const onlyNull = assemble([], [honestNull], 1);
+  ok("an honest-null fills room when nothing else contests it", onlyNull.slots.map((s) => s.entryId).includes("UN8"));
+  const contested = assemble([], [honestNull, realContent], 1);
+  ok("real content wins a contested slot over an honest-null, even at a worse rung ordering position", contested.slots.map((s) => s.entryId).includes("UN2") && !contested.slots.map((s) => s.entryId).includes("UN8"));
+}
+
+section("20 · THE UD7 SHORT-CARD CASE (M3/M11) — reframed from 'empty card'; see mode-contract.ts");
+// ⚠ Originally scoped as an empty-card mechanism; direct testing during implementation showed no mode
+// reaches literal slots.length === 0 under realistic inputs (identity/position content is essentially
+// always eligible and fills the room a cleared floor gives up). The real, uniform outcome is "UD7 header
+// + short slot list led by real content" — asserted here for BOTH M3 (holder) and M11 (stranger with
+// prior contact), per the requirement that a holder-facing case not be proven only on a stranger.
+{
+  const emptyDelta = { evaluable: true as const, since: daysAgo(5), sinceLabel: "July 2026", lastSeenGeneration: "gen-current", newSnapshotSinceLastLook: false, newlyStandingKeys: [], clearedKeys: [], lastSeenBand: "steady" };
+  const realDelta = { evaluable: true as const, since: daysAgo(5), sinceLabel: "July 2026", lastSeenGeneration: "gen-old", newSnapshotSinceLastLook: true, newlyStandingKeys: [MEDIUM.key], clearedKeys: [], lastSeenBand: "steady" };
+  const recurringAttn = { hasHistory: true, firstViewedAt: daysAgo(60), lastViewedAt: daysAgo(2), viewCount: 8, viewCountTrailing30d: 5, lastViewedSnapshotGeneration: "gen-current" };
+
+  // M3 — RECURRING holder.
+  const m3empty = composeRelationalState(holder({ attention: recurringAttn, delta: emptyDelta }), obj({ findings: [] }), NOW, RATES);
+  ok("M3, empty delta: mode is M3", m3empty.mode === "M3", m3empty.mode);
+  ok("M3, empty delta: header is UD7", m3empty.header.entryId === "UD7");
+  ok("M3, empty delta: floor not reserved, but UH1 still present via the ladder", allIds(m3empty).includes("UH1"));
+  const m3real = composeRelationalState(holder({ attention: recurringAttn, delta: realDelta }), obj({ findings: [MEDIUM] }), NOW, RATES);
+  ok("M3, real delta (negative control): header is the standing frame, not UD7", m3real.header.entryId === "UH1-standing");
+  ok("M3, real delta (negative control): UD1 fires", allIds(m3real).includes(`UD1:${MEDIUM.key}`));
+
+  // M11 — RECURRING, NEITHER (stranger with prior contact).
+  const m11empty = composeRelationalState(reader({ attention: recurringAttn, delta: emptyDelta }), obj({ findings: [] }), NOW, RATES);
+  ok("M11, empty delta: mode is M11", m11empty.mode === "M11", m11empty.mode);
+  ok("M11, empty delta: header is UD7", m11empty.header.entryId === "UD7");
+  ok("M11, empty delta: floor not reserved, but UO1 still present via the ladder", allIds(m11empty).includes("UO1"));
+  const m11real = composeRelationalState(reader({ attention: recurringAttn, delta: realDelta }), obj({ findings: [MEDIUM] }), NOW, RATES);
+  ok("M11, real delta (negative control): header is NOT UD7", m11real.header.entryId !== "UD7");
 }
 
 console.log(`\n${"═".repeat(64)}\nRELATIONAL MATRIX — ${pass} passed, ${fail} failed\n${"═".repeat(64)}`);

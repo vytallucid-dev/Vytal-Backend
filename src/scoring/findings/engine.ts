@@ -65,6 +65,7 @@ import { ruleD1 } from "./rules/d1-price-ahead-quality.js";
 import { ruleD2 } from "./rules/d2-price-ahead-trajectory.js";
 import { ruleD3 } from "./rules/d3-ownership-building-weak-foundation.js";
 import { ruleD4 } from "./rules/d4-ownership-exiting-healthy.js";
+import { coalesceFindings } from "./coalesce.js";
 import { ruleD5 } from "./rules/d5-laggard-catching-up.js";
 import { ruleD6 } from "./rules/d6-quality-rolling-over.js";
 import { ruleD7 } from "./rules/d7-trajectory-breaking-base-holds.js";
@@ -183,6 +184,8 @@ export const EVERY_RULE: FireRule[] = [...FILING_RULES, ...SCORING_RULES];
  *  order). A single throwing rule is isolated so it can never abort the others or the
  *  scoring pass (findings are best-effort — they never block a score write). */
 export function runFindings(ctx: FiringContext, rules: FireRule[] = SCORING_RULES): FiredFinding[] {
+  // ★ COALESCED ON THE WAY OUT — see coalesce.ts for why the runner is the right seam (three callers,
+  //   pure, and ahead of a persist layer whose only dedup silently drops the second row).
   const out: FiredFinding[] = [];
   for (const rule of rules) {
     try {
@@ -198,7 +201,7 @@ export function runFindings(ctx: FiringContext, rules: FireRule[] = SCORING_RULE
       // swallow — a buggy rule must not break scoring; it simply does not fire.
     }
   }
-  return out;
+  return coalesceFindings(out);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -254,7 +257,10 @@ export function runFindingsDetailed(ctx: FiringContext, rules: FireRule[] = SCOR
       // swallow — a buggy rule must not break scoring.
     }
   }
-  return { fired, notEvaluable: notEval };
+  // ★ THE SAME COALESCING AS runFindings, AND IT MUST BE. This is the LIVE scoring path (score-pass.ts
+  //   calls it), so applying it in only one of the two runners would mean the live pass and the
+  //   backfills disagreed about what one move produces.
+  return { fired: coalesceFindings(fired), notEvaluable: notEval };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════

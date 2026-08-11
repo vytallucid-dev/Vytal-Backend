@@ -255,7 +255,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       foundation: 48, ownershipDeltaPp: 9, ownershipFrom: 60, ownershipTo: 69, strong: true,
       cause: "shareholding_changed", driver: "Behind it: FII +1.20pp, DII +0.80pp.",
     },
-    expectContains: "In the few cases of this we have, the Market pillar has strengthened in the readings that followed.",
+    expectContains: "In most cases of this, the Market pillar has strengthened in the readings that followed.",
   },
   {
     label: "divergence_D3 (NOT strong ⇒ the evidenced claim is WITHHELD)",
@@ -270,7 +270,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
     // borrows its authority. The card now states the movement and its driver, and stops. The absence
     // of the study's sentence is asserted directly below.
     expectContains: "Institutional ownership is rising while Foundation still reads as weak.",
-    expectOmits: "In the few cases of this we have, the Market pillar has strengthened",
+    expectOmits: "In most cases of this, the Market pillar has strengthened",
   },
   {
     label: "divergence_D4 (strong ⇒ evidenced + the n=11 caveat)",
@@ -372,7 +372,7 @@ export const VERDICT_FIXTURES: VerdictFixture[] = [
       card: "T6", momentumPrior: 57, momentumNow: 49, regimeTier: "decides_read",
       regimeReadPhases: ["NORMAL"], regimeAtEvent: { regime: "HOT" },
     },
-    expectContains: "in a hot sector it has consistently been masked",
+    expectContains: "in a hot sector it has tended to be masked",
   },
   {
     label: "★ T2 · Tier 2 — the phase is ALWAYS displayed (NORMAL)",

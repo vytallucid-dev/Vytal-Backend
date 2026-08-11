@@ -73,6 +73,9 @@ import type { PatternSubject } from "./pattern-facts.js";
 
 export const NOT_COVERED_IDS = [
   "NC1", "NC2", "NC3", "NC4", "NC5", "NC6", "NC7", "NC8", "NC9", "NC10",
+  // ★ NC11 · THE COALESCED TWO-BAND SLIP. Not a new exclusion — it is NC3 and NC4 as ONE entry when a
+  //   single composite move passes both marks. See its record for why it exists and how it is matched.
+  "NC11",
 ] as const;
 export type NotCoveredId = (typeof NOT_COVERED_IDS)[number];
 
@@ -229,6 +232,42 @@ export const NOT_COVERED: Readonly<Record<NotCoveredId, NotCoveredRecord>> = Obj
 
   NC10: rec("NC10", "trajectory", ["foundation"], cross("foundation", "up", 72), "outlier_driven",
     "The balance-sheet reading has reached its strong zone. The accounts have caught up with a business that was most likely already improving before this registered."),
+
+  // ── ★ NC11 · OVERALL READING SLIPPED TWO BANDS IN ONE MOVE (coalescing ruling §1; copy ruling §5) ──
+  //
+  // ONE MOVE, ONE ENTRY. NC3 (composite down through 68) and NC4 (composite down through 62) describe
+  // the SAME kind of event at two marks, and a large enough single fall passes both. The business had
+  // one thing happen to it; rendering it as two notes with word-for-word identical bodies — which is
+  // exactly what NC3 and NC4 carry, by design — reports our mark placement rather than the company.
+  //
+  // ⚠ MATCHED ON TRIGGER SHAPE, NOT ON ID (and the ruling's own §5 table calls this the BDL row). This
+  //   record declares the FAR mark (62) as its trigger so the registry stays declarative, but the
+  //   coalescing itself happens in the match engine, which detects that one move satisfied several
+  //   same-subject same-direction crossings and emits this in their place. See
+  //   scoring/findings/not-covered-eval.ts. The constituent marks are carried on the firing as facts,
+  //   so nothing is hidden — the note names how many boundaries were passed and where the reading
+  //   landed.
+  //
+  // ── WHY `bull_masked` AND NOT A NEW TOKEN ────────────────────────────────────────────────────────
+  // The reason field is a CATEGORY, never a sentence (see NotCoveredReason above), and this is not a
+  // new category — it is NC3/NC4's own, described precisely. The ruling's rationale, recorded here
+  // because this file is where reasoning already lives:
+  //
+  //   "Downward composite band crossings read positive across the study window and reversed under
+  //    phase split, indicating the direction belongs to the surrounding market condition rather than
+  //    to the crossing itself. The composite is assembled from published results and lags the change
+  //    it records, so the crossing arrives after both the business change and, frequently, the price
+  //    move. Movement is recorded; no claim is spoken."
+  //
+  // Adding a token for that would give one phenomenon two names.
+  //
+  // ⚠ NO CLOSE VARIANT, AND NOT BY OMISSION. The ruling supplied one; this registry has no such field.
+  //   `closeVariant` and both shared closing lines were deliberately deleted (see the header above),
+  //   and scripts/verify-not-covered.ts asserts BOTH that no record carries the field and that every
+  //   note's rendered text equals its `copy` byte-for-byte. A resolution slot is a separate concept
+  //   with its own design question; it is not needed for this record and is not invented here.
+  NC11: rec("NC11", "trajectory", ["composite"], cross("composite", "down", 62), "bull_masked",
+    "The overall reading has moved down far enough in a single step to pass two band marks. This reading is built from results already published, so it records a change the business has already been through rather than one that is beginning. Passing two marks reflects the size of the step, not two separate events."),
 });
 
 export const NOT_COVERED_RECORDS: readonly NotCoveredRecord[] = NOT_COVERED_IDS.map((id) => NOT_COVERED[id]);

@@ -419,6 +419,24 @@ interface PatternClauseParts {
    * fabricate a seam or duplicate the sentence.
    */
   phaseInObservation?: boolean;
+  /**
+   * ★ COALESCED ENTRIES ONLY — the constituent that fired but does NOT speak, named as a fact.
+   *
+   * Coalescing consolidates; it does not suppress (Coalescing ruling §1). When one move crosses several
+   * marks the entry speaks at most ONE claim, from one named constituent — but the others still fired,
+   * and a reader must be able to see that they did. This carries that line.
+   *
+   * ⚠ IT IS NOT THE `movement` CLAUSE, THOUGH IT JOINS AT THE SAME POSITION. The real movement clause is
+   * DERIVED from the value series (`MOVEMENT_COPY_BY_BASIS`) and states how the defining quantity moved
+   * over the run. This is a statement about which OTHER RULE was satisfied by the same move. Routing it
+   * through the derived slot would have the entry claim a measurement it did not make; giving it its own
+   * field keeps "what else fired" separate from "how the number moved", which is the distinction
+   * `coalescedFrom` vs `claimSource` exists to preserve on the record.
+   *
+   * Absent on every non-coalesced pattern — an optional key, for the reason PatternFacts.largeMoveCutPp
+   * gives at length.
+   */
+  constituentFact?: string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -517,12 +535,10 @@ const PATTERN_CLAUSES: Record<string, (ev: Ev) => PatternClauseParts> = {
     // ★ THE RELAXED BRANCH IS GONE, NOT REWORDED. Its old text named the evidenced pattern and then
     //   withheld it, which still borrows its authority. At the relaxed tier D3 emits observation +
     //   movement + boundary and stops; `atEvidencedTier` gates this, so no branch exists here.
-    // ★ THE DIRECTIONAL REGISTER, MATCHING THE RECORD. This read "In most cases of this" — the ROBUST
-    //   vocabulary on a pattern declared `directional`, which tells the reader the evidence is
-    //   stronger than it is. Since the figures were stripped from cards, the register IS the reader's
-    //   only signal of sample strength, so a mismatch here is not a wording preference — it is the
-    //   thing `confidence` exists to convey, conveyed wrongly. verify-copy-register.ts now asserts it.
-    size: "In the few cases of this we have, the Market pillar has strengthened in the readings that followed.",
+    // ★ THE REGISTER FOLLOWS THE CONFIDENCE TIER. Register is the reader's only signal of sample
+    //   strength, so it follows the pattern's confidence tier rather than being chosen per record. D3
+    //   is robust (n=26) under the n≈20 boundary (CONFIDENCE_ROBUST_MIN_N) and speaks the robust form.
+    size: "In most cases of this, the Market pillar has strengthened in the readings that followed.",
   }),
 
   divergence_D4_ownership_exiting_healthy: (ev) => ({
@@ -563,6 +579,97 @@ const PATTERN_CLAUSES: Record<string, (ev: Ev) => PatternClauseParts> = {
     size: "At this distance neither pillar reliably closes toward the other at the next reading. The tension is real; when it resolves is not something the model can tell you.",
   }),
 
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ★ THE COALESCED ENTRIES. One move across several marks — ONE entry (Coalescing ruling §1).
+  //
+  // ⚠ EVERY SENTENCE BELOW IS VERBATIM AS RULED (copy ruling §1–§3). Do not rewrite, re-punctuate or
+  //   "tighten" any of it. The constituent crossings are named as FACTS inside the entry — that copy
+  //   is here too, in the `movement` slot, because consolidating must never make a fired rule invisible.
+  //
+  // ⚠ WHERE THE CLAIM LIVES. `size` is the CLAIM slot (D7's note explains why a crossing may still use
+  //   it), and `atEvidencedTier` gates it. An entry ruled `described` — D6+D7 and T5+T8 — emits
+  //   `size: null` and therefore carries NO consequence clause at all, which is exactly what
+  //   `claimSource: null` means on the record.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+  // ── D6+D7 · `described`. claimSource null. The mechanism, and nothing after it. ─────────────────
+  divergence_D6_D7_trajectory_collapse: () => ({
+    observation:
+      "The trajectory has fallen from exceptional to weak in a single reading, while the balance sheet still reads as strong. A move of that span in one step means one set of results carried it across the whole ordinary range. Foundation is drawn from statements that move slowly, so its strength describes a period that predates this change.",
+    // ★ NO CONSEQUENCE CLAUSE, BY RULING. The combined configuration sits outside the observed range of
+    //   both constituents, and the adjacent 15+ deterioration bucket showed no clean negative — so
+    //   speaking either constituent's claim here would run against the measurement that bears on it.
+    size: null,
+  }),
+
+  // ── T2+T3 · the claim is REGIME-SELECTED, so the observation is too. ────────────────────────────
+  // T3 reads true in HOT only; T2 is masked in HOT and reads true in two-sided markets. The maps are
+  // complementary, so exactly one constituent may speak in every phase and never both. The variant is
+  // chosen HERE (like T3's own copy does) rather than appended, because the phase is part of the
+  // sentence. The constituent that does NOT speak is named as a fact in `movement`.
+  //
+  // ⚠ THE UNKNOWN PHASE IS NOT THE CALM PHASE — T3's own rule, and it applies with more force here.
+  //   With no established phase we cannot tell which constituent is permitted to speak, so NEITHER
+  //   does: the entry falls back to the bare mechanism and emits no claim.
+  trajectory_B_T2_T3_deterioration_out_of_top_band: (ev) => {
+    const phase = firedInPhase(ev);
+    if (phase === "HOT") {
+      return {
+        observation:
+          "The overall reading has left the top band in a single step. That band describes a business whose condition the market has generally already recognised, so what has slipped is the thing that supported that recognition. Here it has slipped while the wider sector is still running.",
+        // claim_source: T3 — the only constituent whose regime map permits speech in HOT.
+        // ★ THE DIRECTIONAL REGISTER, BECAUSE T3 IS THE SPEAKER. The register belongs to the CLAIM, not
+        //   to the entry (ruling: confidence travels with claim_source), and T3's population is small.
+        //   Since the figures were stripped from cards, this phrase is the reader's only signal of how
+        //   much evidence stands behind the claim — a robust register here would overstate it.
+        size: "In the few cases of this we have, the price has moved down over the following period rather than holding up.",
+        constituentFact: "The reading also fell materially from its prior level.",
+        phaseInObservation: true,
+      };
+    }
+    if (phase === null) {
+      return {
+        observation:
+          "The overall reading has fallen materially from a high base, and in the same move left the top band.",
+        size: null, // phase unknown ⇒ neither constituent is licensed to speak
+      };
+    }
+    return {
+      observation:
+        "The overall reading has fallen materially from a high base, and in the same move left the top band. A business that was reading as sound is measurably less so, and the sector around it is not running, so the change stands on its own rather than being carried by conditions.",
+      // claim_source: T2. ⚠ SAME-WINDOW BY DESIGN — "over the same period as", never "after". T2's
+      //   evidence is same-window and the ruling is explicit that this must not be rewritten forward.
+      size: "More often than not, the price has moved down over the same period as a change of this kind rather than holding up.",
+      constituentFact: "The reading also crossed out of the top band.",
+      phaseInObservation: true,
+    };
+  },
+
+  // ── T1+T4 · T1 speaks; T4 is named as a fact. ──────────────────────────────────────────────────
+  // T1 carries a measured population and the `robust` register; T4's sample was never preserved, which
+  // independently disqualifies it from speaking. See the record's `claimSource`.
+  trajectory_D_T1_T4_recovery_out_of_low_zone: () => ({
+    // ★ THE THIRD SENTENCE IS LOAD-BEARING (ruling §2). It stops the reader taking a recovery reading
+    //   as early notice — which the low zone's strong same-window tracking would otherwise invite.
+    observation:
+      "The overall reading has risen out of the low zone and into steady territory in a single step. Readings this low describe a business under real strain, so a move of this size reflects a change in the underlying accounts rather than a shift in sentiment. This reading is built from results already published, so the improvement it records is one the business has already been through.",
+    size: "In most cases of this kind, the price has risen over the same period.",
+    constituentFact: "The reading also crossed up through the boundary into steady.",
+  }),
+
+  // ── T5+T8 · `described` on R1 grounds. claimSource null. ────────────────────────────────────────
+  trajectory_D_T5_T8_foundation_weak_to_strong: () => ({
+    // ★ THE NAMED CAUSES ARE NOT A RANKED SPECULATION (ruling §3). They are the set of things that can
+    //   move a slow pillar this far in one reading, offered so the reader knows what to look up in the
+    //   accounts. No cause is stated as operative.
+    observation:
+      "The balance-sheet reading has moved from below its weak mark into its strong zone in a single step. Foundation is drawn from annual and quarterly statements and ordinarily moves in small increments, so a change of this span means the accounts themselves changed shape — a restructuring, a disposal, a return to profit, or something comparable. What the reading now describes is a different balance sheet, not a gradually improving one.",
+    // ★ NO CONSEQUENCE CLAUSE. Both constituents' claims were measured on ordinary-sized moves and do
+    //   not survive at this magnitude — R1: reaction does not scale with move size, and inverts at the
+    //   extremes.
+    size: null,
+  }),
+
   trajectory_D_T1_recovery_low_zone: () => ({
     observation: "A struggling business is turning, driven by the underlying pillars rather than the Market pillar alone.",
     size: "In most cases of this, the Market pillar had already begun moving by the time this showed.",
@@ -600,7 +707,14 @@ const PATTERN_CLAUSES: Record<string, (ev: Ev) => PatternClauseParts> = {
 
   trajectory_D_T4_recovering_out_of_below_par: () => ({
     observation: "The overall reading has crossed into steady. A recovery that has held long enough to cross a band.",
-    size: null, // a crossing
+    // ★ NULL FOR TWO INDEPENDENT REASONS, AND BOTH NOW HOLD STRUCTURALLY.
+    //   1. It is a crossing, so §1.2's severity gradient does not apply (the original reason).
+    //   2. ★ IT SPEAKS NO CLAIM AT ALL — `confidence: "described"`, ruled. T4's sample was never
+    //      preserved, and since the register is now the reader's only evidence signal, a pattern that
+    //      cannot be tiered cannot speak. This was already true incidentally; it is now enforced by
+    //      the `described` declaration on the record, which verify-copy-register.ts §4 asserts emits
+    //      NEITHER register. If (2) is ever lifted by recovering the sample, (1) still holds.
+    size: null,
   }),
 
   trajectory_D_T5_foundation_out_of_weak: () => ({
@@ -621,7 +735,7 @@ const PATTERN_CLAUSES: Record<string, (ev: Ev) => PatternClauseParts> = {
     //   pattern declared `robust`, understating evidence that is actually measured. The mirror image of
     //   D3's mismatch, and equally invisible to a reader who can no longer see n.
     observation:
-      "The operating trajectory has broken into weak territory. The balance sheet may still be intact, but the direction of the business has changed. This reads most clearly in calm markets; in a hot sector it has consistently been masked.",
+      "The operating trajectory has broken into weak territory. The balance sheet may still be intact, but the direction of the business has changed. This reads most clearly in calm markets; in a hot sector it has tended to be masked.",
     size: null, // a crossing
     phaseInObservation: true,
   }),
@@ -642,7 +756,7 @@ const PATTERN_CLAUSES: Record<string, (ev: Ev) => PatternClauseParts> = {
 
   trajectory_D_T8_foundation_strong_improving: () => ({
     observation: "A business that was already sound is getting sounder.",
-    size: "Uncommon, and in most cases of this it has held.",
+    size: "Uncommon, and in the few cases of this we have, it has held.",
   }),
 
   trajectory_B_T9_foundation_weak_declining: () => ({
@@ -688,7 +802,13 @@ export function composeVerdict(key: string, evidence: unknown, lifecycle: Findin
     //   alone; the movement line is what renders when there is a path but no typed closure.
     const res = resolutionClause(lifecycle);
     const mv = res ? null : movementClause(lifecycle, ev);
-    const movement = [mv, res].filter((s): s is string => !!s).join(" ");
+    // ★ THE CONSTITUENT FACT LEADS THE MOVEMENT SLOT ON A COALESCED ENTRY. It states which OTHER rule
+    //   the same move satisfied — the guarantee that consolidating never makes a fired rule invisible
+    //   (Coalescing ruling §1). It is placed FIRST because it is about the event the card is reporting,
+    //   whereas the derived movement line is about how the quantity has travelled since; and it is
+    //   emitted UNCONDITIONALLY, never gated by the claim rule, because it asserts no consequence —
+    //   suppressing it on a `described` entry would hide the very fact that two rules fired.
+    const movement = [p.constituentFact ?? null, mv, res].filter((s): s is string => !!s).join(" ");
     if (movement) byType.set("movement", movement);
 
     // ── the claim rule. Relaxed ⇒ no size AND no phase. The card describes and stops. ──

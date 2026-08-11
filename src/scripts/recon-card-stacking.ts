@@ -26,6 +26,10 @@ async function main() {
   for (const h of holdings) {
     try {
       const s = await resolveRelationalState(h.user_id, h.stock_id);
+      if (!s) {
+        console.error(`UNRESOLVED user=${h.user_id} stock=${h.stock_id}: no object state`);
+        continue;
+      }
       const all = [...s.slots, ...s.overflow];
       rows.push({
         userId: h.user_id,
@@ -44,7 +48,7 @@ async function main() {
         })),
       });
     } catch (err) {
-      console.error(`FAILED user=${h.userId} stock=${h.stockId}:`, (err as Error).message);
+      console.error(`FAILED user=${h.user_id} stock=${h.stock_id}:`, (err as Error).message);
     }
   }
 
@@ -53,6 +57,10 @@ async function main() {
   for (const stockId of stockIds) {
     try {
       const s = await resolveRelationalState(null, stockId);
+      if (!s) {
+        console.error(`UNRESOLVED anon stock=${stockId}: no object state`);
+        continue;
+      }
       const all = [...s.slots, ...s.overflow];
       rows.push({
         userId: null,

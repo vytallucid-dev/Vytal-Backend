@@ -1,7 +1,11 @@
 // File: src/ingestions/quaterly-results/scan.ts (NEW — replaces v2's quarterly + annual scanners)
 
 import { prisma } from "../../db/prisma.js";
-import { fetchFilingsList, groupFilingsByPeriod } from "./results/discovery.js";
+import {
+  fetchFilingsList,
+  fetchFilingsInWindow,
+  groupFilingsByPeriod,
+} from "./results/discovery.js";
 // import { fetchXbrlFile } from "./xbrl/fetcher.js";
 import { parseQuarterly, parseAnnual } from "./xbrl/parser.js";
 import { enqueueJob } from "../../jobs/enqueue.js";
@@ -135,7 +139,6 @@ export async function scanSymbol(
     return result;
   }
 
-  result.totalFilings = filings.length;
   await logFetch(
     stock.id,
     symbol,
@@ -146,6 +149,29 @@ export async function scanSymbol(
     "nse_filings_api",
     `${filings.length} filings discovered`,
   );
+
+  return scanDiscoveredFilings(stock, filings, result, options);
+}
+
+/**
+ * Everything after discovery: filter, group, and process one symbol's filings.
+ *
+ * ★ EXTRACTED SO BOTH DISCOVERY PATHS SHARE IT VERBATIM. `scanSymbol` reaches it with the whole
+ *   history of one symbol (per-symbol endpoint); `scanUniverseRanged` reaches it with just the
+ *   filings that landed inside the window (ranged endpoint). Nothing below this line knows or
+ *   cares which — which is the property that makes the two paths' OUTPUT comparable, and is what
+ *   the equivalence proof leans on.
+ */
+async function scanDiscoveredFilings(
+  stock: Pick<Stock, "id" | "symbol" | "industryType">,
+  discovered: NseFilingEntry[],
+  result: ScanSymbolResult,
+  options: ScanSymbolOptions,
+): Promise<ScanSymbolResult> {
+  const symbol = stock.symbol;
+  let filings = discovered;
+
+  result.totalFilings = filings.length;
 
   if (options.fromQeDate) {
     const cutoff = options.fromQeDate.getTime();
@@ -815,6 +841,206 @@ export async function scanUniverse(
     if (i < stocks.length - 1) {
       await sleep(delayMs);
     }
+  }
+
+  await runResultsCoverageGuards(scanStart, result);
+
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// ★ RANGED UNIVERSE SCAN — ask NSE "who filed", not "did you file" 504 times.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * How far back the discovery window reaches by default.
+ *
+ * ⚠ THE WINDOW MUST COVER THE GAP BETWEEN SUCCESSFUL RUNS, NOT THE GAP BETWEEN SCHEDULED RUNS.
+ *   The cron fires 2×/day in season (04:00, 16:00 UTC) and 1×/day off season — but MEASURED over
+ *   30 days, 32 of 77 runs (41.6%) never completed, and consecutive misses are routine (05 Aug
+ *   16:00 and 06 Aug 16:00 both died; the next success was 07 Aug 04:00, 36 h after the last one).
+ *   A window sized to the CADENCE would have silently dropped every filing in that gap.
+ *
+ * 72 h absorbs two consecutive misses at the off-season cadence and five in season. The overlap it
+ * buys — 60 h in season, 48 h off — is deliberate and nearly free: a filing seen again is decided
+ * by `decideIngest` exactly as before, and the whole ranged window is a handful of requests
+ * regardless of its width. The old payload said `hoursBack: 6`, which was both never read
+ * (see the handler) and, had it been read, 6 h short of even one in-season tick.
+ */
+export const DEFAULT_DISCOVERY_WINDOW_HOURS = 72;
+
+export interface ScanUniverseRangedOptions {
+  /** Discovery window width in hours. Defaults to DEFAULT_DISCOVERY_WINDOW_HOURS. */
+  hoursBack?: number;
+  /** Delay between SYMBOLS. Unchanged at 1500 ms, but now amortised over the symbols that actually
+   *  filed (tens) rather than the whole universe (504). */
+  delayMs?: number;
+  industries?: (
+    | "non_financial"
+    | "banking"
+    | "nbfc"
+    | "life_insurance"
+    | "general_insurance"
+  )[];
+  perSymbol?: ScanSymbolOptions;
+  onProgress?: (
+    symbol: string,
+    result: ScanSymbolResult,
+    progress: { current: number; total: number },
+  ) => void | Promise<void>;
+  signal?: AbortSignal;
+  /** Clock injection for tests/dry runs. Defaults to now. */
+  now?: Date;
+}
+
+export interface ScanUniverseRangedResult extends ScanUniverseResult {
+  windowFrom: string;
+  windowTo: string;
+  /** HTTP requests spent on discovery for the WHOLE universe. */
+  discoveryRequests: number;
+  /** Every row NSE returned for the window (all companies, Financials + Governance). */
+  rowsReturned: number;
+  financialsRows: number;
+  /** Financials rows surviving the universe filter — what we actually work on. */
+  inUniverseRows: number;
+  /** Distinct in-universe symbols that filed inside the window. */
+  symbolsWithFilings: number;
+}
+
+/**
+ * Discover once for the whole market, then process only the symbols that filed.
+ *
+ * The per-symbol path (`scanUniverse`) asks NSE 504 questions to find the ~50 companies that filed,
+ * and re-reads every symbol's entire filing history on every run because nothing ever windowed it.
+ * This asks one windowed question instead.
+ *
+ * ⚠ THE UNIVERSE FILTER IS INSIDE `fetchFilingsInWindow`, BEFORE ANY DOCUMENT FETCH. That ordering
+ *   is the saving, and it is the shape insider-trades already uses (pit-source.ts:50).
+ *
+ * ⚠ WHAT THIS DELIBERATELY DOES NOT DO: it does not re-derive `decideIngest`'s inputs from the
+ *   discovery row, so a filing inside the window still costs one XBRL fetch before we learn we
+ *   already hold it. That reorder was attempted and REJECTED — the parser derives (quarter,
+ *   fiscalYear) from the document's own declared fiscal-year dates, and re-deriving them from
+ *   `qe_Date` + `stocks.fiscalYearEnd` disagrees with what the parser wrote on 38 rows / 10 stocks.
+ *   See the note on `decideIngest` in picker.ts.
+ */
+export async function scanUniverseRanged(
+  options: ScanUniverseRangedOptions = {},
+): Promise<ScanUniverseRangedResult> {
+  const scanStart = new Date();
+  const now = options.now ?? scanStart;
+  const hoursBack = options.hoursBack ?? DEFAULT_DISCOVERY_WINDOW_HOURS;
+  const delayMs = options.delayMs ?? 1500;
+  const to = now;
+  const from = new Date(now.getTime() - hoursBack * 3600_000);
+
+  const stocks = await prisma.stock.findMany({
+    where: {
+      isActive: true,
+      ...(options.industries ? { industryType: { in: options.industries } } : {}),
+    },
+    select: { id: true, symbol: true, industryType: true, fiscalYearEnd: true },
+  });
+  // The membership test AND the fiscal-year lookup, in one map — `fetchFilingsInWindow` uses
+  // "undefined ⇒ not in the universe" so there is exactly one source of truth for both.
+  const universe = new Map(stocks.map((s) => [s.symbol.trim().toUpperCase(), s]));
+
+  const discovery = await fetchFilingsInWindow(
+    from,
+    to,
+    (symbol) => universe.get(symbol)?.fiscalYearEnd,
+    options.signal,
+  );
+
+  // Group the window's filings by symbol; each symbol then goes through the SAME machinery the
+  // per-symbol path uses.
+  const bySymbol = new Map<string, NseFilingEntry[]>();
+  for (const f of discovery.filings) {
+    const key = f.symbol.trim().toUpperCase();
+    const arr = bySymbol.get(key);
+    if (arr) arr.push(f);
+    else bySymbol.set(key, [f]);
+  }
+  const symbols = Array.from(bySymbol.keys()).sort();
+
+  const result: ScanUniverseRangedResult = {
+    totalSymbols: symbols.length,
+    successfulSymbols: 0,
+    failedSymbols: 0,
+    totalIngested: 0,
+    totalUpgraded: 0,
+    totalRefreshed: 0,
+    totalSkipped: 0,
+    totalFailed: 0,
+    symbolErrors: [],
+    changedSymbols: [],
+    windowFrom: from.toISOString(),
+    windowTo: to.toISOString(),
+    discoveryRequests: discovery.pages,
+    rowsReturned: discovery.totalRows,
+    financialsRows: discovery.financialsRows,
+    inUniverseRows: discovery.inUniverseRows,
+    symbolsWithFilings: discovery.symbols,
+  };
+
+  console.log(
+    `[results-scan/ranged] window ${from.toISOString()} → ${to.toISOString()}: ` +
+      `${discovery.pages} request(s), ${discovery.totalRows} rows, ` +
+      `${discovery.financialsRows} financials, ${discovery.inUniverseRows} in-universe ` +
+      `across ${symbols.length} symbol(s)`,
+  );
+
+  for (let i = 0; i < symbols.length; i++) {
+    const symbol = symbols[i];
+    const stock = universe.get(symbol)!;
+    const filings = bySymbol.get(symbol)!;
+
+    const perSymbol: ScanSymbolResult = {
+      symbol,
+      totalFilings: 0,
+      totalGroups: 0,
+      ingested: 0,
+      upgraded: 0,
+      refreshed: 0,
+      skipped: 0,
+      failed: 0,
+      errors: [],
+      scoreRelevantChanged: false,
+    };
+
+    try {
+      // The discovery audit row. Deliberately says WINDOW, not "all filings" — this symbol's older
+      // filings were not looked at this run, and the log must not imply they were.
+      await logFetch(
+        stock.id,
+        symbol,
+        null,
+        null,
+        null,
+        "success",
+        "nse_filings_api",
+        `${filings.length} filings discovered (ranged window ${hoursBack}h)`,
+      );
+
+      const r = await scanDiscoveredFilings(stock, filings, perSymbol, options.perSymbol ?? {});
+      result.successfulSymbols++;
+      result.totalIngested += r.ingested;
+      result.totalUpgraded += r.upgraded;
+      result.totalRefreshed += r.refreshed;
+      result.totalSkipped += r.skipped;
+      result.totalFailed += r.failed;
+      // Same contract as the per-symbol path: a SCORE INPUT moved, not "a row was rewritten".
+      if (r.scoreRelevantChanged) result.changedSymbols.push(symbol);
+
+      if (options.onProgress) {
+        await options.onProgress(symbol, r, { current: i + 1, total: symbols.length });
+      }
+    } catch (err) {
+      result.failedSymbols++;
+      result.symbolErrors.push({ symbol, error: String(err) });
+    }
+
+    if (i < symbols.length - 1) await sleep(delayMs);
   }
 
   await runResultsCoverageGuards(scanStart, result);

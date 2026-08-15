@@ -91,6 +91,41 @@ export type PickerTable =
 /**
  * Decide whether to (re)ingest a chosen filing FOR ITS OWN BASIS.
  *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ * ⚠ WHY THIS STILL RUNS *AFTER* THE XBRL IS FETCHED, AND WHY MOVING IT WAS REJECTED — 2026-08-14.
+ *
+ * scan.ts fetches the document (scan.ts:279) and parses it BEFORE reaching this function, so a
+ * filing we already hold costs a full download to discover that. Moving this call ahead of the
+ * fetch was attempted. It does not work, and the reason is in the arguments:
+ *
+ *   · `filing`  — from the discovery row. Fine: only `consolidated` and `filingDateParsed` are read,
+ *                 and both come straight off the NSE list entry.
+ *   · `table`   — from `pickerTableFor(taxonomy, …)`, and `taxonomy` is `detectTaxonomy(xml, url)`.
+ *                 This half IS recoverable: the URL carries the token
+ *                 (INTEGRATED_FILING_INDAS_… / _NBFC_INDAS_… / _BANKING_… / _LI_… / _GI_…) and
+ *                 detectTaxonomy already falls back to exactly that regex.
+ *   · `period`  — ✗ THE BLOCKER. `{quarter, fiscalYear}` comes from the PARSED document:
+ *                 parser-common.ts `deriveFiscalPeriod` reads `DateOfEndOfReportingPeriod` and
+ *                 `DateOfEndOfFinancialYear` out of the XBRL itself.
+ *
+ * Re-deriving `period` from (`qe_Date`, `stocks.fiscalYearEnd`) — the only inputs available before
+ * the fetch — was tested against every row this pipeline has written. MEASURED: 3,847 of 3,885
+ * result_fetch_logs rows agree, and 38 DISAGREE, across 9 stocks — ABB, CASTROLIND, CIEINDIA,
+ * CRISIL, HEXT, IGIL, NESTLEIND, SCHAEFFLER, VBL. Every one is a calendar-year or FY-transitioning
+ * filer whose document declares a fiscal year that is not what our column says.
+ *
+ * A 1% disagreement rate is not a rounding error here: `period` IS the unique key this function
+ * looks the row up by, so a wrong period means "no existing row" means a duplicate ingest under a
+ * fabricated quarter. The document is the authority on its own fiscal year; our column is not.
+ *
+ * ⚠ SEPARATELY, AND WORTH FIXING ON ITS OWN: those 38 rows say `stocks.fiscalYearEnd` is WRONG for
+ *   ~7 stocks (marked `march`, filing on a Jan–Dec year). That column is ALREADY load-bearing at
+ *   discovery.ts `inferFilingType`, which decides annual-vs-quarterly from the qe_Date month — so
+ *   for those stocks the December filing (their real annual) is being classified as a quarterly.
+ *   Consistent with the data: only 3 stocks in the whole universe ever get an annual row from a
+ *   December quarter-end. NOT changed here — it is a data correction, not a scan change.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════
+ *
  * Dual-basis model: a Standalone filing is only ever compared against the
  * existing Standalone row, and a Consolidated filing against the existing
  * Consolidated row. We never replace one basis with the other (the old

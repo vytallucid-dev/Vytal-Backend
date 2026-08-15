@@ -29,14 +29,42 @@ async function main() {
   const errs = report.results.filter((r) => r.status === "error");
   const disabled = report.results.filter((r) => r.status === "skipped_disabled");
 
+  // floor_reason is prose and can run to thousands of characters (chat_sessions' records the
+  // whole distill dependency). It used to be interpolated whole into the clamp banner, which
+  // turned one clamped row into an unreadable single line. The banner now carries a SHORT form
+  // and the full text follows as its own wrapped block — nothing is truncated away, so the
+  // operator still reads all of it here rather than going to the DB for it.
+  const CLAMP_HEADLINE = 90;
+  const firstSentence = (s: string): string => {
+    const m = /^.*?[.!?](?=\s|$)/.exec(s.trim());
+    const head = (m ? m[0] : s.trim()).replace(/\s+/g, " ");
+    return head.length > CLAMP_HEADLINE ? head.slice(0, CLAMP_HEADLINE - 1).trimEnd() + "…" : head;
+  };
+  /** Wrap prose to `width`, indented, so a long reason reads as a paragraph. */
+  const wrap = (s: string, width: number, indent: string): string[] => {
+    const out: string[] = [];
+    let line = "";
+    for (const word of s.replace(/\s+/g, " ").trim().split(" ")) {
+      if (line && line.length + 1 + word.length > width) { out.push(indent + line); line = word; }
+      else line = line ? `${line} ${word}` : word;
+    }
+    if (line) out.push(indent + line);
+    return out;
+  };
+
   const line = (r: (typeof report.results)[number]) => {
     const gate = r.armed ? "[armed]" : "[held] ";
-    const clamp = r.clamped ? `  ⚠ CLAMPED→${r.effective} (${r.floorReason})` : "";
+    const clamp = r.clamped ? `  ⚠ CLAMPED→${r.effective} — ${firstSentence(r.floorReason)}` : "";
     const ex = r.exemption ? `  exempt:${r.exemption}` : "";
     const err = r.error ? `  ERROR: ${r.error}` : "";
     console.log(
       `  ${gate} ${pad(r.table, 34)} would-delete ${pad(r.matched, 8)} keep/days=${pad(r.effective ?? "-", 6)} floor=${pad(r.floor, 5)}${clamp}${ex}${err}`,
     );
+    // The FULL reason, in its own block — only when a clamp actually fired.
+    if (r.clamped && r.floorReason) {
+      console.log(`        └─ floor ${r.floor} — full reason:`);
+      for (const l of wrap(r.floorReason, 104, "           ")) console.log(l);
+    }
     if (r.detail) console.log(`        ${JSON.stringify(r.detail)}`);
   };
 

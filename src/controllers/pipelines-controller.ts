@@ -17,7 +17,26 @@
 
 import type { Request, Response } from "express";
 import { prisma } from "../db/prisma.js";
-import { JobTypes, type JobType } from "../jobs/types.js";
+import { JobStatus, JobTypes, type JobType } from "../jobs/types.js";
+import { STALE_AFTER_MS } from "../jobs/reaper.js";
+
+/** One job type inside a pipeline card. ADDITIVE — the frontend hook does not read it yet. */
+interface PipelineMemberStatus {
+  type: string;
+  lastRunAt: string | null;
+  status: string | null;
+  triggeredBy: string | null;
+  /** Running or pending work for THIS type. Null when idle. */
+  inFlight: {
+    id: string;
+    status: string;
+    startedAt: string | null;
+    progress: number;
+    lastHeartbeatAt: string | null;
+    /** null while pending; "alive" | "stale" | "unknown" once running. */
+    liveness: "alive" | "stale" | "unknown" | null;
+  } | null;
+}
 
 interface PipelineStatus {
   key: string;
@@ -25,8 +44,16 @@ interface PipelineStatus {
   lastRunAt: string | null;
   /** Raw trigger audit ("cron" | "user:…" | "admin_route" | "hook:…" | …) or null. */
   triggeredBy: string | null;
-  /** Job status of that last run ("succeeded" | "failed" | …); null for non-job sources. */
+  /**
+   * Card status. ⚠ NO LONGER "the newest finished run's status" — it is the WORST member's,
+   * and it can now be "stalled" or "running", which the old shape could never say. The
+   * frontend renders this string as-is, so the two new values are additive there too.
+   */
   status: string | null;
+  /** Per job type. Present on job-driven cards; absent on ingestion-errors / casa. */
+  perType?: PipelineMemberStatus[];
+  inFlightCount?: number;
+  stalledCount?: number;
 }
 
 // pipeline key (= /admin/<key> route slug) → the background_job types whose newest
@@ -96,18 +123,111 @@ const PIPELINE_JOB_TYPES: Record<string, JobType[]> = {
   ],
 };
 
-/** Newest FINISHED job among the given types — the pipeline's true last run. */
+/**
+ * A pipeline card's status.
+ *
+ * ★★ THIS FUNCTION CONCEALED THE 11 AUGUST INCIDENT AND IT IS FIXED IN PLACE, NOT
+ *    SUPERSEDED. It is fixed rather than replaced because it has a live frontend consumer
+ *    (Vytal-Frontend/lib/api/hooks/use-pipeline-status.ts, rendered by the admin cards),
+ *    and the four fields that hook reads — key, lastRunAt, triggeredBy, status — keep
+ *    exactly their old meaning. Everything new is ADDITIVE, so the panel keeps working
+ *    untouched and can adopt the new fields when it is built. Retiring the path would have
+ *    meant shipping a broken admin page.
+ *
+ * ── DEFECT 1: A STUCK JOB WAS INVISIBLE BY CONSTRUCTION ──────────────────────────────
+ * The query was `where: { finishedAt: { not: null } }`. A job stuck in `running` has no
+ * finishedAt, so the ONE state that needed showing was the one state the query could not
+ * return. On 12 and 13 August this card read "succeeded, minutes ago" while the pipeline
+ * was dead. `inFlight` below is the fix: running/pending work is now first-class, and it
+ * carries its own liveness.
+ *
+ * ── DEFECT 2: ONE CARD REPORTED ANOTHER TYPE'S HEALTH AS ITS OWN ─────────────────────
+ * The `mf` card covers four job types and returned the newest finished run AMONG them.
+ * instrument_corporate_actions was dead; mf_analytics_daily was fine and three minutes
+ * old; the card showed mf_analytics's success. `perType` below breaks every card out, and
+ * the card-level `status` is now the WORST member rather than the newest — so one healthy
+ * member can no longer vouch for a dead one.
+ */
 async function latestJobRun(key: string, types: JobType[]): Promise<PipelineStatus> {
-  const job = await prisma.backgroundJob.findFirst({
-    where: { type: { in: types }, finishedAt: { not: null } },
-    orderBy: { finishedAt: "desc" },
-    select: { finishedAt: true, status: true, triggeredBy: true },
-  });
+  const now = Date.now();
+
+  // Per type, independently. No aggregate can hide a member any more.
+  const perType: PipelineMemberStatus[] = await Promise.all(
+    types.map(async (type) => {
+      const [finished, active] = await Promise.all([
+        prisma.backgroundJob.findFirst({
+          where: { type, finishedAt: { not: null } },
+          orderBy: { finishedAt: "desc" },
+          select: { finishedAt: true, status: true, triggeredBy: true },
+        }),
+        prisma.backgroundJob.findFirst({
+          where: { type, status: { in: [JobStatus.RUNNING, JobStatus.PENDING] } },
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true, status: true, startedAt: true, createdAt: true,
+            progress: true, lastHeartbeatAt: true,
+          },
+        }),
+      ]);
+
+      const hbAge = active?.lastHeartbeatAt ? now - active.lastHeartbeatAt.getTime() : null;
+      const liveness: "alive" | "stale" | "unknown" | null =
+        !active || active.status === JobStatus.PENDING
+          ? null
+          : hbAge === null
+            ? "unknown"
+            : hbAge > STALE_AFTER_MS
+              ? "stale"
+              : "alive";
+
+      return {
+        type,
+        lastRunAt: finished?.finishedAt ? finished.finishedAt.toISOString() : null,
+        status: finished?.status ?? null,
+        triggeredBy: finished?.triggeredBy ?? null,
+        inFlight: active
+          ? {
+              id: active.id,
+              status: active.status,
+              startedAt: active.startedAt?.toISOString() ?? null,
+              progress: active.progress,
+              lastHeartbeatAt: active.lastHeartbeatAt?.toISOString() ?? null,
+              liveness,
+            }
+          : null,
+      };
+    }),
+  );
+
+  // The card's own headline stays backward-compatible: newest finished run across members.
+  const newest = perType
+    .filter((m) => m.lastRunAt)
+    .sort((a, b) => (a.lastRunAt! < b.lastRunAt! ? 1 : -1))[0];
+
+  // …but the STATUS is now the worst member, not the newest. A stuck member outranks a
+  // succeeded one; a failed/abandoned member outranks a success.
+  const stuck = perType.find((m) => m.inFlight?.liveness === "stale");
+  const failedMember = perType.find(
+    (m) => m.status === JobStatus.FAILED || m.status === JobStatus.ABANDONED,
+  );
+  const runningMember = perType.find((m) => m.inFlight);
+
+  const status = stuck
+    ? "stalled"
+    : failedMember
+      ? (failedMember.status as string)
+      : runningMember
+        ? "running"
+        : (newest?.status ?? null);
+
   return {
     key,
-    lastRunAt: job?.finishedAt ? job.finishedAt.toISOString() : null,
-    triggeredBy: job?.triggeredBy ?? null,
-    status: job?.status ?? null,
+    lastRunAt: newest?.lastRunAt ?? null,
+    triggeredBy: newest?.triggeredBy ?? null,
+    status,
+    perType,
+    inFlightCount: perType.filter((m) => m.inFlight).length,
+    stalledCount: perType.filter((m) => m.inFlight?.liveness === "stale").length,
   };
 }
 

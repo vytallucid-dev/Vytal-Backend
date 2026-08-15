@@ -202,6 +202,12 @@ export const JobTypes = {
   // BACKFILL-LAW.md): any change to a rule's logic or constants requires this, because a
   // filing-triggered row freezes until the next filing — up to eleven months for an annual rule.
   FILING_BACKFILL: "filing_backfill",
+  // ── The daily operations health check (Part 3) ─────────────
+  // Reads job history + the scheduler's own registry and answers, from data: which crons did
+  // not fire in their window, what is stuck, which retention rules are erroring, which types
+  // have gone silent, and the abandonment/reclaim rate per type. READ-ONLY over every table it
+  // touches; its own job `result` IS the persisted report (no new table — see health/check.ts).
+  JOB_HEALTH_CHECK: "job_health_check",
 } as const;
 
 export type JobType = (typeof JobTypes)[keyof typeof JobTypes];
@@ -291,8 +297,28 @@ export interface ResultsScanPayload {
   )[];
   /** Optional: cap on universe scans for testing. */
   limit?: number;
-  /** Optional: hours-back filter for incremental universe scans. */
+  /**
+   * Discovery window width, in hours, for mode="universe" + discovery="ranged".
+   *
+   * ⚠ THIS FIELD EXISTED AND WAS DEAD. The cron passed `hoursBack: 6`; the handler destructured it
+   *   and echoed it into the job result without ever passing it to the scanner, so every run
+   *   re-read every symbol's ENTIRE filing history. It is live now. Omitted ⇒
+   *   DEFAULT_DISCOVERY_WINDOW_HOURS (72).
+   */
   hoursBack?: number;
+  /**
+   * How the universe scan finds work. Ignored for mode="symbol" (always per-symbol).
+   *
+   *   "ranged"     — ONE windowed, all-companies call to integrated-filing-results, filtered to the
+   *                  active universe before any XBRL fetch. The recurring-cron path.
+   *   "per_symbol" — one call per symbol, returning that symbol's whole history. Kept as the
+   *                  fallback: use it if ranged discovery returns empty or the endpoint changes
+   *                  shape, and for a deliberate full re-sweep.
+   *
+   * Default for mode="universe" is "ranged". mode="backfill" always uses "per_symbol" — a backfill
+   * is explicitly asking for history, which a window cannot serve.
+   */
+  discovery?: "ranged" | "per_symbol";
 }
 
 export interface LegacyBackfillPayload {
@@ -474,6 +500,15 @@ export interface ChatProfileDistillPayload {
   dryRun?: boolean;
 }
 export interface RemindersDeliverDailyPayload {}
+/** The daily health check. `windowHours` widens/narrows the cron-coverage lookback (default 24);
+ *  `lookbackDays` sets the reliability window (default 7). Both exist so the validation harness can
+ *  point the SAME code at a historical window without a second implementation. */
+export interface JobHealthCheckPayload {
+  windowHours?: number;
+  lookbackDays?: number;
+  /** ISO instant to treat as "now". Harness/backfill only; the cron never sets it. */
+  asOf?: string;
+}
 export interface DealsDailyIngestPayload {}
 export interface EventsWeeklyIngestPayload {}
 export interface EventsDailyRefreshPayload {}
@@ -564,7 +599,8 @@ export type JobPayload =
   | { type: typeof JobTypes.FILING_BACKFILL; data: FilingBackfillPayload }
   | { type: typeof JobTypes.CHAT_TITLE_GENERATE; data: ChatTitleGeneratePayload }
   | { type: typeof JobTypes.CHAT_PROFILE_DISTILL; data: ChatProfileDistillPayload }
-  | { type: typeof JobTypes.REMINDERS_DELIVER_DAILY; data: RemindersDeliverDailyPayload };
+  | { type: typeof JobTypes.REMINDERS_DELIVER_DAILY; data: RemindersDeliverDailyPayload }
+  | { type: typeof JobTypes.JOB_HEALTH_CHECK; data: JobHealthCheckPayload };
 
 // ── Retry policy per job type ────────────────────────────────
 // Conservative defaults. Most ingest jobs should NOT auto-retry —
@@ -691,7 +727,255 @@ export const RETRY_POLICIES: Record<JobType, RetryPolicy> = {
   [JobTypes.CHAT_TITLE_GENERATE]: { maxAttempts: 1 },
   // Idempotent by watermark, so a retry is safe — but a failed night is cheap to skip; the next run resumes.
   [JobTypes.CHAT_PROFILE_DISTILL]: { maxAttempts: 1 },
+  // Health check — pure reads. A failure means we have no report for the night, which is worth one
+  // more try: the whole value of the thing is that it does not silently not run.
+  [JobTypes.JOB_HEALTH_CHECK]: { maxAttempts: 2 },
 };
+
+// ── Restart policy per job type ──────────────────────────────
+//
+// WHAT THIS ANSWERS, AND WHY IT IS NOT `RETRY_POLICIES`. RETRY_POLICIES governs a job
+// that RAN AND THREW: the handler produced an exception, the worker caught it, and
+// `attempts < maxAttempts` decides whether to try again. This map governs a job that
+// never got to throw — its worker vanished mid-run (SIGTERM, OOM, a redeploy, or the
+// swallowed-terminal-write path at worker.ts's loop catch) and the row was left
+// `running` with nobody behind it.
+//
+// ★ THE TWO PATHS ARE STRUCTURALLY DIFFERENT AND THAT IS THE POINT. The retry path is
+//   reachable only from INSIDE runJob's try block; a killed process has no stack, so it
+//   raises nothing and the retry never engages. Measured: instrument_corporate_actions
+//   carries maxAttempts 2, set specifically so "a transient NSE blip must not leave
+//   tonight's fold rescaling from a stale split table" — and on 11 Aug it sat dead for
+//   2.74 days with attempts still at 1, because nothing threw. The reclaim path is
+//   reached from OUTSIDE the job's own execution, by a later tick reading only DB state.
+//   It needs no exception, no cooperation from the dead job, and no restart.
+//
+// "requeue" — safe to re-run from the very start. Row goes back to `pending`,
+//             reclaim_count += 1, attempts UNTOUCHED (it was interrupted, not failed).
+// "fail"    — NOT safe to auto-re-run. Row goes to `abandoned` with a stated reason so
+//             it is visible, rather than silently repeating work nobody sanctioned.
+//
+// ⚠ THE DEFAULT IS "fail". `restartPolicyFor` returns "fail" for any type not in this
+//   map, so an unrecognised row (a renamed type, a hand-inserted row) is surfaced rather
+//   than re-run. The Record<JobType, …> below makes the map exhaustive at COMPILE time:
+//   adding a JobType without declaring its restart policy will not build.
+export type RestartPolicy = "requeue" | "fail";
+
+export const RESTART_POLICIES: Record<JobType, RestartPolicy> = {
+  // ── NOT SAFE TO AUTO-REQUEUE ───────────────────────────────
+  // Deletes production data irreversibly. maxAttempts is already 1 by explicit policy
+  // ("NEVER auto-retry … re-running is wasteful and muddies the audit"). Each delete is
+  // individually idempotent, so this is a POLICY exclusion rather than a correctness one
+  // — but a requeue would put a destructive pass back on the queue with no operator in
+  // the loop, which is exactly what that policy exists to prevent.
+  [JobTypes.RETENTION_PRUNE]: "fail",
+  // "Retrying would only double-hit the broker's API" (RETRY_POLICIES, above). It also
+  // does not NEED a requeue: the worklist is derived from lastSyncedAt, so the next
+  // 30-minute firing picks up everything that fell behind. Failing it is strictly better
+  // than requeuing it — the cron is unblocked either way, and the broker is hit once.
+  [JobTypes.BROKER_POLL_SYNC]: "fail",
+  // ── The 8 manual backfills ─────────────────────────────────
+  // Operator-initiated, hours long, and driven by NO cron — so a stuck one blocks no
+  // schedule and the "unblock the cron" argument for requeuing does not apply. Re-running
+  // from zero is idempotent but re-spends hours of NSE crawl, and the operator who
+  // started it is the right person to decide that. They land in `abandoned` with a reason.
+  [JobTypes.DEALS_BACKFILL]: "fail",
+  [JobTypes.EVENTS_BACKFILL]: "fail",
+  [JobTypes.INSIDER_TRADES_BACKFILL]: "fail",
+  [JobTypes.NEWS_BACKFILL]: "fail",
+  [JobTypes.PRICE_BACKFILL]: "fail",
+  [JobTypes.INDEX_PRICES_BACKFILL]: "fail",
+  [JobTypes.SHAREHOLDING_BACKFILL]: "fail",
+  [JobTypes.LEGACY_BACKFILL]: "fail",
+
+  // ── SAFE TO REQUEUE ────────────────────────────────────────
+  // ★ The 11 August job. NOT-NULL instrument_id + a real unique key, so a re-run collides
+  //   and updates in place. This is the row that must come back on its own.
+  [JobTypes.INSTRUMENT_CORPORATE_ACTIONS]: "requeue",
+  // decideIngest skips any period that already has a real data row and logFetch upserts in
+  // place → "zero duplicate rows" on a re-run (scheduler.ts). Expensive (p95 6.30h) but
+  // correct, and it is the type with the worst measured abandonment rate (42.1%).
+  [JobTypes.RESULTS_SCAN]: "requeue",
+  // Compute-and-discard with the WRITE BARRIER AFTER EVERY WINDOW — a mid-run kill wrote
+  // nothing, so a re-run starts clean rather than resuming a half-written table.
+  [JobTypes.MF_ANALYTICS_DAILY]: "requeue",
+  // Both re-read the last few trading days by design (self-healing) and upsert.
+  [JobTypes.EOD_PRICES_DAILY]: "requeue",
+  [JobTypes.INDEX_PRICES_DAILY]: "requeue",
+  // One file = the whole universe, upserted on the ISIN spine.
+  // ⚠ Each writes an mf_run_log row per run, so a reclaim leaves TWO log rows for one
+  //   night. Cosmetic (the log stops being a run count); no analytics are doubled.
+  [JobTypes.AMFI_NAV_DAILY]: "requeue",
+  [JobTypes.ETF_NAV_DAILY]: "requeue",
+  // The four udiff lanes: append-only prices + forward-only snapshot, and all four abort
+  // BEFORE any write on a bad feed, so an interrupted run left a consistent table.
+  [JobTypes.REIT_DAILY]: "requeue",
+  [JobTypes.ETF_PRICES_DAILY]: "requeue",
+  [JobTypes.GOVT_SECURITIES_DAILY]: "requeue",
+  [JobTypes.CORPORATE_BONDS_DAILY]: "requeue",
+  // Insert-with-dedupe (inserted/skipped counters on every one of these).
+  [JobTypes.DEALS_DAILY_INGEST]: "requeue",
+  [JobTypes.EVENTS_WEEKLY_INGEST]: "requeue",
+  [JobTypes.EVENTS_DAILY_REFRESH]: "requeue",
+  [JobTypes.SHAREHOLDING_QUARTERLY]: "requeue",
+  [JobTypes.SHAREHOLDING_SMART_REFRESH]: "requeue",
+  [JobTypes.INSIDER_TRADES_DAILY]: "requeue",
+  // GUID-keyed dedupe. ⚠ Known ~1.4% GUID drift → a reclaim can add a handful of
+  // duplicate news rows. Acceptable and not silent; the alternative is a dead news feed.
+  [JobTypes.DAILY_NEWS_INGEST]: "requeue",
+  [JobTypes.NSE_ANNOUNCEMENTS_INGEST]: "requeue",
+  [JobTypes.GOOGLE_NEWS_INGEST]: "requeue",
+  [JobTypes.NEWS_CONTENT_EXTRACTION]: "requeue",
+  // Upsert on (stock, rule, period); the prior-period comparison reads STRICTLY EARLIER
+  // rows, so a re-run cannot read its own last write and flip a standing state.
+  [JobTypes.FILING_RECOMPUTE]: "requeue",
+  [JobTypes.FILING_ROLLING_DAILY]: "requeue",
+  // The discharge of the standing law. Its own note says leaving the universe
+  // half-recomputed is the state it exists to prevent — so an interrupted one must resume.
+  [JobTypes.FILING_BACKFILL]: "requeue",
+  // Fingerprint pre-check → skip-identical; append-only supersede; one txn per PG.
+  [JobTypes.PG_RESCORE]: "requeue",
+  [JobTypes.PG_CASCADE_RESCORE]: "requeue",
+  [JobTypes.FILL_CASCADE_RESCORE]: "requeue",
+  [JobTypes.PRICES_REFETCH]: "requeue",
+  // Fire + disarm happen in ONE transaction, so already-fired alerts are skipped.
+  [JobTypes.ALERTS_EVAL_DAILY]: "requeue",
+  // Dedupe on resolvedEventDate with a DB unique as the backstop.
+  [JobTypes.REMINDERS_EVAL_DAILY]: "requeue",
+  // ⚠ THESE TWO SEND EMAIL. `delivered=false` is the guard, and the send→flip crash window
+  //   is covered by a stable per-event Idempotency-Key forwarded to Resend
+  //   (alert-event:<id> / reminder-event:<id>). That dedup guarantee is RESEND'S, not
+  //   ours, and is bounded by their key-retention window — a reclaim lands within
+  //   minutes, comfortably inside it. Requeue is also the only option that gets the
+  //   night's mail out at all; failing leaves users silently un-notified.
+  [JobTypes.ALERTS_DELIVER_DAILY]: "requeue",
+  [JobTypes.REMINDERS_DELIVER_DAILY]: "requeue",
+  // Single INSERT…SELECT…ON CONFLICT.
+  [JobTypes.BEHAVIOR_ROLLUP_RECONCILE]: "requeue",
+  // No writes at all — a re-run cannot cost anything but one aggregate.
+  [JobTypes.BASE_RATES_WARM]: "requeue",
+  // Watermark-idempotent per session; an interruption re-spends at most one quota unit.
+  [JobTypes.CHAT_PROFILE_DISTILL]: "requeue",
+  // Race-safe updateMany / fingerprint skip. Cost of a re-run is 1 quota unit.
+  [JobTypes.CHAT_TITLE_GENERATE]: "requeue",
+  [JobTypes.QUARTER_BRIEF]: "requeue",
+  // ON CONFLICT DO NOTHING + the DB's rolling-window trigger. This one IS cron-driven
+  // (weekly-instrument-history-refresh), unlike the 8 manual backfills above.
+  [JobTypes.INSTRUMENT_HISTORY_BACKFILL]: "requeue",
+  [JobTypes.PEER_METRICS_COMPUTE_ALL]: "requeue",
+  // Read-only over every table it touches; a re-run recomputes the same report from the same
+  // history. The only cost of re-running is one more job row.
+  [JobTypes.JOB_HEALTH_CHECK]: "requeue",
+};
+
+/**
+ * The restart policy for a job row's `type`.
+ *
+ * Takes a raw string rather than a JobType because it is called with whatever is in the
+ * database, which is not guaranteed to still be a declared type (a rename, a hand-inserted
+ * row, a type deleted in a later deploy). Anything unrecognised is "fail" — surfaced, never
+ * silently re-run.
+ */
+export function restartPolicyFor(type: string): RestartPolicy {
+  return (RESTART_POLICIES as Record<string, RestartPolicy>)[type] ?? "fail";
+}
+
+// ── Cancellation capability per job type ─────────────────────
+//
+// ★ WHY THIS IS DATA AND NOT A DOCS PAGE. Cancellation in this system is COOPERATIVE: the
+//   admin route sets cancel_requested, the worker's poller flips the row to CANCELLED and
+//   calls abort(), and then — for most types — the handler keeps working to completion and
+//   its result is silently discarded. A panel that renders one "Cancel" button for every
+//   row is therefore telling the operator something untrue about most of them. The API
+//   serves this map so the UI can disable, warn, or explain instead of pretending.
+//
+// TRACED, NOT INFERRED. Every "checkpointed" below was followed from the handler into the
+// service to confirm the callback's `false` actually breaks the loop; the file:line is on
+// the entry. The classification is deliberately pessimistic where a trace was ambiguous.
+//
+//   "checkpointed"  — the handler asks at a real mid-run checkpoint AND the service stops.
+//                     A cancel takes effect at the next checkpoint (≤ one batch/symbol).
+//   "signal_only"   — no checkpoint, but ctx.signal reaches the I/O, so abort() unwinds an
+//                     in-flight request. Effective only while it is waiting on that call.
+//   "preflight_only"— asked once before the work starts. Once running, it is "none".
+//   "none"          — neither. cancel_requested is RECORDED and the job runs to completion.
+//                     The row will read CANCELLED while the work is still happening.
+export type CancellationSupport = "checkpointed" | "signal_only" | "preflight_only" | "none";
+
+export const CANCELLATION_SUPPORT: Record<JobType, CancellationSupport> = {
+  // ── checkpointed (traced end to end) ───────────────────────
+  [JobTypes.PRICE_BACKFILL]: "checkpointed", // ingest-prices.ts:752 `if (!shouldContinue)`
+  [JobTypes.INDEX_PRICES_BACKFILL]: "checkpointed", // ingest-indices.ts:360-363
+  [JobTypes.EVENTS_BACKFILL]: "checkpointed", // ingest-events.ts:521-526
+  [JobTypes.NEWS_BACKFILL]: "checkpointed", // ingest-news.ts:473-478
+  [JobTypes.DAILY_NEWS_INGEST]: "checkpointed", // ingest-news.ts:266-271 + 473-478
+  [JobTypes.NSE_ANNOUNCEMENTS_INGEST]: "checkpointed", // ingest-news.ts:266-271
+  [JobTypes.GOOGLE_NEWS_INGEST]: "checkpointed", // ingest-news.ts:266-271
+  [JobTypes.NEWS_CONTENT_EXTRACTION]: "checkpointed", // ingest-news.ts:473-478
+  [JobTypes.INSIDER_TRADES_BACKFILL]: "checkpointed", // pit-jobs.ts:252-257 (+ signal at :230)
+  [JobTypes.SHAREHOLDING_BACKFILL]: "checkpointed", // ingest-shareholding.ts:574-579 (+ :522)
+  [JobTypes.SHAREHOLDING_QUARTERLY]: "checkpointed", // ingest-shareholding.ts:574-579
+  [JobTypes.SHAREHOLDING_SMART_REFRESH]: "checkpointed", // ingest-shareholding.ts:574-579
+  [JobTypes.PEER_METRICS_COMPUTE_ALL]: "checkpointed", // compute.ts:812-818
+  [JobTypes.LEGACY_BACKFILL]: "checkpointed", // handler throws JobCancelledError from onProgress
+  // One gate, between compute and the single write phase — a cancel means "do not persist".
+  // Narrow, but real: it aborts the only thing that mutates.
+  [JobTypes.PG_RESCORE]: "checkpointed", // pg-rescore.handler.ts:92
+  [JobTypes.PG_CASCADE_RESCORE]: "checkpointed",
+  [JobTypes.FILL_CASCADE_RESCORE]: "checkpointed",
+
+  // ── signal_only ────────────────────────────────────────────
+  [JobTypes.INSTRUMENT_HISTORY_BACKFILL]: "signal_only", // ctx.signal → runBackfill, no checkpoint
+  // ⚠ THE WORST CASE IN THE TABLE, AND IT LOOKS LIKE THE BEST. results-scan.handler calls
+  //   ctx.shouldCancel() three times — and every one of them only skips a PROGRESS WRITE
+  //   (`if (await ctx.shouldCancel()) return;` inside onProgress), never the scan. ctx.signal
+  //   reaches fetchFilingsInWindow, the up-front discovery call, and NOT the per-symbol XBRL
+  //   loop that runs for hours (scan.ts:948). So a cancel on a running universe scan stops
+  //   nothing once discovery is done — on a job whose p95 is 6.30h. Classified on what it
+  //   DOES, not on the presence of the calls.
+  [JobTypes.RESULTS_SCAN]: "signal_only",
+
+  // ── preflight_only ─────────────────────────────────────────
+  [JobTypes.PRICES_REFETCH]: "preflight_only", // checked once at handler:214, then never
+
+  // ── none: the flag is recorded and nothing stops ───────────
+  // ★ The two jobs in the 11 August incident are both here.
+  [JobTypes.INSTRUMENT_CORPORATE_ACTIONS]: "none",
+  [JobTypes.MF_ANALYTICS_DAILY]: "none",
+  [JobTypes.EOD_PRICES_DAILY]: "none",
+  [JobTypes.INDEX_PRICES_DAILY]: "none",
+  [JobTypes.AMFI_NAV_DAILY]: "none",
+  [JobTypes.ETF_NAV_DAILY]: "none",
+  [JobTypes.REIT_DAILY]: "none",
+  [JobTypes.ETF_PRICES_DAILY]: "none",
+  [JobTypes.GOVT_SECURITIES_DAILY]: "none",
+  [JobTypes.CORPORATE_BONDS_DAILY]: "none",
+  [JobTypes.DEALS_BACKFILL]: "none",
+  [JobTypes.DEALS_DAILY_INGEST]: "none",
+  [JobTypes.EVENTS_WEEKLY_INGEST]: "none",
+  [JobTypes.EVENTS_DAILY_REFRESH]: "none",
+  [JobTypes.INSIDER_TRADES_DAILY]: "none",
+  [JobTypes.QUARTER_BRIEF]: "none",
+  [JobTypes.ALERTS_EVAL_DAILY]: "none",
+  [JobTypes.ALERTS_DELIVER_DAILY]: "none",
+  [JobTypes.REMINDERS_EVAL_DAILY]: "none",
+  [JobTypes.REMINDERS_DELIVER_DAILY]: "none",
+  [JobTypes.BROKER_POLL_SYNC]: "none",
+  [JobTypes.RETENTION_PRUNE]: "none",
+  [JobTypes.BEHAVIOR_ROLLUP_RECONCILE]: "none",
+  [JobTypes.BASE_RATES_WARM]: "none",
+  [JobTypes.FILING_RECOMPUTE]: "none",
+  [JobTypes.FILING_ROLLING_DAILY]: "none",
+  [JobTypes.FILING_BACKFILL]: "none",
+  [JobTypes.CHAT_TITLE_GENERATE]: "none",
+  [JobTypes.CHAT_PROFILE_DISTILL]: "none",
+  [JobTypes.JOB_HEALTH_CHECK]: "none", // pure reads, seconds long — nothing to cancel
+};
+
+/** Cancellation capability for a raw type string. Unknown ⇒ "none" (never promise more). */
+export function cancellationSupportFor(type: string): CancellationSupport {
+  return (CANCELLATION_SUPPORT as Record<string, CancellationSupport>)[type] ?? "none";
+}
 
 // ── Job status constants ────────────────────────────────────
 

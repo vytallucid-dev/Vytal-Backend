@@ -41,12 +41,21 @@ function effectiveDeletions(r: { status: string; armed: boolean; matched: number
 }
 
 /** One dry-run for one table under an optional proposed override — THE single home
- *  for the count, reused by preview AND the save-time projection AND the verify. */
+ *  for the count, reused by preview AND the save-time projection AND the verify.
+ *
+ * ⚠ TWO COUNTS, AND THE DIFFERENCE IS THE WHOLE POINT.
+ *   `deletions` is what the nightly run would DELETE — 0 for a disabled or unarmed row.
+ *   `matched`   is what the rule MATCHED — the real blast radius, independent of the gate.
+ * They diverge exactly when a row is held, which is exactly when an operator is deciding
+ * whether to arm it. Reporting only `deletions` made a held row read "0 rows" whether it
+ * matched nothing or matched thousands; `matched` is carried alongside so the surface can
+ * say which. Nothing about `deletions` changed — see effectiveDeletions above. */
 async function projectFor(table: string, override?: PolicyOverride) {
   const report = await runRetention({ dryRun: true, only: [table], overrides: override ? [override] : undefined });
   const r = report.results.find((x) => x.table === table);
   return {
     deletions: effectiveDeletions(r),
+    matched: r?.matched ?? 0, // raw, gate-independent
     clamped: r?.clamped ?? false,
     effective: r?.effective ?? null,
     floor: r?.floor ?? null,
@@ -71,6 +80,12 @@ function projectionString(deletions: number, clamped: boolean, floor: number | n
 export async function previewPolicyChange(table: string, field: EditableField, value: number | boolean): Promise<Result<{
   table: string; field: EditableField; value: number | boolean;
   currentDeletions: number; proposedDeletions: number; delta: number;
+  /** RAW match counts — what the rule selects regardless of the armed/enabled gate.
+   *  Equal to the *Deletions pair on an armed+enabled row; the honest number on a held one. */
+  currentMatched: number; proposedMatched: number;
+  /** The row's PERSISTED armed flag, so the surface can tell "0 because nothing matched"
+   *  from "0 because this row is held" without a second request. */
+  armed: boolean;
   clamped: boolean; effective: number | null; floor: number | null; floorReason: string;
 }>> {
   const policy = await prisma.retentionPolicy.findUnique({ where: { table } });
@@ -86,6 +101,9 @@ export async function previewPolicyChange(table: string, field: EditableField, v
       currentDeletions: current.deletions,
       proposedDeletions: proposed.deletions,
       delta: proposed.deletions - current.deletions,
+      currentMatched: current.matched,
+      proposedMatched: proposed.matched,
+      armed: policy.armed,
       clamped: proposed.clamped, effective: proposed.effective, floor: proposed.floor, floorReason: proposed.floorReason,
     },
   };

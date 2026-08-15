@@ -1387,6 +1387,28 @@ model BackgroundJob {
   finishedAt DateTime? @map("finished_at")
   durationMs Int?      @map("duration_ms")
 
+  // ── LIVENESS ────────────────────────────────────────────────────────────────
+  // Stamped at claim and then re-stamped by the WORKER on a fixed timer
+  // (JOB_HEARTBEAT_INTERVAL_MS, jobs/reaper.ts) for as long as the row is "running".
+  //
+  // ★ THIS IS NOT `progress`, AND THE DIFFERENCE IS THE WHOLE POINT. `progress` is
+  //   written by the HANDLER, so it proves only that the handler chose to report —
+  //   measured, live instrument_corporate_actions runs sit at progress 38 for minutes,
+  //   and two CORPSES were recorded at progress 100. This column is written from
+  //   outside the handler's control flow and means exactly one thing: a worker process
+  //   was alive and owned this row at this instant.
+  //
+  // NULL means "claimed by a worker that predates this column" — see the reaper's
+  // legacy branch. It is NEVER treated as "infinitely stale" by the timer.
+  lastHeartbeatAt DateTime? @map("last_heartbeat_at")
+
+  // Times this row has been RECLAIMED (requeued after its worker vanished). Distinct
+  // from `attempts`, and deliberately so: `attempts` counts times the job RAN AND
+  // THREW, `reclaimCount` counts times it was INTERRUPTED. An interruption must not
+  // consume a retry — the job never got to fail — but it must still be bounded, or a
+  // process that dies at the same point every time requeues forever.
+  reclaimCount Int @default(0) @map("reclaim_count")
+
   // Audit
   triggeredBy String // "user:aman" | "cron" | "admin_route" | "hook:result_ingested"
   attempts    Int    @default(0) // bumped each time the worker picks it up
@@ -1396,6 +1418,9 @@ model BackgroundJob {
   @@index([status, priority, createdAt])
   @@index([type, status])
   @@index([createdAt])
+  // The reaper's only query: stalled-liveness scan. Partial on status='running'
+  // because that is the sole population it ever reads and it is ~1 row deep.
+  @@index([status, lastHeartbeatAt])
   @@map("background_jobs")
 }
 
@@ -1406,8 +1431,15 @@ model BackgroundJob {
 //   "succeeded"  — completed without error
 //   "failed"     — error thrown; will not retry (or retries exhausted)
 //   "cancelled"  — user requested cancel; handler honoured it
-//   "abandoned"  — server restarted while running; on next worker boot, stuck "running"
-//                   jobs older than 10 min are marked abandoned
+//   "abandoned"  — the worker that owned it vanished and the row could not be safely
+//                   re-run (see RESTART_POLICIES in src/jobs/types.ts). Written by the
+//                   RECLAIM path in src/jobs/reaper.ts, which is keyed on
+//                   `last_heartbeat_at` age — NOT on `started_at`, which cannot
+//                   distinguish a 14-hour results_scan from a 14-hour corpse.
+//
+// ⚠ A vanished worker whose job IS safe to re-run does not land here at all: it is
+//   returned to "pending" with reclaim_count incremented and `attempts` untouched.
+//   "abandoned" is therefore the *terminal* half of reclaim, not all of it.
 
 model BankingFundamental {
   id         String @id @default(cuid())

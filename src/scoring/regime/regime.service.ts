@@ -47,8 +47,14 @@
 //     and lose the directional read it was entitled to — or worse, gain one it never had.
 //   · ON A TOOL LANDING → the CURRENT regime, live, as present-tense sector context.
 // This service serves both: pass `asOf` for the point-in-time (fire-time) value, omit it for live.
-// ⚠ Step 1 ships the primitive only. Nothing here is wired into score-pass or any rule — the stamp
-// is written by steps 2–4. REGIME_EVIDENCE_KEY is named now so those steps cannot drift.
+// ⚠ CORRECTED 2026-08-14. This line used to read "Step 1 ships the primitive only. Nothing here is
+// wired into score-pass or any rule" — true at Step 1, false since. THIS SERVICE IS NOW ON THE
+// SCORE PATH: composite/score-pass.ts:69 imports getRegimeForPeerGroup and calls it once per peer
+// group (score-pass.ts:689) to stamp REGIME_EVIDENCE_KEY onto fired findings that declare a regime
+// dependency and onto every not-covered row. The call is best-effort — wrapped in try/catch at
+// score-pass.ts:677-707, so a lookup failure costs the stamp, never the score row — but it is a
+// live read of prisma.indexPrice (line ~152 below) from inside the scoring pass. Treat any change
+// to this file's IO as touching scoring output, not as a standalone primitive.
 //
 // ── POINT-IN-TIME IS REAL, NOT COSMETIC ───────────────────────────────────────────────────────────
 // `asOf` restricts rows to date ≤ cutoff BEFORE the window is measured, mirroring

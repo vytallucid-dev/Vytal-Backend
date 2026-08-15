@@ -201,7 +201,7 @@ export interface IngestEventsResult {
 
 // ── Universe loader ────────────────────────────────────────────
 
-async function loadUniverse(): Promise<Map<string, string>> {
+export async function loadUniverse(): Promise<Map<string, string>> {
   const stocks = await prisma.stock.findMany({
     where: { isActive: true },
     select: { id: true, symbol: true },

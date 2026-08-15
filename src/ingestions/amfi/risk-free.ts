@@ -10,14 +10,28 @@
 // return actually EARNED risk-free across that window, which is precisely the index's own
 // return. A spot yield quoted today says nothing about what cash earned over the last 3 years.
 //
-// ⚠️  THE DEPTH GATE. index_prices holds only ~1 year of these indices today (recon: ~250
-//     points). So rf(1Y) is real and rf(3Y)/rf(5Y) DO NOT EXIST. They are honest-empty —
-//     NOT approximated, NOT back-filled with a constant, NOT silently annualised from a
-//     shorter span. A Sharpe computed against a risk-free rate we do not have would be a
-//     fabricated number wearing a decimal point.
+// ⚠️  THE DEPTH GATE — THE DOCTRINE STANDS, THE NUMBERS BELOW WERE STALE (corrected 2026-08-14).
+//     The rule is unchanged and non-negotiable: a horizon the series does not cover is
+//     honest-empty — NOT approximated, NOT back-filled with a constant, NOT silently annualised
+//     from a shorter span. A Sharpe computed against a risk-free rate we do not have would be a
+//     fabricated number wearing a decimal point. What follows is only the measured state.
 //
-//     Fix (no new code): re-run INDEX_PRICES_BACKFILL with days=1825. The moment the index
-//     series deepens, 3Y/5Y Sharpe start computing on the next nightly run — no code change.
+//     THIS COMMENT USED TO SAY "index_prices holds only ~1 year of these indices today (recon:
+//     ~250 points), so rf(3Y)/rf(5Y) DO NOT EXIST". That is no longer the case. Measured
+//     2026-08-14: "Nifty 1D Rate Index" holds 1,233 points spanning 1,856 days
+//     (2021-07-14 → 2026-08-13); "Nifty 10 yr Benchmark G-Sec" is identical. 1,856 > H.y5
+//     (1,826), so y1/y3/y5 are all covered and the 3Y/5Y legs compute. Re-measure rather than
+//     trusting this paragraph — depth moves.
+//
+//     ⚠ AND THE OLD PRESCRIBED FIX WAS UNRUNNABLE. It read "re-run INDEX_PRICES_BACKFILL with
+//     days=1825", but IndexBackfillSchema (schema/schema.ts:73) is
+//     `days: z.number().int().min(1).max(365)` — that request is rejected 400 by
+//     controllers/ingestion/indices-controllers.ts:171. runIndexBackfill's own default
+//     (ingest-indices.ts:325) is 365 too. The NSE index pipeline cannot reach past one year.
+//     The depth above did NOT come from that path: it came from scripts/backfill-index-yahoo.ts,
+//     a Yahoo-sourced 5yr backfill that writes the same index_prices.indexName series with
+//     provider "yahoo-finance" (createMany skipDuplicates, never overwriting NSE rows). That
+//     script is the actual deep-history route; raising the 365 cap is a separate, untaken decision.
 //
 // THIS IS ONE OF TWO INDEPENDENT GATES. A Sharpe needs BOTH (i) the fund's own NAV depth and
 // (ii) the risk-free series covering that horizon. Either one missing ⇒ honest-empty, with

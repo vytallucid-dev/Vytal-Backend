@@ -5,6 +5,65 @@ Routine implementation choices are not logged. Newest first.
 
 ---
 
+## `retention-floor-asymmetry` · Retention · The floor is irrevocable and the keep is not — so they are not two settings, they are two different KINDS of decision
+
+**The asymmetry, stated once.** `retention_policy` has two numbers that look interchangeable and are not.
+The audited admin route writes `keep | days | supersededDays | armed | enabled` and **nothing else** —
+`EDITABLE` at [`retention-controller.ts:20-24`](../src/controllers/admin/retention-controller.ts) says so in
+as many words: *"floor / mode / key / exemption are correctness constraints, never editable here."* So `keep`
+is a dial an admin turns with a preview and an audit row behind it, and **`floor` can only ever be changed by
+another migration.** One is operational; the other is permanent.
+
+**★ THEREFORE: set `floor` at the MEASURED consumer requirement and `keep` at the desired ceiling.** Never
+the same number, and never a floor picked for comfort. A low floor with a high keep stays tunable downward
+forever — the operator can walk `keep` down to the floor as evidence arrives. **`floor == keep` freezes the
+policy immutable-downward**: every value the UI accepts below it is silently clamped back up at run time,
+and the only repair is a migration.
+
+**Four rows are frozen today, and it was not deliberate in all four.** `index_prices` (keep=floor=1250),
+`score_snapshots` (60/60), `stock_news` (90/90), `chat_sessions` (1/1). No clamp is firing on any live row —
+`clamps fired: 0` in every dry-run — so the freeze is invisible until someone tries to lower one.
+
+**And the stored value is never the effective one.** `clampUp` ([`policy.ts:132-139`](../src/retention/policy.ts))
+runs at each engine pass, not at write time: `retention_policy.keep` holds the **requested** number, the audit
+row's `newValue` holds the **same requested** number, and the clamped value that actually governs the delete
+is persisted **nowhere**. It survives only in the audit row's free-text `projectedDelta` (*"… (clamped to floor
+760: …)"*), computed once at save. **You cannot read a policy's effective limit out of the database.** That is
+the second reason `floor_reason` must name the consumer with file:line — it is the only durable record of what
+the number was derived from.
+
+---
+
+## `stock-findings-partition-key` · Retention · A depth policy on `stock_findings` MUST partition on `(stock_id, rule_key)` — `stock_id` alone deletes live findings
+
+**The shape of the trap.** `depth_per_key` ranks with
+`row_number() OVER (PARTITION BY <key_cols> ORDER BY <order_col> DESC, "id" DESC)` and deletes `rn > keep`
+([`engine.ts:90-99`](../src/retention/engine.ts)) — the oldest end, which is right. But **what counts as "the
+oldest end" depends entirely on what shares a partition.** Partition `stock_findings` on `stock_id` alone and
+a stock's 22 rules are ranked **against each other** by `period_end`. A rule whose *current* row sits at an old
+period — `S:FY19Q3` (2018), `A:FY22` — ranks last and is deleted first, **even though every consumer still
+reads it as that rule's live answer.** The prune looks like it is trimming history; it is deleting the present.
+
+**Measured, not reasoned.** At a deliberately generous `keep=24` on `stock_id` alone: **219 rows deleted, 127
+of them a rule's SOLE current row.** On `(stock_id, rule_key)` the live maximum depth is **2** and no `keep ≥ 2`
+deletes anything at all. The right partition is not a tuning preference — the wrong one is silent data loss.
+
+**The partition is discoverable from the consumers, and every one of them agrees.** All six read sites reduce
+on the pair: `SELECT DISTINCT ON (f.stock_id, f.rule_key) … ORDER BY … period_end DESC`
+([`base-rates.ts:182`](../src/relational/base-rates.ts), [`reader-context.ts:383`](../src/relational/reader-context.ts))
+and, in the Prisma readers, *"the FIRST row seen for a (stock, rule) pair is its current one"*
+([`read.ts:150`](../src/filing/read.ts), `:355`, `:399`, [`screen.service.ts:265`](../src/scoring/read/screen.service.ts)).
+**The reduction key IS the partition key.** Where a consumer reduces is where a depth policy must partition —
+that generalises past this table.
+
+**Depth 2, not 1, and the second row is load-bearing.** [`read.ts:294`](../src/filing/read.ts) uses the presence
+of a second row for a pair as its *"prior exists"* test *"for free"*, and [`pass.ts:141`](../src/filing/pass.ts)
+picks the latest row with `period_end <` this period to decide `newly_standing` vs `continuing`. Delete it and
+the pass re-stamps `newly_standing` on a rule that has been standing for periods — a wrong claim on a surface
+a reader trusts, produced by a retention policy that looked correct.
+
+---
+
 ## `broker-exited-position-read` · Broker mirror · An exited position is not a holding — and the rule needs ONE home, on the READ
 
 **The symptom.** A Zerodha demat that held 3 instruments, sold all of them, and reconnected showed the 3

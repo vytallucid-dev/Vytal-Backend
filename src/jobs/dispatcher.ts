@@ -66,6 +66,7 @@ import { handleBehaviorRollupReconcile } from "./handlers/behavior-rollup-reconc
 import { handleBaseRatesWarm } from "./handlers/base-rates-warm.handler.js";
 import { handleChatTitleGenerate } from "./handlers/chat-title-generate.handler.js";
 import { handleChatProfileDistill } from "./handlers/chat-profile-distill.handler.js";
+import { handleJobHealthCheck } from "./handlers/job-health-check.handler.js";
 import { JobTypes, type JobType } from "./types.js";
 
 export type JobHandler<TPayload = any, TResult = any> = (
@@ -125,6 +126,7 @@ const HANDLERS: Record<JobType, JobHandler> = {
   [JobTypes.BASE_RATES_WARM]: handleBaseRatesWarm,
   [JobTypes.CHAT_TITLE_GENERATE]: handleChatTitleGenerate,
   [JobTypes.CHAT_PROFILE_DISTILL]: handleChatProfileDistill,
+  [JobTypes.JOB_HEALTH_CHECK]: handleJobHealthCheck,
 };
 
 export function getHandler(type: string): JobHandler | null {

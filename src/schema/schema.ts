@@ -44,11 +44,19 @@ export const DailyPricesQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(365).default(90),
 });
 
-// 4 years ≈ 992 trading days at NSE's ~248/yr. The Market pillar's A2 sub-component
-// gates at 756 trading days and D1's sector-vol baseline samples a trailing 3yr window
-// (needing ~846); 3 calendar years is only ~744 bars and silently drops A2 for every
-// stock. 4y is the smallest window that clears both with headroom.
-export const PRICE_BACKFILL_MAX_DAYS = 1461; // 4 calendar years (incl. one leap day)
+// 5 years ≈ 1,240 trading days at NSE's ~248/yr (measured 2026-08-14: 250 / 250 / 244 /
+// 248 sessions over the last four trailing-365d windows). The Market pillar's A2
+// sub-component gates at 756 trading days and D1's sector-vol baseline samples a trailing
+// 3yr window (needing ~846); 3 calendar years is only ~744 bars and silently drops A2 for
+// every stock. 4y (1461) cleared both; 5y is the depth the price surfaces now want.
+// ⚠ PAIRED WITH RETENTION: daily_prices is depth_per_key with keep=1300 rows/stock. Read the
+// pairing as WINDOWS, not counts — retention must reach FURTHER BACK than the fetch, or a
+// backfill writes rows the nightly pruner deletes again. At the measured 0.6799 sessions/day,
+// 1300 bars ≈ 1,912 calendar days against this 1,826-day reach: ~86 days (~5%) of headroom.
+// keep was raised 1000 → 1250 → 1300 for exactly this reason; at keep=1250 the two windows
+// were within ~12 days and DEAD EVEN at the 250 sessions/yr both of the last two years ran.
+// Raise the keep FIRST if this constant is ever raised again.
+export const PRICE_BACKFILL_MAX_DAYS = 1826; // 5 calendar years (incl. one leap day)
 
 export const PriceBackfillSchema = z.object({
   days: z.number().int().min(1).max(PRICE_BACKFILL_MAX_DAYS).default(PRICE_BACKFILL_MAX_DAYS),

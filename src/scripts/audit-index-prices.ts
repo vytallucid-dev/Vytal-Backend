@@ -11,11 +11,49 @@ const hdr = (s: string) => console.log(`\n${"═".repeat(78)}\n${s}\n${"═".rep
 // ─────────────────────────────────────────────────────────────
 // THE USED SET — every index the codebase actually reads. Grep-derived, with the site.
 //
-// CRITICAL CORRECTION TO THE BRIEF: the SCORING ENGINE DOES NOT READ index_prices AT ALL.
-// The Market pillar (src/scoring/market/*) reads prisma.peerGroup + prisma.dailyPrice — nothing
-// else. There are exactly FIVE readers of index_prices in the whole backend, and none of them is
-// a scoring path. So deleting an index CANNOT break a Health Score. The "non-negotiable, silently
-// breaks scoring" premise does not hold. What it CAN break is display surfaces.
+// ⚠⚠ CORRECTED 2026-08-14 — THIS BLOCK USED TO SAY THE OPPOSITE, AND IT WAS WRONG.
+// It read: "the SCORING ENGINE DOES NOT READ index_prices AT ALL … exactly FIVE readers … none
+// of them is a scoring path. So deleting an index CANNOT break a Health Score." That was true
+// when written and became false when REGIME was wired into the score pass. This file's whole
+// purpose is to guide prune decisions, so the stale claim was the dangerous kind: acting on it
+// would have deleted an index the score path reads. Re-grep before trusting any statement here.
+//
+// ── WHAT IS ACTUALLY TRUE NOW ──────────────────────────────────────────────────────────────
+// · The MARKET PILLAR still reads no index. src/scoring/market/* takes prisma.peerGroup +
+//   prisma.dailyPrice; sectorBaselineVol / sectorOneYearReturnMedian
+//   (market/universal-subcomponents.ts:173) compute from the PEER POOL, not a benchmark. A2/C1/D1
+//   are index-independent. That half of the old claim survives.
+// · But REGIME IS ON THE SCORE PATH. composite/score-pass.ts:69 imports getRegimeForPeerGroup,
+//   and regime/regime.service.ts:152 reads prisma.indexPrice — the SECTOR index, at
+//   REGIME_LOOKBACK_ROWS + 1 = 127 rows, resolved through SECTOR_INDEX_MAP (20 entries) by
+//   resolveOne at regime.service.ts:340.
+// · THEREFORE: deleting a MAPPED sector index CAN change a Health Score's regime phase. Not by
+//   erroring — resolveOne falls through to the pg_pool method, and to unknownRegime only if that
+//   also fails — but the phase a finding is stamped with can differ, and HOT/STRESSED vs null
+//   changes the directional read on the trajectory family (T1–T9) and on divergence D1/D6.
+//   "Cannot break a score" is still true. "Cannot change a score's output" is NOT.
+//
+// ── SEVEN READERS, NOT FIVE (+ one writer) ─────────────────────────────────────────────────
+//   1. scoring/regime/regime.service.ts:152        SCORING  · sector index, 127 rows
+//   2. scoring/read/price-view.service.ts:89       display  · Nifty 50 + sector index, take 820
+//   3. scoring/read/peer-comparison.service.ts:70  display  · sector index (via loadIndexLine)
+//   4. controllers/ingestion/indices-controllers.ts:38  display · 9 CORE_INDICES, 80-day window
+//   5. controllers/me/portfolio-benchmark-controller.ts:60  display · ALLOWED_INDICES = {Nifty 50}
+//   6. ingestions/amfi/risk-free.ts:61             MF       · 1D-Rate → G-Sec, full series
+//   7. ingestions/amfi/mf-benchmark.ts:464 (+ the DISTINCT index_name probe at
+//      mf-analytics.ts:268)                        MF       · ~14 resolved per run, full series
+//   WRITER: ingestions/indices/ingest-indices.ts:78 (upsert) — the only one.
+//
+// ── WHAT IS SAFE TO PRUNE ──────────────────────────────────────────────────────────────────
+// · LOAD-BEARING — never prune: the 20 names in SECTOR_INDEX_MAP (scoring, via regime),
+//   "Nifty 50" (BENCHMARK_INDEX + the portfolio overlay), "Sensex" (dashboard strip), and the
+//   two RF series ("Nifty 1D Rate Index", "Nifty 10 yr Benchmark G-Sec").
+// · SAFE — the shallow tail. As of 2026-08-14, 62 of 164 indices hold ≤20 points (first row
+//   2026-07-20, a feed widening). No consumer above reads any of them. They are the honest
+//   prune target; the deep unread benchmarks below are the KEEP-FUTURE set, not this.
+// ⚠ Verify membership from the CODE at run time — SECTOR_INDEX_MAP is 20 entries today and a
+//   universe expansion could extend it. A name-by-name list here would rot exactly as the
+//   claim above did.
 // ─────────────────────────────────────────────────────────────
 
 const USED: Record<string, string[]> = {

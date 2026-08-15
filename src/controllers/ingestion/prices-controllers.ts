@@ -265,8 +265,9 @@ export const triggerEodIngest = async (req: Request, res: Response) => {
 
 // ── POST /api/v1/admin/prices/backfill ────────────────────────
 // Backfill historical EOD prices.
-// Body: { days?: number } — defaults to the 4-year max (see PRICE_BACKFILL_MAX_DAYS),
-// the smallest window that clears the Market pillar's 756-trading-day A2 gate.
+// Body: { days?: number } — defaults to the 5-year max (see PRICE_BACKFILL_MAX_DAYS),
+// which clears the Market pillar's 756-trading-day A2 gate with room to spare and stays
+// under the daily_prices retention keep (1250 rows/stock).
 
 export const triggerPriceBackfill = async (req: Request, res: Response) => {
   const body = PriceBackfillSchema.safeParse(req.body);

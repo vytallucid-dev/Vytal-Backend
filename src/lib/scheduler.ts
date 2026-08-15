@@ -6,14 +6,27 @@
 //
 // Benefits:
 //   - Every run is tracked in BackgroundJob (status, progress, result)
-//   - A restart mid-job marks it ABANDONED, not silently lost
+//   - A restart mid-job returns the row to `pending` (or `abandoned` for the types that
+//     are not safe to re-run) rather than leaving a ghost — see jobs/reaper.ts.
+//     ⚠ THIS LINE USED TO CLAIM "a restart mid-job marks it ABANDONED, not silently
+//       lost", and that was FALSE for the case that actually happened. Boot recovery
+//       only reaped rows older than 30 minutes and only ran at boot, so a restart
+//       arriving inside that window left the row `running` forever and NOTHING looked
+//       again. Measured 11 Aug 2026: 2.74 days, and the two ticks below were skipped.
 //   - Two server instances or a restart can't double-run the same job
+//     ⚠ Read this precisely: the guarantee is enqueue-time dedup (enqueueIfNotActive),
+//       and its failure mode is the OPPOSITE of double-running — a single stuck
+//       `running` row makes every later tick skip, i.e. the job stops running at all.
+//       That is what the reaper exists to bound.
 //   - All jobs are cancellable from the admin API
+//     ⚠ Cancellation is COOPERATIVE. 12 of 36 handler files never check ctx.shouldCancel
+//       and never take ctx.signal, so for those the flag is recorded and nothing stops.
 // ─────────────────────────────────────────────────────────────
 
 import cron from "node-cron";
 import { enqueueJob, listJobs } from "../jobs/enqueue.js";
 import { JobStatus, JobTypes, type JobType } from "../jobs/types.js";
+import { reapStalledJobs } from "../jobs/reaper.js";
 import { sweepFailedScoringJobs } from "../scoring/errors/failed-job-guard.js";
 import { sweepStaleSnapshots } from "../scoring/errors/stale-snapshot-guard.js";
 import { sweepDegradedSnapshots } from "../scoring/errors/degraded-snapshot-guard.js";
@@ -120,11 +133,43 @@ async function enqueueIfNotActive(
 
 // ── Job registry ──────────────────────────────────────────────
 
-interface ScheduledJob {
+export interface ScheduledJob {
   name: string;
   /** Cron expression (UTC). IST = UTC + 5:30. */
   schedule: string;
   enqueue: () => Promise<void>;
+  /**
+   * The job type this entry enqueues, or null when it does work INLINE and creates no
+   * background_jobs row at all (the three scoring sweeps and the reaper).
+   *
+   * ★ DECLARED, NOT INFERRED, because the health check needs it and a closure cannot be
+   *   read. `null` is a real answer here, not a missing one: it tells the monitor that
+   *   this entry is unobservable from the jobs table and must be excluded by NAME rather
+   *   than counted as permanently missing.
+   */
+  jobType: JobType | null;
+  /**
+   * The enqueue GATE, when the cron expression is not the schedule.
+   *
+   * ⚠ results-scan is the live case and the reason this field exists: it ticks 6×/day
+   *   year-round and this predicate decides which ticks actually enqueue. Without it the
+   *   health check would compute 6 expected firings a night and report four phantom
+   *   misses — training the operator to ignore the report, which is the exact failure
+   *   this whole part is meant to prevent.
+   */
+  gate?: (now: Date) => boolean;
+  /**
+   * Job types whose FRESH OUTPUT this entry reads. Declared so the health check can detect
+   * a consumer that ran against a stale or half-written input.
+   *
+   * ★ THIS IS THE 11 AUGUST HARM, NOT ITS CAUSE. The cause was a stuck ICA row; the HARM
+   *   was three nights of mf_analytics folding ETF NAV against a split table that had not
+   *   been refreshed. Every ordering below is already stated as load-bearing in the comment
+   *   on its entry ("ORDERING IS LOAD-BEARING… the fold reads what this writes") — this
+   *   field only makes that machine-readable, so the monitor can say it instead of an
+   *   operator having to know it.
+   */
+  dependsOn?: JobType[];
 }
 
 // All cron expressions are in UTC.
@@ -138,6 +183,40 @@ interface ScheduledJob {
 //   6:30 PM IST = 13:00 UTC
 
 const SCHEDULED_JOBS: ScheduledJob[] = [
+  // ── JOB REAPER — every 2 minutes, and it does NOT go through the queue ──────────
+  //
+  // ★ THIS IS THE ONE ENTRY THAT MUST NOT BE A JOB. Every other line in this list enqueues
+  //   work for the worker to drain. A reaper that did that would queue BEHIND the very job
+  //   it exists to reclaim — a stuck 7-hour scan would hold the worker, the reaper's own
+  //   row would sit `pending` behind it, and nothing would ever be reclaimed. So it calls
+  //   reapStalledJobs directly, in-process, like the three scoring sweeps below.
+  //
+  // WHY 2 MINUTES. The detection budget is STALE_AFTER_MS (10 min) + this cadence, so a
+  // stalled job surfaces within 12 minutes worst-case. The pass itself is one indexed read
+  // over a population that is normally EMPTY (`status='running'` is ~1 row deep against
+  // ~12k), so 720 near-free reads a day buys that latency. Against the 2.74 days the 11
+  // August row actually took, the cadence is not the expensive part of anything.
+  //
+  // ⚠ It runs in the SAME process as the worker, so it cannot help a process that is fully
+  //   dead. That case is the BOOT pass's (worker.start → reapStalledJobs({mode:"boot"})).
+  //   Between them: process alive + row orphaned → this; process dead → boot.
+  {
+    name: "job-reaper",
+    schedule: "*/2 * * * *",
+    jobType: null,
+    enqueue: async () => {
+      const r = await reapStalledJobs({ mode: "timer" });
+      // Silent when there is nothing to say — this fires 720×/day and a heartbeat line per
+      // tick would bury the one that matters. reapStalledJobs logs loudly on every reclaim.
+      if (r.scanned > 0) {
+        console.error(
+          `[Scheduler] job-reaper: scanned=${r.scanned} requeued=${r.requeued} ` +
+            `failed=${r.failed} raced=${r.skippedRaced}`,
+        );
+      }
+    },
+  },
+
   // ── Prices ─────────────────────────────────────────────────
   // NOTE: NSE publishes the full security-wise bhavcopy
   // (sec_bhavdata_full_*.csv, with delivery data) only ~6 PM IST.
@@ -148,6 +227,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-eod-prices",
     schedule: "30 13 * * 1-5", // 7:00 PM IST, Mon–Fri
+    jobType: JobTypes.EOD_PRICES_DAILY,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.EOD_PRICES_DAILY,
@@ -165,6 +245,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-amfi-nav",
     schedule: "0 19 * * *", // 12:30 AM IST — after AMFI's ~11 PM IST publish
+    jobType: JobTypes.AMFI_NAV_DAILY,
     enqueue: () =>
       enqueueIfNotActive(JobTypes.AMFI_NAV_DAILY, {}, "cron:daily-amfi-nav").then(() => {}),
   },
@@ -186,6 +267,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-etf-nav",
     schedule: "30 19 * * *", // 1:00 AM IST — after daily-amfi-nav, before daily-mf-analytics
+    jobType: JobTypes.ETF_NAV_DAILY,
     enqueue: () =>
       enqueueIfNotActive(JobTypes.ETF_NAV_DAILY, {}, "cron:daily-etf-nav").then(() => {}),
   },
@@ -211,6 +293,9 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-etf-corporate-actions",
     schedule: "45 19 * * *", // 1:15 AM IST — between daily-etf-nav and daily-mf-analytics
+    jobType: JobTypes.INSTRUMENT_CORPORATE_ACTIONS,
+    // Reads the ETF catalogue: an ETF with no row and no ticker cannot be looked up on NSE.
+    dependsOn: [JobTypes.ETF_NAV_DAILY],
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.INSTRUMENT_CORPORATE_ACTIONS,
@@ -229,6 +314,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-reit",
     schedule: "45 13 * * 1-5", // 7:15 PM IST, weekdays — after NSE publishes the day's bhavcopy
+    jobType: JobTypes.REIT_DAILY,
     enqueue: () => enqueueIfNotActive(JobTypes.REIT_DAILY, {}, "cron:daily-reit").then(() => {}),
   },
 
@@ -245,6 +331,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-etf-prices",
     schedule: "50 13 * * 1-5", // 7:20 PM IST, weekdays — 5 min after daily-reit
+    jobType: JobTypes.ETF_PRICES_DAILY,
     enqueue: () =>
       enqueueIfNotActive(JobTypes.ETF_PRICES_DAILY, {}, "cron:daily-etf-prices").then(() => {}),
   },
@@ -258,6 +345,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-govt-securities",
     schedule: "55 13 * * 1-5", // 7:25 PM IST, weekdays — 5 min after daily-etf-prices
+    jobType: JobTypes.GOVT_SECURITIES_DAILY,
     enqueue: () =>
       enqueueIfNotActive(JobTypes.GOVT_SECURITIES_DAILY, {}, "cron:daily-govt-securities").then(() => {}),
   },
@@ -293,6 +381,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     // from NSE. Two NSE pulls firing on the same minute is exactly what the 5-minute stagger across
     // these lanes exists to prevent, so this steps over it rather than doubling up.
     schedule: "5 14 * * 1-5",
+    jobType: JobTypes.CORPORATE_BONDS_DAILY,
     enqueue: () =>
       enqueueIfNotActive(JobTypes.CORPORATE_BONDS_DAILY, {}, "cron:daily-corporate-bonds").then(() => {}),
   },
@@ -319,6 +408,13 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-mf-analytics",
     schedule: "0 20 * * *", // 1:30 AM IST — one hour after daily-amfi-nav
+    jobType: JobTypes.MF_ANALYTICS_DAILY,
+    // ★ THE 11 AUGUST EDGE. The fold anchors each scheme on its OWN latest nav_date (the two
+    //   NAV feeds) and RESCALES the series from the split table (ICA) before computing
+    //   anything. A fold that runs while any of the three is stale or still mid-write
+    //   produces numbers that look fine and are wrong — which is exactly what happened on
+    //   11, 12 and 13 August and what nothing surfaced.
+    dependsOn: [JobTypes.AMFI_NAV_DAILY, JobTypes.ETF_NAV_DAILY, JobTypes.INSTRUMENT_CORPORATE_ACTIONS],
     enqueue: () =>
       enqueueIfNotActive(JobTypes.MF_ANALYTICS_DAILY, {}, "cron:daily-mf-analytics").then(() => {}),
   },
@@ -332,6 +428,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "weekly-instrument-history-refresh",
     schedule: "0 3 * * 6", // 8:30 AM IST Saturday — after Friday's close + Sat 00:30 AMFI NAV
+    jobType: JobTypes.INSTRUMENT_HISTORY_BACKFILL,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.INSTRUMENT_HISTORY_BACKFILL,
@@ -348,6 +445,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-eod-indices",
     schedule: "35 13 * * 1-5", // 7:05 PM IST, Mon–Fri
+    jobType: JobTypes.INDEX_PRICES_DAILY,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.INDEX_PRICES_DAILY,
@@ -377,6 +475,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-filing-rolling-window",
     schedule: "30 14 * * *", // 8:00 PM IST, every day
+    jobType: JobTypes.FILING_ROLLING_DAILY,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.FILING_ROLLING_DAILY,
@@ -389,6 +488,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-alerts-eval",
     schedule: "0 15 * * 1-5", // 8:30 PM IST, Mon–Fri (≈1.5h after EOD prices → post-rescore)
+    jobType: JobTypes.ALERTS_EVAL_DAILY,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.ALERTS_EVAL_DAILY,
@@ -407,6 +507,9 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-alerts-deliver",
     schedule: "15 15 * * 1-5", // 8:45 PM IST, Mon–Fri (15 min after daily-alerts-eval)
+    jobType: JobTypes.ALERTS_DELIVER_DAILY,
+    // Drains what the eval pass recorded — a drain before the eval sends nothing.
+    dependsOn: [JobTypes.ALERTS_EVAL_DAILY],
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.ALERTS_DELIVER_DAILY,
@@ -423,6 +526,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-reminders-eval",
     schedule: "20 15 * * *", // 8:50 PM IST, every day
+    jobType: JobTypes.REMINDERS_EVAL_DAILY,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.REMINDERS_EVAL_DAILY,
@@ -439,6 +543,8 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-reminders-deliver",
     schedule: "25 15 * * *", // 8:55 PM IST, every day (5 min after daily-reminders-eval)
+    jobType: JobTypes.REMINDERS_DELIVER_DAILY,
+    dependsOn: [JobTypes.REMINDERS_EVAL_DAILY],
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.REMINDERS_DELIVER_DAILY,
@@ -451,6 +557,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-block-deals",
     schedule: "0 14 * * 1-5", // 7:30 PM IST, Mon–Fri
+    jobType: JobTypes.DEALS_DAILY_INGEST,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.DEALS_DAILY_INGEST,
@@ -463,6 +570,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "weekly-events",
     schedule: "0 2 * * 0", // 7:30 AM IST Sunday
+    jobType: JobTypes.EVENTS_WEEKLY_INGEST,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.EVENTS_WEEKLY_INGEST,
@@ -473,6 +581,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-event-refresh",
     schedule: "30 2 * * 1-5", // 8:00 AM IST Mon–Fri
+    jobType: JobTypes.EVENTS_DAILY_REFRESH,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.EVENTS_DAILY_REFRESH,
@@ -485,6 +594,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "quarterly-shareholding",
     schedule: "30 3 20 1,4,7,10 *", // 9:00 AM IST on the 20th of each quarter month
+    jobType: JobTypes.SHAREHOLDING_QUARTERLY,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.SHAREHOLDING_QUARTERLY,
@@ -495,6 +605,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-shareholding-refresh",
     schedule: "0 4 * * 1-5", // 9:30 AM IST Mon–Fri
+    jobType: JobTypes.SHAREHOLDING_SMART_REFRESH,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.SHAREHOLDING_SMART_REFRESH,
@@ -507,6 +618,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-insider-trades",
     schedule: "0 13 * * 1-5", // 6:30 PM IST Mon–Fri
+    jobType: JobTypes.INSIDER_TRADES_DAILY,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.INSIDER_TRADES_DAILY,
@@ -519,6 +631,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-nse-news",
     schedule: "30 3 * * 1-5", // 9:00 AM IST Mon–Fri
+    jobType: JobTypes.NSE_ANNOUNCEMENTS_INGEST,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.NSE_ANNOUNCEMENTS_INGEST,
@@ -529,6 +642,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "daily-google-news",
     schedule: "0 4 * * 1-5", // 9:30 AM IST Mon–Fri
+    jobType: JobTypes.GOOGLE_NEWS_INGEST,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.GOOGLE_NEWS_INGEST,
@@ -559,6 +673,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "monthly-peer-metrics",
     schedule: "30 1 5 * *", // 7:00 AM IST on the 5th of every month
+    jobType: JobTypes.PEER_METRICS_COMPUTE_ALL,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.PEER_METRICS_COMPUTE_ALL,
@@ -605,6 +720,8 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "results-scan",
     schedule: "0 */4 * * *", // every 4 hours (UTC): 00,04,08,12,16,20 — the GATE picks 1 or 2 of them
+    jobType: JobTypes.RESULTS_SCAN,
+    gate: resultsScanShouldEnqueue,
     enqueue: async () => {
       // In-season: 04:00 + 16:00 UTC (2/day, 12h apart). Off-season: only 16:00 UTC, so
       // the scan still runs once a day year-round. See resultsScanShouldEnqueue.
@@ -616,9 +733,14 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
         );
         return;
       }
+      // ⚠ `hoursBack: 6` USED TO BE HERE AND IT WAS DEAD — the handler destructured it and echoed
+      //   it into the job result without ever passing it to the scanner, so every run re-read every
+      //   symbol's entire filing history. It is omitted now rather than corrected in place, so the
+      //   window lives in exactly ONE place: DEFAULT_DISCOVERY_WINDOW_HOURS in scan.ts, next to the
+      //   reasoning for its width. Pass an explicit hoursBack here only to deviate from that.
       await enqueueIfNotActive(
         JobTypes.RESULTS_SCAN,
-        { mode: "universe", hoursBack: 6 },
+        { mode: "universe" },
         "cron:results-scan",
         50,
       );
@@ -638,6 +760,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     // rescore cascades settle (see A4). Real-time detection is unaffected — the worker hook surfaces a
     // terminal failure the instant it happens; this sweep is only the boot-time/re-affirm backstop.
     schedule: "0 18 * * *",
+    jobType: null,
     enqueue: async () => {
       const r = await sweepFailedScoringJobs();
       console.log(
@@ -659,6 +782,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     // then refreshes. Runs 10 min after the failed-job sweep so the three inline sweeps (they share this
     // process + the pg Pool, not the job worker) don't fan their full-scan queries out on the same tick.
     schedule: "10 18 * * *",
+    jobType: null,
     enqueue: async () => {
       const r = await sweepStaleSnapshots();
       console.log(
@@ -689,6 +813,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "broker-poll-sync",
     schedule: "*/30 3-11 * * 1-5", // every 30 min, 09:00–17:00 IST (03:30–11:30 UTC), Mon–Fri
+    jobType: JobTypes.BROKER_POLL_SYNC,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.BROKER_POLL_SYNC,
@@ -705,6 +830,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
     // one daily pass after the cascades settle catches every change. Spaced last (10 min after the stale
     // sweep) so the largest scan runs alone. Query shape is deliberately untouched here (cadence-only).
     schedule: "20 18 * * *",
+    jobType: null,
     enqueue: async () => {
       const r = await sweepDegradedSnapshots();
       console.log(
@@ -722,6 +848,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "nightly-behavior-rollup-reconcile",
     schedule: "40 18 * * *",
+    jobType: JobTypes.BEHAVIOR_ROLLUP_RECONCILE,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.BEHAVIOR_ROLLUP_RECONCILE,
@@ -744,6 +871,7 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
   {
     name: "nightly-chat-profile-distill",
     schedule: "10 19 * * *",
+    jobType: JobTypes.CHAT_PROFILE_DISTILL,
     enqueue: () =>
       enqueueIfNotActive(
         JobTypes.CHAT_PROFILE_DISTILL,
@@ -751,31 +879,75 @@ const SCHEDULED_JOBS: ScheduledJob[] = [
         "cron:nightly-chat-profile-distill",
       ).then(() => {}),
   },
+
+  // ── DAILY OPERATIONS HEALTH CHECK (Part 3) ─────────────────
+  // Reads the last 24h of cron coverage, everything stuck, the retention rules' per-table
+  // status, and 7 days of per-type reliability. Writes nothing but its own job row, whose
+  // `result` IS the persisted report.
+  //
+  // 22:00 UTC (3:30 AM IST) — LAST in the nightly order, and the position is load-bearing.
+  // It must run AFTER nightly-retention-prune (21:30) so it reads the SAME night's
+  // per-table retention statuses rather than yesterday's, and after the whole 19:00–21:30
+  // ingest/fold/prune block so a 24h window covers one complete cycle. 30 minutes is ample:
+  // the prune measures p95 37s.
+  //
+  // ⚠ It is deliberately AFTER the thing it inspects rather than before. A health check
+  //   scheduled first would report on a window it is standing in the middle of.
+  {
+    name: "daily-job-health-check",
+    schedule: "0 22 * * *", // 3:30 AM IST, every day
+    jobType: JobTypes.JOB_HEALTH_CHECK,
+    enqueue: () =>
+      enqueueIfNotActive(
+        JobTypes.JOB_HEALTH_CHECK,
+        {},
+        "cron:daily-job-health-check",
+        40, // ahead of default work: a report queued behind a 7-hour scan is a report nobody gets
+      ).then(() => {}),
+  },
 ];
 
-// ── Retention pruner — NIGHTLY, 3:00 AM IST — HELD DISABLED ────
+// ── Retention pruner — NIGHTLY, 3:00 AM IST — LIVE AND ARMED ───
 // ⚠️ This job DELETES production data irreversibly. It is registered ONLY when
-// RETENTION_CRON_ARMED is flipped to true — which happens AFTER the first dry-run
-// report is reviewed and signed off (cv2-scheduler-hazard). Until then it is not
-// registered and CANNOT fire, no matter how often the server restarts. The only
-// way to exercise the engine today is the manual dry-run script
-// (src/scripts/retention-dry-run.ts), which deletes nothing.
+// RETENTION_CRON_ARMED is true — which was flipped AFTER the first dry-run report
+// was reviewed and signed off (cv2-scheduler-hazard). It is true today, so the
+// nightly run is REGISTERED and FIRES, enqueuing RETENTION_PRUNE { dryRun: false }.
+// To exercise the engine without deleting, use src/scripts/retention-dry-run.ts.
 //
 // 3:00 AM IST = 21:30 UTC — after daily-mf-analytics (1:30 AM IST) has long
 // settled and hours before the 6:30 AM IST insider fetch. Nothing races it.
 //
-// ARMED (Step 1, 2026-07-18): the nightly 3 AM run enqueues RETENTION_PRUNE
-// { dryRun: false }. Per-table safety is enforced in the POLICY, not here — the
-// engine deletes only rows with retention_policy.armed = true. As of Step 1 the 30
-// routine tables are armed; `daily_prices` is held (armed=false) for the Step-2
-// one-time mass correction, so this nightly run maintains only the 30 and CANNOT
-// touch daily_prices. (Kill switch: UPDATE retention_policy SET armed=false, or set
-// this flag back to false to stop the cron entirely.)
+// Per-table safety is enforced in the POLICY, not here — the engine deletes only
+// rows with retention_policy.armed = true. Read the live table; do not read this
+// comment for a table's state.
+//
+// ⚠️ daily_prices IS ARMED — DO NOT READ THE OLD STEP-1 NOTE THAT SAID OTHERWISE.
+//   Step 1 (2026-07-18) armed the 30 routine tables and deliberately HELD
+//   daily_prices at armed=false for the Step-2 one-time 5.2y→4y mass correction.
+//   Step 2 has since COMPLETED: src/scripts/retention-step2-execute.ts:106 flips
+//   daily_prices.armed=true on a clean §13, and the live row reads armed=true with
+//   its last write at 2026-07-18T03:35:17Z. The nightly now maintains daily_prices
+//   at keep=1000 (floor 760) — the steady state that script predicted at ~424
+//   rows/night, and the dry-run measures at 423 (423 stocks sitting at 1001 rows,
+//   i.e. pruned to 1000 then one fresh bar).
+//
+//   ★ THAT ARMING WAS APPLIED OUTSIDE THE AUDITED PATH, so retention_policy_audit
+//     holds NO row for it. Only the admin API (applyPolicyChange, controllers/admin/
+//     retention-controller.ts:98) writes an audit row, in the same transaction as the
+//     UPDATE; there is no DB trigger on retention_policy (verified against pg_trigger
+//     — zero triggers), so a script's prisma.retentionPolicy.update, or a raw SQL
+//     UPDATE, changes state silently. Both arming scripts take that unaudited route.
+//     An absent audit row therefore does NOT mean a value never changed. Future policy
+//     changes should go through the admin path so the trail stays honest.
+//
+// (Kill switch: UPDATE retention_policy SET armed=false, or set this flag back to
+// false to stop the cron entirely.)
 const RETENTION_CRON_ARMED = true;
 
 const RETENTION_JOB: ScheduledJob = {
   name: "nightly-retention-prune",
   schedule: "30 21 * * *", // 3:00 AM IST (21:30 UTC), every day
+  jobType: JobTypes.RETENTION_PRUNE,
   enqueue: () =>
     enqueueIfNotActive(
       JobTypes.RETENTION_PRUNE,
@@ -783,6 +955,25 @@ const RETENTION_JOB: ScheduledJob = {
       "cron:nightly-retention-prune",
     ).then(() => {}),
 };
+
+// ── THE REGISTRY, AS DATA ─────────────────────────────────────
+//
+// Everything the scheduler will actually register, in one list, EXPORTED — so the daily
+// health check derives "what was supposed to run" from the same objects that run it.
+// That is the whole point: the monitor and the scheduler cannot disagree about the
+// schedule, because there is only one schedule.
+//
+// ⚠ DO NOT re-declare this list anywhere. If a health report ever needs a cadence, it
+//   reads `schedule` off these entries and parses it (lib/cron-expr.ts). A second copy is
+//   how the comment drift this build spent Part 1 correcting begins.
+export function scheduledJobRegistry(): readonly ScheduledJob[] {
+  return RETENTION_CRON_ARMED ? [...SCHEDULED_JOBS, RETENTION_JOB] : [...SCHEDULED_JOBS];
+}
+
+/** Entries that create no background_jobs row, keyed by name — see ScheduledJob.jobType. */
+export function inlineOnlyCronNames(): string[] {
+  return scheduledJobRegistry().filter((j) => j.jobType === null).map((j) => j.name);
+}
 
 // ── Scheduler ─────────────────────────────────────────────────
 

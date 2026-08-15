@@ -129,8 +129,9 @@ async function runTime(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean): Pr
 // ── MODE 3: supersede_chain — score layer, cascade order ENFORCED ──
 // Keep every HEAD (never pointed-at). Prune SUPERSEDED (pointed-at) non-head rows
 // older than N days. Order: null supersedes_id (NoAction FK) → delete snapshots
-// (CASCADE patterns/red_flags/guardrail) → delete orphan pillars (CASCADE leaves)
-// → orphan peer_stats / runs LAST (RESTRICT-guarded, so the DB itself backstops).
+// (CASCADE score_patterns; score_guardrail_events is SET NULL, not deleted) →
+// delete orphan pillars (CASCADE leaves) → orphan peer_stats / runs LAST
+// (RESTRICT-guarded, so the DB itself backstops).
 async function runSupersede(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean): Promise<TableResult> {
   if (p.supersededDays == null) throw new Error("supersede_chain requires superseded_days");
   const t = p.table; // score_snapshots
@@ -146,11 +147,17 @@ async function runSupersede(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean
 
   const matched = await count(`SELECT count(*)::int AS n FROM (${targetSel}) x`, sdays);
 
+  // The ONLY two tables that FK score_snapshots.id: score_patterns (ON DELETE CASCADE —
+  // these rows go with the snapshot) and score_guardrail_events (ON DELETE SET NULL since
+  // 20260731090000_guardrail_events_decouple_from_snapshot — these rows SURVIVE, detached).
+  // ⚠ `score_red_flags` was counted here until 2026-08-14 — the table was dropped by
+  // 20260811120000_drop_score_red_flags and the unconditional count threw 42P01 on every
+  // pass (dry-run included), erroring the whole score_snapshots rule out. Do not re-add a
+  // child here without an FK to snapshot_id.
   const childCount = (child: string) =>
     count(`SELECT count(*)::int AS n FROM ${q(child)} c WHERE c."snapshot_id" IN (${targetSel})`, sdays);
   const cascadedPatterns = await childCount("score_patterns");
-  const cascadedRedFlags = await childCount("score_red_flags");
-  const cascadedGuardrail = await childCount("score_guardrail_events");
+  const detachedGuardrail = await childCount("score_guardrail_events");
 
   // Pillars that would ORPHAN: referenced by a target snapshot AND by NO survivor.
   const projectedOrphanPillars = await count(
@@ -165,7 +172,8 @@ async function runSupersede(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean
     await prisma.$transaction(async (tx) => {
       // 1 — null the chain pointer on the referrers (NoAction FK forbids deleting a still-pointed row).
       await tx.$executeRawUnsafe(`UPDATE ${q(t)} SET "supersedes_id" = NULL WHERE "supersedes_id" IN (${targetSel})`, sdays);
-      // 2 — delete the superseded snapshots (CASCADE → patterns / red_flags / guardrail_events).
+      // 2 — delete the superseded snapshots (CASCADE → score_patterns; score_guardrail_events
+      //     has its own retention row and is merely DETACHED here, snapshot_id → NULL).
       deleted = await tx.$executeRawUnsafe(`DELETE FROM ${q(t)} WHERE "id" IN (${targetSel})`, sdays);
       // 3 — delete now-orphaned pillars (no snapshot references them). CASCADE → metrics/subs/ownership/flows.
       await tx.$executeRawUnsafe(
@@ -188,8 +196,7 @@ async function runSupersede(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean
   res.detail = {
     supersededSnapshots: matched,
     cascadedPatterns,
-    cascadedRedFlags,
-    cascadedGuardrail,
+    detachedGuardrail, // SET NULL, not deleted — kept as a count so the blast radius is visible
     projectedOrphanPillars,
     peerStatsRuns: "orphans swept post-cascade at execution (RESTRICT-guarded)",
   };

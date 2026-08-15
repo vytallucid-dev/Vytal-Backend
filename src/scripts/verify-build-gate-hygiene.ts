@@ -118,6 +118,81 @@ const NON_GATE_STEPS: { cmd: string; why: string }[] = [
  * for something the build container is not guaranteed to have. Each one is named here WITH ITS REASON
  * or the build fails. Adding a gate that reaches without adding a line here is the failure this catches.
  */
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ §7 — THE CLAIM MUST BE TRUE. A script that SAYS it enforces at build time must RUN at build time.
+//
+// ── THE INCIDENT THIS EXISTS FOR ──────────────────────────────────────────────────────────────────
+// scoring/inputs/score-input-columns.ts carried, for months: "src/scripts/verify-score-input-columns.ts
+// asserts that against prisma/schema.prisma and fails the build otherwise." The script existed. It was
+// correct. package.json never called it. A newly-added column could silently default to cosmetic —
+// exactly the failure the comment promised was impossible. Three more were then found by hand:
+// mf-analytics.ts:1133 cites verify-t5-omission-keys.ts, ai/guardrail.ts:411 cites
+// verify-evaluative-tier.ts, and verify-phs-pd-readtime.ts / verify-number-grounding.ts claim it of
+// themselves. Four false promises, all discovered by a person reading rather than by a machine.
+//
+// §1-§6 above are ONE-WAY: they assert that nothing WRONG is reachable from `build`. Nothing asserted
+// that something PROMISED is reachable. This is that assertion, and it is the mirror image.
+//
+// ── THE CLAIM PREDICATE, STATED ───────────────────────────────────────────────────────────────────
+// A script CLAIMS build enforcement when a BUILD_CLAIM pattern matches either
+//   · its OWN source (a self-claim), or
+//   · a ±2-line window around its filename in ANY src/ file (a claim made ABOUT it from elsewhere —
+//     the mf-analytics / guardrail shape, which a self-source scan cannot see).
+// The window matters: a file that names a script in one place and says "fails the build" about
+// something else 200 lines away is not making a claim about that script.
+//
+// ── WHY AN ALLOWLIST, AND WHY IT CARRIES A REASON ─────────────────────────────────────────────────
+// Some claiming scripts CANNOT be build gates — §2 forbids a build gate from reaching the database,
+// and four of these query it. Their claim text is loose, but the scripts are real and they do run;
+// they run in `verify:all`, not in `build`. That is a legitimate state and it must be DECLARED with
+// its reason rather than skipped silently, the same discipline §4 uses for env/DB reach. Reconciled
+// both ways: an undeclared claimer fails, and a declaration that no longer describes a claiming
+// script also fails. Cross-repo scripts are exempt BY CONSTRUCTION — §3 has already proven they must
+// not be reachable from `build`, so requiring them to be would contradict it.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+const BUILD_CLAIM: { re: RegExp; why: string }[] = [
+  { re: /\bfails?\s+the\s+build\b/i, why: '"fails the build"' },
+  { re: /\bthe\s+build\s+(?:fails|stops|breaks|halts)\b/i, why: '"the build fails/stops/breaks"' },
+  { re: /\bbreaks?\s+the\s+build\b/i, why: '"breaks the build"' },
+  { re: /\bBUILD\s+GATE\b/, why: '"BUILD GATE"' },
+];
+/** ±N lines around a filename mention that count as "a claim about THAT script". */
+const CLAIM_WINDOW = 2;
+
+/**
+ * ⚠ DECLARED NON-BUILD CLAIMERS. Each names WHY the claim is true-ish but the script is not a build
+ * gate, and WHERE it actually runs. Adding a claiming script without adding a line here fails.
+ */
+const BUILD_CLAIM_EXEMPT: Record<string, string> = {
+  "src/scripts/verify-personal-section.ts":
+    "DELIBERATELY WIRED NOWHERE, and its own header says so at :5 — it reaches the frontend, so §3 " +
+    "would reject it from `build`. The 'fails the build' phrase in it describes verify-build-gate-hygiene, " +
+    "not itself. This is what a correct un-wired script looks like; it is the reference case.",
+  "src/scripts/verify-projection-parity.ts":
+    "Imports src/db/prisma.ts and compares LIVE projections — §2 forbids a build gate from reading the " +
+    "database. Runs in `npm run verify:read-parity`, which `verify:all` chains. Its 'BUILD GATE' phrase " +
+    "is describing the class it belongs to, not a claim to be in `build`.",
+  "src/scripts/verify-t5-omission-keys.ts":
+    "Imports src/db/prisma.ts and scans live omission keys — cannot be a build gate (§2). The claim is " +
+    "made ABOUT it from src/ingestions/amfi/mf-analytics.ts:1133 ('now fails the build on any omission " +
+    "key that is not a column'), which overstates it. Runs in `npm run verify:live`.",
+  "src/scripts/verify-evaluative-tier.ts":
+    "Imports src/db/prisma.ts and scans the live chat corpus, and reads A/B arm files from an absolute " +
+    "temp path — twice disqualified from `build` (§2). Claimed of at src/ai/guardrail.ts:411. " +
+    "Runs in `npm run verify:live`.",
+  "src/scripts/verify-number-grounding.ts":
+    "Imports src/db/prisma.ts and grounds numbers against live instrument rows — cannot be a build gate " +
+    "(§2). Its 'fails the build' at :156 describes its own negative controls. Runs in `npm run verify:live`.",
+  "src/scripts/verify-phs-pd-readtime.ts":
+    "Reaches src/db/prisma.ts TRANSITIVELY (via controllers/me/portfolio-snapshot-controller.ts, a " +
+    "131-module closure) — §4 flagged it the moment it was wired into verify:copy, which is how this was " +
+    "found. Runs in `npm run verify:live`.",
+  "src/scripts/brief-mobile-height.ts":
+    "Not a gate at all. Its :28 'a gate that fails the build because a padding changed would…' is " +
+    "HYPOTHETICAL prose arguing AGAINST making it one. Kept in the scan rather than pattern-excluded, " +
+    "because narrowing the predicate to spare one file is how a scan starts going blind.",
+};
+
 const ENV_OR_DB_ALLOWANCE: Record<string, string> = {
   "src/scripts/verify-catalogue-endpoint.ts":
     "boots the real app in-process to assert the SERIALISED bytes. app.ts's router imports pull in " +
@@ -417,8 +492,103 @@ async function main() {
     "verdicts.ts cites Vytal-Frontend in its header and is clean",
   );
 
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  rule("7 · ★ THE CLAIM MUST BE TRUE — a script that SAYS it enforces at build time must RUN at build time");
+  //
+  // The mirror of §3. §3 asks "is anything WRONG reachable from build?"; this asks "is everything
+  // PROMISED reachable from build?". Reuses BUILD.gates (§1), allScripts + crossRepo + referencedBy
+  // (§3). No second resolver — the reachable set is the one the whole file already computed.
+  // ⚠ NORMALISE BEFORE MATCHING, and this is not cosmetic — it is the bug the negative control below
+  // caught on its first run. The comment that started this whole item WRAPS mid-phrase:
+  //     // …asserts that against prisma/schema.prisma and fails
+  //     // the build otherwise — so a newly-added column can never DEFAULT to cosmetic.
+  // Raw, that reads "fails\n// the build" and no pattern matches. A claim split by a line break and a
+  // comment marker is still a claim — arguably the likeliest form of one, since these are prose blocks.
+  // Strip leading //, *, -- markers and collapse whitespace, then match.
+  const normalise = (s: string) => s.replace(/^[ \t]*(?:\/\/+|\*+|--+)[ \t]?/gm, " ").replace(/\s+/g, " ");
+  const claimHits = (s: string) => {
+    const n = normalise(s);
+    return BUILD_CLAIM.filter((t) => t.re.test(n)).map((t) => t.why);
+  };
+
+  // Every .ts under src/, excluding the generated client — the corpus for "claimed ABOUT it".
+  const srcTree: string[] = [];
+  (function walk(dir: string) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = resolve(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== "generated") walk(p); }
+      else if (e.name.endsWith(".ts")) srcTree.push(p);
+    }
+  })(resolve(ROOT, "src"));
+
+  /** Where a claim about `script` was found: its own source, and/or a ±CLAIM_WINDOW window elsewhere. */
+  function claimsFor(script: string): string[] {
+    const base = script.split("/").pop()!;
+    const out = claimHits(readFileSync(resolve(ROOT, script), "utf8")).map((w) => `self ${w}`);
+    for (const f of srcTree) {
+      if (rel(f) === script) continue;
+      const src = readFileSync(f, "utf8");
+      if (!src.includes(base)) continue; // cheap reject before the line walk
+      const lines = src.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].includes(base)) continue;
+        const w = claimHits(lines.slice(Math.max(0, i - CLAIM_WINDOW), i + CLAIM_WINDOW + 1).join(" "));
+        if (w.length) out.push(`${rel(f)}:${i + 1} ${w.join("+")}`);
+      }
+    }
+    return out;
+  }
+
+  const crossRepoSet = new Set(crossRepo); // §3 already proved these must NOT be in `build`
+  const claimers = allScripts
+    .filter((s) => !crossRepoSet.has(s))
+    .map((s) => ({ script: s, why: claimsFor(s) }))
+    .filter((c) => c.why.length > 0);
+
+  console.log(`  scripts scanned: ${allScripts.length} · CLAIM build enforcement: ${claimers.length} · cross-repo exempt by construction: ${crossRepo.length}`);
+  for (const c of claimers) {
+    const state = buildGateSet.has(c.script) ? "IN BUILD" : BUILD_CLAIM_EXEMPT[c.script] ? "declared" : "★ UNWIRED";
+    console.log(`     ${state.padEnd(9)} ${c.script}`);
+    for (const w of c.why) console.log(`        ↳ ${w}`);
+  }
+
+  const brokenPromises = claimers.filter((c) => !buildGateSet.has(c.script) && !BUILD_CLAIM_EXEMPT[c.script]);
+  ok(
+    "★ every script CLAIMING build-time enforcement is reachable from `build` (or declared below)",
+    brokenPromises.length === 0,
+    brokenPromises.map((c) => `${c.script} — claims [${c.why.join("; ")}] but nothing in package.json runs it`).join("\n       ") ||
+      `${claimers.filter((c) => buildGateSet.has(c.script)).length} wired · ${Object.keys(BUILD_CLAIM_EXEMPT).length} declared`,
+  );
+  // Reconciled the other way: a declaration that describes nothing is a lie, exactly as in §4.
+  const staleClaims = Object.keys(BUILD_CLAIM_EXEMPT).filter(
+    (s) => !isFile(resolve(ROOT, s)) || claimsFor(s).length === 0 || buildGateSet.has(s),
+  );
+  ok(
+    "…and no declaration describes a script that is missing, no longer claims, or is now IN the build",
+    staleClaims.length === 0,
+    staleClaims.join(", ") || `${Object.keys(BUILD_CLAIM_EXEMPT).length} declarations, all live`,
+  );
+  for (const [s, why] of Object.entries(BUILD_CLAIM_EXEMPT)) console.log(`     ${s}\n        ↳ ${why}`);
+
+  // Negative controls — the §6 discipline applied to this scan, so a dead predicate is visible.
+  ok(
+    "the claim predicate FIRES on the comment that started this (score-input-columns.ts)",
+    claimHits(readFileSync(resolve(ROOT, "src/scoring/inputs/score-input-columns.ts"), "utf8")).length > 0,
+    claimHits(readFileSync(resolve(ROOT, "src/scoring/inputs/score-input-columns.ts"), "utf8")).join(" · ") || "DID NOT FIRE — the scan is dead",
+  );
+  ok(
+    "…and on a claim made ABOUT a script from another module (the shape a self-scan cannot see)",
+    claimsFor("src/scripts/verify-t5-omission-keys.ts").some((w) => w.startsWith("src/ingestions/amfi/mf-analytics.ts")),
+    claimsFor("src/scripts/verify-t5-omission-keys.ts").join(" · ") || "MISSED the mf-analytics citation",
+  );
+  ok(
+    "…and does NOT fire on prose that merely mentions building",
+    claimHits("this module is built from the manifest and the build order matters").length === 0,
+    "mention is not a claim",
+  );
+
   console.log(
-    `\n${fail === 0 ? "✅ BUILD-GATE HYGIENE PASSES — the build reads this checkout and nothing else" : `❌ ${fail} FAILURE(S) — a build gate is reaching outside the checkout; it belongs in verify:cross-repo`}`,
+    `\n${fail === 0 ? "✅ BUILD-GATE HYGIENE PASSES — the build reads this checkout and nothing else, and every promised gate runs" : `❌ ${fail} FAILURE(S) — a build gate is reaching outside the checkout, or a promised gate never runs`}`,
   );
   process.exit(fail === 0 ? 0 : 1);
 }

@@ -14,7 +14,9 @@ const PG_NAME = "Large-Cap AMCs & Exchanges";
 const SYM = "MCX";
 const raw = <T = any>(q: string, ...a: any[]) => prisma.$queryRawUnsafe<T[]>(q, ...a);
 
-async function snap(tx: any = prisma) {
+type QueryClient = { $queryRawUnsafe<T = any>(query: string, ...values: any[]): Promise<T> };
+
+async function snap(tx: QueryClient = prisma) {
   const [r] = await tx.$queryRawUnsafe<any[]>(`
     SELECT pg."id", pg."stock_count"::int stored,
       (SELECT count(*)::int FROM stock_peer_groups g WHERE g."peer_group_id"=pg."id") roster,

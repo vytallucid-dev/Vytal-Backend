@@ -1,0 +1,20 @@
+{
+ "pgId": "da40a058-4b51-41b6-999e-36add4269c86",
+ "before": {
+  "id": "da40a058-4b51-41b6-999e-36add4269c86",
+  "stored": 6,
+  "roster": 6,
+  "active": 5
+ },
+ "after": {
+  "id": "da40a058-4b51-41b6-999e-36add4269c86",
+  "stored": 5,
+  "roster": 5,
+  "active": 5
+ },
+ "deleted": 1,
+ "updated": 1,
+ "seatId": "71e92b34-cd7c-4d99-a557-451dd52d4fae",
+ "inactiveWithSeat": 0,
+ "groupsWithDrift": 0
+}

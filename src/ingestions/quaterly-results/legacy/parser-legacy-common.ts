@@ -57,6 +57,47 @@ export function extractNumber(
   return raw;
 }
 
+// ─────────────────────────────────────────────────────────────
+// ANNUAL CASH-FLOW EXTRACTION — FourD first, OneD only as a fallback.
+//
+// ⚠ THIS IS DELIBERATELY NOT A GENERAL FALLBACK. Read this before widening it.
+//
+// MEASURED 2026-08-16 across FY19–FY23 documents, the two duration contexts mean
+// the same thing in EVERY vintage (they are dangling refs in FY19/FY21 — used but
+// never defined by an <xbrli:context> — so the meaning was established from the
+// values themselves):
+//     OneD  = ONE quarter (Q4)          FourD = FOUR quarters (the full year)
+//   ULTRACEMCO FY21 revenue  OneD 13,965.51 Cr vs FourD 43,188.34 Cr  (0.32)
+//   ULTRACEMCO FY23 revenue  OneD 18,121.02 Cr vs FourD 61,326.50 Cr  (0.30)
+//   ABB        FY20 revenue  OneD  1,700.76 Cr vs FourD  5,820.95 Cr  (0.29)
+//   BHARTIARTL FY21 revenue  OneD 16,329.50 Cr vs FourD 64,325.90 Cr  (0.25)
+// So reading OneD as an annual figure would import ONE QUARTER AS A YEAR. That is
+// why P&L and balance-sheet fields keep their strict context and must keep it.
+//
+// The CASH-FLOW STATEMENT is the exception, and only because the FY21-vintage
+// filers tagged a FULL-YEAR figure with the quarter context. The values prove it —
+// each OneD-tagged cash flow is a year-sized number, not a quarter-sized one:
+//   ULTRACEMCO  CF FY21 OneD 11,551.00 Cr  vs its own FourD CF FY22 8,669.66 / FY23 9,348.18
+//   BHARTIARTL  CF FY21 OneD 34,392.30 Cr  vs its own FourD CF FY23 43,582.60
+//   PIDILITIND  CF FY21 OneD  1,264.19 Cr  vs its own FourD CF FY23  1,432.36
+// A quarter would be ~1/4 of those; ×4 would be wildly out of line with the same
+// company's neighbouring annual figures.
+//
+// THREE PROPERTIES MAKE THIS SAFE:
+//   1. SCOPE — applied ONLY to cash-flow-statement tags in the ANNUAL parser.
+//      Revenue / PAT / PBT / expenses / every balance-sheet field are untouched,
+//      so the "OneD is a quarter" hazard cannot reach them.
+//   2. ORDER — FourD is always preferred. When a filer tags correctly (FY22+),
+//      FourD wins and OneD is never consulted.
+//   3. NO AMBIGUITY — MEASURED: in every document where a cash-flow tag appears
+//      under OneD, it appears there ONLY. There is never a competing FourD value
+//      for the same tag, so the fallback never has to choose between two.
+function extractAnnualCashFlow(xml: string, tag: string): number | null {
+  const primary = extractNumber(xml, tag, ANNUAL_PNL_CONTEXT);
+  if (primary !== null) return primary;
+  return extractNumber(xml, tag, QUARTERLY_PNL_CONTEXT);
+}
+
 export function extractText(
   xml: string,
   tag: string,
@@ -570,26 +611,10 @@ export function parseAnnualResultXbrl(
       otherAssets: extractNumber(xml, "OtherAssets", BS),
       totalAssets: extractNumber(xml, "Assets", BS),
 
-      cashFromOperating: extractNumber(
-        xml,
-        "CashFlowsFromUsedInOperatingActivities",
-        PNL,
-      ),
-      cashFromInvesting: extractNumber(
-        xml,
-        "CashFlowsFromUsedInInvestingActivities",
-        PNL,
-      ),
-      cashFromFinancing: extractNumber(
-        xml,
-        "CashFlowsFromUsedInFinancingActivities",
-        PNL,
-      ),
-      netCashFlow: extractNumber(
-        xml,
-        "IncreaseDecreaseInCashAndCashEquivalents",
-        PNL,
-      ),
+      cashFromOperating: extractAnnualCashFlow(xml, "CashFlowsFromUsedInOperatingActivities"),
+      cashFromInvesting: extractAnnualCashFlow(xml, "CashFlowsFromUsedInInvestingActivities"),
+      cashFromFinancing: extractAnnualCashFlow(xml, "CashFlowsFromUsedInFinancingActivities"),
+      netCashFlow: extractAnnualCashFlow(xml, "IncreaseDecreaseInCashAndCashEquivalents"),
 
       gnpaAbsolute: extractNumber(xml, "GrossNonPerformingAssets", PNL),
       nnpaAbsolute: extractNumber(xml, "NonPerformingAssets", PNL),
@@ -730,49 +755,17 @@ export function parseAnnualResultXbrl(
     currentAssets: extractNumber(xml, "CurrentAssets", BS),
     totalAssets: extractNumber(xml, "Assets", BS),
 
-    cashFromOperating: extractNumber(
-      xml,
-      "CashFlowsFromUsedInOperatingActivities",
-      PNL,
-    ),
-    cashFromInvesting: extractNumber(
-      xml,
-      "CashFlowsFromUsedInInvestingActivities",
-      PNL,
-    ),
-    cashFromFinancing: extractNumber(
-      xml,
-      "CashFlowsFromUsedInFinancingActivities",
-      PNL,
-    ),
-    netCashFlow: extractNumber(
-      xml,
-      "IncreaseDecreaseInCashAndCashEquivalents",
-      PNL,
-    ),
-    capex: extractNumber(
-      xml,
-      "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
-      PNL,
-    ),
-    proceedsFromBorrowings: extractNumber(
-      xml,
-      "ProceedsFromBorrowingsClassifiedAsFinancingActivities",
-      PNL,
-    ),
-    repaymentsOfBorrowings: extractNumber(
-      xml,
-      "RepaymentsOfBorrowingsClassifiedAsFinancingActivities",
-      PNL,
-    ),
-    dividendsPaid: extractNumber(
-      xml,
-      "DividendsPaidClassifiedAsFinancingActivities",
-      PNL,
-    ),
+    cashFromOperating: extractAnnualCashFlow(xml, "CashFlowsFromUsedInOperatingActivities"),
+    cashFromInvesting: extractAnnualCashFlow(xml, "CashFlowsFromUsedInInvestingActivities"),
+    cashFromFinancing: extractAnnualCashFlow(xml, "CashFlowsFromUsedInFinancingActivities"),
+    netCashFlow: extractAnnualCashFlow(xml, "IncreaseDecreaseInCashAndCashEquivalents"),
+    capex: extractAnnualCashFlow(xml, "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities"),
+    proceedsFromBorrowings: extractAnnualCashFlow(xml, "ProceedsFromBorrowingsClassifiedAsFinancingActivities"),
+    repaymentsOfBorrowings: extractAnnualCashFlow(xml, "RepaymentsOfBorrowingsClassifiedAsFinancingActivities"),
+    dividendsPaid: extractAnnualCashFlow(xml, "DividendsPaidClassifiedAsFinancingActivities"),
     interestPaid:
-      extractNumber(xml, "InterestPaidClassifiedAsFinancingActivities", PNL) ??
-      extractNumber(xml, "InterestPaidClassifiedAsOperatingActivities", PNL),
+      extractAnnualCashFlow(xml, "InterestPaidClassifiedAsFinancingActivities") ??
+      extractAnnualCashFlow(xml, "InterestPaidClassifiedAsOperatingActivities"),
 
     ...basePerShare,
   };

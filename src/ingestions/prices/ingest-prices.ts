@@ -721,14 +721,30 @@ export async function runPriceBackfill(
 
   console.log(`[PriceBackfill] Starting ${daysBack}-day backfill…`);
 
-  // Pre-collect trading days (weekdays only) so we can report accurate
-  // progress fractions rather than guessing what fraction of days are weekends.
+  // ★ EVERY CALENDAR DAY IS A CANDIDATE — the weekend skip was REMOVED here.
+  //
+  //   It used to filter `dow !== 0 && dow !== 6`, which made a genuine weekend
+  //   session UNREACHABLE. NSE does hold them: the Budget Saturday of 01-02-2025 is
+  //   a real session and its rows are in daily_prices right now (470 stocks, and
+  //   MEASURED not a duplicate of any adjacent day). A backfill could never have
+  //   re-fetched it, and any special session in a newly-reachable window would have
+  //   been silently absent rather than merely missing.
+  //
+  //   The skip was a proxy for "no file exists on a non-trading day". That proxy was
+  //   always wrong in one direction (weekend sessions) and — MEASURED 2026-08-15 —
+  //   wrong in the other too: this archive serves HTTP 200 with the PRIOR session's
+  //   file on a non-session date, so the skip was never what protected us. GUARD 6
+  //   in nse-bhavcopy.ts is the real test, and it supersedes this.
+  //
+  //   COST: ~522 extra candidate days over a 1,826-day walk (~2 per week), each one
+  //   a single request rejected in milliseconds — either a 404, or a 200 whose DATE1
+  //   fails GUARD 6 before a row is built. Cheap insurance against a silently absent
+  //   trading day.
   const dates: Date[] = [];
   for (let i = daysBack; i >= 1; i--) {
     const d = new Date(today);
     d.setUTCDate(d.getUTCDate() - i);
-    const dow = d.getUTCDay();
-    if (dow !== 0 && dow !== 6) dates.push(d);
+    dates.push(d);
   }
 
   for (let idx = 0; idx < dates.length; idx++) {

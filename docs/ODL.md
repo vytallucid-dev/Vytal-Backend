@@ -5,6 +5,75 @@ Routine implementation choices are not logged. Newest first.
 
 ---
 
+## `retention-shareholding-row-vs-quarter` · Retention · The Ownership baseline counts ROWS, not quarter-ends — and the floor cannot fix it
+
+**The defect.** `countConsecutiveTrailingQuarters` ([baseline.ts:44-55](../src/scoring/ownership/baseline.ts)) walks `rows` and increments once per row, breaking only when `isPriorQuarterGap` sees a gap larger than `GAP_MONTHS_THRESHOLD = 4` months ([dilution.ts:65,216-221](../src/scoring/ownership/dilution.ts)). An interim filing sits well inside 4 months of its neighbours, so it does not break the run — **it counts as a quarter.** `established_75` therefore claims "8 consecutive trailing quarters present" on a series that may hold only 6 real quarter-ends.
+
+**MEASURED 2026-08-16** against `shareholding_patterns`: 472 stocks hold ≥8 rows; only **460** hold ≥8 genuine quarter-ends. **12 stocks are scored `established_75` off fewer than 8 real quarters, live, today.** (Measured on total rows vs total quarter-ends, standing in for the trailing-run walk; the exact figure could differ slightly.)
+
+**Why the retention floor is NOT the fix.** `shareholding_patterns.floor` is 8 and counts rows. The consumer counts rows. They agree *with each other* — 8 retained rows do produce `n=8` and do clear `BASELINE_QUARTERS_THRESHOLD` ([baseline.ts:24](../src/scoring/ownership/baseline.ts)). Raising the floor would over-constrain retention without changing a single score. Both the floor and the consumer diverge from the *documented intent*, and only one of them is a scoring bug.
+
+**★ FORWARD DEPENDENCY — the two changes are one change.** If the counter is corrected to count quarter-ends, the floor **must rise in the same migration**, to 8 + worst-case interims. MEASURED worst case: `IDFCFIRSTB`, 5 interims against 8 quarter-ends, so **13**. Correct the counter alone and the baseline it was meant to fix silently under-serves — retention will trim to 8 rows while the consumer now needs 8 quarter-ends. This is the same row-vs-quarter-end mismatch that set `keep` to 44 rather than 26 in Stage 1.
+
+## `retention-floor-is-l3-arithmetic` · Retention · A floor is `K + l3MinN − 1`, not a window size — because Lens-3 re-dispatches over row prefixes
+
+**The rule.** Every retention floor on a scored table must be derived as **`K + l3MinN − 1` rows**, where `K` is the periods one metric value consumes and `l3MinN` is the number of values Lens-3 requires. Not `K`. The floors that shipped before this were window sizes, and every one of them under-served L3 by `l3MinN − 1` rows.
+
+**Why.** Lens-3 own-history is **not** read from `score_snapshots`. `seriesForKey` ([score-pass.ts:113-123](../src/scoring/composite/score-pass.ts)) walks `rows.slice(0, i + 1)` and **re-dispatches the metric over every prefix**, keeping whichever values come back available. A metric that needs 8 quarters produces its first value at prefix 8, its second at 9, and its sixth at 13 — so six L3 values cost thirteen rows of raw history, not eight.
+
+**The two configs, and they are chosen by PILLAR, not by industry** ([score-pass.ts:86-87](../src/scoring/composite/score-pass.ts), applied at :522-523):
+
+| config | pillar | `l3MinN` | `l3Window` |
+|---|---|---|---|
+| `F_CFG` | foundation | **5** | 10 |
+| `M_CFG` | momentum | **6** | 12 |
+
+Banking inherits both, because `bankingSeriesForKey` ([banking.ts:355-368](../src/scoring/metrics/banking.ts)) re-dispatches over prefixes the same way and feeds the same gate. This is why `banking_quarterly_results` needed 9 (NIM `K=4` + 6 − 1) rather than the 4 its old floor recorded.
+
+**Applies to any future floor.** Derive from the deepest single-value `K` on the table, add `l3MinN − 1`, and name the read site with file:line in `floor_reason` — that text is the only durable record, because `floor` is not editable through the audited admin route ([retention-controller.ts:20-24](../src/controllers/admin/retention-controller.ts)) and can only ever be repaired by another migration.
+
+## `fabricated-rows-on-real-sessions` · Prices · Two dates carry fabricated ROWS on days the market was genuinely open — a delete would replace one lie with another
+
+**PARKED, DELIBERATELY. Do not delete these rows. Do not re-fetch them without reading this first.**
+
+**The two dates.** MEASURED 2026-08-15 against `daily_prices`:
+
+| Date | Day | Rows on the date | Fabricated rows | Shape | Independent witness |
+|---|---|---|---|---|---|
+| **2024-01-15** | Mon | 448 | **91** (20.3%) | `volume = 0 AND high = low` | `index_prices`: **79 rows, 78 moving** |
+| **2025-03-18** | Tue | 478 | **470** (98.3%) | `volume = 0 AND high = low` | `index_prices`: **97 rows, 96 moving** |
+
+Both are `provider = 'yahoo-finance'`.
+
+**Why they are NOT in the delete that cleaned the five fabricated sessions.** The session-date cleanup
+removed five dates on which the market never opened (2026-01-15, 2026-05-01, 2026-05-28, 2026-06-26,
+2026-07-05). These two are the opposite case: **the market WAS open.** The `index_prices` lane is fed by
+a different NSE archive (`content/indices/ind_close_all_*`) which was MEASURED to fail closed with a 404
+on a non-session date, so it cannot inherit the equity archive's stale-200 defect. It recorded a full set
+of *moving* indices on both days. These were real trading sessions.
+
+**★ THEREFORE the failure is row-level, not date-level, and the two need OPPOSITE remedies.** Deleting a
+fabricated *session* removes a day that never existed — an unambiguous improvement. Deleting these rows
+would remove real stocks from a day the market genuinely traded, leaving a hole that reads as "no session"
+to every consumer. **A fabricated bar and an absent bar are both lies; the delete just swaps which one you
+are telling.** The likely correct fix is a **re-fetch** of those two dates from `sec_bhavdata_full` (now
+that the session-date guard will reject a stale file rather than stamp it), not a delete.
+
+**⚠ 2025-03-18 is the reason the cleanup rule needed TWO factors, and it is why this entry exists.** At
+98.3% it clears any sane pattern threshold — a pattern-only rule deletes it. Only the independent witness
+saves it. **Never adjudicate a fabricated session on the pattern alone**; require a corroborating source
+that provably fails closed. See `dryrun-session-date.ts` for the guard, and
+[`session-date.ts`](../src/ingestions/shared/session-date.ts) for the measured archive behaviours.
+
+**What is NOT known (do not assume either way).** Whether Yahoo would still serve real bars for those two
+dates on a re-request is UNKNOWN and was deliberately not probed. Whether the 91 rows on 2024-01-15 are
+the same failure as the 470 on 2025-03-18, or merely the same shape, is also UNKNOWN — 20.3% is far from
+the ~100% the other Yahoo dates show, and a genuinely illiquid tail on a real session is legitimate data
+(normal dates run 0.0–3.1% on this measure). **Do not delete on the shape alone; establish per-row which
+of the 91 are fabricated first.**
+
+---
+
 ## `retention-floor-asymmetry` · Retention · The floor is irrevocable and the keep is not — so they are not two settings, they are two different KINDS of decision
 
 **The asymmetry, stated once.** `retention_policy` has two numbers that look interchangeable and are not.

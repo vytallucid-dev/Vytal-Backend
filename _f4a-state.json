@@ -1,0 +1,692 @@
+{
+ "deep": [
+  {
+   "sym": "ABBOTINDIA",
+   "st": {
+    "id": "cc679842-d653-4114-9e99-0d4f01d27d3a",
+    "symbol": "ABBOTINDIA",
+    "name": "Abbott India Ltd.",
+    "isin": "INE358A01014",
+    "ind": "non_financial",
+    "fye": "march",
+    "active": true,
+    "sec": "464b8544-609a-4e43-9061-2a843821d3dc",
+    "created": "2026-07-04 10:47:27.365",
+    "updated": "2026-07-04 10:47:27.365"
+   },
+   "counts": {
+    "quarterly_results": 0,
+    "banking_quarterly_results": 0,
+    "nbfc_quarterly_results": 0,
+    "life_insurance_quarterly_results": 0,
+    "general_insurance_quarterly_results": 0,
+    "fundamentals": 0,
+    "banking_fundamentals": 0,
+    "nbfc_fundamentals": 0,
+    "life_insurance_fundamentals": 0,
+    "general_insurance_fundamentals": 0
+   },
+   "sh": {
+    "n": 5,
+    "lo": "2017-09-30",
+    "hi": "2018-12-31"
+   },
+   "dp": {
+    "n": 996,
+    "lo": "2022-08-01",
+    "hi": "2026-08-14"
+   },
+   "ce": {
+    "n": 17,
+    "lo": "2010-03-03",
+    "hi": "2026-07-24"
+   },
+   "logs": 1,
+   "logRows": [
+    {
+     "ts": "2026-07-09 19:29:26.2",
+     "status": "success",
+     "source": "nse_filings_api",
+     "q": "",
+     "fy": "",
+     "rt": null,
+     "fd": null,
+     "error": "0 filings discovered"
+    }
+   ]
+  },
+  {
+   "sym": "BAYERCROP",
+   "st": {
+    "id": "c6091aac-0fc7-4a18-b133-79ecab8addd4",
+    "symbol": "BAYERCROP",
+    "name": "Bayer Cropscience Ltd.",
+    "isin": "INE462A01022",
+    "ind": "non_financial",
+    "fye": "march",
+    "active": true,
+    "sec": "34cee9d0-29f4-4b9f-9ffe-b07840490b97",
+    "created": "2026-07-04 10:47:27.365",
+    "updated": "2026-07-04 13:14:18.869"
+   },
+   "counts": {
+    "quarterly_results": 0,
+    "banking_quarterly_results": 0,
+    "nbfc_quarterly_results": 0,
+    "life_insurance_quarterly_results": 0,
+    "general_insurance_quarterly_results": 0,
+    "fundamentals": 0,
+    "banking_fundamentals": 0,
+    "nbfc_fundamentals": 0,
+    "life_insurance_fundamentals": 0,
+    "general_insurance_fundamentals": 0
+   },
+   "sh": {
+    "n": 4,
+    "lo": "2018-03-31",
+    "hi": "2018-12-31"
+   },
+   "dp": {
+    "n": 996,
+    "lo": "2022-08-01",
+    "hi": "2026-08-14"
+   },
+   "ce": {
+    "n": 21,
+    "lo": "2014-09-19",
+    "hi": "2026-08-05"
+   },
+   "logs": 1,
+   "logRows": [
+    {
+     "ts": "2026-07-09 19:47:25.503",
+     "status": "success",
+     "source": "nse_filings_api",
+     "q": "",
+     "fy": "",
+     "rt": null,
+     "fd": null,
+     "error": "0 filings discovered"
+    }
+   ]
+  },
+  {
+   "sym": "MCX",
+   "st": {
+    "id": "df7b6457-0650-404d-9a0a-8a08034a47e3",
+    "symbol": "MCX",
+    "name": "Multi Commodity Exchange of India Ltd",
+    "isin": "INE745G01043",
+    "ind": "non_financial",
+    "fye": "march",
+    "active": true,
+    "sec": "d8551ddf-a50c-4996-a088-557bd6d67efc",
+    "created": "2026-05-10 18:23:58.262",
+    "updated": "2026-05-10 18:23:58.262"
+   },
+   "counts": {
+    "quarterly_results": 0,
+    "banking_quarterly_results": 0,
+    "nbfc_quarterly_results": 0,
+    "life_insurance_quarterly_results": 0,
+    "general_insurance_quarterly_results": 0,
+    "fundamentals": 0,
+    "banking_fundamentals": 0,
+    "nbfc_fundamentals": 0,
+    "life_insurance_fundamentals": 0,
+    "general_insurance_fundamentals": 0
+   },
+   "sh": {
+    "n": 4,
+    "lo": "2018-03-31",
+    "hi": "2018-12-31"
+   },
+   "dp": {
+    "n": 997,
+    "lo": "2022-06-27",
+    "hi": "2026-08-14"
+   },
+   "ce": {
+    "n": 18,
+    "lo": "2012-04-26",
+    "hi": "2026-01-02"
+   },
+   "logs": 1,
+   "logRows": [
+    {
+     "ts": "2026-05-11 15:09:19.487",
+     "status": "success",
+     "source": "nse_filings_api",
+     "q": "",
+     "fy": "",
+     "rt": null,
+     "fd": null,
+     "error": "0 filings discovered"
+    }
+   ]
+  },
+  {
+   "sym": "RELIANCE",
+   "st": {
+    "id": "e4526727-1a02-47a7-ac86-1efe5bd91424",
+    "symbol": "RELIANCE",
+    "name": "Reliance Industries Ltd",
+    "isin": "INE002A01018",
+    "ind": "non_financial",
+    "fye": "march",
+    "active": true,
+    "sec": "d394ef92-c257-4f96-b2ad-551e7d8bb2bf",
+    "created": "2026-05-10 18:24:00.125",
+    "updated": "2026-05-10 18:24:00.125"
+   },
+   "counts": {
+    "quarterly_results": 64,
+    "banking_quarterly_results": 0,
+    "nbfc_quarterly_results": 0,
+    "life_insurance_quarterly_results": 0,
+    "general_insurance_quarterly_results": 0,
+    "fundamentals": 15,
+    "banking_fundamentals": 0,
+    "nbfc_fundamentals": 0,
+    "life_insurance_fundamentals": 0,
+    "general_insurance_fundamentals": 0
+   },
+   "sh": {
+    "n": 13,
+    "lo": "2023-09-30",
+    "hi": "2026-06-30"
+   },
+   "dp": {
+    "n": 997,
+    "lo": "2022-06-27",
+    "hi": "2026-08-14"
+   },
+   "ce": {
+    "n": 21,
+    "lo": "2011-05-05",
+    "hi": "2026-07-17"
+   },
+   "logs": 42,
+   "logRows": [
+    {
+     "ts": "2026-08-16 09:42:09.284",
+     "status": "success",
+     "source": "nse_xbrl_annual_legacy",
+     "q": "Y",
+     "fy": "FY19",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:42:08.299",
+     "status": "success",
+     "source": "nse_xbrl_annual_legacy",
+     "q": "Y",
+     "fy": "FY20",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:42:01.839",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q1",
+     "fy": "FY19",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:42:00.432",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q2",
+     "fy": "FY19",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:41:59.163",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q3",
+     "fy": "FY19",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:41:57.9",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q4",
+     "fy": "FY19",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:41:56.058",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q1",
+     "fy": "FY20",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:41:54.203",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q2",
+     "fy": "FY20",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:41:52.285",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q3",
+     "fy": "FY20",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-08-16 09:41:51.195",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q4",
+     "fy": "FY20",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-07-18 13:09:00.145",
+     "status": "refreshed",
+     "source": "nse_xbrl_quarterly",
+     "q": "Q1",
+     "fy": "FY27",
+     "rt": "both",
+     "fd": "2026-06-30 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed]"
+    },
+    {
+     "ts": "2026-06-13 16:24:39.529",
+     "status": "refreshed",
+     "source": "nse_xbrl_quarterly",
+     "q": "Q4",
+     "fy": "FY25",
+     "rt": "both",
+     "fd": "2025-03-31 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed] (Q4 derived from Mar-31 annual)"
+    },
+    {
+     "ts": "2026-06-13 16:24:39.421",
+     "status": "refreshed",
+     "source": "nse_xbrl_annual",
+     "q": "Y",
+     "fy": "FY25",
+     "rt": "both",
+     "fd": "2025-03-31 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed]"
+    },
+    {
+     "ts": "2026-05-12 10:42:33.096",
+     "status": "success",
+     "source": "nse_xbrl_annual_legacy",
+     "q": "Y",
+     "fy": "FY21",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:32.36",
+     "status": "success",
+     "source": "nse_xbrl_annual_legacy",
+     "q": "Y",
+     "fy": "FY22",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:31.698",
+     "status": "success",
+     "source": "nse_xbrl_annual_legacy",
+     "q": "Y",
+     "fy": "FY23",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:30.841",
+     "status": "success",
+     "source": "nse_xbrl_annual_legacy",
+     "q": "Y",
+     "fy": "FY24",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:28.599",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q1",
+     "fy": "FY21",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:27.745",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q2",
+     "fy": "FY21",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:26.842",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q3",
+     "fy": "FY21",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:25.998",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q4",
+     "fy": "FY21",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:25.085",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q1",
+     "fy": "FY22",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:24.057",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q2",
+     "fy": "FY22",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:23.139",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q3",
+     "fy": "FY22",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:22.243",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q4",
+     "fy": "FY22",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:21.201",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q1",
+     "fy": "FY23",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:20.371",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q2",
+     "fy": "FY23",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:19.122",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q3",
+     "fy": "FY23",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:18.313",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q4",
+     "fy": "FY23",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:17.45",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q1",
+     "fy": "FY24",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:16.527",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q2",
+     "fy": "FY24",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:15.691",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q3",
+     "fy": "FY24",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:14.76",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q4",
+     "fy": "FY24",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:13.945",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q1",
+     "fy": "FY25",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:13.077",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q2",
+     "fy": "FY25",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-12 10:42:12.266",
+     "status": "success",
+     "source": "nse_xbrl_quarterly_legacy",
+     "q": "Q3",
+     "fy": "FY25",
+     "rt": null,
+     "fd": null,
+     "error": null
+    },
+    {
+     "ts": "2026-05-11 15:12:59.174",
+     "status": "refreshed",
+     "source": "nse_xbrl_quarterly",
+     "q": "Q4",
+     "fy": "FY26",
+     "rt": "both",
+     "fd": "2026-03-31 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed] (Q4 derived from Mar-31 annual)"
+    },
+    {
+     "ts": "2026-05-11 15:12:58.805",
+     "status": "refreshed",
+     "source": "nse_xbrl_annual",
+     "q": "Y",
+     "fy": "FY26",
+     "rt": "both",
+     "fd": "2026-03-31 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed]"
+    },
+    {
+     "ts": "2026-05-11 15:12:58.195",
+     "status": "refreshed",
+     "source": "nse_xbrl_quarterly",
+     "q": "Q3",
+     "fy": "FY26",
+     "rt": "both",
+     "fd": "2025-12-31 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed]"
+    },
+    {
+     "ts": "2026-05-11 15:12:57.498",
+     "status": "refreshed",
+     "source": "nse_xbrl_quarterly",
+     "q": "Q2",
+     "fy": "FY26",
+     "rt": "both",
+     "fd": "2025-09-30 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed]"
+    },
+    {
+     "ts": "2026-05-11 15:12:56.799",
+     "status": "refreshed",
+     "source": "nse_xbrl_quarterly",
+     "q": "Q1",
+     "fy": "FY26",
+     "rt": "both",
+     "fd": "2025-06-30 00:00:00",
+     "error": "bases=[consolidated,standalone] outcomes=[refreshed,refreshed]"
+    },
+    {
+     "ts": "2026-05-11 15:12:56.12",
+     "status": "success",
+     "source": "nse_filings_api",
+     "q": "",
+     "fy": "",
+     "rt": null,
+     "fd": null,
+     "error": "12 filings discovered"
+    }
+   ]
+  }
+ ],
+ "zeroAll": [
+  {
+   "sym": "ABBOTINDIA",
+   "ind": "non_financial",
+   "lastDisc": "2026-07-09 19:29:26.2",
+   "err": "0 filings discovered"
+  },
+  {
+   "sym": "BAYERCROP",
+   "ind": "non_financial",
+   "lastDisc": "2026-07-09 19:47:25.503",
+   "err": "0 filings discovered"
+  },
+  {
+   "sym": "MCX",
+   "ind": "non_financial",
+   "lastDisc": "2026-05-11 15:09:19.487",
+   "err": "0 filings discovered"
+  }
+ ],
+ "zeroQuarterly": [],
+ "zeroDiscovery": [
+  {
+   "sym": "ABBOTINDIA",
+   "ind": "non_financial",
+   "q": 0,
+   "f": 0,
+   "n": 1,
+   "latest": "2026-07-09 19:29:26.2",
+   "status": "success"
+  },
+  {
+   "sym": "BAYERCROP",
+   "ind": "non_financial",
+   "q": 0,
+   "f": 0,
+   "n": 1,
+   "latest": "2026-07-09 19:47:25.503",
+   "status": "success"
+  },
+  {
+   "sym": "MCX",
+   "ind": "non_financial",
+   "q": 0,
+   "f": 0,
+   "n": 1,
+   "latest": "2026-05-11 15:09:19.487",
+   "status": "success"
+  }
+ ],
+ "staleTail": [],
+ "dist": [
+  {
+   "status": "success",
+   "n": 443,
+   "zero": 3
+  }
+ ]
+}

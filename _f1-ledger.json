@@ -1,0 +1,99 @@
+{
+  "done": [
+    "ABB",
+    "ANANDRATHI",
+    "ASIANPAINT",
+    "ATGL",
+    "BEL",
+    "BLUESTARCO",
+    "BRITANNIA",
+    "BSE",
+    "BSOFT",
+    "CAMS",
+    "CROMPTON",
+    "ERIS",
+    "GALLANTT",
+    "GESHIP",
+    "GMRAIRPORT",
+    "GODFRYPHLP",
+    "GPIL",
+    "GRAPHITE",
+    "HBLENGINE",
+    "ICICIBANK",
+    "INDIAMART",
+    "INDIGO",
+    "INDUSTOWER",
+    "IPCALAB",
+    "ITC",
+    "JSWDULUX",
+    "KPIL",
+    "KPITTECH",
+    "LEMONTREE",
+    "LTTS",
+    "LUPIN",
+    "MPHASIS",
+    "MRPL",
+    "NBCC",
+    "NYKAA",
+    "POLYCAB",
+    "REDINGTON",
+    "RELIANCE",
+    "SHREECEM",
+    "SUNPHARMA",
+    "SUZLON",
+    "TATASTEEL",
+    "TORNTPHARM",
+    "TVSMOTOR",
+    "UBL",
+    "UNITDSPR",
+    "WELSPUNLIV",
+    "WHIRLPOOL",
+    "ZENTEC"
+  ],
+  "retried": [],
+  "secondPass": [],
+  "startedAt": "2026-08-17T07:25:58.867Z",
+  "runs": 1,
+  "filings": 3054,
+  "ingested": 3047,
+  "failed": 7,
+  "errors": [
+    {
+      "symbol": "GESHIP",
+      "filing": "Quarterly:01-Apr-2022..30-Jun-2022 [standalone]",
+      "error": "Impossible declared fiscal year: end 2022-03-31 is not after start 2022-04-01. Refusing to derive a period label from a fiscal-year end this filing contradicts."
+    },
+    {
+      "symbol": "ICICIBANK",
+      "filing": "Quarterly:01-Jan-2018..31-Mar-2018 [standalone]",
+      "error": "XBRL fetch 404 on https://nsearchives.nseindia.com/corporate/xbrl/BANKING_34957_8760_09052018045543_WEB.xml"
+    },
+    {
+      "symbol": "ICICIBANK",
+      "filing": "Annual:01-Apr-2017..31-Mar-2018 [standalone]",
+      "error": "XBRL fetch 404 on https://nsearchives.nseindia.com/corporate/xbrl/BANKING_34957_8760_09052018045543_WEB.xml"
+    },
+    {
+      "symbol": "POLYCAB",
+      "filing": "Quarterly:01-Jul-2022..30-Sep-2022 [standalone]",
+      "error": "Impossible declared fiscal year: 2022-04-01..2022-09-30 spans 6 month(s), which is neither a 12-month year nor a transitional period ending 31 March (Companies Act 2013 s.2(41)). The declared fiscal-year END is therefore not credible, and it is the sole source of both the FY label and the quarter index. Refusing to write a label."
+    },
+    {
+      "symbol": "TVSMOTOR",
+      "filing": "Quarterly:01-Jan-2021..31-Mar-2021 [standalone]",
+      "error": "XBRL fetch 404 on https://nsearchives.nseindia.com/corporate/xbrl/INDAS_69479_444263_28042021034056_WEB.xml"
+    },
+    {
+      "symbol": "TVSMOTOR",
+      "filing": "Annual:01-Apr-2020..31-Mar-2021 [standalone]",
+      "error": "XBRL fetch 404 on https://nsearchives.nseindia.com/corporate/xbrl/INDAS_69479_444263_28042021034056_WEB.xml"
+    },
+    {
+      "symbol": "WELSPUNLIV",
+      "filing": "Quarterly:01-Jul-2022..30-Sep-2022 [consolidated]",
+      "error": "Impossible declared fiscal year: end 2022-03-31 is not after start 2022-04-01. Refusing to derive a period label from a fiscal-year end this filing contradicts."
+    }
+  ],
+  "rescoreWatch": [],
+  "watchFrom": "2026-08-17T07:25:58.867Z"
+}

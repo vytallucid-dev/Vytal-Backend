@@ -1,0 +1,179 @@
+{
+ "pg": {
+  "id": "da40a058-4b51-41b6-999e-36add4269c86",
+  "name": "Large-Cap AMCs & Exchanges",
+  "sc": 6
+ },
+ "members": [
+  {
+   "sym": "ANGELONE",
+   "act": true,
+   "snap": 0
+  },
+  {
+   "sym": "BSE",
+   "act": true,
+   "snap": 0
+  },
+  {
+   "sym": "HDFCAMC",
+   "act": true,
+   "snap": 0
+  },
+  {
+   "sym": "MCX",
+   "act": false,
+   "snap": 0
+  },
+  {
+   "sym": "NAM-INDIA",
+   "act": true,
+   "snap": 0
+  },
+  {
+   "sym": "UTIAMC",
+   "act": true,
+   "snap": 0
+  }
+ ],
+ "drift": [
+  {
+   "name": "Large-Cap AMCs & Exchanges",
+   "stored": 6,
+   "roster": 6,
+   "active": 5
+  },
+  {
+   "name": "Large-Cap Auto Ancillaries",
+   "stored": 7,
+   "roster": 7,
+   "active": 7
+  },
+  {
+   "name": "Large-Cap Auto OEMs",
+   "stored": 7,
+   "roster": 7,
+   "active": 7
+  },
+  {
+   "name": "Large-Cap Capital Goods & Industrial",
+   "stored": 8,
+   "roster": 8,
+   "active": 8
+  },
+  {
+   "name": "Large-Cap Cement",
+   "stored": 7,
+   "roster": 7,
+   "active": 7
+  },
+  {
+   "name": "Large-Cap Consumer Durables & Electrical",
+   "stored": 6,
+   "roster": 6,
+   "active": 6
+  },
+  {
+   "name": "Large-Cap Defense",
+   "stored": 7,
+   "roster": 7,
+   "active": 7
+  },
+  {
+   "name": "Large-Cap FMCG",
+   "stored": 9,
+   "roster": 9,
+   "active": 9
+  },
+  {
+   "name": "Large-Cap Hospitals & Diagnostics",
+   "stored": 5,
+   "roster": 5,
+   "active": 5
+  },
+  {
+   "name": "Large-Cap Housing Finance",
+   "stored": 4,
+   "roster": 4,
+   "active": 4
+  },
+  {
+   "name": "Large-Cap IT Services",
+   "stored": 6,
+   "roster": 6,
+   "active": 6
+  },
+  {
+   "name": "Large-Cap Metals & Mining",
+   "stored": 8,
+   "roster": 8,
+   "active": 8
+  },
+  {
+   "name": "Large-Cap NBFCs",
+   "stored": 8,
+   "roster": 8,
+   "active": 8
+  },
+  {
+   "name": "Large-Cap Oil & Gas",
+   "stored": 8,
+   "roster": 8,
+   "active": 8
+  },
+  {
+   "name": "Large-Cap Paints",
+   "stored": 3,
+   "roster": 3,
+   "active": 3
+  },
+  {
+   "name": "Large-Cap Pharma",
+   "stored": 10,
+   "roster": 10,
+   "active": 10
+  },
+  {
+   "name": "Large-Cap Power & Utilities",
+   "stored": 7,
+   "roster": 7,
+   "active": 7
+  },
+  {
+   "name": "Large-Cap Private Banks",
+   "stored": 6,
+   "roster": 6,
+   "active": 6
+  },
+  {
+   "name": "Large-Cap PSU Banks",
+   "stored": 6,
+   "roster": 6,
+   "active": 6
+  },
+  {
+   "name": "Large-Cap Real Estate",
+   "stored": 5,
+   "roster": 5,
+   "active": 5
+  },
+  {
+   "name": "Large-Cap Retail & Apparel",
+   "stored": 5,
+   "roster": 5,
+   "active": 5
+  },
+  {
+   "name": "Large-Cap Specialty Chemicals",
+   "stored": 7,
+   "roster": 7,
+   "active": 7
+  },
+  {
+   "name": "Large-Cap Telecom & Towers",
+   "stored": 4,
+   "roster": 4,
+   "active": 4
+  }
+ ]
+}

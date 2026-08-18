@@ -5,7 +5,7 @@ import {
   fetchXbrlFile,
   groupFilingsByQuarter,
   parseNseFilingDate,
-  pickBestFilingForQuarter,
+  pickFilingsPerBasisV2,
 } from "./discovery-legacy.js";
 import {
   parseQuarterlyResultXbrl,
@@ -290,82 +290,89 @@ async function processOneLeg(
   );
 
   for (const [, group] of byPeriod) {
-    const best = pickBestFilingForQuarter(
+    // DUAL-BASIS: take EVERY basis filed for this period, not one. Foundation
+    // reads standalone only and never falls back (scoring/metrics/types.ts:7-11),
+    // so preferring consolidated here made the standalone document unreachable
+    // for every company that files both. One basis filed → one pick, exactly as
+    // before. Both legs (Quarterly and Annual) run through here.
+    const picks = pickFilingsPerBasisV2(
       group,
       group[0].fromDate,
       group[0].toDate,
     );
-    if (!best) continue;
+    if (picks.length === 0) continue;
 
-    summary.totalFilings++;
-    const filingLabel = `${best.fromDate}..${best.toDate}`;
+    for (const { filing: best, basis } of picks) {
+      summary.totalFilings++;
+      const filingLabel = `${best.fromDate}..${best.toDate} [${basis}]`;
 
-    try {
-      const xml = await fetchXbrlFile(best.xbrl);
-      const filingMeta = {
-        symbol: best.symbol,
-        xbrl: best.xbrl,
-        consolidated: best.consolidated,
-      };
+      try {
+        const xml = await fetchXbrlFile(best.xbrl);
+        const filingMeta = {
+          symbol: best.symbol,
+          xbrl: best.xbrl,
+          consolidated: best.consolidated,
+        };
 
-      if (period === "Quarterly") {
-        const v2 = parseQuarterlyResultXbrl(xml, filingMeta);
-        const v3 = adaptV2ToDispatchableQuarterly(v2, industryType);
-        const result = await dispatchQuarterlyIngest(
-          stockId,
-          v3,
-          QUARTERLY_LEGACY_SOURCE,
-          "ingest",
+        if (period === "Quarterly") {
+          const v2 = parseQuarterlyResultXbrl(xml, filingMeta);
+          const v3 = adaptV2ToDispatchableQuarterly(v2, industryType);
+          const result = await dispatchQuarterlyIngest(
+            stockId,
+            v3,
+            QUARTERLY_LEGACY_SOURCE,
+            "ingest",
+          );
+
+          await logLegacyFetch(
+            stockId,
+            symbol,
+            v2.quarter,
+            v2.fiscalYear,
+            result.status,
+            null,
+            "Quarterly",
+          );
+
+          if (result.status === "refreshed") summary.refreshed++;
+          else summary.ingested++;
+        } else {
+          const v2 = parseAnnualResultXbrl(xml, filingMeta);
+          const v3 = adaptV2ToDispatchableAnnual(v2, industryType);
+          const result = await dispatchAnnualIngest(
+            stockId,
+            v3,
+            ANNUAL_LEGACY_SOURCE,
+            "ingest",
+          );
+
+          await logLegacyFetch(
+            stockId,
+            symbol,
+            "Y",
+            v2.fiscalYear,
+            result.status,
+            null,
+            "Annual",
+          );
+
+          if (result.status === "refreshed") summary.refreshed++;
+          else summary.ingested++;
+        }
+      } catch (err) {
+        const msg = (err as Error).message;
+        console.error(
+          `[legacy-backfill] ${symbol} ${period} ${filingLabel} failed:`,
+          msg,
         );
-
-        await logLegacyFetch(
-          stockId,
+        summary.failed++;
+        summary.errors.push({
           symbol,
-          v2.quarter,
-          v2.fiscalYear,
-          result.status,
-          null,
-          "Quarterly",
-        );
-
-        if (result.status === "refreshed") summary.refreshed++;
-        else summary.ingested++;
-      } else {
-        const v2 = parseAnnualResultXbrl(xml, filingMeta);
-        const v3 = adaptV2ToDispatchableAnnual(v2, industryType);
-        const result = await dispatchAnnualIngest(
-          stockId,
-          v3,
-          ANNUAL_LEGACY_SOURCE,
-          "ingest",
-        );
-
-        await logLegacyFetch(
-          stockId,
-          symbol,
-          "Y",
-          v2.fiscalYear,
-          result.status,
-          null,
-          "Annual",
-        );
-
-        if (result.status === "refreshed") summary.refreshed++;
-        else summary.ingested++;
+          filing: `${period}:${filingLabel}`,
+          error: msg,
+        });
+        await logLegacyFetch(stockId, symbol, null, null, "failed", msg, period);
       }
-    } catch (err) {
-      const msg = (err as Error).message;
-      console.error(
-        `[legacy-backfill] ${symbol} ${period} ${filingLabel} failed:`,
-        msg,
-      );
-      summary.failed++;
-      summary.errors.push({
-        symbol,
-        filing: `${period}:${filingLabel}`,
-        error: msg,
-      });
-      await logLegacyFetch(stockId, symbol, null, null, "failed", msg, period);
     }
   }
 }

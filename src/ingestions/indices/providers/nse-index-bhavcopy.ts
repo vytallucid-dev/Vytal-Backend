@@ -39,6 +39,12 @@ import {
   checkSkipRate,
   indexRunRef,
 } from "../indices-guards.js";
+import {
+  checkSessionDate,
+  parseDdMmYyyy,
+  isoDay,
+  type SessionDateMismatch,
+} from "../../shared/session-date.js";
 
 // ── URL builder ───────────────────────────────────────────────
 
@@ -119,7 +125,7 @@ interface IndexRow {
 function parseIndexBhavcopy(
   csvText: string,
   date: Date,
-): { values: IndexEodValue[]; skipped: number } {
+): { values: IndexEodValue[]; skipped: number; dateValues: string[] } {
   const rows: IndexRow[] = parseCsv(csvText, {
     columns: true,
     skip_empty_lines: true,
@@ -127,9 +133,15 @@ function parseIndexBhavcopy(
   });
 
   const values: IndexEodValue[] = [];
+  const dateValues: string[] = [];
   let skipped = 0;
 
   for (const row of rows) {
+    // GUARD 6 input. Collected from EVERY row, including ones skipped below for a
+    // missing close — a mixed-date file must be detectable regardless of which
+    // rows happen to be valuable.
+    if (row["Index Date"] != null) dateValues.push(row["Index Date"]);
+
     const name = (row["Index Name"] ?? "").trim();
     const close = num(row["Closing Index Value"]);
 
@@ -141,7 +153,11 @@ function parseIndexBhavcopy(
 
     values.push({
       indexName: name,
-      date, // canonical fetch date (mirrors the equity pipeline — ignores the file's own date col)
+      // The fetch date — now SAFE to stamp, because GUARD 6 in processIndexBody has
+      // already proved the file's own "Index Date" equals it. (It previously read
+      // "ignores the file's own date col", which was the latent bug: on a stale 200
+      // every row here would carry a date the file never claimed.)
+      date,
       open: num(row["Open Index Value"]),
       high: num(row["High Index Value"]),
       low: num(row["Low Index Value"]),
@@ -156,7 +172,7 @@ function parseIndexBhavcopy(
     });
   }
 
-  return { values, skipped };
+  return { values, skipped, dateValues };
 }
 
 // ── Provider ──────────────────────────────────────────────────
@@ -192,7 +208,26 @@ export class NseIndexCsvProvider implements IndexProvider {
       throw new Error(`NseIndex returned HTTP ${res.status} for ${url}`);
     }
 
-    const { values, skipped } = await this.processIndexBody(res.body, d);
+    const { values, skipped, notASession } = await this.processIndexBody(
+      res.body,
+      d,
+    );
+
+    // Same shape as the 404 branch above — a non-session is not a fault. Unlike
+    // the equity lane there is no provider chain to short-circuit here, but the
+    // wording is kept identical so both lanes read the same way in the logs.
+    if (notASession) {
+      return {
+        values: [],
+        skipped: 0,
+        source: this.name,
+        fetchedAt,
+        errors: [
+          `No index archive for ${d.toDateString()} — market likely closed ` +
+            `(${notASession.message})`,
+        ],
+      };
+    }
 
     if (values.length === 0) {
       errors.push("Parsed 0 index values — check CSV format");
@@ -205,14 +240,19 @@ export class NseIndexCsvProvider implements IndexProvider {
     return { values, skipped, source: this.name, fetchedAt, errors };
   }
 
-  // Shape-assert + parse + skip-check on a raw CSV body. Separated from the
-  // HTTP fetch so the guards can be exercised against synthetic bodies (the
-  // dry-run) without network. THROWS on shape failure (GUARD 1 reject);
-  // reports GUARD 1/2 violations as a side effect.
+  // Shape-assert + session-date-assert + parse + skip-check on a raw CSV body.
+  // Separated from the HTTP fetch so the guards can be exercised against
+  // synthetic bodies (the dry-run) without network. THROWS on shape failure
+  // (GUARD 1 reject); reports GUARD 1/2 violations as a side effect. A GUARD 6
+  // rejection is NOT a fault and writes no ingestion_error.
   async processIndexBody(
     body: string,
     date: Date,
-  ): Promise<{ values: IndexEodValue[]; skipped: number }> {
+  ): Promise<{
+    values: IndexEodValue[];
+    skipped: number;
+    notASession: SessionDateMismatch | null;
+  }> {
     // ── GUARD 1: SHAPE (critical · source_code · REJECT) ──
     // Specific-column assertion over the exact parser-read set — replaces
     // the old substring check that let an Open/High/Low/Change/P-E/P-B/
@@ -240,7 +280,24 @@ export class NseIndexCsvProvider implements IndexProvider {
       );
     }
 
-    const { values, skipped } = parseIndexBhavcopy(body, date);
+    const { values, skipped, dateValues } = parseIndexBhavcopy(body, date);
+
+    // ── GUARD 6: SESSION DATE (the file must BE the day we asked for) ──
+    // MEASURED 2026-08-15: THIS archive returns 404 on a non-session date
+    // (ind_close_all_05072026.csv → 404), unlike the equity archive which returns
+    // 200 with the prior session's file. So this guard is not fixing a live
+    // corruption here — it removes the DEPENDENCE on that upstream courtesy.
+    // The two archives sit on the same host and already behave differently; if
+    // this one ever starts serving stale 200s, every index row would silently
+    // carry a date the file never claimed. Cheap to hold, expensive to discover.
+    const mismatch = checkSessionDate(dateValues, date, parseDdMmYyyy);
+    if (mismatch) {
+      console.warn(
+        `[NseIndex] REJECTED ${isoDay(date)} — ${mismatch.message} ` +
+          `[kind=${mismatch.kind}, returned=${JSON.stringify(mismatch.returned)}]`,
+      );
+      return { values: [], skipped: 0, notASession: mismatch };
+    }
 
     // ── GUARD 2: SKIP-RATE (high · source_code · flag) ──
     // A spike in dropped rows = a value-parse break. If it drops EVERY row
@@ -263,7 +320,7 @@ export class NseIndexCsvProvider implements IndexProvider {
       });
     }
 
-    return { values, skipped };
+    return { values, skipped, notASession: null };
   }
 
   async ping(): Promise<boolean> {

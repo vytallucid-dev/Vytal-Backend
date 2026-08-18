@@ -14,12 +14,21 @@
 export const INDEX_CRON = "index_eod_prices";
 export const INDEX_SOURCE = "nse-index-csv";
 
-// ── GUARD 1: SHAPE ──  the EXACT columns parseIndexBhavcopy reads (the
-// file's "Index Date" is ignored — canonical fetch date is used — so it's
-// not asserted). The current code only substring-checks Index Name +
-// Closing Index Value, so a rename of any OTHER column silently nulls it.
+// ── GUARD 1: SHAPE ──  the EXACT columns parseIndexBhavcopy reads. The current
+// code only substring-checks Index Name + Closing Index Value, so a rename of any
+// OTHER column silently nulls it.
+//
+// ★ "Index Date" IS ASSERTED AND MUST STAY ASSERTED. It used to be excluded on the
+//   grounds that the parser ignored it in favour of the canonical fetch date. That
+//   is exactly the flaw GUARD 6 (session date) now closes: the file's own date is
+//   the authority on which session it holds. If the column went missing, GUARD 6
+//   would have nothing to compare and would silently degrade to "accept" — so its
+//   absence has to fail HERE, loudly, as a shape break.
+//   Format is MEASURED, not assumed: "13-08-2026" (DD-MM-YYYY) — note this differs
+//   from the equity bhavcopy's DATE1 ("16-Aug-2022", DD-MMM-YYYY).
 export const REQUIRED_INDEX_COLUMNS = [
   "Index Name",
+  "Index Date",
   "Open Index Value",
   "High Index Value",
   "Low Index Value",

@@ -28,7 +28,12 @@ import {
 import { SERIES_TO_CLASS, TRUST_SERIES, type TrustSeries, type TrustClass } from "./reit-guards.js";
 
 // Re-exported so Step 14's callers (ingest-reits, the recon/verify scripts) keep working unchanged.
-export { fetchUdiff, udiffUrl, weekdaysBack } from "../shared/udiff-bhavcopy.js";
+export {
+  fetchUdiff,
+  udiffUrl,
+  calendarDaysBack,
+  checkUdiffTradeDate,
+} from "../shared/udiff-bhavcopy.js";
 
 /** One RR/IV row: identity (isin/symbol/name/class) AND the day's OHLCV, from the same line. */
 export interface TrustRow {
@@ -57,7 +62,7 @@ export interface MalformedRow {
 }
 
 export type UdiffParse =
-  | { ok: true; header: string[]; rows: TrustRow[]; totalRows: number; malformed: MalformedRow[] }
+  | { ok: true; header: string[]; rows: TrustRow[]; totalRows: number; malformed: MalformedRow[]; tradDates: string[] }
   | { ok: false; reason: "unzip" | "empty"; observed: string };
 
 const toTrustRow = (r: UdiffRow): TrustRow => ({
@@ -104,5 +109,7 @@ export function parseUdiff(buffer: Buffer): UdiffParse {
     rows.push(toTrustRow(r));
   }
 
-  return { ok: true, header: raw.header, rows, totalRows: raw.totalRows, malformed };
+  // tradDates passes through UNFILTERED — the trust-series filter above must not
+  // narrow the evidence the session-date check runs on.
+  return { ok: true, header: raw.header, rows, totalRows: raw.totalRows, malformed, tradDates: raw.tradDates };
 }

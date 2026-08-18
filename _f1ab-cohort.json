@@ -1,0 +1,507 @@
+{
+ "c1Count": 49,
+ "excluded": [],
+ "clean": [
+  {
+   "sym": "HBLENGINE",
+   "first": "2018-03-31",
+   "missing": [
+    "2019-09-30",
+    "2019-12-31",
+    "2020-03-31",
+    "2020-06-30",
+    "2020-09-30"
+   ],
+   "recoverable": 5,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "BRITANNIA",
+   "first": "2018-03-31",
+   "missing": [
+    "2018-03-31",
+    "2018-06-30"
+   ],
+   "recoverable": 2,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ICICIBANK",
+   "first": "2018-03-31",
+   "missing": [
+    "2018-03-31",
+    "2022-06-30"
+   ],
+   "recoverable": 2,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "JSWDULUX",
+   "first": "2018-03-31",
+   "missing": [
+    "2018-03-31",
+    "2022-06-30"
+   ],
+   "recoverable": 2,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "MPHASIS",
+   "first": "2018-03-31",
+   "missing": [
+    "2018-03-31",
+    "2018-06-30"
+   ],
+   "recoverable": 2,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "NBCC",
+   "first": "2018-03-31",
+   "missing": [
+    "2019-03-31",
+    "2019-12-31"
+   ],
+   "recoverable": 2,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "POLYCAB",
+   "first": "2019-03-31",
+   "missing": [
+    "2022-06-30",
+    "2022-09-30"
+   ],
+   "recoverable": 2,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ABB",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-03-31"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ANANDRATHI",
+   "first": "2021-12-31",
+   "missing": [
+    "2021-12-31"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ASIANPAINT",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ATGL",
+   "first": "2018-12-31",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "BEL",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "BLUESTARCO",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "BSE",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "BSOFT",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "CAMS",
+   "first": "2021-06-30",
+   "missing": [
+    "2022-09-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "CROMPTON",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ERIS",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "GALLANTT",
+   "first": "2018-06-30",
+   "missing": [
+    "2021-03-31"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "GESHIP",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "GMRAIRPORT",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "GODFRYPHLP",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "GPIL",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "GRAPHITE",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "INDIAMART",
+   "first": "2019-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "INDIGO",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "INDUSTOWER",
+   "first": "2018-09-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "IPCALAB",
+   "first": "2018-06-30",
+   "missing": [
+    "2021-03-31"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ITC",
+   "first": "2018-06-30",
+   "missing": [
+    "2021-03-31"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "KPIL",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "KPITTECH",
+   "first": "2019-03-31",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "LEMONTREE",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "LTTS",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "LUPIN",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "MRPL",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "NYKAA",
+   "first": "2021-09-30",
+   "missing": [
+    "2023-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "REDINGTON",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "RELIANCE",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "SHREECEM",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "SUNPHARMA",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "SUZLON",
+   "first": "2018-06-30",
+   "missing": [
+    "2019-03-31"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "TATASTEEL",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "TORNTPHARM",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "TVSMOTOR",
+   "first": "2018-06-30",
+   "missing": [
+    "2021-03-31"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "UBL",
+   "first": "2018-06-30",
+   "missing": [
+    "2020-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "UNITDSPR",
+   "first": "2018-06-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "WELSPUNLIV",
+   "first": "2018-06-30",
+   "missing": [
+    "2018-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "WHIRLPOOL",
+   "first": "2018-06-30",
+   "missing": [
+    "2023-09-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  },
+  {
+   "sym": "ZENTEC",
+   "first": "2018-09-30",
+   "missing": [
+    "2022-06-30"
+   ],
+   "recoverable": 1,
+   "sourceGap": 0,
+   "kind": "C1"
+  }
+ ],
+ "totalRows": 59
+}

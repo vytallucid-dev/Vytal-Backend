@@ -1,0 +1,99 @@
+{
+ "p3a": {
+  "byType": {
+   "A": 6812,
+   "B": 1429,
+   "C": 4056
+  },
+  "total": 12297
+ },
+ "p3c": {
+  "completeNow": 194,
+  "completeAfter": 417,
+  "blocked": [
+   "ABLBL",
+   "AEGISVOPAK",
+   "ANTHEM",
+   "ATHERENERG",
+   "BELRISE",
+   "CPPLUS",
+   "EMMVEE",
+   "ENRIN",
+   "GROWW",
+   "ITCHOTELS",
+   "JAINREC",
+   "JSWCEMENT",
+   "LENSKART",
+   "LGEINDIA",
+   "MEESHO",
+   "PINELABS",
+   "PWL",
+   "TENNIND",
+   "THELEELA",
+   "TMCV",
+   "TRAVELFOOD",
+   "URBANCO"
+  ]
+ },
+ "p3d": {
+  "nfNow": 243,
+  "nfAfter": 267,
+  "bkNow": 0,
+  "bkAfter": 12,
+  "blockers": [
+   [
+    "listed too late — no filing exists before the cutoff",
+    102
+   ],
+   [
+    "value-side (non_positive_base / divide_by_zero) — keying cannot fix",
+    53
+   ],
+   [
+    "annual history < 2 FY at cutoff",
+    5
+   ]
+  ]
+ },
+ "banking": {
+  "ruledQ": 1410,
+  "ruledA": 500,
+  "ruledQpre": 786,
+  "ruledApre": 296,
+  "qPeriods": [
+   "2018-03-31",
+   "2018-06-30",
+   "2018-09-30",
+   "2018-12-31",
+   "2019-03-31",
+   "2019-06-30",
+   "2019-09-30",
+   "2019-12-31",
+   "2020-03-31",
+   "2020-06-30",
+   "2020-09-30",
+   "2020-12-31",
+   "2021-03-31",
+   "2021-06-30",
+   "2021-09-30",
+   "2021-12-31"
+  ],
+  "aPeriods": [
+   "FY18",
+   "FY19",
+   "FY20",
+   "FY21"
+  ]
+ },
+ "effort": {
+  "docsA": 939,
+  "docsB": 137,
+  "docsC": 412,
+  "keyCells": 10868,
+  "keyDocs": 1351
+ },
+ "excl": {
+  "exclBoundary": 18431,
+  "exclPreFirst": 1891
+ }
+}

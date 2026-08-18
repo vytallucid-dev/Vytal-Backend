@@ -199,6 +199,15 @@ const ENV_OR_DB_ALLOWANCE: Record<string, string> = {
     "db/prisma.ts (a pg Pool is constructed but never connected — the pool is lazy) and config/env.ts. " +
     "The one route it exercises, /api/v1/catalogue, is assembled from frozen constants and reads no DB. " +
     "Module load must stay env-free: see the lazy JWKS note in src/middleware/auth.ts.",
+  "src/scripts/dryrun-session-date.ts":
+    "drives the REAL providers' processBhavcopyBody / processIndexBody / parseUdiff against synthetic " +
+    "CSV+zip bodies, so importing them pulls ingestions/shared/ingestion-error.ts → db/prisma.ts. Same " +
+    "shape as the allowance above: a pg Pool is CONSTRUCTED but never connected, because the pool is " +
+    "lazy and this script issues no query. It cannot reach the DB even by accident — reportIngestionError " +
+    "is the only writer on those paths and it is reached ONLY by a GUARD 1 (shape) or GUARD 2 (skip-rate) " +
+    "breach, and no fixture here breaches either. Its own subject, the session-date check, returns BEFORE " +
+    "GUARD 2 by construction. Unlike its dryrun-* siblings (dryrun-ingestion-guards / dryrun-indices-guards, " +
+    "which insert sentinel rows and are correctly NOT build gates) this one writes nothing at all.",
 };
 const ENV_OR_DB_MODULES = ["src/config/env.ts", "src/db/prisma.ts"];
 

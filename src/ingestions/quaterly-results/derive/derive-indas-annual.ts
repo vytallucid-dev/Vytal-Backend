@@ -82,8 +82,12 @@ export function boundDerived(
   if (v === null) return null;
   const max = new Prisma.Decimal(10).pow(maxIntDigits);
   if (v.abs().greaterThanOrEqualTo(max)) {
+    // ⚠ prefix was hardcoded `[ingest-indas-annual]`, which mislabelled every other
+    //   caller — S4.2 added banking-annual, banking-quarterly and indas-quarterly,
+    //   so a quarterly overflow was logging as an annual one. `tag` already carries
+    //   the real caller.
     console.warn(
-      `[ingest-indas-annual] ${tag}: derived ${field}=${v.toString()} out of column range ` +
+      `[boundDerived] ${tag}: derived ${field}=${v.toString()} out of column range ` +
         `(|v|≥${max.toString()}) → stored null (display field; scoring reads raw lines, not this column).`,
     );
     return null;

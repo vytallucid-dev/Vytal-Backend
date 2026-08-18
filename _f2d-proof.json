@@ -1,0 +1,874 @@
+{
+ "counts": {
+  "docs": 23640,
+  "cases": 29535,
+  "noPeriod": 0,
+  "oldMatch": 29452,
+  "curMatch": 29528,
+  "curRefuse": 5
+ },
+ "curDelta": [
+  {
+   "sym": "CANBK",
+   "stored": "FY22Q1",
+   "cur": "REFUSE",
+   "truth": "FY23Q1",
+   "windowM": 0,
+   "fs": "2022-04-01",
+   "fe": "2022-03-31",
+   "pe": "2022-06-30",
+   "src": "nse_xbrl_quarterly_legacy",
+   "u": "https://nsearchives.nseindia.com/corporate/xbrl/BANKING_603203_2859_25072022202906_WEB.xml",
+   "tbl": "banking_quarterly_results",
+   "rt": "standalone"
+  },
+  {
+   "sym": "CEMPRO",
+   "stored": "FY19Q4",
+   "cur": "REFUSE",
+   "truth": "FY18Q4",
+   "windowM": 15,
+   "fs": "2018-01-01",
+   "fe": "2019-03-31",
+   "pe": "2018-03-31",
+   "src": "nse_xbrl_quarterly_legacy",
+   "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_35067_9108_11052018022330_WEB.xml",
+   "tbl": "quarterly_results",
+   "rt": "standalone"
+  },
+  {
+   "sym": "CEMPRO",
+   "stored": "FY19Q4",
+   "cur": "REFUSE",
+   "truth": "FY18Q4",
+   "windowM": 15,
+   "fs": "2018-01-01",
+   "fe": "2019-03-31",
+   "pe": "2018-03-31",
+   "src": "nse_xbrl_quarterly_legacy",
+   "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_35069_15589_19062018023351_WEB.xml",
+   "tbl": "quarterly_results",
+   "rt": "consolidated"
+  },
+  {
+   "sym": "DELHIVERY",
+   "stored": "FY22Q2",
+   "cur": "FY22Q4",
+   "truth": "FY23Q2",
+   "windowM": 6,
+   "fs": "2022-04-01",
+   "fe": "2022-09-30",
+   "pe": "2022-09-30",
+   "src": "nse_xbrl_quarterly_legacy",
+   "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866026_6626_12112022180008_WEB.xml",
+   "tbl": "quarterly_results",
+   "rt": "consolidated"
+  },
+  {
+   "sym": "DELHIVERY",
+   "stored": "FY22Q2",
+   "cur": "FY22Q4",
+   "truth": "FY23Q2",
+   "windowM": 6,
+   "fs": "2022-04-01",
+   "fe": "2022-09-30",
+   "pe": "2022-09-30",
+   "src": "nse_xbrl_quarterly_legacy",
+   "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866011_6626_12112022175928_WEB.xml",
+   "tbl": "quarterly_results",
+   "rt": "standalone"
+  },
+  {
+   "sym": "IOB",
+   "stored": "FY22Q2",
+   "cur": "REFUSE",
+   "truth": "FY23Q2",
+   "windowM": 0,
+   "fs": "2022-04-01",
+   "fe": "2022-03-31",
+   "pe": "2022-09-30",
+   "src": "nse_xbrl_quarterly_legacy",
+   "u": "https://nsearchives.nseindia.com/corporate/xbrl/BANKING_847687_5140_09112022103239_WEB.xml",
+   "tbl": "banking_quarterly_results",
+   "rt": "consolidated"
+  },
+  {
+   "sym": "POWERINDIA",
+   "stored": "FY22Q4",
+   "cur": "REFUSE",
+   "truth": "FY21Q4",
+   "windowM": 15,
+   "fs": "2021-01-01",
+   "fe": "2022-03-31",
+   "pe": "2021-03-31",
+   "src": "nse_xbrl_quarterly_legacy",
+   "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_69678_445980_05052021074334_WEB.xml",
+   "tbl": "quarterly_results",
+   "rt": "standalone"
+  }
+ ],
+ "guards": {
+  "G1 11–13 band": {
+   "moved": 26,
+   "rescue": 2,
+   "brk": 24,
+   "neutral": 5,
+   "breaks": [
+    {
+     "sym": "ACC",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "NESTLEIND",
+     "stored": "FY24Q3",
+     "cur": "FY24Q3",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "POWERINDIA",
+     "stored": "FY22Q2",
+     "cur": "FY22Q2",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "POWERINDIA",
+     "stored": "FY22Q1",
+     "cur": "FY22Q1",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "ACC",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "IGIL",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "IGIL",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q2",
+     "cur": "FY19Q2",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q1",
+     "cur": "FY19Q1",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "ACC",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "ACC",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q1",
+     "cur": "FY19Q1",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q2",
+     "cur": "FY19Q2",
+     "why": "window 15m outside 11–13"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "why": "window 18m outside 11–13"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 18m outside 11–13"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 18m outside 11–13"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q3",
+     "cur": "FY25Q3",
+     "why": "window 9m outside 11–13"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "why": "window 18m outside 11–13"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q4",
+     "cur": "FY25Q4",
+     "why": "window 9m outside 11–13"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Y",
+     "cur": "FY25Y",
+     "why": "window 9m outside 11–13"
+    }
+   ],
+   "rescues": [
+    {
+     "sym": "ACC",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "truth": "FY23Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_88299_783178_01022023061242_WEB.xml"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_790051_4966_22102022125650_WEB.xml"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "truth": "FY23Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_88935_788377_08022023125252.xml"
+    },
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866026_6626_12112022180008_WEB.xml"
+    },
+    {
+     "sym": "NESTLEIND",
+     "stored": "FY24Q3",
+     "cur": "FY24Q3",
+     "truth": "FY24Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_102696_1047773_08022024120425.xml"
+    },
+    {
+     "sym": "POWERINDIA",
+     "stored": "FY22Q2",
+     "cur": "FY22Q2",
+     "truth": "FY22Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_76643_545078_22102021075416_WEB.xml"
+    },
+    {
+     "sym": "POWERINDIA",
+     "stored": "FY22Q1",
+     "cur": "FY22Q1",
+     "truth": "FY22Q1",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_73316_495110_24072021104422_WEB.xml"
+    },
+    {
+     "sym": "ACC",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_768989_4668_18102022102736_WEB.xml"
+    },
+    {
+     "sym": "IGIL",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1611629_28012026041015_WEB.xml"
+    },
+    {
+     "sym": "IGIL",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1611626_28012026040818_WEB.xml"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q2",
+     "cur": "FY19Q2",
+     "truth": "FY19Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_39945_56934_01112018050335_WEB.xml"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q1",
+     "cur": "FY19Q1",
+     "truth": "FY19Q1",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_38427_33681_10082018060930_WEB.xml"
+    },
+    {
+     "sym": "ACC",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "truth": "FY23Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_88297_783172_01022023061116_WEB.xml"
+    },
+    {
+     "sym": "ACC",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_769024_4668_18102022102644_WEB.xml"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q2",
+     "cur": "FY23Q2",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_790050_4966_22102022125650_WEB.xml"
+    },
+    {
+     "sym": "AMBUJACEM",
+     "stored": "FY23Q3",
+     "cur": "FY23Q3",
+     "truth": "FY23Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_88933_788371_08022023125033.xml"
+    },
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866011_6626_12112022175928_WEB.xml"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q1",
+     "cur": "FY19Q1",
+     "truth": "FY19Q1",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_38426_33676_10082018060620_WEB.xml"
+    },
+    {
+     "sym": "CEMPRO",
+     "stored": "FY19Q2",
+     "cur": "FY19Q2",
+     "truth": "FY19Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_39950_56955_01112018052308_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "truth": "FY26Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1575225_14112025054815_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1620148_06022026044508_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1620200_06022026050905_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q3",
+     "cur": "FY25Q3",
+     "truth": "FY25Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_119525_1377557_11022025114920.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "truth": "FY26Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1575222_14112025054748_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q4",
+     "cur": "FY25Q4",
+     "truth": "FY25Q4",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1467435_17062025120948_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Y",
+     "cur": "FY25Y",
+     "truth": null,
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1467435_17062025120948_WEB.xml"
+    }
+   ]
+  },
+  "G2 brief's rule": {
+   "moved": 9,
+   "rescue": 2,
+   "brk": 7,
+   "neutral": 2,
+   "breaks": [
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q3",
+     "cur": "FY25Q3",
+     "why": "window 9m shorter than a year"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q4",
+     "cur": "FY25Q4",
+     "why": "window 9m shorter than a year"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Y",
+     "cur": "FY25Y",
+     "why": "window 9m shorter than a year"
+    }
+   ],
+   "rescues": [
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866026_6626_12112022180008_WEB.xml"
+    },
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866011_6626_12112022175928_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "truth": "FY26Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1575225_14112025054815_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1620148_06022026044508_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1620200_06022026050905_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q3",
+     "cur": "FY25Q3",
+     "truth": "FY25Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_119525_1377557_11022025114920.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "truth": "FY26Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1575222_14112025054748_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q4",
+     "cur": "FY25Q4",
+     "truth": "FY25Q4",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1467435_17062025120948_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Y",
+     "cur": "FY25Y",
+     "truth": null,
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1467435_17062025120948_WEB.xml"
+    }
+   ]
+  },
+  "G3 end-only + length": {
+   "moved": 9,
+   "rescue": 2,
+   "brk": 7,
+   "neutral": 2,
+   "breaks": [
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q3",
+     "cur": "FY25Q3",
+     "why": "window 9m shorter than a year"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "why": "window 18m longer than 15"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q4",
+     "cur": "FY25Q4",
+     "why": "window 9m shorter than a year"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Y",
+     "cur": "FY25Y",
+     "why": "window 9m shorter than a year"
+    }
+   ],
+   "rescues": [
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866026_6626_12112022180008_WEB.xml"
+    },
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866011_6626_12112022175928_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "truth": "FY26Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1575225_14112025054815_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1620148_06022026044508_WEB.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q3",
+     "cur": "FY26Q3",
+     "truth": "FY26Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1620200_06022026050905_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q3",
+     "cur": "FY25Q3",
+     "truth": "FY25Q3",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_119525_1377557_11022025114920.xml"
+    },
+    {
+     "sym": "SIEMENS",
+     "stored": "FY26Q2",
+     "cur": "FY26Q2",
+     "truth": "FY26Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1575222_14112025054748_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Q4",
+     "cur": "FY25Q4",
+     "truth": "FY25Q4",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1467435_17062025120948_WEB.xml"
+    },
+    {
+     "sym": "GILLETTE",
+     "stored": "FY25Y",
+     "cur": "FY25Y",
+     "truth": null,
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INTEGRATED_FILING_INDAS_1467435_17062025120948_WEB.xml"
+    }
+   ]
+  },
+  "G4 statutory": {
+   "moved": 2,
+   "rescue": 2,
+   "brk": 0,
+   "neutral": 2,
+   "breaks": [],
+   "rescues": [
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866026_6626_12112022180008_WEB.xml"
+    },
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866011_6626_12112022175928_WEB.xml"
+    }
+   ]
+  },
+  "G5 statutory ≤18": {
+   "moved": 2,
+   "rescue": 2,
+   "brk": 0,
+   "neutral": 2,
+   "breaks": [],
+   "rescues": [
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866026_6626_12112022180008_WEB.xml"
+    },
+    {
+     "sym": "DELHIVERY",
+     "stored": "FY22Q2",
+     "cur": "FY22Q4",
+     "truth": "FY23Q2",
+     "u": "https://nsearchives.nseindia.com/corporate/xbrl/INDAS_866011_6626_12112022175928_WEB.xml"
+    }
+   ]
+  }
+ },
+ "regression": {
+  "unchanged": 29533,
+  "total": 29535,
+  "byFyEndMonth": [
+   [
+    3,
+    {
+     "n": 28924,
+     "unchanged": 28924
+    }
+   ],
+   [
+    12,
+    {
+     "n": 502,
+     "unchanged": 502
+    }
+   ],
+   [
+    9,
+    {
+     "n": 78,
+     "unchanged": 76
+    }
+   ],
+   [
+    6,
+    {
+     "n": 31,
+     "unchanged": 31
+    }
+   ]
+  ],
+  "byYear": [
+   [
+    2025,
+    {
+     "n": 4577,
+     "unchanged": 4577
+    }
+   ],
+   [
+    2026,
+    {
+     "n": 2819,
+     "unchanged": 2819
+    }
+   ],
+   [
+    2024,
+    {
+     "n": 4014,
+     "unchanged": 4014
+    }
+   ],
+   [
+    2022,
+    {
+     "n": 3399,
+     "unchanged": 3397
+    }
+   ],
+   [
+    2020,
+    {
+     "n": 3193,
+     "unchanged": 3193
+    }
+   ],
+   [
+    2019,
+    {
+     "n": 2691,
+     "unchanged": 2691
+    }
+   ],
+   [
+    2018,
+    {
+     "n": 1711,
+     "unchanged": 1711
+    }
+   ],
+   [
+    2023,
+    {
+     "n": 3786,
+     "unchanged": 3786
+    }
+   ],
+   [
+    2021,
+    {
+     "n": 3322,
+     "unchanged": 3322
+    }
+   ],
+   [
+    2017,
+    {
+     "n": 23,
+     "unchanged": 23
+    }
+   ]
+  ],
+  "byMonth": [
+   [
+    12,
+    {
+     "n": 29504,
+     "unchanged": 29504
+    }
+   ],
+   [
+    15,
+    {
+     "n": 20,
+     "unchanged": 20
+    }
+   ],
+   [
+    6,
+    {
+     "n": 2,
+     "unchanged": 0
+    }
+   ],
+   [
+    18,
+    {
+     "n": 4,
+     "unchanged": 4
+    }
+   ],
+   [
+    9,
+    {
+     "n": 3,
+     "unchanged": 3
+    }
+   ],
+   [
+    0,
+    {
+     "n": 2,
+     "unchanged": 2
+    }
+   ]
+  ]
+ }
+}

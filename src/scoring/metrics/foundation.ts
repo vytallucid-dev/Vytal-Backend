@@ -70,16 +70,27 @@ export function f1Roce(r: FoundationAnnual): MetricValue {
   if (ebit === null) return unavailable("F1", "ROCE %", "%", "missing_line_item", "need PBT & finance costs");
   if (nw === null) return unavailable("F1", "ROCE %", "%", "missing_line_item", "need net worth");
   const debt = totalDebtFrom(r);
+  // ⚠ ABSENCE IS NOT ZERO. `debt ?? 0` made capital employed = net worth alone,
+  //   which OVERSTATES ROCE (a smaller denominator) on a company whose borrowings
+  //   simply were not disclosed. crossCheck cannot catch it: `stored.roce` is
+  //   computed from the same absent inputs, so both are wrong together.
+  //   totalDebtFrom = sumNonNull(borrowingsCurrent, borrowingsNoncurrent) returns
+  //   null ONLY when EVERY part is null, so null means NOTHING WAS DISCLOSED while
+  //   0 means at least one part was reported and summed to zero. A genuinely
+  //   debt-free company therefore still scores; only true absence goes unavailable.
+  if (debt === null)
+    return unavailable("F1", "ROCE %", "%", "missing_line_item",
+      "borrowings not disclosed — capital employed is unknown (absence is not zero debt)",
+      { ebit: r2(ebit), netWorth: r2(nw), totalDebt: null });
   const flags: string[] = [];
-  if (debt === null) flags.push("borrowings absent → total debt treated as 0 (capital employed = net worth)");
-  const capEmployed = nw + (debt ?? 0);
+  const capEmployed = nw + debt;
   if (capEmployed === 0) return unavailable("F1", "ROCE %", "%", "divide_by_zero", "capital employed = 0");
   const value = (ebit / capEmployed) * 100;
   crossCheck(flags, "roce", value, r.stored.roce);
   return {
     key: "F1", label: "ROCE %", available: true, value, unit: "%", source: "derived",
-    formula: `ROCE = EBIT ${r2(ebit)} / (net worth ${r2(nw)} + debt ${r2(debt ?? 0)} = ${r2(capEmployed)}) × 100 = ${r2(value)}%`,
-    inputs: { ebit: r2(ebit), netWorth: r2(nw), totalDebt: debt === null ? null : r2(debt), capitalEmployed: r2(capEmployed) },
+    formula: `ROCE = EBIT ${r2(ebit)} / (net worth ${r2(nw)} + debt ${r2(debt)} = ${r2(capEmployed)}) × 100 = ${r2(value)}%`,
+    inputs: { ebit: r2(ebit), netWorth: r2(nw), totalDebt: r2(debt), capitalEmployed: r2(capEmployed) },
     reason: null, flags,
   };
 }
@@ -186,16 +197,22 @@ export function f4DebtEquity(r: FoundationAnnual): MetricValue {
   const debt = totalDebtFrom(r);
   if (nw === null) return unavailable("F4", "D/E", "ratio", "missing_line_item", "need net worth");
   if (nw === 0) return unavailable("F4", "D/E", "ratio", "divide_by_zero", "net worth = 0");
+  // ⚠ ABSENCE IS NOT ZERO — and here it was the worst possible direction: `debt ?? 0`
+  //   yielded D/E = 0.00, the TOP band, so a leveraged company whose borrowings were
+  //   not disclosed scored as debt-free with only a flags string dissenting. A flag
+  //   does not move a band. See the F1 note for why null ≠ 0 in this column.
+  if (debt === null)
+    return unavailable("F4", "D/E", "ratio", "missing_line_item",
+      "borrowings not disclosed — leverage is unknown (absence is not zero debt)",
+      { totalDebt: null, netWorth: r2(nw), storedDebtToEquityPct: r.stored.debtToEquity });
   const flags: string[] = [];
-  if (debt === null) flags.push("borrowings absent → total debt treated as 0");
-  const debtUsed = debt ?? 0;
-  const value = debtUsed / nw;
+  const value = debt / nw;
   // stored debtToEquity is a PERCENT (ratio×100) — compare against value×100.
   crossCheck(flags, "debtToEquity(%)", value * 100, r.stored.debtToEquity);
   return {
     key: "F4", label: "D/E", available: true, value, unit: "ratio", source: "derived",
-    formula: `D/E = total debt ${r2(debtUsed)} / net worth ${r2(nw)} = ${r2(value)}`,
-    inputs: { totalDebt: debt === null ? null : r2(debt), netWorth: r2(nw), storedDebtToEquityPct: r.stored.debtToEquity },
+    formula: `D/E = total debt ${r2(debt)} / net worth ${r2(nw)} = ${r2(value)}`,
+    inputs: { totalDebt: r2(debt), netWorth: r2(nw), storedDebtToEquityPct: r.stored.debtToEquity },
     reason: null, flags,
   };
 }

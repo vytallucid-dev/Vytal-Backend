@@ -163,6 +163,71 @@ export function pickBestFilingForQuarter(
   );
 }
 
+// ─────────────────────────────────────────────────────────────
+// DUAL-BASIS pick, v2-shaped. The sibling of picker.ts's
+// `pickFilingsPerBasis` (v3 / NseFilingEntry) for the v2 listing shape this
+// module returns.
+//
+// ★ WHY THIS EXISTS. `pickBestFilingForQuarter` above returns ONE filing per
+//   period and prefers Consolidated when both bases are filed. Foundation reads
+//   STANDALONE ONLY (scoring/metrics/types.ts:7-11) and never falls back — so on
+//   every period where a company filed both, the legacy backfill fetched the
+//   consolidated document and the standalone one was never retrieved. MEASURED
+//   2026-08-16: the legacy path wrote 7% standalone (44 of 646 annual rows)
+//   against the v3 path's 52% (781 of 1515) over the same universe and source.
+//
+// ⚠ `pickBestFilingForQuarter` is DELIBERATELY LEFT IN PLACE and unchanged — it
+//   is still exported and is the reference for the pre-fix behaviour.
+//
+// Basis mapping mirrors the parser exactly (parser-legacy-common.ts:185,420):
+//   `consolidated === "Consolidated"` → consolidated; everything else, including
+//   a null, → standalone.
+//
+// Within a basis the winner is the LATEST filingDate — identical to the reduce in
+// `pickBestFilingForQuarter`, so a period that has only one basis is picked exactly
+// as before (COLPAL files standalone only; SUNPHARMA FY21 had no consolidated).
+// The v2 listing carries no `typeSub`, so there is no Revision > New > Original
+// rank to apply here as the v3 picker does.
+//
+// Returns [] when nothing matches the period; otherwise 1 entry (one basis filed)
+// or 2 (both filed). Order is standalone-first for reproducible logs.
+export interface BasisPickV2 {
+  filing: any;
+  basis: "standalone" | "consolidated";
+}
+
+export function pickFilingsPerBasisV2(
+  filings: any[],
+  fromDate: string,
+  toDate: string,
+): BasisPickV2[] {
+  const candidates = filings.filter(
+    (f) => f.fromDate === fromDate && f.toDate === toDate,
+  );
+  if (candidates.length === 0) return [];
+
+  const byBasis = new Map<"standalone" | "consolidated", any[]>();
+  for (const c of candidates) {
+    const basis: "standalone" | "consolidated" =
+      c.consolidated === "Consolidated" ? "consolidated" : "standalone";
+    const arr = byBasis.get(basis);
+    if (arr) arr.push(c);
+    else byBasis.set(basis, [c]);
+  }
+
+  const picks: BasisPickV2[] = [];
+  for (const [basis, pool] of byBasis) {
+    const winner = pool.reduce((best: any, cur: any) =>
+      parseNseFilingDate(cur.filingDate) > parseNseFilingDate(best.filingDate)
+        ? cur
+        : best,
+    );
+    picks.push({ filing: winner, basis });
+  }
+
+  return picks.sort((a, b) => (a.basis === "standalone" ? -1 : 1));
+}
+
 export function groupFilingsByQuarter(filings: any[]): Map<string, any[]> {
   const byQuarter = new Map<string, any[]>();
   for (const f of filings) {

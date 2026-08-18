@@ -33,6 +33,8 @@ import {
   classifyFailedRate,
   checkBatchNullRate,
   resultsRunRef,
+  classifyEmptyDiscovery,
+  EMPTY_DISCOVERY_STALE_DAYS,
 } from "./fundamentals-guards.js";
 
 function sleep(ms: number) {
@@ -139,18 +141,128 @@ export async function scanSymbol(
     return result;
   }
 
-  await logFetch(
-    stock.id,
-    symbol,
-    null,
-    null,
-    null,
-    "success",
-    "nse_filings_api",
-    `${filings.length} filings discovered`,
-  );
+  // ★ GUARD 6 — a zero-filing discovery is NOT a success. See logDiscovery.
+  const empty = await logDiscovery(stock, filings.length, "per-symbol, whole history");
+  if (empty) {
+    // A stock we hold nothing for, or one that has gone silent, is a FAILED symbol —
+    // not a quiet one. Counting it here is what makes it visible to the run-level
+    // failure-rate guard and to every caller that reads `failed`, and it is the
+    // difference between "we looked and found nothing" and "we recorded a success".
+    result.failed++;
+    result.errors.push({
+      qeDate: "(discovery)",
+      filingType: "(n/a)",
+      error: `discovery returned 0 filings (${empty})`,
+    });
+  }
 
   return scanDiscoveredFilings(stock, filings, result, options);
+}
+
+/**
+ * ★★ THE DISCOVERY AUDIT ROW, AND THE ONE PLACE THAT DECIDES WHAT ZERO MEANS.
+ *
+ * ⚠ THIS REPLACES AN UNCONDITIONAL `status: "success"`. Both discovery paths used to
+ * write the same row whatever came back, so `0 filings discovered` was recorded as a
+ * SUCCESS — which meant nothing retried, nothing alerted, and no coverage query keyed on
+ * status could see it. MEASURED 2026-08-17: ABBOTINDIA, BAYERCROP and MCX each carry
+ * exactly one such row, each holds zero rows in all ten result tables, and each has been
+ * silently empty for one to three months. That is the same shape as every other silent
+ * failure this programme has found: an honest empty recorded as a healthy outcome.
+ *
+ * ⚠ THE FIX IS NOT "CALL ZERO A FAILURE". A quiet stock legitimately returns zero, and
+ * flagging every one of those would put ~440 rows a run into the triage queue and bury
+ * the three that matter. The classifier (fundamentals-guards.ts GUARD 6) asks what the
+ * log could not: do we hold anything, and is it current?
+ *
+ *   never    → status "discovery_empty"  · ingestion_error, severity HIGH
+ *   stopped  → status "discovery_stale"  · ingestion_error, severity MEDIUM
+ *   quiet    → status "no_new_filing"    · no fault row, nothing to triage
+ *
+ * "no_new_filing" is not a new vocabulary word — it has been documented on the model since
+ * the dual-basis rewrite and was simply never emitted. It is the honest label for the
+ * common case, and it is DISTINCT from "success", so a coverage query can now separate
+ * "we ingested something" from "we asked and there was nothing new".
+ *
+ * ⚠ THE FAULT ROW IS WHAT MAKES IT VISIBLE, AND THE DEDUP IS WHAT KEEPS IT QUIET.
+ * reportIngestionError keys on (cron, guardType, targetField, targetEntity) scoped to
+ * status="open", so re-tripping on the same stock bumps `occurrences` on the one open row
+ * rather than opening a second. A stock that stays empty for a year is ONE row with
+ * occurrences=730 — which is both the alert and the retry counter.
+ *
+ * @returns the fault kind when this discovery is a fault, else null.
+ */
+async function logDiscovery(
+  stock: Pick<Stock, "id" | "symbol">,
+  filingCount: number,
+  context: string,
+): Promise<"never" | "stopped" | null> {
+  if (filingCount > 0) {
+    await logFetch(stock.id, stock.symbol, null, null, null, "success", "nse_filings_api",
+      `${filingCount} filings discovered (${context})`);
+    return null;
+  }
+
+  const { rowsHeld, newestReportMs } = await heldResultReach(stock.id);
+  const { kind, ageDays } = classifyEmptyDiscovery(rowsHeld, newestReportMs, Date.now());
+
+  if (kind === "quiet") {
+    await logFetch(stock.id, stock.symbol, null, null, null, "no_new_filing", "nse_filings_api",
+      `0 filings discovered (${context}) — ${rowsHeld} result row(s) held, newest ${ageDays}d old`);
+    return null;
+  }
+
+  const status = kind === "never" ? "discovery_empty" : "discovery_stale";
+  const observed =
+    kind === "never"
+      ? `0 filings, and 0 result rows held in any result table`
+      : `0 filings, and the newest period held is ${ageDays} days old (${rowsHeld} row(s))`;
+
+  await logFetch(stock.id, stock.symbol, null, null, null, status, "nse_filings_api",
+    `${observed} (${context})`);
+
+  await reportIngestionError({
+    source: RESULTS_SOURCE,
+    cron: RESULTS_CRON,
+    guardType: "count",
+    targetTable: "QuarterlyResult",
+    targetField: "discovery",
+    // Per-STOCK dedup: one open row per silent stock, occurrences counting the retries.
+    targetEntity: stock.symbol,
+    severity: kind === "never" ? "high" : "medium",
+    // Nothing an admin can hand-fill: the value does not exist to be entered. Either NSE
+    // starts serving it (the re-probe picks it up with no human action) or the source is
+    // wrong and that is a code/universe decision.
+    resolutionPath: "source_code",
+    expected:
+      kind === "never"
+        ? "at least one filing from NSE for an active, scored stock"
+        : `a filing within ${EMPTY_DISCOVERY_STALE_DAYS} days for an active, scored stock`,
+    observed,
+    detail:
+      kind === "never"
+        ? `NSE's filings API returns nothing for this symbol and we hold no results for it at all. ` +
+          `Probe it against a working control before assuming a transient fault: if the control ` +
+          `answers and this does not, the emptiness is real at the symbol NSE was asked about.`
+        : `This stock filed before and has now gone silent past a full filing cycle. Either it ` +
+          `stopped filing (corporate action, suspension) or discovery stopped finding it.`,
+    runRef: resultsRunRef(`discovery:${stock.symbol}`),
+  });
+
+  return kind;
+}
+
+/** Rows held and newest reporting period, across EVERY result table. One query. */
+async function heldResultReach(stockId: string): Promise<{ rowsHeld: number; newestReportMs: number | null }> {
+  const [r] = await prisma.$queryRaw<Array<{ n: number; newest: Date | null }>>`
+    SELECT count(*)::int AS n, max(rd) AS newest FROM (
+      SELECT report_date rd FROM quarterly_results                    WHERE stock_id = ${stockId}::uuid
+      UNION ALL SELECT report_date FROM banking_quarterly_results     WHERE stock_id = ${stockId}::uuid
+      UNION ALL SELECT report_date FROM nbfc_quarterly_results        WHERE stock_id = ${stockId}::uuid
+      UNION ALL SELECT report_date FROM life_insurance_quarterly_results    WHERE stock_id = ${stockId}::uuid
+      UNION ALL SELECT report_date FROM general_insurance_quarterly_results WHERE stock_id = ${stockId}::uuid
+    ) x`;
+  return { rowsHeld: r?.n ?? 0, newestReportMs: r?.newest ? new Date(r.newest).getTime() : null };
 }
 
 /**
@@ -1011,16 +1123,13 @@ export async function scanUniverseRanged(
     try {
       // The discovery audit row. Deliberately says WINDOW, not "all filings" — this symbol's older
       // filings were not looked at this run, and the log must not imply they were.
-      await logFetch(
-        stock.id,
-        symbol,
-        null,
-        null,
-        null,
-        "success",
-        "nse_filings_api",
-        `${filings.length} filings discovered (ranged window ${hoursBack}h)`,
-      );
+      //
+      // Routed through the SAME classifier as the per-symbol path, even though this branch is
+      // only reached for symbols that DID file (they came out of `bySymbol`, which is built from
+      // the window's rows) so the zero case is unreachable here today. One place decides what a
+      // discovery count means; a future caller that can reach zero inherits the classification
+      // instead of re-deriving it, which is how the "success" default got in.
+      await logDiscovery(stock, filings.length, `ranged window ${hoursBack}h`);
 
       const r = await scanDiscoveredFilings(stock, filings, perSymbol, options.perSymbol ?? {});
       result.successfulSymbols++;
@@ -1043,9 +1152,86 @@ export async function scanUniverseRanged(
     if (i < symbols.length - 1) await sleep(delayMs);
   }
 
+  await reprobeSilentStocks(result, delayMs, options);
+
   await runResultsCoverageGuards(scanStart, result);
 
   return result;
+}
+
+/**
+ * ★★ THE RETRY. Without it, the classification above is only an alarm.
+ *
+ * ⚠ THE RANGED SCAN CAN NEVER RE-REACH A STOCK NSE DOES NOT LIST AS HAVING FILED. That is
+ * the whole mechanism of the silence: the recurring path asks "who filed in the last 72
+ * hours" and processes the answer, so a stock absent from every window is never scanned
+ * again — for ever, on its own. ABBOTINDIA and BAYERCROP were each scanned exactly ONCE
+ * (2026-07-09) and MCX once (2026-05-11); the next attempt would have been never.
+ *
+ * So the empty set re-probes itself, every run, through the full per-symbol path. Three
+ * properties make that safe rather than a slow leak:
+ *
+ *   · IT IS SELF-EMPTYING. A stock leaves the set the moment it holds one result row.
+ *     The work shrinks as the problem is solved and cannot become permanent background load.
+ *   · IT IS BOUNDED, AND THE BOUND IS NOT SILENT. At most REPROBE_MAX symbols per run; if
+ *     more qualify, the count that was NOT probed is logged. A silent cap reads as coverage.
+ *   · IT COSTS WHAT IT LOOKS LIKE. MEASURED 2026-08-17: 3 qualifying stocks, one request
+ *     each plus the 1500 ms inter-symbol pacing — under 10 s on a run that already spends
+ *     minutes. A universe-wide re-probe (504 requests) is what this deliberately is NOT.
+ *
+ * ⚠ IT DELIBERATELY RE-PROBES ONLY THE `never` CLASS (zero rows held), not `stopped`. A
+ * stopped stock still has a fault row and an operator; a never stock has nothing at all,
+ * and is the one case where an automatic retry is the difference between eventual recovery
+ * and permanent absence. Widening this to `stopped` would make the bound depend on how
+ * broken NSE is, which is exactly the wrong coupling.
+ */
+export const REPROBE_MAX = 25;
+
+async function reprobeSilentStocks(
+  result: ScanUniverseRangedResult,
+  delayMs: number,
+  options: ScanUniverseRangedOptions,
+): Promise<void> {
+  const silent = await prisma.$queryRaw<Array<{ symbol: string }>>`
+    SELECT s.symbol FROM stocks s
+     WHERE s.is_active = true
+       AND NOT EXISTS (SELECT 1 FROM quarterly_results                    q WHERE q.stock_id = s.id)
+       AND NOT EXISTS (SELECT 1 FROM banking_quarterly_results            q WHERE q.stock_id = s.id)
+       AND NOT EXISTS (SELECT 1 FROM nbfc_quarterly_results               q WHERE q.stock_id = s.id)
+       AND NOT EXISTS (SELECT 1 FROM life_insurance_quarterly_results     q WHERE q.stock_id = s.id)
+       AND NOT EXISTS (SELECT 1 FROM general_insurance_quarterly_results  q WHERE q.stock_id = s.id)
+     ORDER BY s.symbol ASC`;
+
+  if (silent.length === 0) return;
+
+  const take = silent.slice(0, REPROBE_MAX);
+  const dropped = silent.length - take.length;
+  console.log(
+    `[results-scan/ranged] re-probing ${take.length} stock(s) holding no results at all: ` +
+      `${take.map((s) => s.symbol).join(", ")}` +
+      (dropped > 0 ? `  ⚠ ${dropped} MORE QUALIFIED AND WERE NOT PROBED THIS RUN (cap ${REPROBE_MAX})` : ""),
+  );
+
+  for (let i = 0; i < take.length; i++) {
+    const { symbol } = take[i];
+    try {
+      const r = await scanSymbol(symbol, options.perSymbol);
+      result.totalIngested += r.ingested;
+      result.totalRefreshed += r.refreshed;
+      result.totalSkipped += r.skipped;
+      result.totalFailed += r.failed;
+      if (r.scoreRelevantChanged) result.changedSymbols.push(symbol);
+      if (r.totalFilings > 0) {
+        console.log(`[results-scan/ranged] re-probe RECOVERED ${symbol}: ${r.totalFilings} filing(s), ${r.ingested} ingested`);
+      }
+    } catch (err) {
+      // A re-probe failure must not fail the run it rides on — the scan's own results are
+      // already computed. It is recorded like any other symbol error.
+      result.failedSymbols++;
+      result.symbolErrors.push({ symbol, error: `re-probe: ${String(err)}` });
+    }
+    if (i < take.length - 1) await sleep(delayMs);
+  }
 }
 
 // ── Run-level guards (GUARDS 2 + 3) for the Ind-AS path ───────

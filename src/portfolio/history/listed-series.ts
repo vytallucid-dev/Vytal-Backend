@@ -13,7 +13,11 @@
 // HOLIDAYS ARE HONEST GAPS: a week whose last weekdays all 404 (holiday cluster) simply yields no
 // point for that week — forward-filled by the chart engine, never invented.
 // ─────────────────────────────────────────────────────────────────────────────
-import { fetchUdiff, parseUdiff } from "../../ingestions/shared/udiff-bhavcopy.js";
+import {
+  fetchUdiff,
+  parseUdiff,
+  checkUdiffTradeDate,
+} from "../../ingestions/shared/udiff-bhavcopy.js";
 import type { SeriesPoint } from "./weekly-sample.js";
 
 /** The udiff ISIN-format floor (Gate-0 probe: first 2024 trading day; all 2022–2023 → 404). */
@@ -85,6 +89,15 @@ export async function fetchUdiffWeekCloses(
       if (res.status !== 200) { recorded = "miss"; continue; }
       const parsed = parseUdiff(res.buffer);
       if (!parsed.ok) { recorded = "miss"; continue; }
+      // The fifth udiff consumer, and it stamps the REQUESTED date below. A stale
+      // 200 would file the week's sample under a day the file does not describe.
+      // Treated as a holiday (step back), matching the 404 branch above.
+      const staleDate = checkUdiffTradeDate(parsed.tradDates, d);
+      if (staleDate) {
+        console.warn(`[ListedSeries] skipping ${iso(d)} — ${staleDate.message}`);
+        recorded = "holiday";
+        continue;
+      }
       const sampleDate = iso(d);
       for (const row of parsed.rows) {
         if (!row.usable) continue;

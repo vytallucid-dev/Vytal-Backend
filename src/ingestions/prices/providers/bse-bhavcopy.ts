@@ -66,6 +66,27 @@ function httpsGetBuffer(
   });
 }
 
+// ⚠ THIS PROVIDER IS **NOT** SESSION-DATE VALIDATED, AND CANNOT BE AS IT STANDS.
+//   Every sibling lane (equity sec_bhavdata_full, indices ind_close_all, udiff
+//   BhavCopy_NSE_CM) now proves a file IS the day it was requested for, by reading
+//   the file's own trading-date column — see ingestions/shared/session-date.ts.
+//   This file declares NO date column at all: the row below is the complete set.
+//   So there is nothing to compare against, and `parseBseCsv` stamps the requested
+//   `date` onto every row exactly the way the equity parser used to.
+//
+//   IT IS LEFT THAT WAY DELIBERATELY, for now:
+//     · It is a FALLBACK that has never run. MEASURED 2026-08-15 — daily_prices
+//       carries exactly two providers, "yahoo-finance" (445,009 rows) and
+//       "nse-bhavcopy-csv" (18,920). Zero rows have ever come from BSE.
+//     · Whether the real CSV carries a trading-date column the interface simply
+//       omits is UNKNOWN and was deliberately NOT probed — cf. BhavRow.ISIN in
+//       nse-bhavcopy.ts, which declares a column the file does not have.
+//
+//   ⚠ BEFORE THIS FALLBACK IS EVER RELIED ON, fetch one real BSE file and check for
+//   a trading-date column. If one exists, wire it through checkSessionDate with its
+//   own parser (the three NSE lanes already use three DIFFERENT date formats — do
+//   not assume a fourth matches any of them). If none exists, this provider cannot
+//   distinguish a holiday from a session and must not be used for archive backfill.
 interface BseBhavRow {
   CODE: string; // BSE code (not NSE symbol)
   NAME: string;

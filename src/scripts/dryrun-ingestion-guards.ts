@@ -118,7 +118,7 @@ async function main() {
   // (the 202-row CSV is a synthetic PARSER fixture; the count guard is
   //  exercised against the live 505 universe just below.)
   console.log("\n[1] Normal healthy day — expect ZERO flags");
-  const normalPrices = await provider.processBhavcopyBody(buildNormalCsv(202), SENTINEL_DATE);
+  const { prices: normalPrices } = await provider.processBhavcopyBody(buildNormalCsv(202), SENTINEL_DATE);
   const afterNormal = await prisma.ingestionError.count({
     where: { runRef: { startsWith: SENTINEL_RUNREF_PREFIX } },
   });
@@ -149,7 +149,7 @@ async function main() {
 
   // ── 3. SKIP-RATE breach — flag (no throw, partial data lands) ──
   console.log("\n[3] 20% of EQ rows un-parseable — expect HIGH skip flag, data still lands");
-  const skipPrices = await provider.processBhavcopyBody(buildHighSkipCsv(), SENTINEL_DATE);
+  const { prices: skipPrices } = await provider.processBhavcopyBody(buildHighSkipCsv(), SENTINEL_DATE);
   check("skip breach does NOT throw (lands the good 80 rows)", skipPrices.length === 80, skipPrices.length);
   const skipRow = await sentinelDateRow("null_rate");
   check("skip row written", !!skipRow);

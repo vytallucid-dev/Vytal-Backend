@@ -17,9 +17,16 @@ export const PRICES_CRON = "daily_eod_prices";
 // EXACT columns parseBhavcopy reads. A rename (CLOSE_PRICE→CLOSING_PRICE)
 // passes a loose substring check but NaNs every close → looks like a
 // holiday. Specific-column assertion catches the rename-as-holiday.
+//
+// ★ DATE1 IS LOAD-BEARING AND MUST BE ASSERTED. It is the file's own
+//   declaration of which session it holds, and GUARD 6 rejects the file when
+//   it disagrees with the date we requested. If DATE1 were absent GUARD 6
+//   would have nothing to compare and would silently degrade to "accept" —
+//   so its absence has to fail here, LOUDLY, as a shape break.
 export const REQUIRED_BHAV_COLUMNS = [
   "SYMBOL",
   "SERIES",
+  "DATE1",
   "OPEN_PRICE",
   "HIGH_PRICE",
   "LOW_PRICE",

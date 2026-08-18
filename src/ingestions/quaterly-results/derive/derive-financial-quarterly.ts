@@ -9,6 +9,7 @@
 
 import { Prisma } from "../../../generated/prisma/client.js";
 import { safeNumber, decimalPct, decimalRatio, pctChange } from "../ingester-utils.js";
+import { boundDerived } from "./derive-indas-annual.js";
 
 type Dec = Prisma.Decimal | null;
 
@@ -35,11 +36,23 @@ export function deriveBankingQuarterly(raw: BankingQRaw, priorQ: BankingQPrior |
   const niiYoy = pctChange(nii, yearAgoQ?.nii ?? null);
   const patQoq = pctChange(raw.netProfit, priorQ?.netProfit ?? null);
   const patYoy = pctChange(raw.netProfit, yearAgoQ?.netProfit ?? null);
+  // ⚠ S4.2 — banking_quarterly_results is one of the four tables the legacy
+  //   backfill writes, so its narrow derived columns are bounded: RATIO columns
+  //   Decimal(8,6) → ceiling 100, PERCENT columns Decimal(8,4) → ceiling 10,000.
+  //   An unrepresentable display ratio becomes NULL; it never clamps and never
+  //   fails an upsert carrying score-relevant columns.
+  const tag = "banking-quarterly";
   return {
     columns: {
-      nii: safeNumber(nii), totalIncome: safeNumber(totalIncome), costToIncomeRatio: decimalRatio(costToIncomeRatio),
-      netMargin: decimalPct(netMargin), pcr: decimalRatio(pcr), tier1Ratio: decimalRatio(tier1Ratio),
-      niiQoq: decimalPct(niiQoq), niiYoy: decimalPct(niiYoy), patQoq: decimalPct(patQoq), patYoy: decimalPct(patYoy),
+      nii: safeNumber(nii), totalIncome: safeNumber(totalIncome),
+      costToIncomeRatio: boundDerived(decimalRatio(costToIncomeRatio), 2, "costToIncomeRatio", tag),
+      netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
+      pcr: boundDerived(decimalRatio(pcr), 2, "pcr", tag),
+      tier1Ratio: boundDerived(decimalRatio(tier1Ratio), 2, "tier1Ratio", tag),
+      niiQoq: boundDerived(decimalPct(niiQoq), 4, "niiQoq", tag),
+      niiYoy: boundDerived(decimalPct(niiYoy), 4, "niiYoy", tag),
+      patQoq: boundDerived(decimalPct(patQoq), 4, "patQoq", tag),
+      patYoy: boundDerived(decimalPct(patYoy), 4, "patYoy", tag),
     },
     numbers: { niiYoy },
   };

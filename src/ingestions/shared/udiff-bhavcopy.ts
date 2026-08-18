@@ -14,6 +14,11 @@
 // ─────────────────────────────────────────────────────────────
 import https from "https";
 import AdmZip from "adm-zip";
+import {
+  checkSessionDate,
+  parseIsoDay,
+  type SessionDateMismatch,
+} from "./session-date.js";
 
 /** NSE publishes the modern full CM bhavcopy under this name, one file per trading day. */
 export function udiffUrl(date: Date): string {
@@ -31,11 +36,19 @@ export const UDIFF_SOURCE = "nse_udiff_bhavcopy";
 // The EXACT columns any reader of this file depends on. A rename means our fields point at the
 // wrong data — an ISIN read out of a price column is a WRONG INSTRUMENT — so a caller REJECTS
 // rather than parse through it.
+//
+// ★ TradDt IS ASSERTED for the same reason the equity lane asserts DATE1: it is the
+//   file's own statement of which session it holds, and `checkUdiffTradeDate` rejects
+//   the file when it disagrees with the date we requested. If the column vanished,
+//   that check would have nothing to compare and would degrade to "accept" — so its
+//   absence must fail here as a shape break. Format is MEASURED: "2026-08-13" (ISO),
+//   which is a THIRD format, different from both sibling archives.
 export const UDIFF_REQUIRED_COLUMNS = [
   "ISIN",
   "TckrSymb",
   "SctySrs",
   "FinInstrmNm",
+  "TradDt",
   "OpnPric",
   "HghPric",
   "LwPric",
@@ -114,7 +127,14 @@ export interface UdiffRow {
 }
 
 export type UdiffParse =
-  | { ok: true; header: string[]; rows: UdiffRow[]; totalRows: number }
+  | {
+      ok: true;
+      header: string[];
+      rows: UdiffRow[];
+      totalRows: number;
+      /** Raw TradDt of every data row. Input to `checkUdiffTradeDate`. */
+      tradDates: string[];
+    }
   | { ok: false; reason: "unzip" | "empty"; observed: string };
 
 const num = (s: string | undefined): number => Number.parseFloat((s ?? "").replace(/,/g, ""));
@@ -139,8 +159,14 @@ export function parseUdiff(buffer: Buffer): UdiffParse {
   const cell = (c: string[], k: string) => (c[idx.get(k) ?? -1] ?? "").trim();
 
   const rows: UdiffRow[] = [];
+  const tradDates: string[] = [];
   for (let i = 1; i < lines.length; i++) {
     const c = lines[i]!.split(",").map((s) => s.trim());
+
+    // Session-date input, collected before any usability filter — a mixed-date file
+    // must be detectable even if the disagreeing rows are ones we would discard.
+    const td = cell(c, "TradDt");
+    if (td) tradDates.push(td);
 
     const isin = cell(c, "ISIN");
     const symbol = cell(c, "TckrSymb");
@@ -184,10 +210,68 @@ export function parseUdiff(buffer: Buffer): UdiffParse {
     rows.push({ ...base, usable: true });
   }
 
-  return { ok: true, header, rows, totalRows: rows.length };
+  return { ok: true, header, rows, totalRows: rows.length, tradDates };
 }
 
-/** Weekdays walking back from `from` (holidays 404 → the caller steps past them). */
+/**
+ * Is this udiff file actually the session we asked for?
+ *
+ * ⚠ A MISMATCH IS "NOT A SESSION", NOT "BAD FILE". The four consumer lanes treat a
+ *   `parseUdiff` failure as a CRITICAL shape fault that aborts the entire run. A
+ *   stale or wrong-dated file must NOT do that — it means exactly what a 404 means
+ *   ("no session on this date, step back a day"), and aborting the run on the first
+ *   holiday would be a far worse regression than the bug being fixed. That is why
+ *   this is a SEPARATE predicate returning a verdict, rather than an `ok: false`
+ *   variant of UdiffParse: the two outcomes are not interchangeable.
+ *
+ * MEASURED 2026-08-15: this archive returns 404 on a non-session date, so today the
+ * check should never fire in production. It exists so the lanes stop DEPENDING on
+ * that — see session-date.ts.
+ */
+export function checkUdiffTradeDate(
+  tradDates: string[],
+  requested: Date,
+): SessionDateMismatch | null {
+  return checkSessionDate(tradDates, requested, parseIsoDay);
+}
+
+/**
+ * Candidate session dates walking back from `from`, newest first.
+ *
+ * ★ WEEKENDS ARE INCLUDED, DELIBERATELY. This used to skip Saturday and Sunday, which
+ *   made a genuine weekend session UNREACHABLE — NSE does hold them (the Budget
+ *   Saturday of 01-02-2025 is a real session sitting in daily_prices right now, and
+ *   muhurat sessions can land on a weekend). The skip was a cheap proxy for "no file
+ *   exists on a non-trading day"; the session-date check is the real test, so the
+ *   proxy is no longer needed and its false negatives are no longer worth paying for.
+ *
+ * ⚠ COST: a weekend day costs one 404, measured at ~120-300ms and rejected before any
+ *   parse. Callers that previously passed a WEEKDAY count must scale it — see each
+ *   lane's MAX_WALK_BACK, all raised by 7/5 to preserve the same trading-day reach.
+ */
+export function calendarDaysBack(from: Date, n: number): Date[] {
+  const out: Date[] = [];
+  const d = new Date(from);
+  d.setUTCHours(0, 0, 0, 0);
+  for (let i = 0; i < n; i++) {
+    out.push(new Date(d));
+    d.setUTCDate(d.getUTCDate() - 1);
+  }
+  return out;
+}
+
+/**
+ * @deprecated WEEKDAY-ONLY walk. **Do not use in any ingest path** — it cannot see a
+ * genuine weekend session (see `calendarDaysBack`, which replaced it everywhere in
+ * ingestions/ and portfolio/).
+ *
+ * Kept, unchanged, for the archived `scripts/recon-step15*` / `recon-step17*` /
+ * `probe-step17*` one-offs ONLY. Those scripts' recorded outputs are cited in the
+ * recon write-ups; repointing them at a calendar walk would change which days they
+ * sample and quietly make those recorded runs irreproducible. Preserving the old
+ * behaviour behind a deprecated name is the honest option — the rename is what
+ * surfaces the distinction rather than hiding it.
+ */
 export function weekdaysBack(from: Date, n: number): Date[] {
   const out: Date[] = [];
   const d = new Date(from);

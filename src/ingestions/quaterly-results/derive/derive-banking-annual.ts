@@ -240,20 +240,25 @@ export function deriveBankingAnnual(
     columns: {
       nii: safeNumber(nii),
       totalIncome: safeNumber(totalIncome),
-      netInterestMargin: decimalRatio(netInterestMargin),
-      costToIncomeRatio: decimalRatio(costToIncomeRatio),
-      creditCostPct: decimalRatio(creditCostPct),
-      roe: decimalRatio(roe !== null ? roe / 100 : null), // store as ratio
-      creditDepositRatio: decimalRatio(creditDepositRatio),
+      // ⚠ S4.2 — every ratio below divides and lands in a NARROW column, so each is
+      //   bounded. The RATIO columns are Decimal(8,6) → ceiling 100 (they hold
+      //   fractions, so 100 is generous); the GROWTH columns are Decimal(8,4) →
+      //   ceiling 10,000 (percent). An unrepresentable value becomes NULL, never a
+      //   clamped number and never a failed upsert.
+      netInterestMargin: boundDerived(decimalRatio(netInterestMargin), 2, "netInterestMargin", tag),
+      costToIncomeRatio: boundDerived(decimalRatio(costToIncomeRatio), 2, "costToIncomeRatio", tag),
+      creditCostPct: boundDerived(decimalRatio(creditCostPct), 2, "creditCostPct", tag),
+      roe: boundDerived(decimalRatio(roe !== null ? roe / 100 : null), 2, "roe", tag), // store as ratio
+      creditDepositRatio: boundDerived(decimalRatio(creditDepositRatio), 2, "creditDepositRatio", tag),
       netWorth: safeNumber(netWorth),
       bookValuePerShare: boundDerived(decimalPerShare(meaningfulBookValue(bookValuePerShare)), 6, "bookValuePerShare", tag),
-      pcr: decimalRatio(pcr),
-      tier1Ratio: decimalRatio(tier1Ratio),
-      niiGrowthYoy: decimalPct(niiGrowthYoy),
-      patGrowthYoy: decimalPct(patGrowthYoy),
-      depositGrowthYoy: decimalPct(depositGrowthYoy),
-      advanceGrowthYoy: decimalPct(advanceGrowthYoy),
-      assetGrowthYoy: decimalPct(assetGrowthYoy),
+      pcr: boundDerived(decimalRatio(pcr), 2, "pcr", tag),
+      tier1Ratio: boundDerived(decimalRatio(tier1Ratio), 2, "tier1Ratio", tag),
+      niiGrowthYoy: boundDerived(decimalPct(niiGrowthYoy), 4, "niiGrowthYoy", tag),
+      patGrowthYoy: boundDerived(decimalPct(patGrowthYoy), 4, "patGrowthYoy", tag),
+      depositGrowthYoy: boundDerived(decimalPct(depositGrowthYoy), 4, "depositGrowthYoy", tag),
+      advanceGrowthYoy: boundDerived(decimalPct(advanceGrowthYoy), 4, "advanceGrowthYoy", tag),
+      assetGrowthYoy: boundDerived(decimalPct(assetGrowthYoy), 4, "assetGrowthYoy", tag),
     },
     numbers: { niiGrowthYoy },
   };

@@ -26,7 +26,14 @@
 // ─────────────────────────────────────────────────────────────
 import { prisma } from "../../db/prisma.js";
 import { reportIngestionError } from "../shared/ingestion-error.js";
-import { fetchUdiff, parseUdiff, udiffUrl, type TrustRow } from "./reit-source.js";
+import {
+  fetchUdiff,
+  parseUdiff,
+  udiffUrl,
+  calendarDaysBack,
+  checkUdiffTradeDate,
+  type TrustRow,
+} from "./reit-source.js";
 import {
   fetchCorporateActions,
   foldTtm,
@@ -96,19 +103,15 @@ export interface ReitIngestResult {
 // Reading N days also seeds N days of `instrument_prices` for free, which is what the thin tier's
 // price chart draws.
 const LOOKBACK_SESSIONS = 5; // trading days of identity+price to union
-const MAX_WALK_BACK = 12; // weekdays to walk to FIND those sessions (holidays 404 → step back)
+// CALENDAR days to walk to FIND those sessions (non-sessions 404 → step back).
+// Raised 12 → 17 (×7/5) when the weekend skip was dropped: the walk now spends days
+// on Saturdays and Sundays, so the old WEEKDAY budget would have shortened the
+// trading-day reach. 17 calendar days ≈ 12 weekdays — reach preserved exactly.
+const MAX_WALK_BACK = 17;
 
-function weekdaysBack(from: Date, n: number): Date[] {
-  const out: Date[] = [];
-  const d = new Date(from);
-  d.setUTCHours(0, 0, 0, 0);
-  for (let i = 0; i < n; i++) {
-    const dow = d.getUTCDay();
-    if (dow !== 0 && dow !== 6) out.push(new Date(d));
-    d.setUTCDate(d.getUTCDate() - 1);
-  }
-  return out;
-}
+// The local weekdaysBack copy was deleted — it duplicated the shared helper AND its
+// weekend skip, which made genuine weekend sessions unreachable. Use the shared
+// calendarDaysBack; the session-date check is what rejects non-trading days now.
 
 /**
  * THE STEP-14 INGEST.
@@ -151,7 +154,7 @@ export async function runReitIngest(
   const sessions: { date: Date; rows: TrustRow[] }[] = [];
   let lastStatus = 0;
 
-  for (const d of weekdaysBack(asOf, MAX_WALK_BACK)) {
+  for (const d of calendarDaysBack(asOf, MAX_WALK_BACK)) {
     if (sessions.length >= LOOKBACK_SESSIONS) break;
 
     const f = await fetchUdiff(d);
@@ -201,6 +204,20 @@ export async function runReitIngest(
       return res;
     }
 
+    // ── SESSION DATE — must run BEFORE the push below, which stamps `d` (the
+    //    REQUESTED date) onto the session. A stale file would otherwise be filed
+    //    under a day it does not describe.
+    //    ⚠ `continue`, NOT abort: a wrong-dated file means "no session here", the
+    //    same as the 404 handled above. Aborting the run — what the shape guards
+    //    do — would take the whole lane down on the first such day.
+    const staleDate = checkUdiffTradeDate(parsed.tradDates, d);
+    if (staleDate) {
+      console.warn(
+        `[REITs] skipping ${d.toISOString().slice(0, 10)} — ${staleDate.message}`,
+      );
+      continue;
+    }
+
     sessions.push({ date: d, rows: parsed.rows });
 
     // Malformed rows are faults on the day they appear. reportIngestionError dedups on
@@ -234,8 +251,8 @@ export async function runReitIngest(
       targetTable: TARGET_TABLE,
       severity: "critical",
       resolutionPath: "source_code",
-      expected: `HTTP 200 with a non-empty body from ${udiffUrl(asOf)} (or one of the ${MAX_WALK_BACK} preceding weekdays)`,
-      observed: `no udiff BhavCopy fetched in ${MAX_WALK_BACK} weekdays (last status ${lastStatus})`,
+      expected: `HTTP 200 with a non-empty body from ${udiffUrl(asOf)} (or one of the ${MAX_WALK_BACK} preceding calendar days)`,
+      observed: `no udiff BhavCopy fetched in ${MAX_WALK_BACK} calendar days (last status ${lastStatus})`,
       detail:
         "NSE udiff BhavCopy unreachable across the whole look-back window — nothing ingested (no partial write, no stale price re-dated as fresh).",
       runRef,

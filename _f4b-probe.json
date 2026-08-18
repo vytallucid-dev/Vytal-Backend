@@ -1,0 +1,156 @@
+{
+ "probes": {
+  "p1": {
+   "ABBOTINDIA": {
+    "n": 0,
+    "sample": []
+   },
+   "BAYERCROP": {
+    "n": 0,
+    "sample": []
+   },
+   "MCX": {
+    "n": 0,
+    "sample": []
+   },
+   "RELIANCE": {
+    "n": 12,
+    "sample": [
+     {
+      "qe": "30-JUN-2026",
+      "t": "quarterly",
+      "c": "Consolidated"
+     },
+     {
+      "qe": "30-JUN-2026",
+      "t": "quarterly",
+      "c": "Standalone"
+     },
+     {
+      "qe": "31-MAR-2026",
+      "t": "annual",
+      "c": "Consolidated"
+     }
+    ]
+   }
+  },
+  "p1b": {
+   "ABBOTINDIA": {
+    "totalCount": 0,
+    "rows": 0,
+    "types": []
+   },
+   "BAYERCROP": {
+    "totalCount": 0,
+    "rows": 0,
+    "types": []
+   },
+   "MCX": {
+    "totalCount": 0,
+    "rows": 0,
+    "types": []
+   },
+   "RELIANCE": {
+    "totalCount": 19,
+    "rows": 19,
+    "types": [
+     [
+      "Integrated Filing- Governance",
+      7
+     ],
+     [
+      "Integrated Filing- Financials",
+      12
+     ]
+    ]
+   }
+  },
+  "p2": {
+   "totalCount": 3128,
+   "rows": 100,
+   "symbols": 52,
+   "subjectsPresent": []
+  },
+  "p3": {
+   "ABBOTINDIA": {
+    "n": 0,
+    "sample": []
+   },
+   "BAYERCROP": {
+    "n": 0,
+    "sample": []
+   },
+   "MCX": {
+    "n": 0,
+    "sample": []
+   },
+   "RELIANCE": {
+    "n": 53,
+    "sample": [
+     {
+      "from": "01-Oct-2024",
+      "to": "31-Dec-2024",
+      "cons": "Non-Consolidated",
+      "isin": "INE002A01018"
+     },
+     {
+      "from": "01-Oct-2024",
+      "to": "31-Dec-2024",
+      "cons": "Consolidated",
+      "isin": "INE002A01018"
+     },
+     {
+      "from": "01-Jul-2024",
+      "to": "30-Sep-2024",
+      "cons": "Consolidated",
+      "isin": "INE002A01018"
+     }
+    ]
+   }
+  },
+  "p4": {
+   "ABBOTINDIA": {
+    "error": "NSE API error 403 on /api/quote-equity?symbol=ABBOTINDIA"
+   },
+   "BAYERCROP": {
+    "error": "NSE API error 403 on /api/quote-equity?symbol=BAYERCROP"
+   },
+   "MCX": {
+    "error": "NSE API error 403 on /api/quote-equity?symbol=MCX"
+   },
+   "RELIANCE": {
+    "error": "NSE API error 403 on /api/quote-equity?symbol=RELIANCE"
+   }
+  },
+  "p5": {
+   "ABBOTINDIA": {
+    "q": "Abbott",
+    "error": "NSE API error 404 on /api/search/autocomplete?q=Abbott"
+   },
+   "BAYERCROP": {
+    "q": "Bayer",
+    "error": "NSE API error 404 on /api/search/autocomplete?q=Bayer"
+   },
+   "MCX": {
+    "q": "Multi",
+    "error": "NSE API error 404 on /api/search/autocomplete?q=Multi"
+   },
+   "RELIANCE": {
+    "q": "Reliance",
+    "error": "NSE API error 404 on /api/search/autocomplete?q=Reliance"
+   }
+  },
+  "p6": {
+   "ABBOTINDIA": [],
+   "BAYERCROP": [],
+   "MCX": [],
+   "RELIANCE": [
+    {
+     "et": "earnings",
+     "ed": "2026-07-17",
+     "p": "Financial Results"
+    }
+   ]
+  }
+ }
+}

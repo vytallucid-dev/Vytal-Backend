@@ -32,6 +32,10 @@ const CRON = "_dryrun_idx";
 const SENTINEL_DATE = new Date("1990-01-01T00:00:00.000Z");
 const SENTINEL_RUNREF = "1990-01-01:";
 
+// "Index Date" MUST be DD-MM-YYYY and MUST equal SENTINEL_DATE: GUARD 6 rejects a
+// file whose own date disagrees with the requested date. The previous fixture said
+// "25-Jun-2026" — both the wrong FORMAT (that is the equity DATE1 shape) and a
+// different day — which the new guard correctly refuses.
 const COLS = [
   "Index Name", "Index Date", "Open Index Value", "High Index Value",
   "Low Index Value", "Closing Index Value", "Points Change", "Change(%)",
@@ -39,7 +43,7 @@ const COLS = [
 ];
 function row(i: number, overrides: Partial<Record<string, string>> = {}): string {
   const base: Record<string, string> = {
-    "Index Name": `Nifty Test ${i}`, "Index Date": "25-Jun-2026",
+    "Index Name": `Nifty Test ${i}`, "Index Date": "01-01-1990",
     "Open Index Value": "100", "High Index Value": "105", "Low Index Value": "99",
     "Closing Index Value": "103", "Points Change": "3", "Change(%)": "2.5",
     Volume: "1000", "Turnover (Rs. Cr.)": "500", "P/E": "22.5", "P/B": "3.2", "Div Yield": "1.1",

@@ -40,7 +40,8 @@ import {
   fetchUdiff,
   parseUdiff,
   udiffUrl,
-  weekdaysBack,
+  calendarDaysBack,
+  checkUdiffTradeDate,
   checkUdiffShape,
   UDIFF_REQUIRED_COLUMNS,
   UDIFF_PROVIDER,
@@ -62,7 +63,9 @@ import {
 
 // Corporate debt is THINNER than government paper (recon: the 10-session union was still growing).
 const LOOKBACK_SESSIONS = 10;
-const MAX_WALK_BACK = 22;
+// CALENDAR days to walk (non-sessions 404 -> step back). Raised 22 -> 31 (x7/5)
+// when the weekend skip was dropped, so the trading-day reach is unchanged.
+const MAX_WALK_BACK = 31;
 
 export interface BondIngestResult {
   ok: boolean;
@@ -126,7 +129,7 @@ export async function runBondIngest(opts: { asOf?: Date } = {}): Promise<BondIng
   const sessions: { date: Date; rows: UdiffRow[] }[] = [];
   let lastStatus = 0;
 
-  for (const d of weekdaysBack(asOf, MAX_WALK_BACK)) {
+  for (const d of calendarDaysBack(asOf, MAX_WALK_BACK)) {
     if (sessions.length >= LOOKBACK_SESSIONS) break;
 
     const f = await fetchUdiff(d);
@@ -249,6 +252,15 @@ export async function runBondIngest(opts: { asOf?: Date } = {}): Promise<BondIng
         runRef, recurring: true,
       });
     }
+    // SESSION DATE - must run BEFORE this push, which stamps `d` (the REQUESTED
+    // date) onto the session. `continue`, NOT abort: a wrong-dated file means "no
+    // session here", exactly like the 404 above. The shape guards abort; this must not.
+    const staleDate = checkUdiffTradeDate(parsed.tradDates, d);
+    if (staleDate) {
+      console.warn(`[Bonds] skipping ${d.toISOString().slice(0, 10)} - ${staleDate.message}`);
+      continue;
+    }
+
     sessions.push({ date: d, rows: mine });
   }
 
@@ -257,7 +269,7 @@ export async function runBondIngest(opts: { asOf?: Date } = {}): Promise<BondIng
     await reportIngestionError({
       source: UDIFF_SOURCE, cron: BOND_CRON, guardType: "shape", targetTable: TARGET_TABLE,
       severity: "critical", resolutionPath: "source_code",
-      expected: `HTTP 200 from ${udiffUrl(asOf)} (or one of the ${MAX_WALK_BACK} preceding weekdays)`,
+      expected: `HTTP 200 from ${udiffUrl(asOf)} (or one of the ${MAX_WALK_BACK} preceding calendar days)`,
       observed: `no udiff BhavCopy fetched (last status ${lastStatus})`,
       detail: "NSE udiff unreachable across the whole look-back — nothing ingested.",
       runRef,

@@ -1,0 +1,106 @@
+{
+ "s1": {
+  "ABBOTINDIA": {
+   "isin": "INE358A01014",
+   "byIsin": 0,
+   "symsIsin": [],
+   "byName": 0,
+   "symsName": []
+  },
+  "BAYERCROP": {
+   "isin": "INE462A01022",
+   "byIsin": 0,
+   "symsIsin": [],
+   "byName": 0,
+   "symsName": []
+  },
+  "MCX": {
+   "isin": "INE745G01043",
+   "byIsin": 0,
+   "symsIsin": [],
+   "byName": 0,
+   "symsName": []
+  },
+  "RELIANCE": {
+   "isin": "INE002A01018",
+   "byIsin": 2,
+   "symsIsin": [
+    "RELIANCE"
+   ],
+   "byName": 2,
+   "symsName": [
+    "RELIANCE=Reliance Industries Limited"
+   ]
+  }
+ },
+ "s2": {
+  "rows": 6000,
+  "symbols": 2269,
+  "totalCount": 44201,
+  "ABBOTINDIA": {
+   "hits": 0,
+   "syms": []
+  },
+  "BAYERCROP": {
+   "hits": 0,
+   "syms": []
+  },
+  "MCX": {
+   "hits": 0,
+   "syms": []
+  },
+  "RELIANCE": {
+   "hits": 1,
+   "syms": [
+    "RELIANCE=Reliance Industries Limited"
+   ]
+  }
+ },
+ "s3": {
+  "n": 2565,
+  "ABBOTINDIA": {
+   "bySymbol": {
+    "series": "EQ",
+    "listed": "08-JAN-2010",
+    "isin": "INE358A01014",
+    "name": "Abbott India Limited"
+   },
+   "byIsin": [
+    "ABBOTINDIA"
+   ]
+  },
+  "BAYERCROP": {
+   "bySymbol": {
+    "series": "EQ",
+    "listed": "08-JAN-2010",
+    "isin": "INE462A01022",
+    "name": "Bayer Cropscience Limited"
+   },
+   "byIsin": [
+    "BAYERCROP"
+   ]
+  },
+  "MCX": {
+   "bySymbol": {
+    "series": "EQ",
+    "listed": "09-MAR-2012",
+    "isin": "INE745G01043",
+    "name": "Multi Commodity Exchange of India Limited"
+   },
+   "byIsin": [
+    "MCX"
+   ]
+  },
+  "RELIANCE": {
+   "bySymbol": {
+    "series": "EQ",
+    "listed": "29-NOV-1995",
+    "isin": "INE002A01018",
+    "name": "Reliance Industries Limited"
+   },
+   "byIsin": [
+    "RELIANCE"
+   ]
+  }
+ }
+}

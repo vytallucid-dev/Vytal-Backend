@@ -25,6 +25,12 @@ import {
   checkSkipRate,
   runRef,
 } from "../prices-guards.js";
+import {
+  checkSessionDate,
+  parseDdMmmYyyy,
+  isoDay,
+  type SessionDateMismatch,
+} from "../../shared/session-date.js";
 
 // ── URL builder ───────────────────────────────────────────────
 
@@ -88,6 +94,10 @@ interface ParseResult {
   prices: EodPrice[];
   totalEq: number; // EQ-series rows seen (skipped + kept)
   skippedBadValue: number; // EQ rows dropped for NaN/≤0 required values
+  /** Raw DATE1 of EVERY row — ALL series, not just EQ. GUARD 6 reads this.
+   *  Collected across all series on purpose: a file whose EQ rows agree but whose
+   *  other boards disagree is exactly the "mixed file" case we refuse to salvage. */
+  dateValues: string[];
 }
 
 function parseBhavcopy(csvText: string, date: Date): ParseResult {
@@ -98,10 +108,14 @@ function parseBhavcopy(csvText: string, date: Date): ParseResult {
   });
 
   const prices: EodPrice[] = [];
+  const dateValues: string[] = [];
   let totalEq = 0;
   let skippedBadValue = 0;
 
   for (const row of rows) {
+    // GUARD 6 input, collected BEFORE the series filter — see ParseResult.dateValues.
+    if (row.DATE1 != null) dateValues.push(row.DATE1);
+
     // Only equity series — skip BE, BL, SM, ST etc.
     if (row.SERIES.trim() !== "EQ") continue;
     totalEq++;
@@ -140,7 +154,7 @@ function parseBhavcopy(csvText: string, date: Date): ParseResult {
     });
   }
 
-  return { prices, totalEq, skippedBadValue };
+  return { prices, totalEq, skippedBadValue, dateValues };
 }
 
 // ── Provider ──────────────────────────────────────────────────
@@ -175,7 +189,25 @@ export class NseBhavcopyCsvProvider implements PriceProvider {
       throw new Error(`NseBhavcopy returned HTTP ${res.status} for ${url}`);
     }
 
-    const prices = await this.processBhavcopyBody(res.body, d);
+    const { prices, notASession } = await this.processBhavcopyBody(res.body, d);
+
+    // ⚠ THE SENTINEL "market likely closed" IS LOAD-BEARING, NOT PROSE.
+    //   registry.ts:74 short-circuits the provider chain ONLY on that substring.
+    //   Without it a rejected holiday would fall through to BSE — spending a
+    //   second fetch on each of the ~60 holidays a 5-year backfill crosses, and
+    //   worse, re-admitting the very corruption we just refused if BSE also
+    //   serves a stale file. A non-session must look EXACTLY like the 404 it is.
+    if (notASession) {
+      return {
+        prices: [],
+        provider: this.name,
+        fetchedAt,
+        errors: [
+          `No bhavcopy for ${d.toDateString()} — market likely closed ` +
+            `(${notASession.message})`,
+        ],
+      };
+    }
 
     if (prices.length === 0) {
       errors.push("Parsed 0 prices from bhavcopy — check CSV format");
@@ -188,11 +220,17 @@ export class NseBhavcopyCsvProvider implements PriceProvider {
     return { prices, provider: this.name, fetchedAt, errors };
   }
 
-  // Shape-assert + parse + skip-check on a raw CSV body. Separated from
-  // the HTTP fetch so the guards can be exercised against synthetic bodies
-  // (see the dry-run harness) without any network. THROWS on shape failure
-  // (the GUARD 1 reject); reports GUARD 1/2 violations as a side effect.
-  async processBhavcopyBody(body: string, date: Date): Promise<EodPrice[]> {
+  // Shape-assert + session-date-assert + parse + skip-check on a raw CSV body.
+  // Separated from the HTTP fetch so the guards can be exercised against
+  // synthetic bodies (see the dry-run harness) without any network. THROWS on
+  // shape failure (the GUARD 1 reject); reports GUARD 1/2 violations as a side
+  // effect. A GUARD 6 rejection is NOT a fault and writes no ingestion_error —
+  // it comes back as `notASession` for the caller to translate into the
+  // market-closed outcome.
+  async processBhavcopyBody(
+    body: string,
+    date: Date,
+  ): Promise<{ prices: EodPrice[]; notASession: SessionDateMismatch | null }> {
     // ── GUARD 1: SHAPE (critical · source_code · REJECT + flag) ──
     // Specific-column assertion BEFORE row iteration. A missing/renamed
     // column means the parser would silently NaN→empty and look like a
@@ -221,7 +259,33 @@ export class NseBhavcopyCsvProvider implements PriceProvider {
       );
     }
 
-    const { prices, totalEq, skippedBadValue } = parseBhavcopy(body, date);
+    const { prices, totalEq, skippedBadValue, dateValues } = parseBhavcopy(
+      body,
+      date,
+    );
+
+    // ── GUARD 6: SESSION DATE (the file must BE the day we asked for) ──
+    // MEASURED 2026-08-15: this archive returns HTTP 200 with the PRIOR session's
+    // file on a non-session date (Sunday 05-07-2026 → DATE1 03-Jul-2026; the
+    // weekday holiday 01-05-2026 → DATE1 30-Apr-2026). The `status === 404`
+    // branch above therefore almost never fires for archive dates, and every row
+    // below would otherwise be stamped with `date` — the date we ASKED for, not
+    // the date the file holds. That is how 2026-07-05 landed 504 rows identical
+    // to Friday 2026-07-03 across every OHLCV field.
+    //
+    // This is NOT reported as an ingestion error: a holiday is not a fault. It is
+    // the same OUTCOME the dead 404 branch intended — zero rows, an explanatory
+    // message, nothing written — so the caller logs "market closed" and moves on.
+    const mismatch = checkSessionDate(dateValues, date, parseDdMmmYyyy);
+    if (mismatch) {
+      // ONE line per rejected day, at the level an operator sees. A backfill
+      // stepping over ~60 holidays must SAY so — silence here reads as success.
+      console.warn(
+        `[NseBhavcopy] REJECTED ${isoDay(date)} — ${mismatch.message} ` +
+          `[kind=${mismatch.kind}, returned=${JSON.stringify(mismatch.returned)}]`,
+      );
+      return { prices: [], notASession: mismatch };
+    }
 
     // ── GUARD 2: SKIP-RATE (high · source_code · flag) ──
     // A spike in rows dropped for bad required values = silent data loss
@@ -244,7 +308,7 @@ export class NseBhavcopyCsvProvider implements PriceProvider {
       });
     }
 
-    return prices;
+    return { prices, notASession: null };
   }
 
   async ping(): Promise<boolean> {

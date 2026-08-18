@@ -4,8 +4,13 @@
 // VERBATIM EXTRACTION of the inline block in ingest-indas-quarterly.ts (CN-8:
 // no math change). The ingester now CALLS this, so ingestion ≡ fill.
 //
-// 6 derived columns, all Decimal(8,4) via decimalPct (no boundDerived here —
-// matching the existing ingester exactly):
+// 6 derived columns, all Decimal(8,4) via decimalPct, EACH BOUNDED by
+// boundDerived (S4.2). ⚠ This comment previously read "no boundDerived here —
+// matching the existing ingester exactly". That was true and is now FALSE: the
+// unbounded form failed whole upserts on thin-revenue quarters (Stage 3b: 9
+// filings lost, ADANIENSOL operatingMargin 301,900% vs a 10,000 ceiling). The
+// bound stores NULL for an unrepresentable display ratio; it never clamps and
+// never fails the write:
 //   • NON-prior (byte-identical-gated): operatingMargin, netMargin.
 //   • PRIOR-dependent (gate-exempt, determinism-checked): revenueQoq/profitQoq
 //     (prior quarter) and revenueYoy/profitYoy (year-ago quarter). These read
@@ -18,6 +23,7 @@
 
 import { Prisma } from "../../../generated/prisma/client.js";
 import { decimalPct, pctChange } from "../ingester-utils.js";
+import { boundDerived } from "./derive-indas-annual.js";
 
 export interface IndAsQuarterlyRaw {
   revenue: number | null;
@@ -68,14 +74,27 @@ export function deriveIndAsQuarterly(
   const profitQoq = pctChange(raw.netProfit, priorQuarter?.netProfit ?? null);
   const profitYoy = pctChange(raw.netProfit, yearAgoQuarter?.netProfit ?? null);
 
+  // ⚠ ALL SIX ARE Decimal(8,4) — |value| must be < 10000. The guard on each
+  //   division is `denominator !== 0`, which a NEAR-zero denominator passes, so a
+  //   thin-revenue quarter produces a percentage far outside the column and the
+  //   upsert FAILS — taking the whole row, including revenue / netProfit /
+  //   profitBeforeTax / depreciation / interest, with it. Measured in Stage 3b:
+  //   9 filings absent, 4 inside the Jan-2022 window, ADANIENSOL operatingMargin
+  //   at 301,900% against a 10,000 ceiling.
+  //   boundDerived stores NULL rather than failing. It does NOT clamp: 301,900%
+  //   is meaningless at any precision, and a clamped 9,999.99 would be a fabricated
+  //   number. These six are COSMETIC for quarterly_results in the score-input
+  //   manifest — no scoring path reads them — so nulling one costs nothing, while
+  //   failing the write costs every score-relevant column on the row.
+  const tag = "indas-quarterly";
   return {
     columns: {
-      operatingMargin: decimalPct(operatingMargin),
-      netMargin: decimalPct(netMargin),
-      revenueQoq: decimalPct(revenueQoq),
-      revenueYoy: decimalPct(revenueYoy),
-      profitQoq: decimalPct(profitQoq),
-      profitYoy: decimalPct(profitYoy),
+      operatingMargin: boundDerived(decimalPct(operatingMargin), 4, "operatingMargin", tag),
+      netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
+      revenueQoq: boundDerived(decimalPct(revenueQoq), 4, "revenueQoq", tag),
+      revenueYoy: boundDerived(decimalPct(revenueYoy), 4, "revenueYoy", tag),
+      profitQoq: boundDerived(decimalPct(profitQoq), 4, "profitQoq", tag),
+      profitYoy: boundDerived(decimalPct(profitYoy), 4, "profitYoy", tag),
     },
     numbers: { revenueYoy },
   };

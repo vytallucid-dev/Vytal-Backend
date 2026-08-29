@@ -54,7 +54,7 @@ import { prisma } from "../../db/prisma.js";
 import { loadFoundationStandalone, loadMomentumStandalone } from "./load.js";
 import {
   fyOrdinal,
-  quarterOrdinal,
+  calendarQuarterOrdinal,
   sumNonNull,
   type FoundationAnnual,
   type MomentumQuarter,
@@ -187,7 +187,7 @@ async function loadBankingFiled(stockId: string, cutoff?: Date): Promise<Omit<Fi
     quarterly: qRows.map((r): MomentumQuarter => ({
       fiscalYear: r.fiscalYear,
       quarter: r.quarter,
-      qOrdinal: quarterOrdinal(r.fiscalYear, r.quarter),
+      qOrdinal: calendarQuarterOrdinal(r.reportDate),
       revenue: n(r.totalIncome),
       otherIncome: n(r.otherIncome),
       interest: n(r.interestExpended),
@@ -267,7 +267,7 @@ async function loadNbfcFiled(stockId: string, cutoff?: Date): Promise<Omit<Filed
     quarterly: qRows.map((r): MomentumQuarter => ({
       fiscalYear: r.fiscalYear,
       quarter: r.quarter,
-      qOrdinal: quarterOrdinal(r.fiscalYear, r.quarter),
+      qOrdinal: calendarQuarterOrdinal(r.reportDate),
       revenue: n(r.revenue),
       otherIncome: n(r.otherIncome),
       interest: n(r.financeCosts),
@@ -339,7 +339,7 @@ async function loadLifeInsuranceFiled(stockId: string, cutoff?: Date): Promise<O
     quarterly: qRows.map((r): MomentumQuarter => ({
       fiscalYear: r.fiscalYear,
       quarter: r.quarter,
-      qOrdinal: quarterOrdinal(r.fiscalYear, r.quarter),
+      qOrdinal: calendarQuarterOrdinal(r.reportDate),
       revenue: n(r.totalRevenuePolicyholders), // ⚠ policyholders' account
       otherIncome: null, // the quarterly LI filing carries no shareholders' other-income line
       interest: null,
@@ -405,7 +405,7 @@ async function loadGeneralInsuranceFiled(stockId: string, cutoff?: Date): Promis
     quarterly: qRows.map((r): MomentumQuarter => ({
       fiscalYear: r.fiscalYear,
       quarter: r.quarter,
-      qOrdinal: quarterOrdinal(r.fiscalYear, r.quarter),
+      qOrdinal: calendarQuarterOrdinal(r.reportDate),
       revenue: n(r.totalRevenue),
       otherIncome: n(r.otherIncome),
       interest: null,

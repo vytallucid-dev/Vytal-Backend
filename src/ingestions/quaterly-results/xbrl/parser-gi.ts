@@ -228,7 +228,13 @@ export function parseGeneralInsuranceQuarterly(
     netProfit:
       extractNumber(xml, "ProfitLossAfterTax", PNL) ??
       extractNumber(xml, "ProfitLossForPeriod", PNL) ??
-      extractNumber(xml, "ProfitLossForThePeriod", PNL),
+      extractNumber(xml, "ProfitLossForThePeriod", PNL) ??
+      // S2 — the ruling: prefer the unambiguous TOTAL tag; fall back to the
+      // owners'/minority split only where every total tag is absent. Appended at
+      // the END so any document carrying a total tag parses byte-identically to
+      // before — this only widens recovery, it never re-points an existing value.
+      extractNumber(xml, "ProfitOrLossAttributableToOwnersOfParent", PNL) ??
+      extractNumber(xml, "ProfitLossBeforeMinorityInterest", PNL),
 
     ...ratios,
   };
@@ -410,7 +416,13 @@ export function parseGeneralInsuranceAnnual(
     netProfit:
       extractNumber(xml, "ProfitLossAfterTax", PNL) ??
       extractNumber(xml, "ProfitLossForPeriod", PNL) ??
-      extractNumber(xml, "ProfitLossForThePeriod", PNL),
+      extractNumber(xml, "ProfitLossForThePeriod", PNL) ??
+      // S2 — the ruling: prefer the unambiguous TOTAL tag; fall back to the
+      // owners'/minority split only where every total tag is absent. Appended at
+      // the END so any document carrying a total tag parses byte-identically to
+      // before — this only widens recovery, it never re-points an existing value.
+      extractNumber(xml, "ProfitOrLossAttributableToOwnersOfParent", PNL) ??
+      extractNumber(xml, "ProfitLossBeforeMinorityInterest", PNL),
 
     // BS
     shareCapital: extractNumber(xml, "ShareCapital", BS),

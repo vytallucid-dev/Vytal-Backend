@@ -123,6 +123,24 @@ export const qIndex = (q: string): number => Number(q.replace(/\D/g, "")) - 1;
 /** Chronological quarter index: FY26Q1 → 26*4+0 = 104. */
 export const quarterOrdinal = (fy: string, q: string): number => fyOrdinal(fy) * 4 + qIndex(q);
 
+/**
+ * ⚠ THE ADJACENCY KEY, DERIVED FROM THE CALENDAR — NOT FROM THE FILED LABEL.
+ *
+ * momentum.ts builds its consecutive run with `qOrdinal === run[0].qOrdinal - 1`, so qOrdinal IS
+ * the definition of "the immediately preceding quarter". Deriving it from (fiscalYear, quarter)
+ * makes that definition depend on the filer's FY CONVENTION, and a company that migrates its FY
+ * carries two conventions in one series: MEASURED 2026-08-24, ACC and AMBUJACEM label 2021-12-31
+ * as Q4 FY21 (December-FY) and 2022-09-30 as Q2 FY23 (March-FY). Both labels are CORRECT AS FILED;
+ * the ordinals they produce jump 89 → 93, so a fully-populated 10-quarter calendar series reports
+ * a trailing run of 2 and every TTM metric goes unavailable.
+ *
+ * The period END is convention-free: three months is three months whoever's fiscal year it sits in.
+ * Keying adjacency on it fixes every FY-migrating filer without rewriting one filed label.
+ * `quarterOrdinal` is retained — the FY label remains the DISPLAY truth and the storage key.
+ */
+export const calendarQuarterOrdinal = (reportDate: Date): number =>
+  reportDate.getUTCFullYear() * 4 + Math.floor(reportDate.getUTCMonth() / 3);
+
 /** Sum of the non-null parts; null only if ALL parts are null. */
 export const sumNonNull = (...xs: (number | null)[]): number | null => {
   const present = xs.filter((x): x is number => x !== null);

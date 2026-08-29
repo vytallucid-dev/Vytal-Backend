@@ -28,6 +28,7 @@ import {
   runSmartShareholdingRefresh,
 } from "../../ingestions/shareholdings/ingest-shareholding.js";
 import { runDailyJob } from "../../ingestions/insider-trades/pit-jobs.js";
+import { fillShareholdingGapsFromBse } from "../../ingestions/shareholdings/bse/bse-shp-gapfill.js";
 
 // ── EOD Prices ────────────────────────────────────────────────
 
@@ -101,8 +102,25 @@ export async function handleShareholdingQuarterly(
     const cancelled = await ctx.shouldCancel();
     return !cancelled;
   }, ctx.signal);
+
+  // ── NSE -> BSE FALLBACK ──────────────────────────────────────
+  // The NSE pass above is the primary source. It occasionally DROPS a quarter
+  // for a stock and nothing notices: ABB's 2026-06-30 filing was still missing
+  // 55 days past the SEBI deadline while BSE held it complete. This sweep runs
+  // AFTER the NSE pass, looks only at quarters whose filing deadline has passed
+  // and that sit after the stock's first known row, and INSERTS ONLY — so an NSE
+  // row is never overwritten and a not-yet-filed quarter is never chased.
+  // A failure here must not fail the quarterly ingest: NSE data has already landed.
+  await ctx.reportProgress(99, "Reconciling NSE gaps against BSE");
+  let gapFill: Awaited<ReturnType<typeof fillShareholdingGapsFromBse>> | { error: string };
+  try {
+    gapFill = await fillShareholdingGapsFromBse({ lookbackQuarters: 8, signal: ctx.signal });
+  } catch (e) {
+    gapFill = { error: (e as Error).message };
+  }
+
   await ctx.reportProgress(100, "Quarterly shareholding ingest complete");
-  return result;
+  return { ...result, gapFill };
 }
 
 // ── Shareholding — smart daily refresh ───────────────────────

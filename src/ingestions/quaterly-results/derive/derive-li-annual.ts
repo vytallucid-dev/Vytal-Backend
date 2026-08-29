@@ -121,11 +121,13 @@ export function deriveLiAnnual(
     columns: {
       netWorth: safeNumber(netWorth),
       bookValuePerShare: boundDerived(decimalPerShare(meaningfulBookValue(bookValuePerShare)), 6, "bookValuePerShare", tag),
-      roe: decimalRatio(roe),
-      newBusinessPremiumPct: decimalRatio(newBusinessPremiumPct),
-      expenseRatioPolicyholders: decimalRatio(expenseRatio),
-      premiumGrowthYoy: decimalPct(premiumGrowthYoy),
-      patGrowthYoy: decimalPct(patGrowthYoy),
+      // S8.1b — bounded to their own columns. Decimal(8,6) → maxIntDigits 2
+      // (ceiling 100); Decimal(8,4) → 4 (ceiling 10,000).
+      roe: boundDerived(decimalRatio(roe), 2, "roe", tag),
+      newBusinessPremiumPct: boundDerived(decimalRatio(newBusinessPremiumPct), 2, "newBusinessPremiumPct", tag),
+      expenseRatioPolicyholders: boundDerived(decimalRatio(expenseRatio), 2, "expenseRatioPolicyholders", tag),
+      premiumGrowthYoy: boundDerived(decimalPct(premiumGrowthYoy), 4, "premiumGrowthYoy", tag),
+      patGrowthYoy: boundDerived(decimalPct(patGrowthYoy), 4, "patGrowthYoy", tag),
     },
     numbers: { premiumGrowthYoy },
   };

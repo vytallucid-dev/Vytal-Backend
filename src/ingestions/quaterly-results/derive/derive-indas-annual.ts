@@ -79,6 +79,42 @@ export function boundDerived(
   field: string,
   tag: string,
 ): Prisma.Decimal | null {
+  return boundToColumn(v, maxIntDigits, field, tag, "derived");
+}
+
+// ── S8.1c — THE DISCLOSED SIBLING ───────────────────────────────────────────
+// The 22 ratios the LI/GI ingesters write come from the DOCUMENT, not from our
+// arithmetic, so the failure has a different cause — and the same cure.
+//
+//   SAME: the column is the constraint either way. A value that cannot be
+//   represented cannot be stored, and an overflow throws the WHOLE upsert,
+//   discarding the raw absolute lines with it. Widening the column is not the
+//   answer — a persistency ratio of 301,900% is meaningless in any column type,
+//   and a wider column would store the nonsense instead of flagging it.
+//
+//   DIFFERENT — and this is why it logs separately: a DERIVED overflow means our
+//   maths hit a near-zero denominator; the inputs survive in the row, so a later
+//   re-derive recovers the true value once the input is fixed. A DISCLOSED
+//   overflow means the filer tagged a number outside any plausible range; no
+//   re-derive can recover it, because there is nothing to recompute from. It
+//   needs the filing re-read or a manual key. A reader chasing a null must be
+//   able to tell those two apart from the log line alone.
+export function boundDisclosed(
+  v: Prisma.Decimal | null,
+  maxIntDigits: number,
+  field: string,
+  tag: string,
+): Prisma.Decimal | null {
+  return boundToColumn(v, maxIntDigits, field, tag, "disclosed");
+}
+
+function boundToColumn(
+  v: Prisma.Decimal | null,
+  maxIntDigits: number,
+  field: string,
+  tag: string,
+  kind: "derived" | "disclosed",
+): Prisma.Decimal | null {
   if (v === null) return null;
   const max = new Prisma.Decimal(10).pow(maxIntDigits);
   if (v.abs().greaterThanOrEqualTo(max)) {
@@ -87,8 +123,10 @@ export function boundDerived(
     //   so a quarterly overflow was logging as an annual one. `tag` already carries
     //   the real caller.
     console.warn(
-      `[boundDerived] ${tag}: derived ${field}=${v.toString()} out of column range ` +
-        `(|v|≥${max.toString()}) → stored null (display field; scoring reads raw lines, not this column).`,
+      `[${kind === "derived" ? "boundDerived" : "boundDisclosed"}] ${tag}: ${kind} ${field}=${v.toString()} out of column range ` +
+        (kind === "derived"
+          ? `(|v|≥${max.toString()}) → stored null (display field; scoring reads raw lines, not this column).`
+          : `(|v|≥${max.toString()}) → stored null (as filed; no sibling to recompute from — re-read the filing or key it by hand).`),
     );
     return null;
   }

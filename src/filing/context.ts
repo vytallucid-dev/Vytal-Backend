@@ -25,6 +25,7 @@ import { loadFlowFeeds } from "../scoring/ownership/flow-feeds-load.js";
 import { opmSeriesFromQuarters } from "../scoring/findings/context.js";
 import { isFinancialIndustry, type FilingContext } from "../scoring/findings/types.js";
 import type { OwnershipQuarter } from "../scoring/ownership/types.js";
+import { collapseToOneRowPerQuarter } from "../scoring/ownership/collapse-quarters.js";
 import type { IndustryType } from "../generated/prisma/client.js";
 import { makePeriod, rollingWindowPeriod, type FilingPeriods } from "./period.js";
 
@@ -68,7 +69,9 @@ export async function loadFilingContext(subject: FilingSubject, asOf: Date, cuto
   });
   // Same mapping score-pass.ts uses at its own DB boundary — counts stay BigInt, percentages become
   // plain numbers. The engine never sees a Decimal.
-  const shareholding: OwnershipQuarter[] = shRows.map((r) => ({
+  // ⚠ ONE ROW PER QUARTER — see ownership/collapse-quarters.ts. These rows are per-FILING, and the
+  //   rules (r2-promoter-exit, primary.ts) treat adjacent elements as consecutive quarters.
+  const shareholding: OwnershipQuarter[] = collapseToOneRowPerQuarter(shRows).map((r) => ({
     asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear,
     promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares,
     promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct),

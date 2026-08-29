@@ -16,6 +16,8 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveGiQuarterly } from "../derive/derive-financial-quarterly.js";
+import { boundDisclosed } from "../derive/derive-indas-annual.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export async function ingestGeneralInsuranceQuarterly(
   input: {
@@ -24,6 +26,7 @@ export async function ingestGeneralInsuranceQuarterly(
     source: string;
   },
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
@@ -130,18 +133,25 @@ export async function ingestGeneralInsuranceQuarterly(
     tax: safeNumber(p.tax),
     netProfit: safeNumber(p.netProfit),
 
-    combinedRatio: decimalRatio(p.combinedRatio),
-    incurredClaimRatio: decimalRatio(p.incurredClaimRatio),
-    expensesOfManagementRatio: decimalRatio(p.expensesOfManagementRatio),
-    netRetentionRatio: decimalRatio(p.netRetentionRatio),
-    solvencyRatio: safeNumber(p.solvencyRatio, 4),
+    // S8.1c — DISCLOSED ratios: taken from the document, not from our arithmetic.
+    //   Bounded to their own columns all the same, because an overflow throws the
+    //   WHOLE upsert and takes the raw absolute lines with it. These four are
+    //   Decimal(8,6) → maxIntDigits 2; solvencyRatio below is Decimal(8,4) → 4.
+    //   Unrepresentable → null, never clamped, never fatal.
+    combinedRatio: boundDisclosed(decimalRatio(p.combinedRatio), 2, "combinedRatio", entity),
+    incurredClaimRatio: boundDisclosed(decimalRatio(p.incurredClaimRatio), 2, "incurredClaimRatio", entity),
+    expensesOfManagementRatio: boundDisclosed(decimalRatio(p.expensesOfManagementRatio), 2, "expensesOfManagementRatio", entity),
+    netRetentionRatio: boundDisclosed(decimalRatio(p.netRetentionRatio), 2, "netRetentionRatio", entity),
+    solvencyRatio: boundDisclosed(safeNumber(p.solvencyRatio, 4), 4, "solvencyRatio", entity),
 
     // Derived (netUnderwritingMargin, netMargin, gpw QoQ/YoY, pat QoQ/YoY)
     // from the single deriveGiQuarterly path (ingestion ≡ fill).
     ...derived.columns,
   };
 
-  const row = await prisma.generalInsuranceQuarterlyResult.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.generalInsuranceQuarterlyResult,
+    modelName: "GeneralInsuranceQuarterlyResult",
     where: {
       stockId_quarter_fiscalYear_resultType: {
         stockId,
@@ -150,9 +160,11 @@ export async function ingestGeneralInsuranceQuarterly(
         resultType: p.resultType,
       },
     },
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: entity,
   });
+  const row = written.row;
 
   return {
     status: decision === "refresh" ? "refreshed" : "success",

@@ -147,8 +147,13 @@ export async function ingestBankSupplementary(
     const s = (raw as Record<string, unknown> | null)?.symbol;
     if (typeof s === "string" && s.trim()) symbols.add(s.trim().toUpperCase());
   }
+  // ⚠ INACTIVE STOCKS TAKE NO NEW DATA. Every other ingestion lane gates on isActive; this one did
+  //   not, so an upload naming a deactivated symbol would quietly write rows for a stock nothing
+  //   else maintains — data that then ages while looking current. A symbol that resolves to an
+  //   inactive stock now falls through to the same "unknown symbol" rejection as any other, so the
+  //   caller is told rather than silently served.
   const stocks = await prisma.stock.findMany({
-    where: { symbol: { in: [...symbols] } },
+    where: { symbol: { in: [...symbols] }, isActive: true },
     select: { id: true, symbol: true, industryType: true },
   });
   const stockBySymbol = new Map(stocks.map((s) => [s.symbol, s]));

@@ -195,15 +195,22 @@ export async function findIndustryTaxonomyDisagreements(): Promise<
     select: { id: true, symbol: true, industryType: true },
   });
 
+  // ⚠ `xbrlIndustry` is REGEX-CAPTURED from a log string — the one value in this family that is
+  // not compile-time enum-typed. scan.ts writes it from industryForTaxonomy() so it is lowercase
+  // by construction today, but a free-text round-trip compared case-sensitively against an enum is
+  // exactly the shape that silently reclassifies every stock if the writer's casing ever drifts.
+  // Normalise both sides; the comparison is then casing-proof without hardcoding any literal.
+  const sameIndustry = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+
   const disagreements: IndustryTaxonomyDisagreement[] = [];
   for (const stock of stocks) {
     const latest = latestByStock.get(stock.id)!;
-    if (stock.industryType === latest.xbrlIndustry) continue; // already agrees
+    if (sameIndustry(stock.industryType, latest.xbrlIndustry)) continue; // already agrees
     disagreements.push({
       symbol: stock.symbol,
       stockId: stock.id,
       currentIndustryType: stock.industryType,
-      filedTaxonomy: latest.xbrlIndustry as IndustryType,
+      filedTaxonomy: latest.xbrlIndustry.toLowerCase() as IndustryType,
       basis: latest.basis,
       fiscalYear: latest.fiscalYear,
       quarter: latest.quarter,

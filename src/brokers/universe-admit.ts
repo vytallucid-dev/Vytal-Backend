@@ -78,6 +78,8 @@ export interface AdmissionOutcome {
     | "admitted_instrument"
     /** Resolved to a NON-EQUITY catalogue instrument (an ETF, a fund). Held, valued, NOT scored. */
     | "matched_instrument"
+    /** An equity outside the covered universe — held, shown, deliberately not adopted. */
+    | "not_covered"
     /** No ISIN, OR an ISIN we cannot honestly classify ⇒ no row. The honest gap. */
     | "unidentifiable";
 }
@@ -96,6 +98,9 @@ export interface ResolutionResult {
   /** STEP 17 — newly created NON-EQUITY catalogue rows (a bond the broker surfaced that no bhavcopy
    *  had shown us). stock_id NULL, so held-NOT-scored by construction. */
   admittedInstruments: { symbol: string; isin: string; instrumentId: string; assetClass: string }[];
+  /** Identified as an equity, but outside the covered universe (BE/BZ series, SME, BSE-only, or
+   *  newer than the last seed). HELD and SHOWN, not adopted — the UI raises a banner from this. */
+  notCovered: { symbol: string; isin: string; reason: string }[];
   /** Resolved to a non-equity instrument — identified, held, NOT scored. Named, never dropped. */
   heldNotScored: { symbol: string; isin: string; instrumentId: string; assetClass: string }[];
   /** Holdings we could not identify (no ISIN, or an ISIN we refuse to guess at) — they keep stock_id
@@ -109,6 +114,14 @@ export interface ResolutionResult {
  * broker feed must not be able to rewrite our universe's facts, only to extend it with rows that
  * were not there.
  */
+/**
+ * Whether an equity the catalogue has never seen should be ADOPTED into `stocks`.
+ *
+ * false since 2026-08-26, when the universe was seeded to the whole NSE EQ segment (2,291 stocks).
+ * See the equity branch below for the full reasoning. Set true to restore pre-expansion behaviour.
+ */
+const ADMIT_UNKNOWN_EQUITIES = false;
+
 export async function resolveHoldingsToUniverse(holdings: StandardHolding[]): Promise<ResolutionResult> {
   const bySymbol = new Map<string, { stockId: string | null; instrumentId: string | null }>();
   const outcomes: AdmissionOutcome[] = [];
@@ -116,10 +129,11 @@ export async function resolveHoldingsToUniverse(holdings: StandardHolding[]): Pr
   const admittedInstruments: ResolutionResult["admittedInstruments"] = [];
   const heldNotScored: ResolutionResult["heldNotScored"] = [];
   const unidentifiable: string[] = [];
+  const notCovered: { symbol: string; isin: string; reason: string }[] = [];
 
   const symbols = [...new Set(holdings.map((h) => h.symbol))];
   if (symbols.length === 0)
-    return { bySymbol, outcomes, admitted, admittedInstruments, heldNotScored, unidentifiable };
+    return { bySymbol, outcomes, admitted, admittedInstruments, notCovered, heldNotScored, unidentifiable };
 
   // ══ Pass 0 (STEP 13): THE CATALOGUE ANSWERS FIRST. ═══════════════════════════════════════
   //
@@ -264,10 +278,33 @@ export async function resolveHoldingsToUniverse(holdings: StandardHolding[]): Pr
         continue;
       }
 
-      // EQUITY — the original path, byte-for-byte. A real stock outside our 504 still becomes a bare
-      // stock: admitted, priced forward by the next daily-prices run (loadUniverse reads `stocks`),
-      // and HELD-NOT-SCORED, because it has no peer group and the scoring engine only ever walks
-      // PeerGroup → StockPeerGroup → Stock. Scoring it is a separate, deliberate promotion.
+      // ── EQUITY ───────────────────────────────────────────────────────────────────────────────
+      // ⚠ THIS USED TO ADMIT. It no longer does, and the reason is that the premise changed.
+      //
+      // Admission existed because the universe was 504 stocks, so a user holding anything outside
+      // the Nifty-500 had shares we could not represent at all. On 2026-08-26 the universe was
+      // seeded to the whole NSE **EQ** segment — 2,291 stocks — so an equity that is still unknown
+      // is no longer "a gap in our coverage". It is one of:
+      //   · BE / BZ series — NSE's surveillance and trade-to-trade lists, deliberately excluded
+      //   · an SME-platform scrip (a separate NSE list, also excluded)
+      //   · BSE-only, or a newly-listed name the seed predates
+      // Those are precisely the holdings we do not want to present as trackable, and admitting them
+      // built a permanent bare row — no sector, no peer group, no fundamentals — for each one.
+      //
+      // So the holding is still HELD and still SHOWN; it simply is not adopted into the universe.
+      // `notCovered` carries it to the sync result so the UI can raise a banner on refresh rather
+      // than the row silently appearing as a first-class stock.
+      //
+      // Flipping ADMIT_UNKNOWN_EQUITIES back to true restores the old behaviour exactly — kept as a
+      // named switch rather than deleted code, because "why did this stop happening" is a question
+      // someone will ask, and a constant answers it where a deletion cannot.
+      if (!ADMIT_UNKNOWN_EQUITIES) {
+        bySymbol.set(h.symbol, { stockId: null, instrumentId: null });
+        notCovered.push({ symbol: h.symbol, isin: h.isin!, reason: cls.why });
+        outcomes.push({ symbol: h.symbol, stockId: null, instrumentId: null, how: "not_covered" });
+        continue;
+      }
+
       const created = await admitBareStock(h.symbol, h.isin!, h.exchange);
       stockIdBySymbol.set(h.symbol, created.stockId);
       admitted.push({ symbol: h.symbol, isin: h.isin!, stockId: created.stockId });
@@ -315,7 +352,7 @@ export async function resolveHoldingsToUniverse(holdings: StandardHolding[]): Pr
     });
   }
 
-  return { bySymbol, outcomes, admitted, admittedInstruments, heldNotScored, unidentifiable };
+  return { bySymbol, outcomes, admitted, admittedInstruments, notCovered, heldNotScored, unidentifiable };
 }
 
 /**

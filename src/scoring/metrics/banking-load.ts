@@ -7,7 +7,7 @@
 // rows (the pure fns surface UNAVAILABLE). PURE shapes out; DB in.
 
 import { prisma } from "../../db/prisma.js";
-import { fyOrdinal, quarterOrdinal } from "./types.js";
+import { fyOrdinal, calendarQuarterOrdinal } from "./types.js";
 import { periodOrdinal } from "./banking-types.js";
 import type { BankingAnnual, BankingQuarter, BankingCtx, SupplementaryPoint } from "./banking-types.js";
 
@@ -59,7 +59,7 @@ export async function loadBankingQuarterlyStandalone(stockId: string, reportDate
   return rows.map((r) => ({
     fiscalYear: r.fiscalYear,
     quarter: r.quarter,
-    qOrdinal: quarterOrdinal(r.fiscalYear, r.quarter),
+    qOrdinal: calendarQuarterOrdinal(r.reportDate),
     interestEarned: n(r.interestEarned),
     interestExpended: n(r.interestExpended),
     otherIncome: n(r.otherIncome),

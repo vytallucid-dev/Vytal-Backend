@@ -19,10 +19,12 @@ import {
 } from "../financial-guards.js";
 import { deriveBankingAnnual } from "../derive/derive-banking-annual.js";
 import { plausibleFaceValue } from "../derive/derive-indas-annual.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export async function ingestBankingAnnual(
   input: { stockId: string; parsed: ParsedBankingAnnual; source: string },
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
@@ -219,11 +221,15 @@ export async function ingestBankingAnnual(
     select: scoreRelevantSelect("banking_fundamentals") as never,
   });
 
-  const row = await prisma.bankingFundamental.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.bankingFundamental,
+    modelName: "BankingFundamental",
     where: key,
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: entity,
   });
+  const row = written.row;
 
   const diff = diffScoreRelevant(
     "banking_fundamentals",

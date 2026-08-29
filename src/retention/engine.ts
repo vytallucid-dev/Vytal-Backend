@@ -141,9 +141,30 @@ async function runSupersede(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean
   }
   const { value: sdays, clamped } = clampUp(p.supersededDays, p.floor);
 
-  // Targets: superseded (someone points at them via supersedes_id) AND older than cutoff.
-  // A head is never pointed-at, so "pointed-at" ⇔ "non-head". $1 = sdays (reused).
-  const targetSel = `SELECT s."id" FROM ${q(t)} s WHERE s."created_at" < now() - make_interval(days => $1::int) AND EXISTS (SELECT 1 FROM ${q(t)} n WHERE n."supersedes_id" = s."id")`;
+  // ⚠⚠ "SUPERSEDED" IS A PROPERTY OF THE VERSION ORDER, NOT OF THE CHAIN POINTER.
+  //
+  //   This predicate used to be `EXISTS (SELECT 1 FROM score_snapshots n WHERE n.supersedes_id =
+  //   s.id)` — "someone points at me" — justified by "a head is never pointed-at, so pointed-at ⇔
+  //   non-head". That equivalence holds only while the chain is INTACT, and step 1 of this very
+  //   cascade nulls those pointers. So the set was defined by a condition its own first statement
+  //   destroys, and it was ALSO unrecoverable: once a run had nulled the pointers, the rows it
+  //   failed to delete became permanently invisible to the next run while remaining in the table.
+  //   MEASURED: 703 rows ended up in exactly that state — non-heads, past the window, pointed at by
+  //   nothing, and no longer matchable.
+  //
+  //   The head is intrinsically the highest version for (stock_id, snapshot_type, period_key). That
+  //   cannot be erased by an UPDATE, survives a partially-applied run, and matches what the policy
+  //   actually says: keep every HEAD forever, prune superseded rows past the window.
+  //   $1 = sdays (reused).
+  const targetSel =
+    `SELECT s."id" FROM (
+       SELECT "id", "created_at",
+              row_number() OVER (PARTITION BY "stock_id", "snapshot_type", "period_key"
+                                 ORDER BY "version" DESC, "created_at" DESC) AS rn
+         FROM ${q(t)}
+     ) s
+      WHERE s.rn > 1
+        AND s."created_at" < now() - make_interval(days => $1::int)`;
 
   const matched = await count(`SELECT count(*)::int AS n FROM (${targetSel}) x`, sdays);
 
@@ -170,11 +191,24 @@ async function runSupersede(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean
   let deleted = 0;
   if (!dryRun && matched > 0) {
     await prisma.$transaction(async (tx) => {
+      // ⚠⚠ THE TARGET SET MUST BE MATERIALISED BEFORE STEP 1, NOT RE-EVALUATED AFTER IT.
+      //   `targetSel` selects rows THAT SOMEONE POINTS AT:
+      //        ... AND EXISTS (SELECT 1 FROM score_snapshots n WHERE n.supersedes_id = s.id)
+      //   Step 1 nulls exactly those pointers. Re-running the same predicate in step 2 therefore
+      //   matches NOTHING — the first statement destroys the very condition that defines the set.
+      //
+      //   MEASURED on the first pass that ever reached this code: matched 703, deleted 0, table
+      //   unchanged, status "ok". That is the worst possible outcome — a prune that reports success
+      //   while removing nothing, so the backlog grows silently and the report says it is healthy.
+      //   Capturing the ids first makes the set immutable for the rest of the transaction.
+      const ids = (await tx.$queryRawUnsafe<Array<{ id: string }>>(targetSel, sdays)).map((r) => r.id);
+      if (ids.length === 0) return;
+
       // 1 — null the chain pointer on the referrers (NoAction FK forbids deleting a still-pointed row).
-      await tx.$executeRawUnsafe(`UPDATE ${q(t)} SET "supersedes_id" = NULL WHERE "supersedes_id" IN (${targetSel})`, sdays);
+      await tx.$executeRawUnsafe(`UPDATE ${q(t)} SET "supersedes_id" = NULL WHERE "supersedes_id" = ANY($1::text[])`, ids);
       // 2 — delete the superseded snapshots (CASCADE → score_patterns; score_guardrail_events
       //     has its own retention row and is merely DETACHED here, snapshot_id → NULL).
-      deleted = await tx.$executeRawUnsafe(`DELETE FROM ${q(t)} WHERE "id" IN (${targetSel})`, sdays);
+      deleted = await tx.$executeRawUnsafe(`DELETE FROM ${q(t)} WHERE "id" = ANY($1::text[])`, ids);
       // 3 — delete now-orphaned pillars (no snapshot references them). CASCADE → metrics/subs/ownership/flows.
       await tx.$executeRawUnsafe(
         `DELETE FROM ${q("score_pillars")} p WHERE NOT EXISTS (SELECT 1 FROM ${q(t)} s WHERE ${pillarRefPlain("s")})`,
@@ -189,7 +223,21 @@ async function runSupersede(p: RetentionPolicyRow, cat: Catalog, dryRun: boolean
              AND NOT EXISTS (SELECT 1 FROM ${q("score_pillars")} pp WHERE pp."run_id" = r."id")
              AND NOT EXISTS (SELECT 1 FROM ${q("score_peer_stats")} ps WHERE ps."run_id" = r."id")`,
       );
-    });
+    },
+    // ⚠ THE DEFAULT 5s INTERACTIVE-TRANSACTION TIMEOUT IS NOT ENOUGH FOR THIS CASCADE, and the
+    //   failure mode is misleading: "A query cannot be executed on an expired transaction", which
+    //   reads like a connection fault rather than "your work took too long". MEASURED on the first
+    //   pass that ever got this far — 703 snapshots, 1,202 cascaded score_patterns and 794 orphaned
+    //   pillars in one atomic unit.
+    //
+    //   ⚠ AND THE SIZE IS A BACKLOG, NOT A STEADY STATE. This rule had never once completed (see the
+    //     migration that unblocked it), so the very first successful run must clear everything that
+    //     accumulated while it was broken. Sizing the timeout for the daily delta would have made
+    //     the catch-up run fail forever — the exact shape of the bug it is recovering from.
+    //     Atomicity is not negotiable here: a half-applied cascade leaves orphaned pillars behind
+    //     dangling snapshots, so this waits rather than splitting the work.
+    { timeout: 300_000, maxWait: 30_000 },
+    );
   }
 
   const res = baseResult(p, "supersede_chain", clamped, sdays, matched, deleted, null);

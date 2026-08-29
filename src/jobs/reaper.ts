@@ -22,6 +22,21 @@
 // age is duration-blind: a 14-hour scan beats every 30 seconds for 14 hours, so it is
 // never a candidate, while a corpse stops beating the instant its process dies.
 //
+// ⚠ THOSE DURATIONS ARE THE PER-SYMBOL PATH, NOT THE NIGHTLY CRON. Naming the job type
+//   without naming the path has already misled one reader into believing the recurring
+//   scan is a multi-hour job and redesigning the scheduler around it. It is not:
+//     · per-symbol universe scan (RETIRED as a cron; still reachable, and required, for
+//       backfill and for re-scanning a symbol after an industryType correction — a window
+//       filters on BROADCAST date, so it can never serve history)
+//       → the p50 2.29h / max 14.55h above. Last cron runs 2026-07-29..08-06, ~3h each.
+//     · ranged universe scan (what the cron actually enqueues: `{ mode: "universe" }`
+//       with no `discovery` → "ranged")
+//       → MEASURED 6-9s off-season, 152s at the 2026-08-15 in-season peak. Discovery is
+//         1-2 paged requests regardless of universe size; the cost is per FILING, not per
+//         stock, so it barely moves when the universe grows.
+//   The argument for heartbeat-age keying is unaffected — the per-symbol path still runs
+//   for hours during a backfill, and that is the case a started_at reaper would kill.
+//
 // ── THE FALSE POSITIVE IS THE DANGEROUS DIRECTION ────────────────────────────────
 // Killing a live 6-hour scan is worse than leaving a corpse one more cycle. Three
 // independent guards, in order:

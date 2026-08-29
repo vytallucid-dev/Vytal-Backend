@@ -1,6 +1,8 @@
 // File: src/ingestions/quaterly-results/ingesters/dispatch.ts (NEW)
 
 import type { ParsedQuarterly, ParsedAnnual } from "../xbrl/parser.js";
+import { FILL_NULL_ONLY, fullUpsert, type WriteDirective } from "./guarded-write.js";
+export type { WriteMode, WriteDirective } from "./guarded-write.js";
 import { ingestIndAsQuarterly } from "./ingest-indas-quarterly.js";
 import { ingestIndAsAnnual } from "./ingest-indas-annual.js";
 import { ingestBankingQuarterly } from "./ingest-banking-quarterly.js";
@@ -39,11 +41,36 @@ export interface IngestOutcome {
   changedColumns?: string[];
 }
 
+
+/**
+ * ⚠ THE ONLY TWO PLACES IN THE CODEBASE THAT CAN PRODUCE A FULL-ROW REWRITE.
+ *
+ * The safe default is fill_null_only, but applying it unconditionally would be a REGRESSION, not a
+ * fix: under the call graph as it stands, `refresh` is the only decision that ever reaches a row
+ * that already exists ("ingest" means there was none, "skip" never calls an ingester). So a blanket
+ * fill_null_only would silently stop applying RESTATEMENTS — a filer correcting its own numbers
+ * would be ignored, which is a quieter and worse failure than the one being fixed.
+ *
+ * So `refresh` — and only `refresh`, which by definition means a genuinely NEWER filing for a period
+ * we already hold — opts into the full rewrite. What makes that safe is that the fence in
+ * guarded-write.ts sits BELOW the mode switch: full_upsert still cannot move a cell carrying
+ * `source='manual_workbook'` or a raw_field_edits row. The restatement lands on pipeline-owned
+ * columns and stops at hand-entered ones.
+ */
+function directiveFor(decision: "ingest" | "refresh", override?: WriteDirective): WriteDirective {
+  if (override) return override;
+  return decision === "refresh"
+    ? fullUpsert("decideIngest saw a strictly newer filingDate for a period already held — a filer restatement. The provenance fence still protects hand-entered cells.")
+    : FILL_NULL_ONLY;
+}
+
 export async function dispatchQuarterlyIngest(
   stockId: string,
   parsed: ParsedQuarterly,
   source: string,
   decision: "ingest" | "refresh",
+  // Omit to let the decision choose (see directiveFor). An explicit directive overrides it.
+  directiveOverride?: WriteDirective,
 ): Promise<IngestOutcome & { taxonomy: string }> {
   switch (parsed.taxonomy) {
     case "indas":
@@ -51,6 +78,7 @@ export async function dispatchQuarterlyIngest(
         ...(await ingestIndAsQuarterly(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "indas",
       };
@@ -59,6 +87,7 @@ export async function dispatchQuarterlyIngest(
         ...(await ingestBankingQuarterly(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "banking",
       };
@@ -67,6 +96,7 @@ export async function dispatchQuarterlyIngest(
         ...(await ingestNbfcQuarterly(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "nbfc",
       };
@@ -75,6 +105,7 @@ export async function dispatchQuarterlyIngest(
         ...(await ingestLifeInsuranceQuarterly(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "li",
       };
@@ -83,6 +114,7 @@ export async function dispatchQuarterlyIngest(
         ...(await ingestGeneralInsuranceQuarterly(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "gi",
       };
@@ -94,6 +126,8 @@ export async function dispatchAnnualIngest(
   parsed: ParsedAnnual,
   source: string,
   decision: "ingest" | "refresh",
+  // Omit to let the decision choose (see directiveFor). An explicit directive overrides it.
+  directiveOverride?: WriteDirective,
 ): Promise<IngestOutcome & { taxonomy: string }> {
   switch (parsed.taxonomy) {
     case "indas":
@@ -101,6 +135,7 @@ export async function dispatchAnnualIngest(
         ...(await ingestIndAsAnnual(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "indas",
       };
@@ -109,6 +144,7 @@ export async function dispatchAnnualIngest(
         ...(await ingestBankingAnnual(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "banking",
       };
@@ -117,6 +153,7 @@ export async function dispatchAnnualIngest(
         ...(await ingestNbfcAnnual(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "nbfc",
       };
@@ -125,6 +162,7 @@ export async function dispatchAnnualIngest(
         ...(await ingestLifeInsuranceAnnual(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "li",
       };
@@ -133,6 +171,7 @@ export async function dispatchAnnualIngest(
         ...(await ingestGeneralInsuranceAnnual(
           { stockId, parsed: parsed.data, source },
           decision,
+          directiveFor(decision, directiveOverride),
         )),
         taxonomy: "gi",
       };

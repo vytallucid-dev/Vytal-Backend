@@ -364,8 +364,13 @@ try {
     bh.stock_id === null && bh.instrument_id === etfInst.id, `stock_id=${bh.stock_id} instrument_id=${bh.instrument_id}`);
 
   const stocksAfter = await prisma.stock.count();
-  assert("NO REGRESSION: the genuine unknown equity was still ADMITTED (+1 stock, and only 1)",
-    stocksAfter === stocksBefore + 1 && out.admitted.length === 1 && out.admitted[0]!.symbol === NEWSYM,
+  // ⚠ INVERTED ON 2026-08-27, DELIBERATELY. This used to require that an unknown equity be
+  //   ADMITTED (+1 stock). Admission was turned off when the universe was seeded to the whole NSE EQ
+  //   segment: an equity still unknown after that is BE/BZ, SME, BSE-only, or newer than the seed --
+  //   exactly what we do not want adopted as a bare row. What this file really guards (an ETF must
+  //   never be fabricated as a stock) is unchanged and still checked below.
+  assert("the genuine unknown equity is NOT adopted -- no new stock, and it is named in notCovered",
+    stocksAfter === stocksBefore && out.admitted.length === 0 && out.notCovered.some((n) => n.symbol === NEWSYM),
     `${stocksBefore} â†’ ${stocksAfter}; admitted=${JSON.stringify(out.admitted.map((a) => a.symbol))}`);
   const adm = await prisma.stock.findUnique({ where: { isin: NEWISIN }, select: { id: true } });
   if (adm) createdStockIds.push(adm.id);

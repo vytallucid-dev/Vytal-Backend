@@ -25,6 +25,19 @@ const COMMIT = process.argv.includes("--commit");
 // when an earlier attempt committed some PGs before stopping). Already-written periods
 // are skipped, so resuming only fills the gaps.
 const RESUME = process.argv.includes("--resume");
+// ── HOW FAR BACK ────────────────────────────────────────────────────────────────────────────────
+// Default FY23Q4 — the quarter ending 2023-03-31, i.e. the first period whose data covers Jan 2023.
+// A stock listed later simply has no earlier quarters and stops where its own data stops, so the
+// floor is "Jan 2023 OR the listing date" without needing to know the listing date.
+//
+// ⚠ IT IS A FLOOR, NOT A TARGET. The engine can now reach much further back than this — Stages 2-8
+//   filled quarterly results to FY2019 and shareholding to 2019-03-31, and point-in-time ownership
+//   was the thing that used to force `no_snapshot`. Left unbounded this would score ~30 periods per
+//   PG, which is more compute and more rows under the retention cap than was asked for.
+const FROM = (() => {
+  const i = process.argv.indexOf("--from");
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1].toUpperCase() : "FY23Q4";
+})();
 
 const NONFIN_PGS: PgRef[] = [
   { pgId: "PG1", seedKey: "pg1_it_services", pgName: "Large-Cap IT Services" },
@@ -44,7 +57,13 @@ const BANK_PGS: PgRef[] = [
   { pgId: "PG6", seedKey: "pg6_psu_banks", pgName: "Large-Cap PSU Banks" },
 ];
 const BANK_IDS = new Set(["PG5", "PG6"]);
-const EXCLUDE_PERIODS = new Set(["FY26Q4"]); // already committed live — never re-score
+// ⚠ WAS `new Set(["FY26Q4"])`. That guarded the then-live period from being re-scored — but the
+//   append-only skip below ("SKIP any already-existing (stock, periodKey)") is the REAL protection
+//   and it is unconditional. The hardcoded name simply went stale: FY26Q4 stopped being the live
+//   period, and the exclusion then BLOCKED the one stock that never received a live snapshot for it
+//   (LTM), leaving a permanent hole nothing could fill. A date-shaped constant in a set like this is
+//   a bug with a delay on it.
+const EXCLUDE_PERIODS = new Set<string>();
 
 /** Indian FYxxQy → quarter-end Date (midnight UTC). FY26Q3 → 2025-12-31. */
 function quarterEnd(periodKey: string): Date {
@@ -70,7 +89,8 @@ async function pgTargetPeriods(pgName: string, banking: boolean): Promise<string
     : await prisma.quarterlyResult.findMany({ where: { stockId: { in: ids }, resultType: "standalone" }, select: { fiscalYear: true, quarter: true } });
   const set = new Set<string>();
   for (const r of rows) { const pk = `${r.fiscalYear}${r.quarter}`; if (/^FY\d{2}Q[1-4]$/.test(pk) && !EXCLUDE_PERIODS.has(pk)) set.add(pk); }
-  return [...set].sort((a, b) => pkOrdinal(a) - pkOrdinal(b));
+  const floor = pkOrdinal(FROM);
+  return [...set].filter((pk) => pkOrdinal(pk) >= floor).sort((a, b) => pkOrdinal(a) - pkOrdinal(b));
 }
 
 const f = (v: number | null | undefined, d = 1) => (v == null ? "—" : v.toFixed(d));

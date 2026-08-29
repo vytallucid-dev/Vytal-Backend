@@ -29,15 +29,34 @@ export function extractCommonMetadata(
       ? QUARTERLY_PNL_CONTEXT // "OneD"
       : ANNUAL_PNL_CONTEXT; // "FourD"
 
+  // ── S3.3a · FILING-DATE FALLBACK ──────────────────────────────────────────
+  // The board-meeting date is absent from the older filings (218 of the 246
+  // FY18–FY22 NBFC documents), and a null filingDate makes every family parser
+  // THROW — the whole document is lost over one metadata field.
+  //
+  // The legacy parser has carried a three-step fallback for this all along
+  // (parser-legacy-common.ts:630 for annual, :391 for quarterly): try OneD, then
+  // the reporting context, then fall back to the period-end date. Copied here.
+  //
+  // ⚠ WHAT THE SUBSTITUTE DOES TO decideIngest (picker.ts:154). That compares the
+  //   NSE filings API's own filingDateParsed against the STORED filingDate:
+  //       filing.filingDateParsed > existing.filingDate  ->  "refresh"
+  //   A period-end substitute is always EARLIER than the real board-meeting date
+  //   (a company files weeks after the period closes), so the comparison tips
+  //   toward "refresh", never toward "skip". The bias is one-directional and
+  //   safe: at worst a row is re-ingested redundantly. It cannot cause a missed
+  //   ingest, and it cannot duplicate — fetchExistingRow keys on
+  //   (stock, period, basis), so a refresh overwrites the same row in place.
+  const filingDate =
+    extractDate(xml, "DateOfBoardMeetingWhenFinancialResultsWereApproved", "OneD") ??
+    extractDate(xml, "DateOfBoardMeetingWhenFinancialResultsWereApproved", reportContext) ??
+    extractDate(xml, "DateOfEndOfReportingPeriod", reportContext);
+
   return {
     // FY dates and filing date are ALWAYS in OneD, regardless of filingType
     fyStart: extractDate(xml, "DateOfStartOfFinancialYear", "OneD"),
     fyEnd: extractDate(xml, "DateOfEndOfFinancialYear", "OneD"),
-    filingDate: extractDate(
-      xml,
-      "DateOfBoardMeetingWhenFinancialResultsWereApproved",
-      "OneD",
-    ),
+    filingDate,
 
     // Reporting-period dates vary by filing type
     reportPeriodStart: extractDate(

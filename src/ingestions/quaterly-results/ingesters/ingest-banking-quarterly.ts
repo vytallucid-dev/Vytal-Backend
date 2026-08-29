@@ -18,10 +18,12 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveBankingQuarterly } from "../derive/derive-financial-quarterly.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export async function ingestBankingQuarterly(
   input: { stockId: string; parsed: ParsedBankingQuarterly; source: string },
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
@@ -157,11 +159,15 @@ export async function ingestBankingQuarterly(
     select: scoreRelevantSelect("banking_quarterly_results") as never,
   });
 
-  const row = await prisma.bankingQuarterlyResult.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.bankingQuarterlyResult,
+    modelName: "BankingQuarterlyResult",
     where: key,
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: entity,
   });
+  const row = written.row;
 
   const diff = diffScoreRelevant(
     "banking_quarterly_results",

@@ -19,6 +19,7 @@ import {
   checkRevenueYoyAnomaly,
   resultsRunRef,
 } from "../fundamentals-guards.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export interface IngestIndAsQuarterlyInput {
   stockId: string;
@@ -41,6 +42,7 @@ export interface IngestIndAsQuarterlyResult {
 export async function ingestIndAsQuarterly(
   input: IngestIndAsQuarterlyInput,
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestIndAsQuarterlyResult> {
   const { stockId, parsed, source } = input;
   const entity = `${stockId}@${parsed.quarter}-${parsed.fiscalYear}@${parsed.resultType}`;
@@ -229,11 +231,15 @@ export async function ingestIndAsQuarterly(
     select: scoreRelevantSelect("quarterly_results") as never,
   });
 
-  const row = await prisma.quarterlyResult.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.quarterlyResult,
+    modelName: "QuarterlyResult",
     where: key,
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: entity,
   });
+  const row = written.row;
 
   const diff = diffScoreRelevant(
     "quarterly_results",

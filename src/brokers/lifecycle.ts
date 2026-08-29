@@ -137,8 +137,17 @@ export interface SyncOutcome {
    *  a trust at its exchange close. Still never scored — pricing a thing is not judging it. */
   heldNotScored: { symbol: string; isin: string; instrumentId: string; assetClass: string }[];
   /** Step 7 — stocks this sync ADDED to the universe (bare: symbol + name + ISIN, no sector, no
-   *  peer group, NEVER scored). Growing the universe is a real event and is reported as one. */
+   *  peer group, NEVER scored). Growing the universe is a real event and is reported as one.
+   *  ⚠ EMPTY SINCE 2026-08-26 for equities — see `notCovered` and universe-admit.ts. */
   admitted: { symbol: string; isin: string; stockId: string }[];
+  /** Equities the user genuinely holds that Vytal does NOT cover — NSE BE/BZ (surveillance and
+   *  trade-to-trade), SME-platform scrips, BSE-only listings, or names newer than the last universe
+   *  seed. They are HELD and SHOWN with quantity and cost; only tracking is absent.
+   *
+   *  ⚠ THIS IS THE BANNER FEED. Non-empty ⇒ the UI should tell the user, on refresh, which of their
+   *  holdings cannot be tracked — once, plainly, without implying anything is broken. Before the
+   *  universe expansion these were silently adopted as bare rows; now they are named instead. */
+  notCovered: { symbol: string; isin: string; reason: string }[];
   /** Symbols whose TICKER we did not know but whose ISIN we already held — a rename (LTIM→LTM),
    *  resolved to the existing stock instead of forking it into a duplicate. */
   matchedByIsin: string[];
@@ -653,6 +662,8 @@ export async function syncHoldings(userId: string, connectionId: string): Promis
     // Step 7 — admission is LOUD. A sync that quietly grew the universe would be a sync that
     // changed what the platform knows without telling anyone.
     admitted: resolution.admitted,
+    // The counterpart to admission: what we deliberately did NOT adopt, so the UI can say so.
+    notCovered: resolution.notCovered,
     matchedByIsin: resolution.outcomes.filter((o) => o.how === "matched_by_isin").map((o) => o.symbol),
     syncedAt: now.toISOString(),
   };

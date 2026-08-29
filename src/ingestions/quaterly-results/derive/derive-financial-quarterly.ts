@@ -72,8 +72,19 @@ export function deriveNbfcQuarterly(raw: NbfcQRaw, priorQ: NbfcQPrior | null, ye
   const revenueYoy = pctChange(raw.revenue, yearAgoQ?.revenue ?? null);
   const patQoq = pctChange(raw.netProfit, priorQ?.netProfit ?? null);
   const patYoy = pctChange(raw.netProfit, yearAgoQ?.netProfit ?? null);
+  // S8.1b — NbfcQuarterlyResult's five narrow columns are all Decimal(8,4) →
+  //   maxIntDigits 4, ceiling 10,000. pat_qoq already stores 6880.6371
+  //   (BAJAJFINSV Q1 FY27 standalone, 68.8% of ceiling) — the tightest of them.
+  const tag = "nbfc-quarterly";
   return {
-    columns: { nii: safeNumber(nii), netMargin: decimalPct(netMargin), revenueQoq: decimalPct(revenueQoq), revenueYoy: decimalPct(revenueYoy), patQoq: decimalPct(patQoq), patYoy: decimalPct(patYoy) },
+    columns: {
+      nii: safeNumber(nii),
+      netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
+      revenueQoq: boundDerived(decimalPct(revenueQoq), 4, "revenueQoq", tag),
+      revenueYoy: boundDerived(decimalPct(revenueYoy), 4, "revenueYoy", tag),
+      patQoq: boundDerived(decimalPct(patQoq), 4, "patQoq", tag),
+      patYoy: boundDerived(decimalPct(patYoy), 4, "patYoy", tag),
+    },
     numbers: { revenueYoy },
   };
 }
@@ -93,8 +104,19 @@ export function deriveLiQuarterly(raw: LiQRaw, priorQ: LiQPrior | null, yearAgoQ
   const premiumYoy = pctChange(raw.grossPremiumIncome, yearAgoQ?.grossPremiumIncome ?? null);
   const patQoq = pctChange(raw.netProfit, priorQ?.netProfit ?? null);
   const patYoy = pctChange(raw.netProfit, yearAgoQ?.netProfit ?? null);
+  // S8.1b — RATIO columns Decimal(8,6) → ceiling 100; PERCENT columns
+  //   Decimal(8,4) → ceiling 10,000.
+  const tag = "li-quarterly";
   return {
-    columns: { newBusinessPremiumPct: decimalRatio(newBusinessPremiumPct), expenseRatioPolicyholders: decimalRatio(expenseRatio), netMargin: decimalPct(netMargin), premiumQoq: decimalPct(premiumQoq), premiumYoy: decimalPct(premiumYoy), patQoq: decimalPct(patQoq), patYoy: decimalPct(patYoy) },
+    columns: {
+      newBusinessPremiumPct: boundDerived(decimalRatio(newBusinessPremiumPct), 2, "newBusinessPremiumPct", tag),
+      expenseRatioPolicyholders: boundDerived(decimalRatio(expenseRatio), 2, "expenseRatioPolicyholders", tag),
+      netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
+      premiumQoq: boundDerived(decimalPct(premiumQoq), 4, "premiumQoq", tag),
+      premiumYoy: boundDerived(decimalPct(premiumYoy), 4, "premiumYoy", tag),
+      patQoq: boundDerived(decimalPct(patQoq), 4, "patQoq", tag),
+      patYoy: boundDerived(decimalPct(patYoy), 4, "patYoy", tag),
+    },
     numbers: { premiumYoy },
   };
 }
@@ -113,8 +135,18 @@ export function deriveGiQuarterly(raw: GiQRaw, priorQ: GiQPrior | null, yearAgoQ
   const gpwYoy = pctChange(raw.grossPremiumsWritten, yearAgoQ?.grossPremiumsWritten ?? null);
   const patQoq = pctChange(raw.netProfit, priorQ?.netProfit ?? null);
   const patYoy = pctChange(raw.netProfit, yearAgoQ?.netProfit ?? null);
+  // S8.1b — RATIO column Decimal(8,6) → ceiling 100; PERCENT columns
+  //   Decimal(8,4) → ceiling 10,000.
+  const tag = "gi-quarterly";
   return {
-    columns: { netUnderwritingMargin: decimalRatio(netUnderwritingMargin), netMargin: decimalPct(netMargin), gpwQoq: decimalPct(gpwQoq), gpwYoy: decimalPct(gpwYoy), patQoq: decimalPct(patQoq), patYoy: decimalPct(patYoy) },
+    columns: {
+      netUnderwritingMargin: boundDerived(decimalRatio(netUnderwritingMargin), 2, "netUnderwritingMargin", tag),
+      netMargin: boundDerived(decimalPct(netMargin), 4, "netMargin", tag),
+      gpwQoq: boundDerived(decimalPct(gpwQoq), 4, "gpwQoq", tag),
+      gpwYoy: boundDerived(decimalPct(gpwYoy), 4, "gpwYoy", tag),
+      patQoq: boundDerived(decimalPct(patQoq), 4, "patQoq", tag),
+      patYoy: boundDerived(decimalPct(patYoy), 4, "patYoy", tag),
+    },
     numbers: { gpwYoy },
   };
 }

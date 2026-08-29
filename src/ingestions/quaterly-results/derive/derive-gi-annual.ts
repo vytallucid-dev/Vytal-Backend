@@ -92,10 +92,12 @@ export function deriveGiAnnual(
     columns: {
       netWorth: safeNumber(netWorth),
       bookValuePerShare: boundDerived(decimalPerShare(meaningfulBookValue(bookValuePerShare)), 6, "bookValuePerShare", tag),
-      roe: decimalRatio(roe),
-      netUnderwritingMargin: decimalRatio(netUnderwritingMargin),
-      gpwGrowthYoy: decimalPct(gpwGrowthYoy),
-      patGrowthYoy: decimalPct(patGrowthYoy),
+      // S8.1b — bounded to their own columns. Decimal(8,6) → maxIntDigits 2
+      // (ceiling 100); Decimal(8,4) → 4 (ceiling 10,000).
+      roe: boundDerived(decimalRatio(roe), 2, "roe", tag),
+      netUnderwritingMargin: boundDerived(decimalRatio(netUnderwritingMargin), 2, "netUnderwritingMargin", tag),
+      gpwGrowthYoy: boundDerived(decimalPct(gpwGrowthYoy), 4, "gpwGrowthYoy", tag),
+      patGrowthYoy: boundDerived(decimalPct(patGrowthYoy), 4, "patGrowthYoy", tag),
     },
     numbers: { gpwGrowthYoy },
   };

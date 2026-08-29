@@ -30,6 +30,7 @@ import {
   plausibleFaceValue,
   boundDerived,
 } from "../derive/derive-indas-annual.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export interface IngestIndAsAnnualInput {
   stockId: string;
@@ -40,6 +41,7 @@ export interface IngestIndAsAnnualInput {
 export async function ingestIndAsAnnual(
   input: IngestIndAsAnnualInput,
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestOutcome> {
   const { stockId, parsed, source } = input;
   const p = parsed;
@@ -350,11 +352,15 @@ export async function ingestIndAsAnnual(
     select: scoreRelevantSelect("fundamentals") as never,
   });
 
-  const row = await prisma.fundamental.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.fundamental,
+    modelName: "Fundamental",
     where: key,
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: tag,
   });
+  const row = written.row;
 
   const diff = diffScoreRelevant(
     "fundamentals",

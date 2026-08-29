@@ -25,6 +25,7 @@ import type { NseFilingEntry } from "./xbrl/types.js";
 import type { Stock } from "../../generated/prisma/client.js";
 import { fetchXbrlFile } from "./legacy/discovery-legacy.js";
 import { reportIngestionError } from "../shared/ingestion-error.js";
+import { runBseFallbackForStock } from "./bse-fallback.js";
 import {
   RESULTS_CRON,
   RESULTS_SOURCE,
@@ -42,6 +43,12 @@ function sleep(ms: number) {
 }
 
 export interface ScanSymbolOptions {
+  /**
+   * Ask BSE for periods NSE did not serve, after the NSE pass. Default TRUE.
+   * Set false for tests and for any run that must touch one exchange only.
+   */
+  bseFallback?: boolean;
+
   /**
    * Cap on number of (qeDate, filingType) groups to process per symbol.
    * Default: process all available. Useful for testing.
@@ -72,6 +79,8 @@ export interface ScanSymbolResult {
   skipped: number;
   failed: number;
   errors: { qeDate: string; filingType: string; error: string }[];
+  /** Present only when the BSE fallback actually had periods to try. */
+  bseFallback?: { attempted: number; written: number; outcomes: Record<string, number> };
   /**
    * Did this symbol's scan change a value the SCORER actually reads?
    *
@@ -156,7 +165,35 @@ export async function scanSymbol(
     });
   }
 
-  return scanDiscoveredFilings(stock, filings, result, options);
+  const scanned = await scanDiscoveredFilings(stock, filings, result, options);
+
+  // ── Step 2: THE OTHER EXCHANGE ───────────────────────────────────────────────────────────────
+  // NSE having nothing is not the same as the company not filing. MEASURED with TCS as the control:
+  // NSE's integrated-filing API returns 12 filings for TCS and ZERO for ABBOTINDIA / BAYERCROP / MCX,
+  // while BSE lists 138 / 141 / 85 for them. GUARD 6 above now says so honestly; this asks BSE.
+  //
+  // ⚠ RUNS SECOND, AND CANNOT FAIL THE SCAN. The BSE writer is INSERT … ON CONFLICT DO NOTHING plus
+  //   a NULL-only fill, so ordering makes "NSE always wins" structural rather than incidental, and
+  //   every error here is swallowed into the result rather than thrown — a fallback that can break
+  //   the primary lane is worse than no fallback.
+  //
+  // ⚠ COSTS NOTHING WHEN THERE IS NOTHING TO DO. It issues no BSE request unless a period inside the
+  //   recent window is actually missing, which for almost every stock on almost every day is false.
+  if (options.bseFallback !== false) {
+    try {
+      const fb = await runBseFallbackForStock(stock, { log: (l) => console.log(l) });
+      if (fb.attempted > 0) {
+        scanned.bseFallback = { attempted: fb.attempted, written: fb.written, outcomes: fb.outcomes };
+        if (fb.written > 0) scanned.scoreRelevantChanged = true;
+      }
+    } catch (err) {
+      // Belt and braces: runBseFallbackForStock already catches, so reaching here means something
+      // truly unexpected. It is still not allowed to fail the NSE scan.
+      console.log(`[BSE fallback] ${symbol}: unexpected ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return scanned;
 }
 
 /**
@@ -252,15 +289,26 @@ async function logDiscovery(
   return kind;
 }
 
-/** Rows held and newest reporting period, across EVERY result table. One query. */
+/** Rows held and newest reporting period, across EVERY result table. One query.
+ *
+ *  ⚠ NO ::uuid CAST. `stock_id` is TEXT on all five tables (Prisma generates the key as text, not
+ *  as a native uuid column), so `stock_id = $1::uuid` raises 42883 `operator does not exist:
+ *  text = uuid` and takes the whole scan down with it.
+ *
+ *  This only ever fired on the EMPTY-DISCOVERY branch — the path taken when NSE returns no filings
+ *  for a symbol — so across a universe of established filers it was effectively unreachable and sat
+ *  here unnoticed. MEASURED 2026-08-27: it killed the first newly-listed stock the expanded-universe
+ *  backfill touched (3BBLACKBIO, listed 2026-04-20, nothing filed yet). In a cohort of 1,787 mostly
+ *  small and recent companies, "NSE has nothing for this symbol" is a common case, not an edge one.
+ */
 async function heldResultReach(stockId: string): Promise<{ rowsHeld: number; newestReportMs: number | null }> {
   const [r] = await prisma.$queryRaw<Array<{ n: number; newest: Date | null }>>`
     SELECT count(*)::int AS n, max(rd) AS newest FROM (
-      SELECT report_date rd FROM quarterly_results                    WHERE stock_id = ${stockId}::uuid
-      UNION ALL SELECT report_date FROM banking_quarterly_results     WHERE stock_id = ${stockId}::uuid
-      UNION ALL SELECT report_date FROM nbfc_quarterly_results        WHERE stock_id = ${stockId}::uuid
-      UNION ALL SELECT report_date FROM life_insurance_quarterly_results    WHERE stock_id = ${stockId}::uuid
-      UNION ALL SELECT report_date FROM general_insurance_quarterly_results WHERE stock_id = ${stockId}::uuid
+      SELECT report_date rd FROM quarterly_results                    WHERE stock_id = ${stockId}
+      UNION ALL SELECT report_date FROM banking_quarterly_results     WHERE stock_id = ${stockId}
+      UNION ALL SELECT report_date FROM nbfc_quarterly_results        WHERE stock_id = ${stockId}
+      UNION ALL SELECT report_date FROM life_insurance_quarterly_results    WHERE stock_id = ${stockId}
+      UNION ALL SELECT report_date FROM general_insurance_quarterly_results WHERE stock_id = ${stockId}
     ) x`;
   return { rowsHeld: r?.n ?? 0, newestReportMs: r?.newest ? new Date(r.newest).getTime() : null };
 }

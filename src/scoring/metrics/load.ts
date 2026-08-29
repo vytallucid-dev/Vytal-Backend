@@ -10,7 +10,7 @@
 import { prisma } from "../../db/prisma.js";
 import {
   fyOrdinal,
-  quarterOrdinal,
+  calendarQuarterOrdinal,
   type FoundationAnnual,
   type MomentumQuarter,
 } from "./types.js";
@@ -81,7 +81,7 @@ export async function loadMomentumStandalone(stockId: string, reportDateCutoff?:
   return rows.map((r) => ({
     fiscalYear: r.fiscalYear,
     quarter: r.quarter,
-    qOrdinal: quarterOrdinal(r.fiscalYear, r.quarter),
+    qOrdinal: calendarQuarterOrdinal(r.reportDate),
     revenue: n(r.revenue),
     otherIncome: n(r.otherIncome),
     interest: n(r.interest),

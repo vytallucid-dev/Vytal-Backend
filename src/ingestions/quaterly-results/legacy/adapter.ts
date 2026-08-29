@@ -33,6 +33,8 @@ import type {
   ParsedV2Annual,
   ParsedV2AnnualIndAs,
   ParsedV2AnnualBanking,
+  ParsedV2Quarterly,
+  ParsedV2QuarterlyBanking,
 } from "./parser-legacy-common.js";
 
 type IndustryType =
@@ -69,9 +71,20 @@ function adaptToIndAsQuarterly(
   };
 }
 
+/**
+ * ⚠ NARROWS ON THE DOCUMENT'S TAXONOMY, NOT ON Stock.industryType.
+ *
+ * The caller routes by industryType, but the nine extra fields only exist when
+ * the PARSER read a banking document. detectTaxonomy can fall back to "ind_as"
+ * on a malformed instance, and a bank routed here off a document that parsed as
+ * ind_as would otherwise read nine `undefined`s and write them as if measured.
+ * The guard keeps that case on the pre-fix behaviour — null, which is honest —
+ * instead of inventing values.
+ */
 function adaptToBankingQuarterly(
-  v2: ParsedQuarterlyResult,
+  v2: ParsedV2Quarterly,
 ): ParsedBankingQuarterly {
+  const b = v2.taxonomy === "banking" ? (v2 as ParsedV2QuarterlyBanking) : null;
   return {
     symbol: v2.symbol,
     quarter: v2.quarter,
@@ -81,10 +94,14 @@ function adaptToBankingQuarterly(
     resultType: v2.resultType,
     xbrlUrl: v2.xbrlUrl,
     interestEarned: v2.revenue, // banking revenue = InterestEarned
-    interestExpended: null,
+    interestExpended: b?.interestExpended ?? null,
     otherIncome: v2.otherIncome,
+    // ⚠ employeesCost stays null. EmployeesCost IS tagged in the legacy
+    //    instance, but it is NOT one of the nine fields this stage was scoped
+    //    and evidenced for, and it is not in the keyed validation set either.
+    //    Left for its own measurement rather than smuggled in beside them.
     employeesCost: null,
-    operatingExpenses: null,
+    operatingExpenses: b?.operatingExpenses ?? null,
     expenditureExclProvisions: v2.expenses,
     ppop: v2.operatingProfit,
     provisions: null,
@@ -93,13 +110,17 @@ function adaptToBankingQuarterly(
     tax: v2.tax,
     profitAfterTax: v2.netProfit,
     netProfit: v2.netProfit,
-    gnpaAbsolute: null,
-    nnpaAbsolute: null,
-    gnpaPct: null,
-    nnpaPct: null,
-    cet1Ratio: null,
-    additionalTier1Ratio: null,
-    roaQuarterly: null,
+    gnpaAbsolute: b?.gnpaAbsolute ?? null,
+    nnpaAbsolute: b?.nnpaAbsolute ?? null,
+    gnpaPct: b?.gnpaPct ?? null,
+    nnpaPct: b?.nnpaPct ?? null,
+    cet1Ratio: b?.cet1Ratio ?? null,
+    additionalTier1Ratio: b?.additionalTier1Ratio ?? null,
+    roaQuarterly: b?.roaQuarterly ?? null,
+    // ⚠ UNCHANGED, and it is load-bearing for tier1_ratio. The quarterly
+    //    deriver gates tier1Ratio = cet1 + at1 on !auditPending
+    //    (derive-financial-quarterly.ts:34); historical legacy data is final,
+    //    so false is correct and tier1_ratio now derives for free.
     auditPending: false,
   };
 }
@@ -469,7 +490,7 @@ function adaptToGiAnnual(v2: ParsedV2Annual): ParsedGeneralInsuranceAnnual {
 // ─────────────────────────────────────────────────────────────
 
 export function adaptV2ToDispatchableQuarterly(
-  v2: ParsedQuarterlyResult,
+  v2: ParsedV2Quarterly,
   industryType: IndustryType,
 ): ParsedQuarterly {
   switch (industryType) {

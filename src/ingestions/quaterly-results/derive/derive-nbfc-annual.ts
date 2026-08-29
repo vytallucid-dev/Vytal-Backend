@@ -294,18 +294,22 @@ export function deriveNbfcAnnual(
 
   return {
     columns: {
-      nim: decimalRatio(nim),
-      costToIncomeRatio: decimalRatio(costToIncomeRatio),
-      creditCostPct: decimalRatio(creditCostPct),
-      spread: decimalRatio(spread),
-      capitalToAssetsRatio: decimalRatio(capitalToAssetsRatio),
-      borrowingsToEquity: decimalPct(borrowingsToEquity),
+      // S8.1b — every derived ratio bounded to its own column. Decimal(8,6) →
+      // maxIntDigits 2 (ceiling 100); Decimal(8,4) → 4 (ceiling 10,000).
+      nim: boundDerived(decimalRatio(nim), 2, "nim", tag),
+      costToIncomeRatio: boundDerived(decimalRatio(costToIncomeRatio), 2, "costToIncomeRatio", tag),
+      creditCostPct: boundDerived(decimalRatio(creditCostPct), 2, "creditCostPct", tag),
+      spread: boundDerived(decimalRatio(spread), 2, "spread", tag),
+      capitalToAssetsRatio: boundDerived(decimalRatio(capitalToAssetsRatio), 2, "capitalToAssetsRatio", tag),
+      borrowingsToEquity: boundDerived(decimalPct(borrowingsToEquity), 4, "borrowingsToEquity", tag),
       netWorth: safeNumber(netWorth),
       bookValuePerShare: boundDerived(decimalPerShare(meaningfulBookValue(bookValuePerShare)), 6, "bookValuePerShare", tag),
-      roe: decimalRatio(roe),
-      aumGrowthYoy: decimalPct(aumGrowthYoy),
-      revenueGrowthYoy: decimalPct(revenueGrowthYoy),
-      patGrowthYoy: decimalPct(patGrowthYoy),
+      roe: boundDerived(decimalRatio(roe), 2, "roe", tag),
+      // ⚠ aumGrowthYoy is the tightest column in this table: IRFC FY26 standalone
+      //   already stores 8019.1960 against a 10,000 ceiling (80.2%).
+      aumGrowthYoy: boundDerived(decimalPct(aumGrowthYoy), 4, "aumGrowthYoy", tag),
+      revenueGrowthYoy: boundDerived(decimalPct(revenueGrowthYoy), 4, "revenueGrowthYoy", tag),
+      patGrowthYoy: boundDerived(decimalPct(patGrowthYoy), 4, "patGrowthYoy", tag),
     },
     numbers: { revenueGrowthYoy },
   };

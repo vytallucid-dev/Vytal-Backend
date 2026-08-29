@@ -45,6 +45,15 @@ export interface ParsedShareholding {
   totalShares: number | null;
   promoterShares: number | null;
   pledgedShares: number | null;
+
+  /**
+   * PROVENANCE, not data: true when fiiPct/diiPct were DERIVED from the
+   * 2020-09-30 vintage's flat Institutions block (InstitutionsI minus the
+   * foreign sub-lines) rather than read from a direct InstitutionsForeign/
+   * InstitutionsDomestic context. Lets a backfill separate "derived" rows from
+   * "directly disclosed" ones without re-fetching the XML.
+   */
+  legacyInstitutionsDerived: boolean;
 }
 
 // ── XML Parser setup ──────────────────────────────────────────
@@ -79,7 +88,7 @@ function stripNs(name: string): string {
 
 type Fact = { contextRef: string; value: number | null };
 
-// ── Dual-vintage context resolution ────────────────────────────
+// ── Multi-vintage context resolution ───────────────────────────
 // SEBI Reg-31 XBRL ships in multiple taxonomy vintages whose category context
 // IDs differ. The 2025 layouts (2025-05-31, 2025-10-31) use
 // "<Category>_ContextI"; the 2022-09-30 layout drops the underscore + "Context"
@@ -88,6 +97,40 @@ type Fact = { contextRef: string; value: number | null };
 // resolves exactly the same context as before, and a 2022 file now resolves too.
 // Object candidates with {pattern:true} preserve the original byCtxPattern
 // (substring) matching; bare strings use exact contextRef match.
+//
+// ── THIRD VINTAGE (shp/2020-09-30) — the FII/DII null cause ──
+// Filings up to and including 2022-06-30 use a FAMILY of older taxonomies --
+// shp/2018-03-31, shp/2019-06-30 and shp/2020-09-30 -- which share one
+// identical layout (verified: 7/7 domestic + 2/2 foreign sub-lines present in
+// every sampled file of all three, block closing to <= 0.01pp). None of them
+// splits the Institutions block into domestic/foreign at all: there is no
+// InstitutionsDomesticI and no InstitutionsForeignI. Instead the block is ONE
+// flat list under a single "InstitutionsI" total, e.g. TCS 2022-06-30:
+//
+//   MutualFundsOrUtiI                     =  3.38
+//   VentureCapitalFundsI                  =  0
+//   AlternativeInvestmentFundsI           =  0.07
+//   ForeignVentureCapitalInvestorsI       =  0      ← FOREIGN
+//   InstitutionsForeignPortfolioInvestorI = 13.50   ← FOREIGN
+//   FinancialInstitutionOrBanksI          =  0.03
+//   InsuranceCompaniesI                   =  4.88
+//   ProvidentFundsOrPensionFundsI         =  0
+//   OtherInstitutionsI                    =  0
+//   ──────────────────────────────────────────────
+//   InstitutionsI                         = 21.86
+//
+// So FII = the two foreign sub-lines and DII = InstitutionsI − FII. That
+// subtraction is self-proving: 21.86 − 13.50 = 8.36, and the domestic sub-lines
+// sum to 3.38 + 0.07 + 0.03 + 4.88 = 8.36 exactly.
+//
+// ⚠️ TWO TRAPS, both handled by EXACT (never substring) matching:
+//   1. The SAME file carries a PROMOTER-side "ForeignPortfolioInvestorI" = 0
+//      (Table II). A substring match on "ForeignPortfolioInvestor" hits that
+//      first and silently writes FII = 0 instead of 13.5. The candidate here is
+//      the full "InstitutionsForeignPortfolioInvestorI", matched exactly.
+//   2. FVCI is classified UNDER InstitutionsForeignI in the 2022+ taxonomy, so
+//      it must count as FOREIGN here too or foreign money lands in DII. It is
+//      almost always 0, which is exactly why it is easy to get wrong silently.
 type CtxCand = string | { ref: string; pattern: true };
 
 const VINTAGE_CTX: Record<string, CtxCand[]> = {
@@ -103,7 +146,14 @@ const VINTAGE_CTX: Record<string, CtxCand[]> = {
   insurance: ["InsuranceCompanies_ContextI", "InsuranceCompaniesI"],
   // Banks: 2025 keeps the legacy substring match; the 2022 fallback uses EXACT
   // match so "BanksI" does not also hit "IndianFinancialInstitutionsOrBanksI".
-  banks: [{ ref: "Banks_ContextI", pattern: true }, "BanksI"],
+  // The 2020 vintage names the combined line "FinancialInstitutionOrBanksI"
+  // (singular "Institution") — added EXACT, and to `banks` ONLY, never also to
+  // financialInstitutions, or banksFisPct would double-count it.
+  banks: [
+    { ref: "Banks_ContextI", pattern: true },
+    "BanksI",
+    "FinancialInstitutionOrBanksI",
+  ],
   // FinancialInstitutions: substring match intentionally catches
   // "OtherFinancialInstitutions(_ContextI|I)" in both vintages.
   financialInstitutions: [
@@ -112,6 +162,14 @@ const VINTAGE_CTX: Record<string, CtxCand[]> = {
   ],
   nonInstitutions: ["NonInstitutions_ContextI", "NonInstitutionsI"],
   total: ["ShareholdingPattern_ContextI", "ShareholdingPatternI"], // totalShares
+  // -- LEGACY VINTAGE FAMILY ONLY (2018-03-31 / 2019-06-30 / 2020-09-30) --
+  // Inputs to the FII/DII derivation below.
+  // All EXACT-match (see trap 1). None of these context IDs exist in the 2025
+  // or 2022 taxonomies, so these lookups return null there and the derivation
+  // never fires — the direct fii/dii contexts win first regardless.
+  institutionsTotal: ["InstitutionsI"],
+  legacyForeignFpi: ["InstitutionsForeignPortfolioInvestorI"],
+  legacyForeignFvci: ["ForeignVentureCapitalInvestorsI"],
   // Employee trust is outside the FII/DII scope but resolved the same way; the
   // 2022 "I" variant is added for consistency. Still defaults to 0 when absent.
   employeeTrust: [
@@ -255,8 +313,35 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
   const promoterPctRaw = byCtxV(PCT, VINTAGE_CTX.promoter) ?? 0;
   const publicPctRaw = byCtxV(PCT, VINTAGE_CTX.public) ?? 0;
   const employeeTrustRaw = byCtxV(PCT, VINTAGE_CTX.employeeTrust) ?? 0;
-  const fiiRaw = byCtxV(PCT, VINTAGE_CTX.fii);
-  const diiRaw = byCtxV(PCT, VINTAGE_CTX.dii);
+  // FII/DII — direct contexts first (2025, then 2022). Both null ⇒ this is the
+  // 2020-09-30 vintage, which has no domestic/foreign split; derive it. See the
+  // VINTAGE_CTX header for the full worked example and the two traps.
+  let fiiRaw = byCtxV(PCT, VINTAGE_CTX.fii);
+  let diiRaw = byCtxV(PCT, VINTAGE_CTX.dii);
+  /** True when fii/dii came from the 2020-vintage subtraction, not a direct context. */
+  let legacyInstitutionsDerived = false;
+
+  if (fiiRaw === null && diiRaw === null) {
+    const instTotalRaw = byCtxV(PCT, VINTAGE_CTX.institutionsTotal);
+    const fpiRaw = byCtxV(PCT, VINTAGE_CTX.legacyForeignFpi);
+    // The FPI line is the anchor: without it there is nothing to split on, and a
+    // bare InstitutionsI total tells us nothing about the foreign share. FVCI is
+    // additive and optional (absent ⇒ 0), never a reason to abandon the derivation.
+    if (instTotalRaw !== null && fpiRaw !== null) {
+      const foreign = fpiRaw + (byCtxV(PCT, VINTAGE_CTX.legacyForeignFvci) ?? 0);
+      const domestic = round4(instTotalRaw - foreign);
+      // A negative domestic residual means the total and the sub-lines disagree —
+      // a malformed filing or a context we mis-read. Emit NOTHING rather than a
+      // fabricated number; the row stays null and shows up in the null-rate guard.
+      // -0.0001 absorbs float noise on an otherwise exact zero.
+      if (domestic >= -0.0001) {
+        fiiRaw = foreign;
+        diiRaw = Math.max(domestic, 0);
+        legacyInstitutionsDerived = true;
+      }
+    }
+  }
+
   const mutualFundRaw = byCtxV(PCT, VINTAGE_CTX.mutualFund);
   const insuranceRaw = byCtxV(PCT, VINTAGE_CTX.insurance);
   const banksRaw = byCtxV(PCT, VINTAGE_CTX.banks);
@@ -370,5 +455,6 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
     totalShares: totalShares ? Math.round(totalShares) : null,
     promoterShares: promoterShares ? Math.round(promoterShares) : null,
     pledgedShares: pledgedShares ? Math.round(pledgedShares) : 0,
+    legacyInstitutionsDerived,
   };
 }

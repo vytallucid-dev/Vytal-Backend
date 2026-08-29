@@ -16,6 +16,8 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveLiQuarterly } from "../derive/derive-financial-quarterly.js";
+import { boundDisclosed } from "../derive/derive-indas-annual.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export async function ingestLifeInsuranceQuarterly(
   input: {
@@ -24,6 +26,7 @@ export async function ingestLifeInsuranceQuarterly(
     source: string;
   },
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
@@ -130,19 +133,26 @@ export async function ingestLifeInsuranceQuarterly(
     tax: safeNumber(p.tax),
     netProfit: safeNumber(p.netProfit),
 
-    solvencyRatio: safeNumber(p.solvencyRatio, 4),
-    persistencyRatio13Month: decimalRatio(p.persistencyRatio13Month),
-    persistencyRatio25Month: decimalRatio(p.persistencyRatio25Month),
-    persistencyRatio37Month: decimalRatio(p.persistencyRatio37Month),
-    persistencyRatio49Month: decimalRatio(p.persistencyRatio49Month),
-    persistencyRatio61Month: decimalRatio(p.persistencyRatio61Month),
+    // S8.1c — DISCLOSED ratios: taken from the document, not from our arithmetic.
+    //   Bounded to their own columns all the same, because an overflow throws the
+    //   WHOLE upsert and takes the raw absolute lines with it. solvencyRatio is
+    //   Decimal(8,4) → maxIntDigits 4; the five persistency ratios are
+    //   Decimal(8,6) → 2. Unrepresentable → null, never clamped, never fatal.
+    solvencyRatio: boundDisclosed(safeNumber(p.solvencyRatio, 4), 4, "solvencyRatio", entity),
+    persistencyRatio13Month: boundDisclosed(decimalRatio(p.persistencyRatio13Month), 2, "persistencyRatio13Month", entity),
+    persistencyRatio25Month: boundDisclosed(decimalRatio(p.persistencyRatio25Month), 2, "persistencyRatio25Month", entity),
+    persistencyRatio37Month: boundDisclosed(decimalRatio(p.persistencyRatio37Month), 2, "persistencyRatio37Month", entity),
+    persistencyRatio49Month: boundDisclosed(decimalRatio(p.persistencyRatio49Month), 2, "persistencyRatio49Month", entity),
+    persistencyRatio61Month: boundDisclosed(decimalRatio(p.persistencyRatio61Month), 2, "persistencyRatio61Month", entity),
 
     // Derived (newBusinessPremiumPct, expenseRatio, netMargin, premium QoQ/YoY,
     // pat QoQ/YoY) from the single deriveLiQuarterly path (ingestion ≡ fill).
     ...derived.columns,
   };
 
-  const row = await prisma.lifeInsuranceQuarterlyResult.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.lifeInsuranceQuarterlyResult,
+    modelName: "LifeInsuranceQuarterlyResult",
     where: {
       stockId_quarter_fiscalYear_resultType: {
         stockId,
@@ -151,9 +161,11 @@ export async function ingestLifeInsuranceQuarterly(
         resultType: p.resultType,
       },
     },
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: entity,
   });
+  const row = written.row;
 
   return {
     status: decision === "refresh" ? "refreshed" : "success",

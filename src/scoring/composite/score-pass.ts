@@ -44,7 +44,7 @@ import { runScoringGate, gateNotRun, behaviourContractLine, type ScoringGateResu
 import { writeGuardrailEval } from "../guardrail/persist.js";
 import { assemblePillar } from "../pillars/assemble.js";
 import type { PillarScoreResult } from "../pillars/types.js";
-import { toPillarScoreRow } from "../pillars/persist.js";
+import { toPillarScoreRow, pillarInputsFingerprint } from "../pillars/persist.js";
 import { toMetricScoreRow } from "../metric-scoring/persist.js";
 import { metricWeightColumnsByKey, completeMetricScoreRow } from "../pillars/persist.js";
 import type { FoundationAnnual, MomentumQuarter, MetricValue } from "../metrics/types.js";
@@ -55,6 +55,7 @@ import { toMarketPillarScoreRow, marketSubScoreRows, marketInputsFingerprint } f
 import { computeOwnership, type OwnershipContext, type OwnershipResult } from "../ownership/ownership.js";
 import { loadFlowFeeds } from "../ownership/flow-feeds-load.js";
 import type { OwnershipQuarter } from "../ownership/types.js";
+import { collapseToOneRowPerQuarter } from "../ownership/collapse-quarters.js";
 import { rangePositionAsOf, MIN_TRAILING_DAYS, type DailyClose } from "../price/range.js";
 import type { A1PriceEval, FlowFeeds, PriceProbe } from "../ownership/flow.js";
 import { FLOW_BAND_VERSION } from "../ownership/flow-bands.js";
@@ -390,7 +391,11 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     const id = ms.id, symbol = ms.symbol, stockIndustry = ms.industryType;
     const daily = (await prisma.dailyPrice.findMany({ where: { stockId: id, ...(cutoff ? { date: { lte: cutoff } } : {}) }, orderBy: { date: "asc" }, select: { date: true, close: true } })).map((d) => ({ date: d.date, close: Number(d.close) }));
     const sh = await prisma.shareholdingPattern.findMany({ where: { stockId: id, ...(cutoff ? { asOnDate: { lte: cutoff } } : {}) }, orderBy: { asOnDate: "asc" }, select: { asOnDate: true, quarter: true, fiscalYear: true, promoterShares: true, totalShares: true, pledgedShares: true, promoterPct: true, fiiPct: true, diiPct: true, retailPct: true } });
-    const own: OwnershipQuarter[] = sh.map((r) => ({ asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear, promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares, promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct) }));
+    // ⚠ ONE ROW PER QUARTER. shareholding_patterns is keyed by as_on_date and legitimately holds
+    //   several filings per quarter (SEBI capital-change disclosures). The rules downstream read
+    //   ADJACENT elements as consecutive quarters, so an intra-quarter row silently becomes "the
+    //   prior quarter". See ownership/collapse-quarters.ts.
+    const own: OwnershipQuarter[] = collapseToOneRowPerQuarter(sh).map((r) => ({ asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear, promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares, promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct) }));
 
     let foundation: MetricValue[], momentum: MetricValue[], snapshotFy: string | null, snapshotQuarter: string | null;
     let seriesFor: (key: string, pillar: "foundation" | "momentum") => number[];
@@ -1069,13 +1074,64 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
   // Daily price-driven Market re-scoring produces many supersedes per period, so the
   // lookup MUST follow the chain to its head.)
   const fp = snapshotInputsFingerprint(m.composite);
-  const liveSnap = await db.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: m.composite.snapshotType, periodKey: m.composite.periodKey }, orderBy: { version: "desc" }, select: { id: true, inputsFingerprint: true, version: true } });
-  if (liveSnap && liveSnap.inputsFingerprint === fp) {
+
+  // ⚠ THE COMPOSITE FINGERPRINT IS NOT SUFFICIENT ON ITS OWN. It hashes the four pillar SUBTOTALS
+  //   at 4dp; the pillar fingerprints hash every metric LEAF (key, scoreState, disposition, score,
+  //   nominal + effective weight). Those are different questions, and the coarse one used to gate
+  //   the fine one: this early return sits ABOVE writeFmPillar, so whenever a leaf moved but the
+  //   weighted subtotal landed on the same 4dp value — offsetting metric moves, a disposition
+  //   change at an equal score, availability shifting effective weight between equal-scoring
+  //   metrics, a peer μ/σ change that nets out — the new PillarScore row was never written and the
+  //   stock page kept rendering the previous decomposition. Silently, and indefinitely.
+  //
+  //   So the skip now requires ALL FIVE hashes to agree. This deliberately does NOT change what is
+  //   STORED in inputs_fingerprint: all 6,116 existing snapshot fingerprints stay valid, and a
+  //   genuinely unchanged stock still skips. Only the DECISION is finer.
+  const leafFp = {
+    foundation: pillarInputsFingerprint(m.fPillar, m.fPillar.snapshot),
+    momentum: pillarInputsFingerprint(m.mPillar, m.mPillar.snapshot),
+    market: m.market ? marketInputsFingerprint(m.market, m.stockId, m.market.state === "scored" ? m.marketSourcePeriod : "MARKET_EXCLUDED") : null,
+    ownership: m.own ? fullInputsFingerprint(m.own) : null,
+  };
+  // Raw, because the four pillar FKs on ScoreSnapshot are scalar (a PillarScore cannot carry four
+  // back-relations), so there is no include to traverse.
+  const live = (await db.$queryRawUnsafe<Array<{
+    id: string; version: number; snap_fp: string;
+    f_fp: string | null; m_fp: string | null; mk_fp: string | null; o_fp: string | null;
+  }>>(
+    `SELECT s.id, s.version, s.inputs_fingerprint AS snap_fp,
+            f.inputs_fingerprint AS f_fp, mo.inputs_fingerprint AS m_fp,
+            mk.inputs_fingerprint AS mk_fp, o.inputs_fingerprint AS o_fp
+       FROM score_snapshots s
+       LEFT JOIN score_pillars f  ON f.id  = s.foundation_pillar_id
+       LEFT JOIN score_pillars mo ON mo.id = s.momentum_pillar_id
+       LEFT JOIN score_pillars mk ON mk.id = s.market_pillar_id
+       LEFT JOIN score_pillars o  ON o.id  = s.ownership_pillar_id
+      WHERE s.stock_id = $1 AND s.snapshot_type::text = $2 AND s.period_key = $3
+      ORDER BY s.version DESC LIMIT 1`,
+    m.stockId, m.composite.snapshotType, m.composite.periodKey))[0] ?? null;
+
+  const leavesAgree = !!live
+    && live.f_fp === leafFp.foundation
+    && live.m_fp === leafFp.momentum
+    && (leafFp.market === null || live.mk_fp === leafFp.market)
+    && (leafFp.ownership === null || live.o_fp === leafFp.ownership);
+
+  if (live && live.snap_fp === fp && leavesAgree) {
     // THE FIX: the score did not move, but the detection is still recorded. snapshotId is
     // NULL here on purpose — liveSnap exists but was NOT screened by this run.
     const ge = await writeGuardrailFor(null);
-    return { symbol: m.symbol, action: "skipped_identical", version: liveSnap.version, superseded: false, snapshotId: liveSnap.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market ? m.market.state : "none", pillarIds: {}, guardrailEventsWritten: ge };
+    // RECOMPUTED-UNCHANGED, recorded as a fact rather than inferred from a missing row. Without
+    // this, a run that legitimately changes nothing leaves no trace it ran, and "evaluated, no
+    // change" is indistinguishable after the fact from "never looked at".
+    await db.$executeRawUnsafe(
+      `UPDATE score_snapshots SET last_evaluated_at = now(), last_evaluated_run_id = $2 WHERE id = $1`,
+      live.id, sc.runId);
+    return { symbol: m.symbol, action: "skipped_identical", version: live.version, superseded: false, snapshotId: live.id, composite: m.composite.composite, band: m.composite.labelBand, marketState: m.market ? m.market.state : "none", pillarIds: {}, guardrailEventsWritten: ge };
   }
+  if (live && live.snap_fp === fp && !leavesAgree)
+    console.log(`  [leaf-drift] ${m.symbol} ${m.composite.periodKey} — composite identical, but a pillar's metric leaves moved; recomputing rather than skipping`);
+  const liveSnap = live ? { id: live.id, inputsFingerprint: live.snap_fp, version: live.version } : null;
 
   // PG-level peer μ/σ rows (score_peer_stats) — get-or-created once per (PG, metric, run,
   // asOf); each scored MetricScore links to its row via peerStatsSnapshotId (was hardcoded
@@ -1108,6 +1164,11 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
 
   const snapRow = toScoreSnapshotRow(m.composite, { runId: sc.runId, specVersionId: sc.specVersionId, bandMappingVersionId: sc.bandMappingVersionId, peerGroupId, barPath, industryPath, pillarScoreIds, maskHeat: m.pondHeat?.heat ?? null, pgTrailingMovePct: m.pondHeat?.trailingMovePct ?? null, notEvaluable: m.notEvaluable, guardrailScreened: opts.guardrail ? opts.guardrail.ran : undefined, findingsEval });
   if (liveSnap) { snapRow.version = liveSnap.version + 1; snapRow.supersedesId = liveSnap.id; } // append-only supersede: chain from the live (highest) version → v1→v2→v3…
+
+  // Same bookkeeping the skip path writes, so "when was this last evaluated" is answerable from
+  // one column regardless of which branch the run took.
+  (snapRow as unknown as Record<string, unknown>).lastEvaluatedAt = new Date();
+  (snapRow as unknown as Record<string, unknown>).lastEvaluatedRunId = sc.runId;
 
   const snap = await db.scoreSnapshot.create({ data: snapRow, select: { id: true } });
   // ── ★ R1's DEDICATED score_red_flags WRITE IS GONE (step 4) ────────────────────────────────────

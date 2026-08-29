@@ -198,7 +198,13 @@ export function parseNbfcQuarterly(
       extractNumber(xml, "TotalTaxExpense", PNL),
     netProfit:
       extractNumber(xml, "ProfitLossForPeriod", PNL) ??
-      extractNumber(xml, "ProfitLossForPeriodFromContinuingOperations", PNL),
+      extractNumber(xml, "ProfitLossForPeriodFromContinuingOperations", PNL) ??
+      // S2 — the ruling: prefer the unambiguous TOTAL tag; fall back to the
+      // owners'/minority split only where every total tag is absent. Appended at
+      // the END so any document carrying a total tag parses byte-identically to
+      // before — this only widens recovery, it never re-points an existing value.
+      extractNumber(xml, "ProfitOrLossAttributableToOwnersOfParent", PNL) ??
+      extractNumber(xml, "ProfitLossBeforeMinorityInterest", PNL),
   };
 }
 
@@ -281,7 +287,13 @@ export function parseNbfcAnnual(
       extractNumber(xml, "Tax", PNL),
     netProfit:
       extractNumber(xml, "ProfitLossForPeriod", PNL) ??
-      extractNumber(xml, "ProfitLossForPeriodFromContinuingOperations", PNL),
+      extractNumber(xml, "ProfitLossForPeriodFromContinuingOperations", PNL) ??
+      // S2 — the ruling: prefer the unambiguous TOTAL tag; fall back to the
+      // owners'/minority split only where every total tag is absent. Appended at
+      // the END so any document carrying a total tag parses byte-identically to
+      // before — this only widens recovery, it never re-points an existing value.
+      extractNumber(xml, "ProfitOrLossAttributableToOwnersOfParent", PNL) ??
+      extractNumber(xml, "ProfitLossBeforeMinorityInterest", PNL),
 
     // Equity
     equityShareCapital: extractNumber(xml, "EquityShareCapital", BS),

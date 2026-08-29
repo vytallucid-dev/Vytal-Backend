@@ -1,6 +1,7 @@
 // File: src/ingestions/quaterly-results/xbrl/parser-banking.ts (NEW)
 
 import { extractNumber } from "./extract.js";
+import { evaluateZeroBlock, type FactReader } from "./zero-block-guard.js";
 import {
   BALANCE_SHEET_CONTEXT,
   ANNUAL_PNL_CONTEXT,
@@ -125,6 +126,9 @@ export interface ParsedBankingAnnual {
   paidUpEquityCapital: number | null;
 }
 
+/** Bind the in-capmkt extractor to one document, for the shared zeroed-block guard. */
+const v3Reader = (xml: string): FactReader => (tag, ctx) => extractNumber(xml, tag, ctx);
+
 /**
  * Q4 audit-gating detector.
  * Decision #12: when GNPA, NNPA, CET1, and ROA are ALL zero in a Q4 filing,
@@ -190,14 +194,28 @@ export function parseBankingQuarterly(
     rawRoa,
   );
 
+  // ★ THE ZEROED-BLOCK GUARD (S7 A3.1, ported from the legacy lane).
+  //
+  // ⚠ isQ4AuditPending ABOVE IS NOT A SUBSTITUTE, AND IT STAYS. It is narrower in
+  //   two ways that MEASURABLY let this defect through: it fires only on Q4, and
+  //   it requires cet1 to be zero as well. nse_xbrl_quarterly holds 39 rows with
+  //   an all-zero NPA block and a live loan book that it did not catch — non-Q4
+  //   quarters, or Q4s whose cet1 was disclosed. The two gates mean different
+  //   things and are deliberately kept apart: auditPending is a STORED FLAG
+  //   meaning "Q4 numbers not yet audited" and it gates derived tier1/pcr, while
+  //   a zeroed block in Q2 is not audit-pending, it is a non-disclosure. So the
+  //   guard nulls fields WITHOUT setting auditPending.
+  const guard = evaluateZeroBlock(v3Reader(xml), PNL, BALANCE_SHEET_CONTEXT);
+
   // If audit-pending, null out the gated fields. Decision #12.
-  const gnpaAbs = auditPending ? null : rawGnpaAbs;
-  const nnpaAbs = auditPending ? null : rawNnpaAbs;
-  const gnpaPct = auditPending ? null : rawGnpaPct;
-  const nnpaPct = auditPending ? null : rawNnpaPct;
+  const gnpaAbs = auditPending || guard.block.refused ? null : rawGnpaAbs;
+  const nnpaAbs = auditPending || guard.block.refused ? null : rawNnpaAbs;
+  const gnpaPct = auditPending || guard.block.refused || guard.coherence.gnpaPct ? null : rawGnpaPct;
+  const nnpaPct = auditPending || guard.block.refused || guard.coherence.nnpaPct ? null : rawNnpaPct;
+  // ⚠ cet1/at1 are NOT members of the asset-quality block and are untouched here.
   const cet1 = auditPending ? null : rawCet1;
   const at1 = auditPending ? null : rawAt1;
-  const roa = auditPending ? null : rawRoa;
+  const roa = auditPending || guard.roa.refused ? null : rawRoa;
 
   return {
     symbol: ctx.symbol,
@@ -277,6 +295,7 @@ export function parseBankingAnnual(
 
   const PNL = ANNUAL_PNL_CONTEXT;
   const BS = BALANCE_SHEET_CONTEXT;
+  const aGuard = evaluateZeroBlock(v3Reader(xml), PNL, BS);
   const ps = extractCommonPerShare(xml, PNL, BS);
 
   return {
@@ -388,18 +407,19 @@ export function parseBankingAnnual(
       PNL,
     ),
 
-    // Asset Quality (annual is always audited; no gating)
-    gnpaAbsolute: extractNumber(xml, "GrossNonPerformingAssets", PNL),
-    nnpaAbsolute: extractNumber(xml, "NonPerformingAssets", PNL),
-    gnpaPct: extractNumber(xml, "PercentageOfGrossNpa", PNL),
-    nnpaPct: extractNumber(xml, "PercentageOfNpa", PNL),
+    // Asset Quality. Annual is always audited, so Decision #12 does not apply —
+    // but "audited" does not mean "disclosed", and the zeroed-block guard does.
+    gnpaAbsolute: aGuard.block.refused ? null : extractNumber(xml, "GrossNonPerformingAssets", PNL),
+    nnpaAbsolute: aGuard.block.refused ? null : extractNumber(xml, "NonPerformingAssets", PNL),
+    gnpaPct: aGuard.block.refused || aGuard.coherence.gnpaPct ? null : extractNumber(xml, "PercentageOfGrossNpa", PNL),
+    nnpaPct: aGuard.block.refused || aGuard.coherence.nnpaPct ? null : extractNumber(xml, "PercentageOfNpa", PNL),
 
     // Capital Adequacy
     cet1Ratio: extractNumber(xml, "CET1Ratio", PNL),
     additionalTier1Ratio: extractNumber(xml, "AdditionalTier1Ratio", PNL),
 
     // Profitability
-    roaDisclosed: extractNumber(xml, "ReturnOnAssets", PNL),
+    roaDisclosed: aGuard.roa.refused ? null : extractNumber(xml, "ReturnOnAssets", PNL),
 
     ...ps,
   };

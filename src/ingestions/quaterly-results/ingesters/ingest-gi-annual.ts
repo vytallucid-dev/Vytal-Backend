@@ -16,7 +16,8 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveGiAnnual } from "../derive/derive-gi-annual.js";
-import { plausibleFaceValue } from "../derive/derive-indas-annual.js";
+import { plausibleFaceValue, boundDisclosed } from "../derive/derive-indas-annual.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export async function ingestGeneralInsuranceAnnual(
   input: {
@@ -25,6 +26,7 @@ export async function ingestGeneralInsuranceAnnual(
     source: string;
   },
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.fiscalYear}@${p.resultType}`;
@@ -180,14 +182,24 @@ export async function ingestGeneralInsuranceAnnual(
     totalApplicationOfFunds: safeNumber(p.totalApplicationOfFunds),
     totalAssets: safeNumber(p.totalAssets),
 
-    combinedRatio: decimalRatio(p.combinedRatio),
-    incurredClaimRatio: decimalRatio(p.incurredClaimRatio),
-    expensesOfManagementRatio: decimalRatio(p.expensesOfManagementRatio),
-    netRetentionRatio: decimalRatio(p.netRetentionRatio),
-    solvencyRatio: safeNumber(p.solvencyRatio, 4),
+    // S8.1c — DISCLOSED ratios: taken from the document, not from our arithmetic.
+    //   Bounded to their own columns all the same, because an overflow throws the
+    //   WHOLE upsert and takes the raw absolute lines with it. These four are
+    //   Decimal(8,6) → maxIntDigits 2; solvencyRatio below is Decimal(8,4) → 4.
+    //   Unrepresentable → null, never clamped, never fatal.
+    combinedRatio: boundDisclosed(decimalRatio(p.combinedRatio), 2, "combinedRatio", entity),
+    incurredClaimRatio: boundDisclosed(decimalRatio(p.incurredClaimRatio), 2, "incurredClaimRatio", entity),
+    expensesOfManagementRatio: boundDisclosed(decimalRatio(p.expensesOfManagementRatio), 2, "expensesOfManagementRatio", entity),
+    netRetentionRatio: boundDisclosed(decimalRatio(p.netRetentionRatio), 2, "netRetentionRatio", entity),
+    solvencyRatio: boundDisclosed(safeNumber(p.solvencyRatio, 4), 4, "solvencyRatio", entity),
 
-    basicEps: decimalPerShare(p.basicEps),
-    dilutedEps: decimalPerShare(p.dilutedEps),
+    // S8.1g — not a ratio, but the same shape on the same table: Decimal(10,4),
+    //   ceiling 1,000,000, written straight from the filing with no bound. A
+    //   mis-tagged EPS would throw the whole upsert exactly as an overflowing
+    //   ratio does. ingest-indas-annual.ts already bounds these two; this matches
+    //   it, using the DISCLOSED sibling because the value is filed, not computed.
+    basicEps: boundDisclosed(decimalPerShare(p.basicEps), 6, "basicEps", entity),
+    dilutedEps: boundDisclosed(decimalPerShare(p.dilutedEps), 6, "dilutedEps", entity),
     // Sanitised, not raw — an implausible source value must not be persisted as
     // if it were a real face value (see the note above and derive-gi-annual.ts).
     faceValueShare: decimalPerShare(faceValueSane),
@@ -198,7 +210,9 @@ export async function ingestGeneralInsuranceAnnual(
     ...derived.columns,
   };
 
-  const row = await prisma.generalInsuranceFundamental.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.generalInsuranceFundamental,
+    modelName: "GeneralInsuranceFundamental",
     where: {
       stockId_fiscalYear_resultType: {
         stockId,
@@ -206,9 +220,11 @@ export async function ingestGeneralInsuranceAnnual(
         resultType: p.resultType,
       },
     },
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: entity,
   });
+  const row = written.row;
 
   return {
     status: decision === "refresh" ? "refreshed" : "success",

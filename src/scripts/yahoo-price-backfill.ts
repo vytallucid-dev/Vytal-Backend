@@ -130,8 +130,14 @@ interface RawOhlcv {
  * Returns rows sorted oldest → newest.
  * Returns empty array on valid "no data" (delisted, wrong symbol, etc.)
  * Throws on network/auth errors so the caller can retry.
+ *
+ * EXPORTED so a historical-only backfill can reuse the fetch + row filter without
+ * also inheriting backfillStock's updateSnapshot() call, which upserts the LIVE
+ * stock_price row (price, prevClose, 52w range, returns, sparkline, provider).
+ * That is correct for a "refresh this stock" run and wrong for a "extend history
+ * backwards" run — see stage3-price-backfill.ts.
  */
-async function fetchYahooHistory(
+export async function fetchYahooHistory(
   nseSymbol: string,
   yearsBack: number,
 ): Promise<RawOhlcv[]> {
@@ -192,7 +198,7 @@ function normaliseDate(d: Date): Date {
  * prevClose[i] = close[i-1] (derived; null for the first row).
  * skipDuplicates ensures NSE bhavcopy rows are never overwritten.
  */
-async function insertDailyPrices(
+export async function insertDailyPrices(
   prisma: PrismaClient,
   stockId: string,
   rows: RawOhlcv[],

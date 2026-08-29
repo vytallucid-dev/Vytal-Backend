@@ -34,6 +34,12 @@ export const FILLABLE: Record<string, ReadonlySet<string>> = {
     "equityAttributableToOwners", "borrowingsCurrent", "borrowingsNoncurrent", "cashFromOperating",
     "capex", "paidUpEquityCapital", "faceValueShare", "tradeReceivablesCurrent",
     "tradeReceivablesNoncurrent", "inventories", "totalAssets", "basicEps", "dilutedEps",
+    // ── S6c: added for the keyed-workbook import. All three are RAW disclosed balance-sheet /
+    //    cash-flow lines, not derived columns, and nothing in this file excluded them on purpose —
+    //    the set simply grew around what the scorer happened to need. `cashFromOperating` and
+    //    `capex` were already here; `cashFromFinancing` is its sibling and feeds the same
+    //    derived netCashFlow. Checked against the derive layer: none of the three is computed.
+    "propertyPlantAndEquipment", "capitalWorkInProgress", "cashFromFinancing",
   ]),
   QuarterlyResult: new Set([
     "revenue", "otherIncome", "expenses", "depreciation", "interest", "profitBeforeTax", "tax", "netProfit", "operatingProfit",
@@ -67,6 +73,11 @@ export const FILLABLE: Record<string, ReadonlySet<string>> = {
     "interestEarned", "interestExpended", "otherIncome", "expenditureExclProvisions", "ppop", "provisions",
     "profitBeforeTax", "tax", "netProfit", "gnpaAbsolute", "nnpaAbsolute",
     "gnpaPct", "nnpaPct", "cet1Ratio", "additionalTier1Ratio", "roaQuarterly",
+    // ── S6c: added for the keyed-workbook import. `operatingExpenses` is a RAW line the banking
+    //    Reg-33 format discloses explicitly; costToIncomeRatio and expenditureExclProvisions are
+    //    computed FROM it, so it is a source, not a derivative. Its absence was an asymmetry —
+    //    BankingFundamental carries the same family of raw lines — not a deliberate exclusion.
+    "operatingExpenses",
   ]),
   NbfcQuarterlyResult: new Set([
     "revenue", "interestIncome", "otherIncome", "totalIncome", "financeCosts", "impairmentOnFinancialInstruments", "netProfit",
@@ -123,6 +134,44 @@ export interface RawFieldEditInput {
   note?: string;
   /** Optional sanity band for the field (reuse the ingestion guards' range sense). */
   bounds?: { min?: number; max?: number };
+  /**
+   * ★ S6c — NULL-ONLY MODE. The UPDATE carries `AND <field> IS NULL`, so it can only ever turn a
+   * blank into a value. If the column already holds anything the edit does NOT land: no write, no
+   * re-derive, no audit row, and ok:false with reason "target column already holds a value".
+   *
+   * ⚠ WHY THIS OPTION EXISTS. This path was built as a CORRECTION path — its whole point is to
+   *   overwrite a wrong value and record the prior one in the audit. That is right for an admin
+   *   fixing one cell with a citation. It is WRONG for a bulk import of 6,584 hand-keyed cells,
+   *   where the guarantee has to be "a blank became a value" and nothing else. Defaults to false,
+   *   so every existing caller behaves exactly as before.
+   */
+  onlyIfNull?: boolean;
+  /**
+   * ★ S7 A2 — EXACT-VALUE MODE. The UPDATE carries `AND <field> = <onlyIfExactly>`, so it can
+   * only ever replace THAT value. Anything else in the column and the edit does not land: no
+   * write, no re-derive, no audit row, ok:false.
+   *
+   * ⚠ WHY THIS EXISTS, AND WHY IT IS NOT A GENERAL OVERWRITE. The legacy NSE parser divided a
+   *   ratio by 1e7 (ReturnOnAssets declares unitRef="INR"), and Decimal(8,6) truncated the result
+   *   to EXACTLY 0 on 241 of 243 banking_fundamentals.roa_disclosed rows. Those cells are not
+   *   blanks — they are wrong numbers reading as real measurements — so onlyIfNull cannot reach
+   *   them, and a plain overwrite would also flatten the rows where the filer's unit declaration
+   *   was correct and the stored value is right. J&KBANK FY22 (both bases) stores a correct
+   *   0.0042 from a document that declares `pure`; this predicate is what leaves it alone.
+   *
+   * ⚠ THE GUARANTEE IS IN THE PREDICATE, exactly as with onlyIfNull. The read below is for the
+   *   audit trail only; a concurrent write between read and update cannot be clobbered.
+   *
+   * Mutually exclusive with onlyIfNull. Defaults to undefined, so every existing caller is
+   * byte-identical.
+   */
+  onlyIfExactly?: number;
+  /**
+   * ★ S6c — suppress the PG-wide rescore cascade AND the quarter-brief invalidation. Used by the
+   * bulk import, which runs in a stage that has ruled out scoring entirely. Defaults to false.
+   * `cascade` comes back as "suppressed" so the caller can assert nothing was enqueued.
+   */
+  skipCascade?: boolean;
 }
 
 export interface RawFieldEditResult {
@@ -132,14 +181,111 @@ export interface RawFieldEditResult {
   /** Which rescore route ran: banking/general = the PG-wide PIT cascade job;
    *  prices = a current-frame PG rescore job; none = display-only (events, no
    *  rescore — the fill is complete synchronously). */
-  cascade?: "banking" | "general" | "prices" | "none";
+  cascade?: "banking" | "general" | "prices" | "none" | "suppressed";
+  /** True when onlyIfNull refused because the column already held a value. Not an error. */
+  refusedNotNull?: boolean;
+  /** True when onlyIfExactly refused because the column did not hold the expected value. Not an error. */
+  refusedGuard?: boolean;
   /** Pollable job id for the rescore (null for "none"/display-only). */
   jobId?: string | null;
   rescore?: unknown;
 }
 
+/** Thrown inside the transaction when onlyIfNull finds a non-null column, so the whole edit
+ *  (write + re-derive + audit) rolls back as one. Distinguished from a real write failure. */
+class ONLY_IF_NULL_REFUSED extends Error {}
+/** Same rollback shape, for the onlyIfExactly guard. */
+class ONLY_IF_EXACT_REFUSED extends Error {}
+
+export interface RowEdit {
+  field: string;
+  newValue: number | null;
+  citation: string;
+}
+export interface RowBatchResult {
+  ok: boolean;
+  reason?: string;
+  landed: string[];
+  /** Fields skipped because the column already held a value. Not an error. */
+  refusedNotNull: string[];
+  reDerived?: ReDeriveResult;
+}
+
+/**
+ * ★ S6c — APPLY MANY NULL-ONLY EDITS TO ONE ROW, IN ONE TRANSACTION.
+ *
+ * Identical semantics to applyRawFieldEdit(onlyIfNull:true, skipCascade:true), batched by row:
+ *   · every field's UPDATE still carries `AND <field> IS NULL` — the guarantee is unchanged
+ *   · one audit row per LANDED cell, each with its own citation — the provenance is unchanged
+ *   · ONE re-derive at the end instead of one per cell — and that is more correct, not less:
+ *     the derived columns are a function of the row's FINAL raw state, so deriving after each
+ *     individual cell just computes intermediate values on a half-filled row and throws them away
+ *   · no cascade, no brief invalidation
+ *
+ * ⚠ WHY IT EXISTS: this database is remote and a bare round trip MEASURED 547 ms, an empty
+ *   transaction 224 ms. Per-cell that is ~2 s × 6,584 cells ≈ 3.7 hours, and the cost is latency,
+ *   not work. The 6,584 cells sit on 413 rows — 16 cells per row — so batching by row cuts the
+ *   transaction count 16-fold without weakening a single guarantee.
+ */
+export async function applyRawFieldEditsForRow(
+  table: string,
+  rowId: string,
+  edits: RowEdit[],
+  editedBy: string,
+): Promise<RowBatchResult> {
+  const allowed = FILLABLE[table];
+  if (!allowed) return { ok: false, reason: `table "${table}" not enabled for raw-field fill`, landed: [], refusedNotNull: [] };
+  for (const e of edits) {
+    if (!allowed.has(e.field)) return { ok: false, reason: `field "${e.field}" is not RAW-fillable on ${table}`, landed: [], refusedNotNull: [] };
+    if (!e.citation || e.citation.trim().length < 4) return { ok: false, reason: `citation required (CN-4) for ${e.field}`, landed: [], refusedNotNull: [] };
+    if (e.newValue !== null && !Number.isFinite(e.newValue)) return { ok: false, reason: `newValue for ${e.field} must be finite or null`, landed: [], refusedNotNull: [] };
+  }
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const model = (tx as unknown as Record<string, {
+        findUniqueOrThrow: (a: unknown) => Promise<unknown>;
+        updateMany: (a: unknown) => Promise<{ count: number }>;
+      }>)[modelKey(table)];
+
+      const sel: Record<string, boolean> = {};
+      for (const e of edits) sel[e.field] = true;
+      const before = (await model.findUniqueOrThrow({ where: { id: rowId }, select: sel })) as Record<string, Prisma.Decimal | null>;
+
+      const landed: string[] = [];
+      const refusedNotNull: string[] = [];
+      for (const e of edits) {
+        const res = await model.updateMany({ where: { id: rowId, [e.field]: null }, data: { [e.field]: e.newValue } });
+        if (res.count === 1) landed.push(e.field);
+        else refusedNotNull.push(e.field);
+      }
+
+      if (landed.length) {
+        const reDerived = await reDeriveRow(tx, table, rowId);
+        await (tx as Prisma.TransactionClient).rawFieldEdit.createMany({
+          data: landed.map((f) => {
+            const e = edits.find((x) => x.field === f)!;
+            return {
+              targetTable: table, targetRowId: rowId, field: f,
+              oldValue: before[f]?.toString() ?? null,
+              newValue: e.newValue?.toString() ?? null,
+              citation: e.citation, editedBy, note: null,
+            };
+          }),
+        });
+        return { ok: true, landed, refusedNotNull, reDerived };
+      }
+      return { ok: true, landed, refusedNotNull };
+    }, { timeout: 60_000 });
+  } catch (e) {
+    return { ok: false, reason: `write failed: ${(e as Error).message}`, landed: [], refusedNotNull: [] };
+  }
+}
+
 function validate(input: RawFieldEditInput): string | null {
   if (!input.citation || input.citation.trim().length < 4) return "citation required (CN-4): provide a source attribution";
+  if (input.onlyIfNull && input.onlyIfExactly !== undefined) return "onlyIfNull and onlyIfExactly are mutually exclusive";
+  if (input.onlyIfExactly !== undefined && !Number.isFinite(input.onlyIfExactly)) return "onlyIfExactly must be a finite number";
   const allowed = FILLABLE[input.table];
   if (!allowed) return `table "${input.table}" not enabled for raw-field fill`;
   if (!allowed.has(input.field)) return `field "${input.field}" is not a RAW-fillable column on ${input.table} (derived columns recompute automatically)`;
@@ -174,10 +320,43 @@ export async function applyRawFieldEdit(input: RawFieldEditInput): Promise<RawFi
     ({ reDerived, priorRaw } = await prisma.$transaction(async (tx) => {
       // (a) capture the prior raw value (for the audit), then write the correction
       // IN-PLACE on the target table (dynamic model — works for all 10 tables).
-      const model = (tx as unknown as Record<string, { findUniqueOrThrow: (a: unknown) => Promise<unknown>; update: (a: unknown) => Promise<unknown> }>)[modelKey(input.table)];
+      const model = (tx as unknown as Record<string, {
+        findUniqueOrThrow: (a: unknown) => Promise<unknown>;
+        update: (a: unknown) => Promise<unknown>;
+        updateMany: (a: unknown) => Promise<{ count: number }>;
+      }>)[modelKey(input.table)];
       const before = await model.findUniqueOrThrow({ where: { id: input.rowId }, select: { [input.field]: true } });
       const priorRaw = ((before as Record<string, Prisma.Decimal | null>)[input.field])?.toString() ?? null;
-      await model.update({ where: { id: input.rowId }, data: { [input.field]: input.newValue } });
+
+      if (input.onlyIfNull) {
+        // ⚠ THE GUARANTEE IS IN THE PREDICATE, NOT IN THE READ ABOVE. `updateMany` with
+        //   `{ [field]: null }` in the WHERE compiles to `UPDATE … WHERE id = $1 AND col IS NULL`,
+        //   so a concurrent write between the read and the update cannot be clobbered. A
+        //   read-then-update would be a race; this cannot be. count === 0 ⇒ the column was not null.
+        const res = await model.updateMany({
+          where: { id: input.rowId, [input.field]: null },
+          data: { [input.field]: input.newValue },
+        });
+        if (res.count !== 1) {
+          throw new ONLY_IF_NULL_REFUSED(
+            `target column ${input.table}.${input.field} already holds a value (${priorRaw}) — null-only edit refused`,
+          );
+        }
+      } else if (input.onlyIfExactly !== undefined) {
+        // The predicate, not the read above, is the guarantee - same shape as onlyIfNull.
+        // Compiles to `UPDATE ... WHERE id = $1 AND col = $2`.
+        const res = await model.updateMany({
+          where: { id: input.rowId, [input.field]: input.onlyIfExactly },
+          data: { [input.field]: input.newValue },
+        });
+        if (res.count !== 1) {
+          throw new ONLY_IF_EXACT_REFUSED(
+            `target column ${input.table}.${input.field} holds ${priorRaw}, not the expected ${input.onlyIfExactly} - guarded edit refused`,
+          );
+        }
+      } else {
+        await model.update({ where: { id: input.rowId }, data: { [input.field]: input.newValue } });
+      }
 
       // (b) re-derive the dependent ratios from the corrected raw (single path).
       const reDerived = await reDeriveRow(tx, input.table, input.rowId);
@@ -194,6 +373,8 @@ export async function applyRawFieldEdit(input: RawFieldEditInput): Promise<RawFi
       return { reDerived, priorRaw };
     }));
   } catch (e) {
+    if (e instanceof ONLY_IF_NULL_REFUSED) return { ok: false, reason: e.message, refusedNotNull: true };
+    if (e instanceof ONLY_IF_EXACT_REFUSED) return { ok: false, reason: e.message, refusedGuard: true };
     return { ok: false, reason: `write failed: ${(e as Error).message}` };
   }
 
@@ -208,6 +389,12 @@ export async function applyRawFieldEdit(input: RawFieldEditInput): Promise<RawFi
   let cascade: RawFieldEditResult["cascade"];
   let jobId: string | null = null;
   let rescore: unknown = null;
+
+  if (input.skipCascade) {
+    // ★ S6c — no rescore job, no brief invalidation, nothing enqueued. The caller has ruled scoring
+    //   out of scope for this stage and asserts afterwards that zero jobs were created.
+    return { ok: true, reDerived, cascade: "suppressed", jobId: null, rescore: null };
+  }
 
   if (NO_RESCORE_TABLES.has(input.table)) {
     // Display-only (events) — the raw write + re-derive is the whole job; no rescore.

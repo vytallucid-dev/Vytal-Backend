@@ -15,10 +15,12 @@ import {
   resultsRunRef,
 } from "../financial-guards.js";
 import { deriveNbfcQuarterly } from "../derive/derive-financial-quarterly.js";
+import { guardedWrite, FILL_NULL_ONLY, type WriteDirective } from "./guarded-write.js";
 
 export async function ingestNbfcQuarterly(
   input: { stockId: string; parsed: ParsedNbfcQuarterly; source: string },
   decision: "ingest" | "refresh",
+  directive: WriteDirective = FILL_NULL_ONLY,
 ): Promise<IngestOutcome> {
   const { stockId, parsed: p, source } = input;
   const entity = `${stockId}@${p.quarter}-${p.fiscalYear}@${p.resultType}`;
@@ -126,7 +128,9 @@ export async function ingestNbfcQuarterly(
     ...derived.columns,
   };
 
-  const row = await prisma.nbfcQuarterlyResult.upsert({
+  const written = await guardedWrite({
+    delegate: prisma.nbfcQuarterlyResult,
+    modelName: "NbfcQuarterlyResult",
     where: {
       stockId_quarter_fiscalYear_resultType: {
         stockId,
@@ -135,9 +139,11 @@ export async function ingestNbfcQuarterly(
         resultType: p.resultType,
       },
     },
-    create: data,
-    update: data,
+    data,
+    directive,
+    label: entity,
   });
+  const row = written.row;
 
   return {
     status: decision === "refresh" ? "refreshed" : "success",

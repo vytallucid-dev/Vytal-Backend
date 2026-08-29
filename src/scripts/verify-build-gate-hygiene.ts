@@ -191,6 +191,32 @@ const BUILD_CLAIM_EXEMPT: Record<string, string> = {
     "Not a gate at all. Its :28 'a gate that fails the build because a padding changed would…' is " +
     "HYPOTHETICAL prose arguing AGAINST making it one. Kept in the scan rather than pattern-excluded, " +
     "because narrowing the predicate to spare one file is how a scan starts going blind.",
+  "src/scripts/dryrun-bse-lane.ts":
+    "Its :9 phrase is 'NOT A BUILD GATE' — a NEGATION the predicate cannot see, and the warning is " +
+    "there precisely so nobody wires it into verify:copy. Twice disqualified from `build` (§2): it " +
+    "imports src/db/prisma.ts and queries the live corpus, and it reads cached BSE XBRL documents " +
+    "from an absolute temp path. Run by hand — `npx tsx src/scripts/dryrun-bse-lane.ts [fixtureDir]`.",
+  "src/scripts/dryrun-bse-column-fill.ts":
+    "Same shape as dryrun-bse-lane.ts — its :2 phrase is 'NOT A BUILD GATE', a NEGATION the predicate " +
+    "cannot see. Twice disqualified from `build` (§2): it imports src/db/prisma.ts, and it does not " +
+    "merely read — it WRITES inside a $transaction it then rolls back, because the negative control " +
+    "has to run against the real table and the real constraint to mean anything. Run by hand — " +
+    "`npx tsx src/scripts/dryrun-bse-column-fill.ts`.",
+  "src/scripts/gen-manual-entry-workbook.ts":
+    "Its :3 phrase is 'NOT A BUILD GATE', the same negation. Not a gate at all — it EMITS the " +
+    "manual-entry workbook. Disqualified from `build` (§2) twice over: it consumes a manifest built " +
+    "from the live database, and it writes its .xlsx to ../outputs, a sibling of this checkout that " +
+    "does not exist on the deploy box. Run by hand — `npx tsx src/scripts/gen-manual-entry-workbook.ts`.",
+  "src/scripts/bse-cohort.ts":
+    "Its :2 phrase is 'NOT A BUILD GATE', the same negation the predicate cannot see. It is the " +
+    "furthest thing from a build gate there is: it imports src/db/prisma.ts, fetches BSE over the " +
+    "network, and WRITES — both the insert path and the null-only column fill. Run by hand — " +
+    "`npx tsx src/scripts/bse-cohort.ts --plan|--live`.",
+  "src/scripts/bse-fence-baseline.ts":
+    "Its :2 phrase is 'NOT A BUILD GATE', the same negation. Disqualified from `build` (§2) three " +
+    "ways: it imports src/db/prisma.ts, it writes the persisted fence baseline to an absolute temp " +
+    "path, and --prove deletes a real NSE row inside a rolled-back transaction to watch the fence " +
+    "name it. Run by hand — `npx tsx src/scripts/bse-fence-baseline.ts --capture|--verify|--prove`.",
 };
 
 const ENV_OR_DB_ALLOWANCE: Record<string, string> = {

@@ -109,6 +109,12 @@ const FUNDAMENTALS: ColumnClassification = {
     "otherCurrentFinancialLiabilities", "otherNoncurrentFinancialLiabilities",
     "provisionsCurrent", "provisionsNoncurrent", "currentTaxLiabilities",
     "deferredTaxLiabilitiesNet", "noncurrentLiabilities",
+    // totalLiabilities is the filing's OWN `Liabilities` subtotal, stored so the balance-sheet
+    // guard can check Assets = Equity + Liabilities against what the document states rather than
+    // against a reconstruction from two of its three parts (see checkBsImbalance). It is read by
+    // that GUARD only — loadFoundationStandalone never selects it, so no metric can reach it and
+    // a change to it cannot move a score. Cosmetic for the same reason noncurrentLiabilities is.
+    "totalLiabilities",
     "goodwill", "otherIntangibleAssets", "intangibleAssetsUnderDevelopment",
     "noncurrentInvestments", "loansNoncurrent", "otherNoncurrentFinancialAssets",
     "otherNoncurrentAssets", "deferredTaxAssetsNet", "investmentProperty",
@@ -188,13 +194,20 @@ const BANKING_FUNDAMENTALS: ColumnClassification = {
 // Loader: the explicit `select` at src/scoring/composite/score-pass.ts:234, which builds
 // OwnershipQuarter. The findings hook reads the SAME `r.own`, so that select is the whole surface.
 // ⚠️ promoterPledgedPct / promoterPledgedSharesPct are COSMETIC: computeOwnership derives pledge
-//    from the raw pledgedShares / promoterShares BigInts, never from the stored percentages.
+//    from the raw COUNTS, never from the stored percentages — pledgedShares over
+//    promoterTotalShares (the filing's own denominator), falling back to promoterShares where
+//    the total holding is not on file.
 const SHAREHOLDING_PATTERNS: ColumnClassification = {
   model: "ShareholdingPattern",
   derivedFrom: "the shareholding select in computePgScores (src/scoring/composite/score-pass.ts:234)",
   relevant: [
     "stockId", "asOnDate", "quarter", "fiscalYear",
-    "promoterShares", "totalShares", "pledgedShares",
+    // ⚠ `promoterTotalShares` IS RELEVANT, AND IT IS THE PLEDGE DENOMINATOR. It is not a duplicate
+    //   of `promoterShares`: that one is NumberOfFullyPaidUpEquityShares and EXCLUDES depository
+    //   receipts, this one is the promoter group's TOTAL holding and is what the filing divides its
+    //   own pledge percentage by. It feeds pledgeRatio -> the ownership ladder and R1, so a change
+    //   in it changes a score. See scoring/ownership/pledging.ts#pledgeDenominator and docs/ODL.md.
+    "promoterShares", "promoterTotalShares", "totalShares", "pledgedShares",
     "promoterPct", "fiiPct", "diiPct", "retailPct",
   ],
   cosmetic: [

@@ -38,7 +38,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Prisma, PrismaClient } from "../../../generated/prisma/client.js";
-import { checkPlContentless, checkScale, checkRevenueNonPositive } from "../fundamentals-guards.js";
+import { checkPlContentless, checkScale, checkZeroedPnlBlock } from "../fundamentals-guards.js";
 
 export const BSE_SOURCE = "bse_xbrl";
 /** ⚠ The only rows in the database for which this column is a FACT rather than a Prisma default —
@@ -65,8 +65,16 @@ function guardMoney(values: Array<number | null>, revenue: number | null, netPro
   for (const v of values) {
     if (checkScale(v)) return `value ${v} exceeds the scale ceiling — a unit break, refusing the row`;
   }
-  if (checkRevenueNonPositive(revenue)) {
-    return `revenue ${revenue} is present but non-positive — refusing the row`;
+  // ⚠ A NON-POSITIVE REVENUE USED TO REFUSE THE ROW HERE, AND THAT REFUSED REAL DATA. This lane is
+  //   the BSE fallback — the one that answers for the small and dormant companies NSE has nothing
+  //   for — which is precisely the population whose revenue from operations is legitimately ₹0
+  //   (a holding company living on other income) or legitimately negative (a Q4 derived as
+  //   full-year minus 9M, on a year revised down). Every one of those rows was being dropped, in
+  //   the exact lane that exists to stop rows being dropped. A zero is not a refusal; a P&L with
+  //   nothing anywhere in it is, and checkPlContentless above plus the parse-time RULE 4 already
+  //   catch that. See checkZeroedPnlBlock.
+  if (checkZeroedPnlBlock({ revenue, netProfit })) {
+    return "every P&L line reads exactly 0 — a column the filer did not fill; refusing to store it as a measurement";
   }
   return null;
 }

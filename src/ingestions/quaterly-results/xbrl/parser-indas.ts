@@ -11,6 +11,7 @@ import {
   extractCommonPerShare,
   deriveFiscalPeriod,
 } from "./parser-common.js";
+import { pnlBlockRefused } from "./zero-block-guard.js";
 
 export interface ParsedIndAsQuarterly {
   symbol: string;
@@ -30,6 +31,9 @@ export interface ParsedIndAsQuarterly {
   tax: number | null;
   netProfit: number | null;
   operatingProfit: number | null;
+  /** Set when RULE 4 refused a zero-filled quarterly column — the reason, for the ingest log.
+   *  A silent refusal is as bad as a silent write (zero-block-guard.ts). */
+  zeroedBlockNote?: string | null;
 }
 
 export interface ParsedIndAsAnnual {
@@ -72,6 +76,8 @@ export interface ParsedIndAsAnnual {
   deferredTaxLiabilitiesNet: number | null;
   currentLiabilities: number | null;
   noncurrentLiabilities: number | null;
+  /** The filing's OWN `Liabilities` subtotal — see checkBsImbalance. */
+  totalLiabilities: number | null;
 
   // BS — Non-current Assets
   propertyPlantAndEquipment: number | null;
@@ -152,6 +158,43 @@ export function parseIndAsQuarterly(
 
   const PNL = QUARTERLY_PNL_CONTEXT;
 
+  // ── RULE 4 — THE ZEROED P&L BLOCK (zero-block-guard.ts). ──────────────────────────────────
+  // A filer who reports only the FULL YEAR still ships the quarterly column, zero-filled. Read
+  // literally that is ₹0 revenue and ₹0 profit for a quarter the company actually traded —
+  // HEROMOTOCO Q4 FY19 consolidated is exactly this, 0.00 on every OneD line beside ₹33,972 Cr
+  // in FourD. So the block is refused and every line goes NULL, which sends the row into the
+  // shape guard (GUARD 1) and leaves any good stored row untouched.
+  //
+  // It is the CONJUNCTION that condemns, never the zero: a dormant company reporting no revenue
+  // but real expenses is untouched, and 225 rows in this database are exactly that.
+  const zeroed = pnlBlockRefused(
+    (tag, ctx) => extractNumber(xml, tag, ctx),
+    PNL,
+    ANNUAL_PNL_CONTEXT, // the YTD/full-year column in the SAME instance — the live-period witness
+    BALANCE_SHEET_CONTEXT, // …and the balance sheet, for an instance with no live period at all
+  );
+  if (zeroed.refused) {
+    return {
+      symbol: ctx.symbol,
+      quarter,
+      fiscalYear,
+      reportDate: meta.reportPeriodEnd,
+      filingDate: meta.filingDate,
+      resultType: ctx.consolidated === "Consolidated" ? "consolidated" : "standalone",
+      xbrlUrl: ctx.xbrl,
+      revenue: null,
+      otherIncome: null,
+      expenses: null,
+      depreciation: null,
+      interest: null,
+      profitBeforeTax: null,
+      tax: null,
+      netProfit: null,
+      operatingProfit: null,
+      zeroedBlockNote: zeroed.note,
+    };
+  }
+
   const revenue = extractNumber(xml, "RevenueFromOperations", PNL);
   const otherIncome = extractNumber(xml, "OtherIncome", PNL);
   const totalExpenses =
@@ -226,6 +269,37 @@ export function parseIndAsAnnual(
   const BS = BALANCE_SHEET_CONTEXT;
   const ps = extractCommonPerShare(xml, PNL, BS);
 
+  // ── RULE 4 — THE ZEROED P&L BLOCK (zero-block-guard.ts), the ANNUAL mirror. ───────────────
+  // The quarterly case is a filer who reports only the year; this is a filer who reports only the
+  // QUARTER and zero-fills the annual column. MEASURED on ADANIENSOL's FY19 standalone instance:
+  // OneD carries ₹260.27 Cr of revenue and FourD carries 0.00 on every line — and FourD is the
+  // column this function reads. MRF's and NTPC's FY18 consolidated instances are the harder shape
+  // again: BOTH columns zero, with only a non-zero paid-up equity capital to prove the company
+  // exists. All three landed as a ₹0 year.
+  //
+  // ⚠ ONLY THE P&L IS NULLED, NOT THE BALANCE SHEET. The refusal is a statement about the P&L
+  //   block specifically; a balance sheet in the same instance may be perfectly good, and throwing
+  //   it away would be its own silent loss. With revenue and netProfit null, GUARD 1
+  //   (checkPlContentless) takes over and decides whether the row may be written at all.
+  const zeroedPnl = pnlBlockRefused(
+    (tag, ctx) => extractNumber(xml, tag, ctx),
+    PNL,
+    QUARTERLY_PNL_CONTEXT, // the Q4-only column in the SAME instance — the live-period witness
+    BS,
+  );
+  /** NULL every P&L line when RULE 4 refused the block. "Unavailable", never "none". */
+  const pl = (v: number | null): number | null => (zeroedPnl.refused ? null : v);
+  /**
+   * EPS out of a refused block — nulled ONLY when it reads exactly 0, and that asymmetry is an
+   * IDENTITY, not a preference. EPS = PAT / shares, so a zero-filled P&L cannot produce a non-zero
+   * EPS: a non-zero one is real information the filer supplied and must survive. A zero one is the
+   * same non-disclosure as the block it came out of. MEASURED on the repaired rows: 8 of 9 carried
+   * basic_eps exactly 0.0000 beside their zeroed P&L, and POLYMED FY18 carried a real 1.83 — which
+   * this keeps. (The same shape as roaRefused, RULE 2.)
+   */
+  const perShare = (v: number | null): number | null =>
+    zeroedPnl.refused && v === 0 ? null : v;
+
   const totalCapex =
     extractNumber(
       xml,
@@ -242,30 +316,31 @@ export function parseIndAsAnnual(
       ctx.consolidated === "Consolidated" ? "consolidated" : "standalone",
     xbrlUrl: ctx.xbrl,
 
-    // P&L
-    revenue: extractNumber(xml, "RevenueFromOperations", PNL),
-    otherIncome: extractNumber(xml, "OtherIncome", PNL),
-    expenses:
+    // P&L — every line passed through `pl`, which nulls the block when RULE 4 refused it.
+    revenue: pl(extractNumber(xml, "RevenueFromOperations", PNL)),
+    otherIncome: pl(extractNumber(xml, "OtherIncome", PNL)),
+    expenses: pl(
       extractNumber(xml, "Expenses", PNL) ??
-      extractNumber(xml, "TotalExpenses", PNL),
-    employeeBenefitExpense: extractNumber(xml, "EmployeeBenefitExpense", PNL),
-    financeCosts: extractNumber(xml, "FinanceCosts", PNL),
-    depreciation: extractNumber(
-      xml,
-      "DepreciationDepletionAndAmortisationExpense",
-      PNL,
+        extractNumber(xml, "TotalExpenses", PNL),
     ),
-    profitBeforeTax: extractNumber(xml, "ProfitBeforeTax", PNL),
-    tax:
+    employeeBenefitExpense: pl(extractNumber(xml, "EmployeeBenefitExpense", PNL)),
+    financeCosts: pl(extractNumber(xml, "FinanceCosts", PNL)),
+    depreciation: pl(
+      extractNumber(xml, "DepreciationDepletionAndAmortisationExpense", PNL),
+    ),
+    profitBeforeTax: pl(extractNumber(xml, "ProfitBeforeTax", PNL)),
+    tax: pl(
       extractNumber(xml, "IncomeTaxExpenseContinuingOperations", PNL) ??
-      extractNumber(xml, "TotalIncomeTaxExpense", PNL) ??
-      extractNumber(xml, "IncomeTaxExpense", PNL) ??
-      extractNumber(xml, "TaxExpense", PNL) ??
-      extractNumber(xml, "TotalTaxExpense", PNL) ??
-      extractNumber(xml, "Tax", PNL),
-    netProfit:
+        extractNumber(xml, "TotalIncomeTaxExpense", PNL) ??
+        extractNumber(xml, "IncomeTaxExpense", PNL) ??
+        extractNumber(xml, "TaxExpense", PNL) ??
+        extractNumber(xml, "TotalTaxExpense", PNL) ??
+        extractNumber(xml, "Tax", PNL),
+    ),
+    netProfit: pl(
       extractNumber(xml, "ProfitLossForPeriod", PNL) ??
-      extractNumber(xml, "ProfitLossForPeriodFromContinuingOperations", PNL),
+        extractNumber(xml, "ProfitLossForPeriodFromContinuingOperations", PNL),
+    ),
 
     // BS — Equity
     equityShareCapital: extractNumber(xml, "EquityShareCapital", BS),
@@ -308,6 +383,9 @@ export function parseIndAsAnnual(
     ),
     currentLiabilities: extractNumber(xml, "CurrentLiabilities", BS),
     noncurrentLiabilities: extractNumber(xml, "NoncurrentLiabilities", BS),
+    // The filing's OWN total. Read rather than reconstructed, because current + non-current is
+    // NOT the whole of it whenever a disposal group (or a regulated utility's own bucket) exists.
+    totalLiabilities: extractNumber(xml, "Liabilities", BS),
 
     // BS — Non-current Assets
     propertyPlantAndEquipment: extractNumber(
@@ -414,5 +492,7 @@ export function parseIndAsAnnual(
       extractNumber(xml, "InterestPaidClassifiedAsOperatingActivities", PNL),
 
     ...ps,
+    basicEps: perShare(ps.basicEps),
+    dilutedEps: perShare(ps.dilutedEps),
   };
 }

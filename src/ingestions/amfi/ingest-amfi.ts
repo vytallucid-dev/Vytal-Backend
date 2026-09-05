@@ -68,8 +68,8 @@ import { prisma } from "../../db/prisma.js";
 import { reportIngestionError } from "../shared/ingestion-error.js";
 import { fetchNavAll, AMFI_NAVALL_URL } from "./amfi-source.js";
 import {
-  parseNavAll, parseAmfiDate, parseNav, parsePlanType,
-  AMFI_ISIN, AMFI_HEADER, AMFI_SOURCE, AMFI_CRON, ETF_CRON,
+  parseNavAll, parseAmfiDate, parseNav, parsePlanType, composeSchemeName,
+  AMFI_ISIN, REQUIRED_AMFI_COLUMNS, AMFI_SOURCE, AMFI_CRON, ETF_CRON,
   type AmfiRow,
 } from "./amfi-parse.js";
 import {
@@ -149,7 +149,13 @@ interface Candidate {
   isin: string;
   symbol: string | null; // NULL for a mutual fund (no ticker); the NSE ticker for an ETF
   schemeCode: string;
+  /** The DISPLAY identity — AMFI's scheme name with its Plan/Option columns joined back on.
+   *  See composeSchemeName. */
   schemeName: string;
+  /** AMFI's BARE scheme name for this row, exactly as shipped. Carried alongside the composed
+   *  one because the upsert needs it to answer a single question: does the name we ALREADY hold
+   *  still describe this fund? See the name clause in upsertCandidates. */
+  baseName: string;
   fundHouse: string | null;
   category: string | null;
   planType: string | null;
@@ -203,16 +209,23 @@ export async function runFundIngest(cls: FundClass): Promise<AmfiIngestResult> {
   const parsed = parseNavAll(fetched.body);
   res.totalRows = parsed.rows.length;
 
-  // GUARD 1 — SHAPE. A column rename means our indices point at the wrong fields; we would
-  // write a NAV into a name. Reject the whole run rather than ingest garbage.
-  if (parsed.headerLine !== AMFI_HEADER) {
+  // GUARD 1 — SHAPE. A column we read being RENAMED OR REMOVED means we cannot know where that
+  // field went; we would write a NAV into a name. Reject the whole run rather than ingest garbage.
+  //
+  // ⚠ MEMBERSHIP, NOT EQUALITY — and the difference is eleven days of frozen NAVs. This guard
+  //   used to compare the header to one frozen string, so when AMFI ADDED "Plan" and "Option"
+  //   on 2026-08-19 an additive change read as a total break: every run aborted through
+  //   2026-08-28 and 18,040 funds held their 2026-08-17 NAV. Columns are now resolved BY NAME
+  //   (amfi-parse.ts), so an added column is absorbed and only a missing one fails — which is
+  //   the same ruling prices-guards.ts already made for the NSE bhavcopy.
+  if (parsed.columns.missing.length > 0) {
     res.errors.shape++;
     await reportIngestionError({
       source: AMFI_SOURCE, cron, guardType: "shape",
       targetTable: TARGET_TABLE, severity: "critical", resolutionPath: "source_code",
-      expected: AMFI_HEADER,
-      observed: parsed.headerLine ?? "(no column header found)",
-      detail: "AMFI column header changed. Column indices would be wrong → REJECTED the run rather than write mis-mapped fields.",
+      expected: `header to carry [${REQUIRED_AMFI_COLUMNS.join(", ")}]`,
+      observed: `missing [${parsed.columns.missing.join(", ")}] — header was ${parsed.headerLine ?? "(no column header found)"}`,
+      detail: "AMFI renamed or dropped a column we read. Column positions would be wrong → REJECTED the run rather than write mis-mapped fields.",
       runRef,
     });
     res.abortReason = "shape guard";
@@ -256,7 +269,12 @@ export async function runFundIngest(cls: FundClass): Promise<AmfiIngestResult> {
   for (const row of rows) {
     const nav = parseNav(row.navRaw);
     const navDate = parseAmfiDate(row.dateRaw);
-    const planType = parsePlanType(row.schemeName);
+    const planType = parsePlanType(row.schemeName, row.planRaw);
+    // The DISPLAY identity. Since 2026-08-19 AMFI ships the plan/option OUT of the name and in
+    // their own columns, so the join has to happen here or four distinct funds land under one
+    // indistinguishable label. A no-op on every file that predates the change. See
+    // composeSchemeName.
+    const displayName = composeSchemeName(row.schemeName, row.planRaw, row.optionRaw);
 
     for (const raw of [row.isinGrowth, row.isinReinvest]) {
       if (raw === null) {
@@ -279,7 +297,8 @@ export async function runFundIngest(cls: FundClass): Promise<AmfiIngestResult> {
         isin: raw,
         symbol,
         schemeCode: row.schemeCode,
-        schemeName: row.schemeName,
+        schemeName: displayName,
+        baseName: row.schemeName,
         fundHouse: row.fundHouse,
         category: row.category,
         planType,
@@ -427,8 +446,54 @@ export async function runFundIngest(cls: FundClass): Promise<AmfiIngestResult> {
     );
   }
 
+  // ── THE RUN SUCCEEDED. Close the shape/count faults that rejected the earlier ones. ──
+  // Without this there is NO WAY BACK, and the cost was measured: the 2026-08-19 column insert
+  // opened a critical shape row that then sat open through the fix AND through every healthy run
+  // after it, because the only code that writes this row is the branch that rejects the file. A
+  // guard that can open but never close stops being a signal and becomes a permanent red mark.
+  // Same lifecycle completion as resolveHealedDiscovery / resolveHealedSplitProbe.
+  await resolveHealedAmfiShape(cron);
+
   res.ok = true;
   return res;
+}
+
+/**
+ * AUTO-RESOLVE-ON-HEAL for the AMFI file-level guards (shape and count).
+ *
+ * Scoped to ONE cron, so the MF pass never closes the ETF pass's row or vice versa — they read the
+ * same file under separate tags precisely so their faults triage independently.
+ *
+ * IDEMPOTENT (no open row ⇒ no-op) and BEST-EFFORT (never throws — closing a healed fault must not
+ * be able to fail the run that healed it).
+ */
+async function resolveHealedAmfiShape(cron: string): Promise<number> {
+  try {
+    const { count } = await prisma.ingestionError.updateMany({
+      where: {
+        source: AMFI_SOURCE,
+        cron,
+        guardType: { in: ["shape", "count"] },
+        targetTable: TARGET_TABLE,
+        targetEntity: null, // file-level guards only — never a per-scheme validity row
+        status: "open",
+      },
+      data: {
+        status: "resolved",
+        resolvedBy: "auto:amfi-shape-heal",
+        resolvedAt: new Date(),
+        resolutionNote:
+          "Healed - a later run read the AMFI file end to end: every column this ingest reads " +
+          "resolved by name and the row count was inside the sane band, so the file-level guard " +
+          "that rejected the earlier run no longer trips.",
+      },
+    });
+    if (count > 0) console.log(`[amfi] auto-resolved ${count} healed file-level fault(s) for ${cron}`);
+    return count;
+  } catch (err) {
+    console.error(`[amfi] resolveHealedAmfiShape failed for ${cron}:`, err);
+    return 0;
+  }
 }
 
 /**
@@ -529,6 +594,92 @@ async function reportValidityIsin(row: AmfiRow, raw: string, runRef: string, cro
  * `RETURNING (xmax = 0)` distinguishes an INSERT from an UPDATE, so a re-run can prove it
  * created 0 new rows.
  */
+/**
+ * WHICH NAME THE CATALOGUE KEEPS — and this is the third time this codebase has had to answer
+ * the same question, after the NAV and the symbol.
+ *
+ * ⚠ AMFI'S 2026-08-19 RESHAPE DROPPED IDENTITY, NOT JUST FORMATTING. It did not only move the
+ *   plan and option into their own columns; it also stopped shipping words that say WHICH FUND
+ *   THIS IS. MEASURED against the live file and the stored catalogue:
+ *       "Axis Children's Fund - Lock in - Direct Growth"      (code 135762)
+ *       "Axis Children's Fund - No Lock in - Direct Growth"   (code 135764)
+ *   both now arrive as the bare string "Axis Children's Fund". Writing what arrives straight
+ *   through would leave 13,909 scheme codes sharing 2,968 labels — against a catalogue that
+ *   today has EXACTLY ZERO labels shared by two codes. Joining the Plan/Option columns back on
+ *   (composeSchemeName) halves that, to 5,999 codes; it cannot fix it, because the missing words
+ *   are not in any column any more.
+ *
+ * ★ SO THE RULE IS THE ONE ALREADY RULED ON TWICE: A VALUE WE HOLD IS NOT DESTROYED BECAUSE THE
+ *   SOURCE DECLINED TO REPEAT IT. If the stored name still CONTAINS AMFI's own base name, then
+ *   AMFI is describing the same fund with less text, and the stored name — obtained from AMFI
+ *   itself, before the reshape, and unique across the catalogue — stands. If the base name is
+ *   NOT in there, AMFI has genuinely renamed the fund and the incoming name wins.
+ *
+ * ★ AND IT DOES NOT FREEZE THE CATALOGUE. A brand-new scheme has nothing stored and takes the
+ *   composed name, which is the best identity AMFI now offers. MEASURED over the live file:
+ *   14,336 names carried forward, 3,648 genuinely replaced, 55 fresh.
+ *
+ * ★ THE SECOND TEST — `ambiguous` — IS WHAT ACTUALLY PROTECTS THE INVARIANT, and containment
+ *   alone does not. A fund AMFI has genuinely RENAMED fails the containment test and takes the
+ *   incoming name, correctly — but AMFI has renamed whole blocks of schemes to the SAME string:
+ *   21 Franklin "Short-Term Income Plan (no. of segregated portfolios- 3)" codes, 19 ICICI
+ *   "Floating Interest Rates Fund" codes, all shipping an empty Plan and Option, all arriving
+ *   as one label. Taking that would put 272 labels onto 2+ scheme codes in a catalogue whose
+ *   measured baseline is ZERO. So when the incoming name cannot tell two scheme codes apart and
+ *   the one we hold can, WE KEEP OURS. AMFI losing the ability to name a fund uniquely is not a
+ *   reason for us to lose it too.
+ *
+ * Pure, so the decision is testable without a database.
+ */
+export function resolveCatalogueName(
+  storedName: string | null,
+  baseName: string,
+  composedName: string,
+  ambiguous: boolean,
+): string {
+  if (!storedName) return composedName; // nothing held — AMFI's best current identity
+  if (ambiguous) return storedName; // AMFI can no longer separate these schemes; we still can
+  const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const base = norm(baseName);
+  // An empty base cannot prove anything about the stored name; keep what we hold.
+  if (!base) return storedName;
+  return norm(storedName).includes(base) ? storedName : composedName;
+}
+
+/**
+ * The incoming labels that CANNOT distinguish two scheme codes within one fund house — computed
+ * over the whole batch, because ambiguity is a property of the set, never of a single row.
+ * Keyed exactly as the catalogue's own uniqueness is measured: (fund_house, lower(name)).
+ */
+function ambiguousLabels(rows: Candidate[]): Set<string> {
+  const key = (c: Candidate) => `${c.fundHouse ?? ""}||${c.schemeName.toLowerCase()}`;
+  const codesPerLabel = new Map<string, Set<string>>();
+  for (const c of rows) {
+    let set = codesPerLabel.get(key(c));
+    if (!set) codesPerLabel.set(key(c), (set = new Set()));
+    set.add(c.schemeCode);
+  }
+  const out = new Set<string>();
+  for (const [k, codes] of codesPerLabel) if (codes.size > 1) out.add(k);
+  return out;
+}
+
+/** The stored `scheme_name` for each ISIN we are about to write. Chunked to stay inside
+ *  Postgres' parameter ceiling; a miss simply means the row is new. */
+async function loadStoredNames(isins: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const CHUNK = 2_000;
+  for (let i = 0; i < isins.length; i += CHUNK) {
+    const slice = isins.slice(i, i + CHUNK);
+    const found = await prisma.instrument.findMany({
+      where: { isin: { in: slice } },
+      select: { isin: true, schemeName: true },
+    });
+    for (const r of found) if (r.schemeName) out.set(r.isin, r.schemeName);
+  }
+  return out;
+}
+
 async function upsertCandidates(
   rows: Candidate[],
   cls: FundClass,
@@ -536,6 +687,12 @@ async function upsertCandidates(
   assertFundClass(cls); // `cls` is interpolated below — re-check the closed set at the SQL seam
   let created = 0;
   let updated = 0;
+
+  // The names we ALREADY hold, for every ISIN in this batch. Read once, up front, because the
+  // name decision below is a comparison between what AMFI is saying now and what it said before
+  // — and after the 2026-08-19 reshape those are no longer the same kind of statement.
+  const storedNames = await loadStoredNames(rows.map((r) => r.isin));
+  const ambiguous = ambiguousLabels(rows);
   const CHUNK = 500; // 11 params/row → 5,500 params/statement, well under Postgres' 65,535
 
   for (let i = 0; i < rows.length; i += CHUNK) {
@@ -545,6 +702,12 @@ async function upsertCandidates(
 
     chunk.forEach((c, n) => {
       const b = n * 11;
+      const name = resolveCatalogueName(
+        storedNames.get(c.isin) ?? null,
+        c.baseName,
+        c.schemeName,
+        ambiguous.has(`${c.fundHouse ?? ""}||${c.schemeName.toLowerCase()}`),
+      );
       tuples.push(
         `(gen_random_uuid()::text, $${b + 1}, $${b + 2}, $${b + 3}, '${cls}'::"AssetClass", NULL, NULL, ` +
           `$${b + 4}, $${b + 5}, $${b + 6}, $${b + 7}, $${b + 8}, $${b + 9}, $${b + 10}::decimal, $${b + 11}::date, now(), now())`,
@@ -552,10 +715,10 @@ async function upsertCandidates(
       values.push(
         c.isin,          //  1
         c.symbol,        //  2  → symbol (NULL for an MF — no ticker; the NSE ticker for an ETF)
-        c.schemeName,    //  3  → name (the catalogue's display identity IS the scheme name)
+        name,            //  3  → name (the catalogue's display identity IS the scheme name)
         c.isActive,      //  4
         c.schemeCode,    //  5  → amfi_scheme_code
-        c.schemeName,    //  6  → scheme_name (raw, for LATER family derivation)
+        name,            //  6  → scheme_name (the same string; mf-family.ts tail-strips it)
         c.fundHouse,     //  7
         c.category,      //  8
         c.planType,      //  9
@@ -575,8 +738,17 @@ async function upsertCandidates(
         scheme_name      = EXCLUDED.scheme_name,
         fund_house       = EXCLUDED.fund_house,
         category         = EXCLUDED.category,
-        plan_type        = EXCLUDED.plan_type,
         amfi_scheme_code = EXCLUDED.amfi_scheme_code,
+
+        -- ══ PLAN TYPE — CARRY-FORWARD, the same ruling as the NAV and the symbol below. ══
+        -- This clause used to be unconditional, and on 2026-08-19 that turned into the
+        -- blank-NAV-wipe bug in a third column. AMFI moved the plan out of the scheme name and
+        -- into a "Plan" column IT LEAVES EMPTY ON 5,742 OF 14,308 ROWS. So an unconditional
+        -- assignment would have overwritten 5,742 correctly-classified plan_types with NULL —
+        -- destroying a classification we already hold, on a night when AMFI simply declined to
+        -- restate it. COALESCE means a stated plan replaces the stored one and an unstated plan
+        -- LEAVES IT ALONE. A plan does not change; only AMFI's willingness to repeat it does.
+        plan_type        = COALESCE(EXCLUDED.plan_type, instruments.plan_type),
 
         -- ══ SYMBOL (Step 13) — CARRY-FORWARD, for the same reason the NAV is. ══
         -- An MF's symbol is ALWAYS NULL (a fund has no ticker), so for the MF pass EXCLUDED.symbol

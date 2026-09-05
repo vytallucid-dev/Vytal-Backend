@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────
 import https from "https";
 import { createInterface } from "readline";
-import { dayToIso } from "./amfi-history-parse.js";
+import { dayToIso, resolveHistoryColumns, isHistDataRow, type HistColumnMap } from "./amfi-history-parse.js";
 
 /**
  * The history endpoint.
@@ -51,6 +51,8 @@ export interface StreamResult {
   dataRows: number;
   /** The column header as shipped — the shape guard's evidence. */
   headerLine: string | null;
+  /** Where each field actually lives in THIS response, resolved from that header. */
+  columns: HistColumnMap;
   durationMs: number;
 }
 
@@ -99,7 +101,7 @@ const DEADLINE_MS = 600_000;
 export function streamHistoryWindow(
   fromDay: number,
   toDay: number,
-  onRow: (parts: string[]) => void,
+  onRow: (parts: string[], cols: HistColumnMap) => void,
 ): Promise<StreamResult> {
   const t0 = Date.now();
   const url = historyWindowUrl(fromDay, toDay);
@@ -108,6 +110,10 @@ export function streamHistoryWindow(
     let bytes = 0;
     let dataRows = 0;
     let headerLine: string | null = null;
+    // Resolved the moment the header line arrives — which is the FIRST line, so every data row
+    // that follows is read through it. Until then it carries `missing`, and the caller's shape
+    // guard refuses the window rather than indexing into a layout nobody has confirmed.
+    let columns: HistColumnMap = resolveHistoryColumns(null);
     let settled = false;
     let activeReq: import("http").ClientRequest | null = null;
 
@@ -173,13 +179,19 @@ export function streamHistoryWindow(
           rl.on("line", (line) => {
             if (!line) return;
             if (line.startsWith("Scheme Code;")) {
-              headerLine ??= line.trim(); // captured once, for the shape guard
+              if (headerLine === null) {
+                headerLine = line.trim(); // captured once, for the shape guard…
+                columns = resolveHistoryColumns(headerLine); // …and it is what places every field
+              }
               return;
             }
+            // No header yet, or a header missing a column we read: we do not know what any
+            // position means, so nothing is folded. The caller's shape guard reports it.
+            if (columns.missing.length > 0) return;
             const parts = line.split(";");
-            if (parts.length < 8 || !/^\d+$/.test(parts[0]!.trim())) return; // section / AMC header
+            if (!isHistDataRow(parts, columns)) return; // section / AMC header
             dataRows++;
-            onRow(parts);
+            onRow(parts, columns);
           });
 
           // ⚠️  BUG FIX (found by Step 13, but NOT a Step-13 bug — it has always been here).
@@ -206,7 +218,7 @@ export function streamHistoryWindow(
           rl.on("error", bad);
           res.on("error", bad);
           rl.on("close", () =>
-            ok({ status, bytes, dataRows, headerLine, durationMs: Date.now() - t0 }),
+            ok({ status, bytes, dataRows, headerLine, columns, durationMs: Date.now() - t0 }),
           );
         },
       );

@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // ★ P1 / 2c · THE MODEL NEVER RECEIVES A RAW KEY AS A FINDING NAME. Asserted, not inspected.
 //
-// This is the gate on the defect the whole build exists to fix. Before Stage 5, ai/grounding.ts and
+// This is the gate on the defect the whole build exists to fix. Before Stage 5, ai/core/grounding.ts and
 // chat/tools/get-stock-facts.ts read `evidence.name` — a name each RULE writes into its own payload,
 // which disagreed with the product's canonical vocabulary on 16 of 34 keys and was simply ABSENT for
 // ownership_R1_pledge, so the loudest finding in the system reached the model as `ownership_R1_pledge`
@@ -54,9 +54,17 @@ function evidenceFor(key: string): Record<string, unknown> {
 
 async function main() {
   rule("1 · SOURCE — neither model-facing surface reads `evidence.name` any more");
-  const grounding = readFileSync("src/ai/grounding.ts", "utf8");
-  const tool = readFileSync("src/chat/tools/get-stock-facts.ts", "utf8");
-  for (const [label, src] of [["ai/grounding.ts", grounding], ["chat/tools/get-stock-facts.ts", tool]] as const) {
+  // ★ RE-POINTED AT THE SURVIVING MODEL-FACING SURFACE (stage 8b). `chat/tools/get-stock-facts.ts`
+  //   was the second one and is deleted; the composition layer's findings copy replaced it, and
+  //   `catalogue/finding-facts.ts` is where a name is resolved now. A source scan whose path no longer
+  //   exists CRASHES the build rather than weakening quietly — which is how this announced itself.
+  const grounding = readFileSync("src/ai/core/grounding.ts", "utf8");
+  //   ⚠ AND THERE IS NOW ONE SURFACE, NOT TWO. `get-stock-facts.ts` was the second; nothing replaced
+  //   it, because under this architecture a finding reaches the reader as a CALLOUT payload built by a
+  //   composition, and the name on it comes from `readFindingsForSymbols` — a read service that was
+  //   already catalogue-resolved. Asserting the catalogue import of a file that legitimately does not
+  //   import it would be a green tick for a claim nobody made, so the loop is scoped to the one site.
+  for (const [label, src] of [["ai/core/grounding.ts", grounding]] as const) {
     ok(
       `${label} resolves names through the CATALOGUE`,
       /from "(?:\.\.\/)+catalogue\/index\.js"/.test(src),
@@ -143,7 +151,7 @@ async function main() {
     `"${sample.slice(0, 72)}…"`,
   );
   ok(
-    "ai/grounding.ts emits the row's verdict field",
+    "ai/core/grounding.ts emits the row's verdict field",
     /verdict="\$\{v\}"|verdict="/.test(grounding) && /rowVerdict\(/.test(grounding),
     "verdict on the wire to the model",
   );

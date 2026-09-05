@@ -17,14 +17,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { readFileSync } from "fs";
 import { prisma } from "../db/prisma.js";
-import { scanExplanationText, AI_EVAL_LIST, AI_HARD_LIST, AI_TARGET_LIST } from "../ai/guardrail.js";
-import { VYTAL_CONTEXT_LAYER } from "../ai/context-layer.js";
+import { scanExplanationText, AI_EVAL_LIST, AI_HARD_LIST, AI_TARGET_LIST } from "../ai/core/guardrail.js";
 import { resolveTone, EXPLANATORY_DEPTH, COMPANY_ANSWER_SHAPE, NON_ADVISORY_SPINE, CONVERSATIONAL_PRECISION, LANGUAGE_MIRROR } from "../ai/tone.js";
-import { CHAT_USE_DONT_NARRATE, CHAT_WRITE_DISCIPLINE, ANTI_ADVICE_REMINDER } from "../chat/voice.js";
-import { toolSpecs, makeToolContext } from "../chat/tools/registry.js";
-import { getFindingsForSymbolsTool } from "../chat/tools/get-findings-for-symbols.js";
 import * as cat from "../catalogue/index.js";
 import { FINDING_COPY, READ_TIME_COPY } from "../portfolio/phs/copy.js";
+import { composedCorpus, assertNonEmpty } from "./lib/composed-corpus.js";
 
 let pass = 0, fail = 0;
 const ok = (n: string, c: boolean, d = "") => { if (c) { pass++; console.log(`  ✅ ${n}${d ? ` — ${d}` : ""}`); } else { fail++; console.log(`  ❌ ${n}${d ? ` — ${d}` : ""}`); } };
@@ -146,7 +143,6 @@ async function main() {
         push(`${n}.${id}.${f}`, v);
         if (Array.isArray(v)) for (const s of v) push(`${n}.${id}.${f}[]`, s);
       }
-  push("VYTAL_CONTEXT_LAYER", VYTAL_CONTEXT_LAYER);
   push("tone.EXPLANATORY_DEPTH", EXPLANATORY_DEPTH);
   // ★ THE DEPTH DIRECTIVE — it TEACHES BY SHOWING THE OFFENCE, so it is the hardest shipped string this
   //   tier will ever be handed: three literal verdicts, quoted as ❌ examples. Pushed by name as well as
@@ -156,16 +152,18 @@ async function main() {
   push("tone.CONVERSATIONAL_PRECISION", CONVERSATIONAL_PRECISION);
   push("tone.LANGUAGE_MIRROR", LANGUAGE_MIRROR);
   push("tone.systemDirective", resolveTone(null, null).systemDirective);
-  push("voice.CHAT_USE_DONT_NARRATE", CHAT_USE_DONT_NARRATE);
-  push("voice.CHAT_WRITE_DISCIPLINE", CHAT_WRITE_DISCIPLINE);
-  push("voice.ANTI_ADVICE_REMINDER", ANTI_ADVICE_REMINDER);
-  for (const s of toolSpecs()) { push(`toolDesc.${s.name}`, s.description); push(`toolParams.${s.name}`, JSON.stringify(s.parameters)); }
-  // the engine's own emitted verdict strings
-  const syms = (await prisma.stock.findMany({ take: 60, select: { symbol: true }, where: { scoreSnapshots: { some: {} } } })).map((s) => s.symbol);
-  for (let i = 0; i < syms.length; i += 6) {
-    const r = await getFindingsForSymbolsTool.handler({ symbols: syms.slice(i, i + 6) }, makeToolContext({ userId: "verify", sessionId: "verify", userMessage: "" } as never));
-    if (r.ok) for (const line of r.content.split("\n")) if (line.trim()) push("ENGINE findings verdict", line);
-  }
+  // ── ★ RE-POINTED AT THE COMPOSED ANSWER (stage 8b) ─────────────────────────────────────────────
+  //    WAS: 33 tool descriptions + the findings tool's own emitted verdict lines over 60 symbols.
+  //    Both are gone — the tool schemas are the mechanism this build retired, and no engine emits
+  //    verdict strings any more.
+  //
+  //    NOW: the PROSE of every composed answer — the sentences a model actually wrote. Deliberately
+  //    NOT the full reader-facing text: that carries code-rendered band labels ("Fragile", "Steady"),
+  //    and scanning those for evaluative language would fire this gate on our own vocabulary rather
+  //    than on model misbehaviour, which is the one thing it exists to catch.
+  const composed = await composedCorpus();
+  assertNonEmpty(composed, "verify-evaluative-tier");
+  for (const c of composed) push(`COMPOSED prose · ${c.label}`, c.prose);
   const shippedFires = shipped.filter((c) => evalOf(c.text).length > 0);
   console.log(`     shipped strings scanned: ${shipped.length}`);
   for (const f of shippedFires) console.log(`     ★ FIRE [${f.src}] ${evalOf(f.text).map((h) => `${h.term}→"${h.match}"`).join(", ")}`);

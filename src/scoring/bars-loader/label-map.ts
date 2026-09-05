@@ -39,6 +39,32 @@ export interface CanonicalMetric {
   direction: BarDirection;
   pillar: Pillar;
   industry: IndustryType;
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * ★★ HOW **VYTAL** COMPUTES IT, WHERE A READER'S PRIOR WOULD BE WRONG.
+   *
+   * ⚠ THIS EXISTS BECAUSE THE MODEL IS ABOUT TO EXPLAIN THESE MEASURES. Meta may hand a metric to the
+   *   model for the GENERAL half — what it measures, why it matters — and a general explanation of
+   *   ROCE would most likely describe a PRE-depreciation version. Vytal's is EBIT-based and
+   *   post-depreciation. The reader would then learn a definition that does not match the number on
+   *   their screen, which is worse than no definition at all. So the basis is authored, code-supplied
+   *   and NOT the model's to write.
+   *
+   * ★ AUTHORED WHERE THE BASIS IS NON-OBVIOUS, NOT EVERYWHERE. ROE = net profit / net worth and
+   *   D/E = debt / net worth are what anyone would assume; a line on each would be padding, and
+   *   padding is how the one line that matters gets skimmed. `undefined` means "conventional".
+   *
+   * ⚠ THE PAIR THIS IS REALLY FOR IS THE EBIT/EBITDA SPLIT INSIDE ONE PRODUCT. ROCE (F1) and interest
+   *   coverage (F5/M5) are POST-depreciation; operating margin (F1_OPM/M1) is EBITDA-based and
+   *   therefore PRE-depreciation. `momentum.ts` states it outright. Homogenising the two would be a
+   *   silent re-rating of every company, so both sides carry a line.
+   *
+   * ★ EVERY STRING HERE IS COPIED FROM THE SCORING CODE'S OWN `formula`, not restated from memory —
+   *   see `metrics/foundation.ts` and `metrics/momentum.ts`. Where they disagree, the code is right
+   *   and this is the bug.
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   */
+  vytalBasis?: string;
 }
 
 // ── Engine canonical key REGISTRY ───────────────────────────────────────────────
@@ -49,27 +75,55 @@ export interface CanonicalMetric {
 const M = (
   key: string, label: string, unit: EngineUnit, direction: BarDirection,
   pillar: Pillar, industry: IndustryType,
-): CanonicalMetric => ({ key, label, unit, direction, pillar, industry });
+  /** See `CanonicalMetric.vytalBasis` — omitted where the basis is the conventional one. */
+  vytalBasis?: string,
+): CanonicalMetric => ({ key, label, unit, direction, pillar, industry, vytalBasis });
 
 export const CANONICAL_METRICS: CanonicalMetric[] = [
   // Non-financial Foundation
-  M("F1", "ROCE", "%", "higher_better", "foundation", "non_financial"),
+  M("F1", "ROCE", "%", "higher_better", "foundation", "non_financial",
+    // foundation.ts:66 — EBIT / (net worth + total debt) × 100, EBIT = PBT + finance costs.
+    "Vytal computes ROCE as EBIT divided by capital employed, where EBIT is profit before tax plus " +
+    "finance costs — so it is AFTER depreciation — and capital employed is net worth plus total debt. " +
+    "Many published definitions use a pre-depreciation figure, which gives a higher number."),
   M("F2", "ROE", "%", "higher_better", "foundation", "non_financial"),
-  M("F3", "Cash Conversion", "ratio", "higher_better", "foundation", "non_financial"),
+  M("F3", "Cash Conversion", "ratio", "higher_better", "foundation", "non_financial",
+    // foundation.ts — (OCF + buyback) / PAT. The buyback add-back is ours and nobody would assume it.
+    "Vytal computes cash conversion as operating cash flow PLUS any buyback outflow, divided by " +
+    "profit after tax. The buyback is added back because it is a return of capital rather than a " +
+    "failure to convert profit into cash."),
   M("F4", "Debt/Equity", "ratio", "lower_better", "foundation", "non_financial"),
-  M("F5", "Interest Coverage", "x", "higher_better", "foundation", "non_financial"),
+  M("F5", "Interest Coverage", "x", "higher_better", "foundation", "non_financial",
+    // foundation.ts:220 — EBIT / finance costs, the same post-depreciation EBIT as ROCE.
+    "Vytal computes interest coverage as EBIT divided by finance costs, using the same " +
+    "post-depreciation EBIT as ROCE. A definition based on EBITDA would give a higher number."),
   M("F6", "Receivables Days", "days", "lower_better", "foundation", "non_financial"),
   M("F7", "Asset Turnover", "x", "higher_better", "foundation", "non_financial"),
-  M("F8", "FCF/PAT (4y avg)", "ratio", "higher_better", "foundation", "non_financial"),
+  M("F8", "FCF/PAT (4y avg)", "ratio", "higher_better", "foundation", "non_financial",
+    // foundation.ts — FCF = OCF − (ΔNetBlock + Dep + ΔCWIP), averaged over four years.
+    "Vytal derives free cash flow as operating cash flow minus capital spending, where capital " +
+    "spending is reconstructed as the change in net block plus depreciation plus the change in " +
+    "capital work in progress. It is then averaged against profit after tax over four years."),
   M("F9", "OCF Consistency", "%", "higher_better", "foundation", "non_financial"),
   M("F10", "Revenue 3y CAGR", "%", "higher_better", "foundation", "non_financial"),
-  M("F1_OPM", "Operating Margin (PG8)", "%", "higher_better", "foundation", "non_financial"),
+  M("F1_OPM", "Operating Margin (PG8)", "%", "higher_better", "foundation", "non_financial",
+    // foundation.ts:391 — EBITDA / revenue. ⚠ THE OPPOSITE SIDE OF THE SPLIT FROM ROCE AND F5.
+    "Vytal computes operating margin on an EBITDA basis — BEFORE depreciation — which is the " +
+    "opposite convention to ROCE and interest coverage in the same product. That is deliberate and " +
+    "the two must not be read as though they share a basis."),
   // Non-financial Momentum
-  M("M1", "TTM Operating Margin", "%", "higher_better", "momentum", "non_financial"),
+  M("M1", "TTM Operating Margin", "%", "higher_better", "momentum", "non_financial",
+    // momentum.ts — Σ(PBT + interest + depreciation) / Σrevenue, i.e. EBITDA, over trailing 12 months.
+    "Vytal computes this on an EBITDA basis — profit before tax plus interest plus depreciation, " +
+    "over the trailing twelve months — so it is BEFORE depreciation, unlike ROCE and interest " +
+    "coverage."),
   M("M2", "TTM Net Margin", "%", "higher_better", "momentum", "non_financial"),
   M("M3", "Revenue YoY (TTM)", "%", "higher_better", "momentum", "non_financial"),
   M("M4", "Net Profit YoY (TTM)", "%", "higher_better", "momentum", "non_financial"),
-  M("M5", "TTM Interest Coverage", "x", "higher_better", "momentum", "non_financial"),
+  M("M5", "TTM Interest Coverage", "x", "higher_better", "momentum", "non_financial",
+    // momentum.ts:26 — ΣEBIT / Σinterest over the trailing twelve months, post-depreciation.
+    "Vytal computes this as trailing-twelve-month EBIT divided by trailing-twelve-month interest, " +
+    "after depreciation — the same basis as the annual measure."),
   M("M1_OPM_TTM", "TTM Operating Margin (PG8)", "%", "higher_better", "momentum", "non_financial"),
   // Banking Foundation
   M("Tier1", "Tier-1 Capital", "%", "higher_better", "foundation", "banking"),

@@ -197,12 +197,37 @@ export function r1StandingAt(rows: OwnershipQuarter[], idx: number): boolean {
   return computePledging(rows[idx], idx >= 1 ? rows[idx - 1] : null).r1Breach;
 }
 
-/** pledgeRatio from counts, or null when undefined (missing pledge data, or
- * promoterShares ≤ 0). PLEDGE-PROPER only. */
+/**
+ * ★★ THE PLEDGE DENOMINATOR — ONE HOME (N-3). Four sites compute a pledge ratio (R1's ladder here,
+ *    P3 promoter stress, the ownership-move divergence, and the read layer's `pledgedPctOfPromoter`)
+ *    and all four must divide by the same thing, or the product states two percentages for one fact.
+ *
+ * ⚠ IT IS THE TOTAL HOLDING, NOT THE FULLY-PAID-UP COUNT, AND THAT IS THE FILING'S OWN BASIS.
+ *   `promoterShares` is `NumberOfFullyPaidUpEquityShares` and excludes depository receipts.
+ *   ASHOKLEY files 1,203,500,000 pledged and prints 40.1% — that is ÷ 3,001,320,522 (the total
+ *   holding), not ÷ 2,342,920,242 (fully paid), which gives 51.4%. Dividing by the wrong one put the
+ *   company over R1's 50% bar when its own disclosure says it is under.
+ *
+ * ⚠ THE FALLBACK IS DELIBERATE AND NARROW. `promoterTotalShares` is null on rows parsed before the
+ *   field existed and on 2020-vintage filings that do not carry the element; those fall back to
+ *   `promoterShares`, which is exactly what they divided by before. Measured: the two counts differ
+ *   for 2 of 353 live-pledge stocks, and one (ASHOKLEY) crosses the bar because of it.
+ */
+export function pledgeDenominator(q: {
+  promoterTotalShares?: bigint | null;
+  promoterShares: bigint | null;
+}): bigint | null {
+  if (q.promoterTotalShares != null && q.promoterTotalShares > 0n) return q.promoterTotalShares;
+  return q.promoterShares;
+}
+
+/** pledgeRatio from counts, or null when undefined (missing pledge data, or the
+ * denominator ≤ 0). PLEDGE-PROPER only. */
 function pledgeRatio(q: OwnershipQuarter): number | null {
   if (q.pledgedShares === null) return null; // pledge data absent
-  if (q.promoterShares === null || q.promoterShares <= 0n) return null; // guard > 0
-  return (Number(q.pledgedShares) / Number(q.promoterShares)) * 100;
+  const denom = pledgeDenominator(q);
+  if (denom === null || denom <= 0n) return null; // guard > 0
+  return (Number(q.pledgedShares) / Number(denom)) * 100;
 }
 
 /**

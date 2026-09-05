@@ -182,7 +182,18 @@ async function fetchSchemeSeriesOnce(schemeCode: string): Promise<string> {
     const req = https.get(`https://api.mfapi.in/mf/${schemeCode}`, (r) => {
       const c: Buffer[] = [];
       r.on("data", (x: Buffer) => c.push(x));
-      r.on("end", () => resolve(Buffer.concat(c).toString()));
+      r.on("end", () => {
+        const body = Buffer.concat(c).toString();
+        // ⚠ THE STATUS CODE MUST BE READ, OR AN ERROR PAGE BECOMES A "SUCCESS". `https.get`
+        //   resolves a 502 exactly as it resolves a 200 — the only difference is the body, and
+        //   mfapi's is HTML. This used to resolve, escape the retry loop below, and only then
+        //   die in JSON.parse as `Unexpected token '<', "<html>`. See fetchSchemeSeries.
+        if ((r.statusCode ?? 0) < 200 || (r.statusCode ?? 0) >= 300) {
+          reject(new Error(`mfapi HTTP ${r.statusCode} for scheme ${schemeCode}`));
+          return;
+        }
+        resolve(body);
+      });
       r.on("error", reject);
     });
     req.on("error", reject);
@@ -190,28 +201,45 @@ async function fetchSchemeSeriesOnce(schemeCode: string): Promise<string> {
   });
 }
 
+/**
+ * ⚠ THE PARSE BELONGS INSIDE THE RETRY, AND LEAVING IT OUTSIDE COST 43 FUNDS THEIR SPLIT ADJUSTMENT.
+ *
+ * MEASURED: 43 open faults across 2026-08-29..08-31, most of them reading `series fetch threw after
+ * 3 attempts: Unexpected token '<', "<html>`. That message was WRONG ON ITS OWN TERMS — there was
+ * exactly ONE attempt. mfapi answered a burst of ~43 sequential calls with a rate-limit HTML page,
+ * `https.get` resolved it as a body (no status check, now fixed above), the loop saw a non-null
+ * `body` and exited satisfied, and the HTML only blew up in `JSON.parse` further down — OUTSIDE the
+ * loop, where no retry could reach it. The single most retryable failure mode was the one failure
+ * mode that never got retried.
+ *
+ * So the whole attempt — fetch AND parse AND shape-check — is one unit inside the loop. An attempt
+ * counts as successful only when it has produced a usable series, which is the only definition of
+ * success that means anything to the caller. Re-probed live: all 43 scheme codes answer HTTP 200
+ * with valid JSON, confirming the failures were transient and retryable throughout.
+ */
 async function fetchSchemeSeries(schemeCode: string): Promise<Map<number, number>> {
-  let body: string | null = null;
   let lastErr: unknown;
-  for (let attempt = 1; attempt <= 3 && body === null; attempt++) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      body = await fetchSchemeSeriesOnce(schemeCode);
+      const body = await fetchSchemeSeriesOnce(schemeCode);
+      const parsed = JSON.parse(body);
+      const out = new Map<number, number>();
+      for (const row of parsed?.data ?? []) {
+        const [dd, mm, yy] = String(row.date).split("-");
+        const day = Date.UTC(Number(yy), Number(mm) - 1, Number(dd)) / 86_400_000;
+        const nav = Number(row.nav);
+        if (Number.isFinite(day) && nav > 0) out.set(day, nav);
+      }
+      // An empty series is not an answer — it is a 200 that carried no data. Retry it too, rather
+      // than hand the caller a map that reconciles nothing and looks like an honest refusal.
+      if (out.size === 0) throw new Error(`mfapi returned no NAV rows for scheme ${schemeCode}`);
+      return out;
     } catch (err) {
       lastErr = err;
       if (attempt < 3) await new Promise((r) => setTimeout(r, 2_000 * attempt));
     }
   }
-  if (body === null) throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
-
-  const out = new Map<number, number>();
-  const parsed = JSON.parse(body);
-  for (const row of parsed?.data ?? []) {
-    const [dd, mm, yy] = String(row.date).split("-");
-    const day = Date.UTC(Number(yy), Number(mm) - 1, Number(dd)) / 86_400_000;
-    const nav = Number(row.nav);
-    if (Number.isFinite(day) && nav > 0) out.set(day, nav);
-  }
-  return out;
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 /**
@@ -333,6 +361,61 @@ export interface SplitIngestResult {
  * treats NULLs as DISTINCT, so that unique index would have enforced nothing and every run would
  * have inserted a fresh duplicate of every split.)
  */
+/**
+ * AUTO-RESOLVE-ON-HEAL for the corporate-actions probe.
+ *
+ * A fetch failure here is correctly a FAULT — "we could not ask" and "there is no split" demand
+ * opposite responses. But the guard could only ever OPEN a row. Nothing closed one, because the
+ * only code path that runs the guard is the one where the fetch throws, and a symbol whose fetch
+ * has started working again never reaches it. So a 60-second timeout on one night became a
+ * permanent entry in the triage queue.
+ *
+ * IDEMPOTENT (a symbol with no open row is a no-op) and BEST-EFFORT (never throws — closing a
+ * healed fault must not be able to fail the run that healed it). Returns rows closed.
+ *
+ * ⚠ IT MUST BE KEYED ON THE SOURCE, BECAUSE THIS RUN OPENS FAULTS AGAINST TWO OF THEM. The probe
+ *   writes `source: "nse"` when NSE's corporate-actions call fails; the reconciliation writes
+ *   `source: "amfi"` when mfapi's NAV-series call fails. This function healed only the first, so
+ *   the second class had exactly the "NO WAY BACK" defect the comment above was written about —
+ *   43 rows opened across three nights in August 2026 and not one of them could ever close, because
+ *   the only code that could close them was filtering them out. Both sources heal now, each on the
+ *   fetch that actually succeeded, and neither closes the other's row.
+ */
+async function resolveHealedSplitProbe(symbol: string, source: "nse" | "amfi"): Promise<number> {
+  const NOTE = {
+    nse:
+      "Healed - NSE answered for this symbol on a later run, so its corporate actions were read " +
+      "and its NAV series is split-adjusted again. The fetch failure did not reproduce.",
+    amfi:
+      "Healed - the AMFI/mfapi NAV series for this scheme was read on a later run, so its split's " +
+      "application day is reconciled and its windows are no longer withheld. The fetch failure did " +
+      "not reproduce.",
+  }[source];
+  try {
+    const { count } = await prisma.ingestionError.updateMany({
+      where: {
+        cron: CRON,
+        guardType: "shape",
+        targetTable: TARGET_TABLE,
+        targetEntity: symbol,
+        source,
+        status: "open",
+      },
+      data: {
+        status: "resolved",
+        resolvedBy: "auto:split-probe-heal",
+        resolvedAt: new Date(),
+        resolutionNote: NOTE,
+      },
+    });
+    if (count > 0) console.log(`[instrument-splits] auto-resolved ${count} healed ${source} fault(s) for ${symbol}`);
+    return count;
+  } catch (err) {
+    console.error(`[instrument-splits] resolveHealedSplitProbe failed for ${symbol} (${source}):`, err);
+    return 0;
+  }
+}
+
 export async function ingestInstrumentSplits(
   opts: { symbols?: string[]; onProgress?: (done: number, total: number, label: string) => Promise<void> } = {},
 ): Promise<SplitIngestResult> {
@@ -386,6 +469,14 @@ export async function ingestInstrumentSplits(
       continue;
     }
 
+    // ── THE FETCH SUCCEEDED. Close any open fault this symbol carries from a run where it did not.
+    // Without this there is NO WAY BACK: the guard fires only on a throw, so a transient timeout
+    // leaves a row open at occurrences=1 forever, indistinguishable from a symbol NSE genuinely
+    // cannot answer for. MEASURED: 25 such rows, every one from the single run of 2026-08-06/07
+    // ("NSE request timed out after 60s"), none re-tripped since, all 25 still open three weeks
+    // later. Same lifecycle completion as failed-job-guard.ts / resolveHealedScoringErrors.
+    await resolveHealedSplitProbe(inst.symbol, "nse");
+
     if (splits.length === 0) continue; // HONEST-EMPTY. Most ETFs never split. Not a fault.
     res.symbolsWithSplit++;
     res.splitsFound += splits.length;
@@ -406,6 +497,10 @@ export async function ingestInstrumentSplits(
     if (inst.code) {
       try {
         series = await fetchSchemeSeries(inst.code);
+        // THE SERIES CAME BACK. Close any fault this symbol carries from a night mfapi did not
+        // answer — the same lifecycle completion the NSE probe above gets, and the absence of which
+        // left 43 transient rate-limit failures open forever. See resolveHealedSplitProbe.
+        await resolveHealedSplitProbe(inst.symbol, "amfi");
       } catch (err) {
         series = null;
         seriesFailed = true;

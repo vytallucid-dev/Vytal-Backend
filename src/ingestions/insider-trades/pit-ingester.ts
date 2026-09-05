@@ -19,6 +19,7 @@ import {
   CAT_OTHER_MAX,
   CORE_NULL_MAX,
   VALUE_NULL_MAX,
+  isPriceableTrade,
   checkBatchRate,
   checkFutureDate,
   insiderRunRef,
@@ -77,20 +78,31 @@ async function runInsiderRecordGuards(
   }
 
   // GUARD 4: NULL-RATE on the always-present fields + the value field.
-  const nullChecks: Array<[string, number, number, string]> = [
-    ["securitiesTraded", records.filter((r) => r.securitiesTraded == null).length, CORE_NULL_MAX, "0%"],
-    ["tradeDate", records.filter((r) => r.tradeDate == null).length, CORE_NULL_MAX, "0%"],
-    ["holdingPctPost", records.filter((r) => r.holdingPctPost == null).length, CORE_NULL_MAX, "0%"],
-    ["tradeValueCr", records.filter((r) => r.tradeValueCr == null).length, VALUE_NULL_MAX, "1.3%"],
+  //
+  // ⚠ tradeValueCr IS MEASURED OVER PRICEABLE TRADES ONLY, and the denominator is the whole point.
+  //   An inter-se transfer has no price to disclose, so its null value is an HONEST EMPTY, not a
+  //   parse break. Measured over every trade, the rate reports the transfer mix; measured over the
+  //   trades that should carry a price, it reports the parser. See UNPRICED_ACQUISITION_MODES.
+  const priceable = records.filter((r) => isPriceableTrade(r.acquisitionMode));
+  const nullChecks: Array<[string, number, number, number, string]> = [
+    ["securitiesTraded", records.filter((r) => r.securitiesTraded == null).length, n, CORE_NULL_MAX, "0%"],
+    ["tradeDate", records.filter((r) => r.tradeDate == null).length, n, CORE_NULL_MAX, "0%"],
+    ["holdingPctPost", records.filter((r) => r.holdingPctPost == null).length, n, CORE_NULL_MAX, "0%"],
+    ["tradeValueCr", priceable.filter((r) => r.tradeValueCr == null).length, priceable.length, VALUE_NULL_MAX, "0.34% of priceable trades"],
   ];
-  for (const [field, nulls, max, normal] of nullChecks) {
-    const rate = checkBatchRate(nulls, n, max);
+  for (const [field, nulls, denom, max, normal] of nullChecks) {
+    const rate = checkBatchRate(nulls, denom, max);
     if (rate == null) continue;
     await reportIngestionError({
       ...base, guardType: "null_rate", targetField: field, severity: "medium", resolutionPath: "source_code",
       expected: `${field} null-rate ≤ ${(max * 100).toFixed(0)}% (normal ${normal})`,
-      observed: `${(rate * 100).toFixed(1)}% null (of ${n})`,
-      detail: "Field nulled across the batch — an XBRL field rename / parse break.",
+      observed: `${(rate * 100).toFixed(1)}% null (of ${denom}${field === "tradeValueCr" ? ` priceable, out of ${n} in the batch` : ""})`,
+      detail:
+        field === "tradeValueCr"
+          ? "The value is missing on trades that SHOULD carry a price (market / ESOP / preferential). " +
+            "Unpriced modes — inter-se transfer, off-market, other — are excluded from this rate because " +
+            "they have no price to disclose. A break here is a parse break."
+          : "Field nulled across the batch — an XBRL field rename / parse break.",
     });
   }
 

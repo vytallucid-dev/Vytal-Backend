@@ -19,7 +19,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { prisma } from "../db/prisma.js";
 import { resolveToneForUser } from "../ai/tone.js";
-import { groundStockHealth, groundPortfolioHealth, CLOSED_WORLD_HEADER } from "../ai/grounding.js";
+import { groundStockHealth, groundPortfolioHealth, CLOSED_WORLD_HEADER } from "../ai/core/grounding.js";
 import { groundStockRelationship, probeStockRelationship } from "../ai/insight/relationship.js";
 import { buildPortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
 import type { PortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
@@ -157,6 +157,34 @@ const joinBlocks = (blocks: (string | null | undefined)[]): string => blocks.fil
  * subject grounding by surface, attaches the reader's orientation + (for a stock) relationship, and builds
  * the surface's opening ask. Fail-soft throughout: a missing snapshot / degraded relationship never breaks
  * the compose — it renders honest-empty and the conversation still opens.
+ *
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ THE OPENING PATH — KEPT, NOT COMPOSED AND NOT RETIRED. Phase 3, and the reasoning is here rather
+ *    than in a document because the next person to read this file is the one who will wonder.
+ *
+ * ⚠ THE QUESTION WAS FAIR: this is a second path that produces prose from facts, and the whole point
+ *   of the composition architecture is that there is ONE. So it was measured rather than assumed —
+ *   one production consumer (`chat-controller.ts`), 22 verify scripts reaching into `src/chat`, and
+ *   13 files behind it.
+ *
+ * ★ IT IS KEPT BECAUSE IT IS NOT A COMPETING ANSWER PATH. `composeTurn` answers A QUESTION: it takes a
+ *   `RoutedTurn`, which is a question plus the slots a router read out of it. THERE IS NO QUESTION
+ *   HERE. A reader has tapped Discuss on a card and said nothing at all; what this builds is the first
+ *   thing WE say, not a reply to anything. Routing it through the composition layer would mean
+ *   inventing the question the reader did not ask and then answering our own invention — which is a
+ *   worse architecture than two paths, not a cleaner one.
+ *
+ * ★ AND IT DOES NOT DUPLICATE A CONCEPT, WHICH IS WHAT N-3/N-5 ACTUALLY FORBID. Both paths read tone
+ *   through the same `resolveTone`, both ground through the same closed-world fact blocks, and the
+ *   figures both speak come from the same resolvers. What differs is only what they are FOR. Checked
+ *   deliberately, because "two paths" and "two homes for one concept" look identical from a distance
+ *   and only the second is the defect.
+ *
+ * ⚠ WHAT WOULD CHANGE THIS RULING: an opening that starts answering questions. The moment a card's
+ *   opening needs slots, a lens, or a section, it has become a turn and belongs in `composeTurn` —
+ *   and the seam to watch is `buildAsk`, which today writes an INVITATION and would be the first
+ *   thing to drift into writing an ANSWER.
+ * ═════════════════════════════════════════════════════════════════════════════════════════════════
  */
 export async function composeDiscussOpening(userId: string, ctx: DiscussContext): Promise<OpeningComposition> {
   const resolved = resolveOpening(ctx);

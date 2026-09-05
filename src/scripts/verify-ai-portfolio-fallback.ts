@@ -44,7 +44,7 @@ import { composeDeterministicFallback, composeDeterministicStockInsight } from "
 import { buildPortfolioHealthView, reshapeSnapshot, type SnapshotReadInput, type PortfolioHealthView } from "../portfolio/phs/portfolio-health-view.js";
 import { buildHealthSnapshotView } from "../scoring/read/health-view.service.js";
 import { composeLmVerdict, composeLpVerdict, type StandingBand } from "../scoring/lens-patterns/standing-context.js";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 import { scanStringsForForwardLanguage, PORTFOLIO_ADVICE_DENY_LIST } from "../scoring/lens-patterns/no-forward-guard.js";
 import type { PfFinding } from "../portfolio/phs/patterns.js";
 

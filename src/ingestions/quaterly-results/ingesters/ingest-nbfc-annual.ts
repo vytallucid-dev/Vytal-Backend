@@ -136,6 +136,7 @@ export async function ingestNbfcAnnual(
         ["loans", p.loans],
       ],
       yoy: revenueGrowthYoy,
+      yoyBase: priorRow?.revenue?.toNumber() ?? null,
       yoyLabel: "revenueGrowthYoy",
     });
   }

@@ -98,6 +98,18 @@ const REASON_PHRASES: Record<string, string> = {
   insufficient_quarters: "more quarters of results than we hold yet",
   insufficient_shareholding_history: "more shareholding filings than we hold yet",
   no_prior_snapshots: "a longer scoring history than this stock has with us",
+  // ⚠ THE ONLY PHRASE HERE THAT IS ABOUT US RATHER THAN ABOUT THE COMPANY — F-3. Every other entry
+  // completes "this needs …" with something the filings lack; a read failure must not borrow that
+  // sentence, because it tells the reader the record is thin when the record is fine.
+  read_failed: "a read on our side that did not complete — this is our error, not a gap in what the company filed",
+  // ⚠ THE BOOK-SHAPED TWIN. `read_failed` reassures about FILINGS, which a reader's own holdings do
+  // not have. The clause a reader actually needs here is that we could not read it — and, said
+  // explicitly, that this is not the same as holding nothing.
+  reader_read_failed:
+    "a read of your own records that did not complete — this is our error, and it does not mean you hold nothing",
+  // ⚠ NOT "could not compute" — see `peers_unassigned`. The comparison is not pending; there is no
+  // group to compare against, which is the ordinary state for 93.5% of the universe.
+  peers_unassigned: "a peer group, which this company has not been assigned to",
   opm_unavailable: "an operating-margin series we do not have for this company",
   pillar_unavailable: "pillars we could not score for this company",
   band_typical_unavailable: "a band comparison we could not compute for this period",
@@ -111,6 +123,12 @@ const REASON_PHRASES: Record<string, string> = {
   // ⚠ NOT a data gap — a scope statement. The check itself does not apply to a bank, an NBFC or an
   // insurer (see isFinancialIndustry), so the phrase must not imply we are waiting for a filing.
   industry_not_applicable: "a measure that does not apply to how this kind of company is financed",
+  // ── THE SUBJECT ITSELF, not a rule on it. The generic fallback below ("more history than this stock
+  //    has with us yet") is WRONG for both: it implies we hold some history and are waiting for more.
+  //    For a newly-listed company we hold none, and for a company outside coverage there is no "this
+  //    stock" to have history.
+  not_ingested: "a first set of quarterly results, which this company has not filed with us yet",
+  not_in_universe: "a company we cover — this one is not in Vytal's universe",
 };
 
 export const reasonPhrase = (reason: string): string =>

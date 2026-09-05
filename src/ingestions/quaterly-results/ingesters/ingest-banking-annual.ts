@@ -128,6 +128,7 @@ export async function ingestBankingAnnual(
         ["totalAssets", p.totalAssets],
       ],
       yoy: niiGrowthYoy,
+      yoyBase: priorRow?.nii?.toNumber() ?? null,
       yoyLabel: "niiGrowthYoy",
       npa: { nnpa: p.nnpaAbsolute, gnpa: p.gnpaAbsolute },
     });

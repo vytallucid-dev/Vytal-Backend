@@ -35,20 +35,17 @@ import { prisma } from "../db/prisma.js";
 import type { Prisma } from "../generated/prisma/client.js";
 import { resolveChatProvider } from "./engine.js";
 import { spendFor, servedByMock } from "../ai/spend.js";
-import { recordAiTokens, type Actor } from "../ai/quota.js";
+import { recordAiTokens, type Actor } from "../ai/core/quota.js";
 import { resolveProfileModel, PROFILE_QUIESCENCE_MS, PROFILE_MAX_SESSIONS_PER_RUN, PROFILE_GAP_DECAY_SESSIONS, PROFILE_DEPTH_WINDOW_SESSIONS, PROFILE_REGISTER_HYSTERESIS } from "./config.js";
 
 // ── THE VOCABULARY ALLOWLIST — the whole legal domain of `glossaryGaps`. ───────────────────────────
 // Bounded BECAUSE Vytal's vocabulary is closed: four pillars, five bands, the lens/field machinery, the
 // portfolio reads. A gap outside this list is dropped, not stored — which is what stops the field from
 // becoming a free-text field by another name.
-export const VYTAL_VOCAB_KEYS = [
-  "band", "pillar", "foundation", "momentum", "market", "ownership",
-  "health_score", "coverage", "provisional", "lens", "field_verdict",
-  "finding", "red_flag", "pattern", "trajectory", "divergence",
-  "peer_group", "construction", "health_read", "pledging",
-] as const;
-export type VytalVocabKey = (typeof VYTAL_VOCAB_KEYS)[number];
+// ★ MOVED TO `src/reader/vocab.ts` AT STAGE 8 (§8.2) — re-exported so this file and its gate keep
+//   compiling until the tree goes.
+export { VYTAL_VOCAB_KEYS, type VytalVocabKey } from "../reader/vocab.js";
+import { VYTAL_VOCAB_KEYS } from "../reader/vocab.js";
 const VOCAB_SET = new Set<string>(VYTAL_VOCAB_KEYS);
 
 export const READER_REGISTERS = ["en", "hi-latin", "devanagari", "mixed"] as const;

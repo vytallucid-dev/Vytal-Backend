@@ -303,6 +303,10 @@ model Fundamental {
   deferredTaxLiabilitiesNet           Decimal? @map("deferred_tax_liabilities_net") @db.Decimal(18, 2)
   currentLiabilities                  Decimal? @map("current_liabilities") @db.Decimal(18, 2)
   noncurrentLiabilities               Decimal? @map("noncurrent_liabilities") @db.Decimal(18, 2)
+  /// The filing's OWN `Liabilities` subtotal. NOT currentLiabilities + noncurrentLiabilities:
+  /// a disposal group tags a third bucket, and reconstructing the total from two of three parts
+  /// is what made all 48 balance-sheet faults. See checkBsImbalance and the migration note.
+  totalLiabilities                    Decimal? @map("total_liabilities") @db.Decimal(18, 2)
   totalDebt                           Decimal? @map("total_debt") @db.Decimal(18, 2) // derived
 
   // ── BS — Non-current Assets ──
@@ -840,6 +844,21 @@ model ShareholdingPattern {
   totalShares    BigInt? @map("total_shares")
   promoterShares BigInt? @map("promoter_shares")
   pledgedShares  BigInt? @map("pledged_shares")
+
+  /// The promoter group's TOTAL holding (XBRL `NumberOfShares` at the promoter aggregate context),
+  /// including depository receipts. `promoterShares` above is `NumberOfFullyPaidUpEquityShares` and
+  /// EXCLUDES them, which is why both exist.
+  ///
+  /// ⚠ THIS IS THE PLEDGE DENOMINATOR, AND ONLY THAT. The filing's own printed pledge percentage
+  /// divides by this: ASHOKLEY files 1,203,500,000 pledged as 40.1%, which is 1.2035bn ÷ 3,001,320,522
+  /// (total), not ÷ 2,342,920,242 (fully paid). Dividing by the wrong one told a reader the company
+  /// was over R1's 50% bar when its own disclosure says it is not.
+  ///
+  /// ⚠ `promoterShares` KEEPS ITS MEANING. N6 promoter accumulation, the ingestion guards and the
+  /// company snapshot all read it; widening it to the total holding would change those silently, and
+  /// the ruling was about the pledge percentage alone. Measured: 2 of 353 live-pledge stocks have the
+  /// two counts differ at all, and exactly one (ASHOKLEY) crosses the 50% bar because of it.
+  promoterTotalShares BigInt? @map("promoter_total_shares")
 
   // ── Source metadata ───────────────────────
   xbrlUrl    String?  @map("xbrl_url") // the XML file that was parsed
@@ -3611,6 +3630,10 @@ model User {
   chatSessions      ChatSession[]
   chatReaderProfile ChatReaderProfile?
 
+  // ── The persisted miss-log (T-0). SetNull, NOT Cascade: deleting a reader de-links their rows
+  //    rather than deleting the question shapes, which are the evidence §6.4 depends on.
+  compositionMisses CompositionMiss[]
+
   @@map("users")
 }
 
@@ -5124,6 +5147,24 @@ model ChatMessage {
   kind        String @default("text") // "text" | "tool_call" | "tool_result" (CHECK-constrained in SQL)
   toolPayload Json?  @map("tool_payload")
 
+  // ── ★ THE RENDERED ANSWER, PERSISTED (stage 8b). §0.1 is that structure IS the answer; a transcript
+  //    that replayed prose where the reader saw a waterfall would make the structure decoration on a
+  //    text answer after all. It also carries the follow-up chain: "sort by momentum" and "why?"
+  //    resolve against what is ON SCREEN, and a replay with no sections cannot route them.
+  //
+  //    ⚠ `content` STAYS AND IS NOT REPLACED. It remains the accessible, copyable, searchable form of
+  //    the same answer. This ADDS a representation.
+  //
+  //    ⚠ NULL ON EVERY USER ROW, EVERY TOOL TURN AND EVERY PRE-8b ASSISTANT ROW. A null means "this
+  //    row has no stored structure", never "the answer had none" — the renderer falls back to
+  //    `content`, which is exactly what those rows have always carried.
+  //    Shape: `{ "v": <int>, "sections": [...] }` — see composition/section-envelope.ts.
+  sections Json? @map("sections")
+  /// The envelope version the row was written at, lifted OUT of the jsonb so it is queryable and
+  /// indexable — "how many rows are still at v1" is a question a later migration has to answer
+  /// cheaply. CHECK-tied to `sections`: both null, or both present.
+  sectionsVersion Int? @map("sections_version")
+
   promptTokens Int?    @map("prompt_tokens")
   outputTokens Int?    @map("output_tokens")
   cachedTokens Int?    @map("cached_tokens")
@@ -5219,4 +5260,92 @@ model ChatReaderProfile {
 
   @@unique([userId]) // THE read key — one row per reader, one indexed point lookup
   @@map("chat_reader_profile")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE MISS-LOG, PERSISTED — §6.4's evidence, given a store (T-0).
+//
+// ★ WHAT THIS FIXES. §6.4 states the miss-log "is what writes composition #199 — with evidence
+// attached, not guesswork." It was `const ROWS: MissLogRow[] = []` for four stages: in-process,
+// unbounded, dying on every restart, and — measured at T-0 — read by NOTHING. Zero rows had ever
+// survived a deploy, so every sequencing decision that cited it cited an empty set.
+//
+// ★ WHY THE SLOTS ARE BOTH FLATTENED AND KEPT WHOLE. The columns are what a reader GROUPs BY —
+// `source` above all, because §6.5's ruling is that a lexical `unresolved` is a statement about our
+// budget and a model `unresolved` is a statement about the question, and counting them together is
+// the one reading that is always wrong. `slots` keeps the entire RouterOutput verbatim so that a slot
+// added to the contract later is not lost from rows written before its column existed.
+//
+// ★ NEVER READ BY THE COMPOSER. Appended on the way out of a turn, read only by the operator report
+// and /admin/miss-log. A composer that read this would be routing on its own past failures.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+model CompositionMiss {
+  id String @id @default(uuid())
+
+  /// The `at` of the in-memory row, under the house column name.
+  createdAt DateTime @default(now()) @map("created_at")
+
+  /// "generic" | "clarify_operation" (CHECK-constrained in SQL). A generic row says "we answered,
+  /// but not well"; a clarify row says "we did not answer" — and the second is the one that says a
+  /// question shape has no home at all.
+  branch String
+
+  /// ★ WHO PRODUCED THIS TURN — "reader" | "harness" (CHECK-constrained, NO DEFAULT).
+  ///
+  /// Harness rows are KEPT, never skipped: a log that behaves differently under test is a log that
+  /// lies. They are excluded at READ time instead, by default, and their count is always printed so
+  /// the exclusion is never invisible. Resolved once by `recordMiss` from MISS_LOG_ORIGIN /
+  /// setMissLogOrigin(); no composition passes it.
+  ///
+  /// ⚠ KNOWN GAP: a BROWSER harness drives the running server over HTTP and is indistinguishable
+  /// from a reader there, so those turns record "reader". This covers in-process harness runs —
+  /// which is where all four observed contaminating rows came from.
+  origin String
+
+  /// What the reader typed, verbatim. A paraphrase is not evidence.
+  raw String
+
+  /// `classificationKey(raw)` — the ROUTER'S OWN normaliser (router/classification-cache.ts), reused
+  /// rather than re-invented so "same question" means the same thing here as it does to the cache.
+  /// This is the grouping key for "how often is this asked", which is the number T-22 re-orders on.
+  questionKey String @map("question_key")
+
+  /// ★ NULLABLE, AND SET NULL ON ACCOUNT DELETION — NOT CASCADE. See the module header for the
+  /// reasoning: de-linking satisfies a deletion request while preserving the question shape, which is
+  /// the evidence; cascading would delete the tail, and the tail is the point.
+  userId String? @map("user_id")
+
+  // ── The slots, flattened for grouping ────────────────────────────────────────────────────────────
+  scope           String
+  operation       String
+  lens            String?
+  perspective     String
+  action          String?
+  confidence      String
+  /// "model" | "lexical" (CHECK-constrained). ★ THE COLUMN THIS TABLE EXISTS TO SPLIT ON.
+  source          String
+  degradedReason  String? @map("degraded_reason")
+  timeframeKind   String? @map("timeframe_kind")
+  timeframeN      Int?    @map("timeframe_n")
+  subjectMentions String[] @default([]) @map("subject_mentions")
+
+  resolvedSymbols String[] @default([]) @map("resolved_symbols")
+  /// What the generic path decided it could show — what the reader ALMOST got, which is what a
+  /// purpose-built family would have to beat. Empty on a clarify row: nothing was composed.
+  sectionsChosen  String[] @default([]) @map("sections_chosen")
+  /// Named data the question asked for that we do not hold. EMPTY IS MEANINGFUL — it says the miss
+  /// was a MISSING FAMILY, not missing data, which is the cheaper of the two to fix.
+  missingData     String[] @default([]) @map("missing_data")
+
+  /// The whole RouterOutput, verbatim. The durable record behind the columns above.
+  slots Json
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([origin, createdAt(sort: Desc)]) // reader rows, newest first — the default read
+  @@index([questionKey, createdAt(sort: Desc)]) // "how often has THIS question been asked"
+  @@index([branch, source, createdAt(sort: Desc)]) // the §6.5 split — the read that must stay cheap
+  @@index([operation, lens]) // question-shape clustering
+  @@map("composition_misses")
 }

@@ -95,6 +95,7 @@ export async function ingestGeneralInsuranceQuarterly(
       runRef,
       scale: [["grossPremiumsWritten", p.grossPremiumsWritten]],
       yoy: gpwYoy,
+      yoyBase: yearAgoRow?.grossPremiumsWritten?.toNumber() ?? null,
       yoyLabel: "gpwYoy",
       solvency: p.solvencyRatio,
     });

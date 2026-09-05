@@ -390,12 +390,12 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   for (const ms of memberStocks) {
     const id = ms.id, symbol = ms.symbol, stockIndustry = ms.industryType;
     const daily = (await prisma.dailyPrice.findMany({ where: { stockId: id, ...(cutoff ? { date: { lte: cutoff } } : {}) }, orderBy: { date: "asc" }, select: { date: true, close: true } })).map((d) => ({ date: d.date, close: Number(d.close) }));
-    const sh = await prisma.shareholdingPattern.findMany({ where: { stockId: id, ...(cutoff ? { asOnDate: { lte: cutoff } } : {}) }, orderBy: { asOnDate: "asc" }, select: { asOnDate: true, quarter: true, fiscalYear: true, promoterShares: true, totalShares: true, pledgedShares: true, promoterPct: true, fiiPct: true, diiPct: true, retailPct: true } });
+    const sh = await prisma.shareholdingPattern.findMany({ where: { stockId: id, ...(cutoff ? { asOnDate: { lte: cutoff } } : {}) }, orderBy: { asOnDate: "asc" }, select: { asOnDate: true, quarter: true, fiscalYear: true, promoterShares: true, promoterTotalShares: true, totalShares: true, pledgedShares: true, promoterPct: true, fiiPct: true, diiPct: true, retailPct: true } });
     // ⚠ ONE ROW PER QUARTER. shareholding_patterns is keyed by as_on_date and legitimately holds
     //   several filings per quarter (SEBI capital-change disclosures). The rules downstream read
     //   ADJACENT elements as consecutive quarters, so an intra-quarter row silently becomes "the
     //   prior quarter". See ownership/collapse-quarters.ts.
-    const own: OwnershipQuarter[] = collapseToOneRowPerQuarter(sh).map((r) => ({ asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear, promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares, promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct) }));
+    const own: OwnershipQuarter[] = collapseToOneRowPerQuarter(sh).map((r) => ({ asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear, promoterShares: r.promoterShares, promoterTotalShares: r.promoterTotalShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares, promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct) }));
 
     let foundation: MetricValue[], momentum: MetricValue[], snapshotFy: string | null, snapshotQuarter: string | null;
     let seriesFor: (key: string, pillar: "foundation" | "momentum") => number[];

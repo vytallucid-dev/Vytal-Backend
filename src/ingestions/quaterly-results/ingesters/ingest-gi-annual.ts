@@ -113,6 +113,7 @@ export async function ingestGeneralInsuranceAnnual(
         ["totalAssets", p.totalAssets],
       ],
       yoy: gpwGrowthYoy,
+      yoyBase: priorRow?.grossPremiumsWritten?.toNumber() ?? null,
       yoyLabel: "gpwGrowthYoy",
       solvency: p.solvencyRatio,
     });

@@ -209,7 +209,36 @@ interface ShpLean {
   pledgedShares: bigint | null;
   promoterShares: bigint | null;
 }
-const inst = (r: ShpLean): number => (numN(r.fiiPct) ?? 0) + (numN(r.diiPct) ?? 0);
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★ AN UNDISCLOSED BUCKET IS NOT ZERO PERCENT. Architecture spec §3.4.
+//
+// `fii_pct` and `dii_pct` are nullable and NULL means the company did not disclose that class this
+// filing — not that the class holds nothing. Measured 2026-08-29 over 25,168 filings: 1,050 FII-null,
+// 1,384 DII-null, and — the shape that does the damage — 315 filings where FII was disclosed last
+// quarter and is absent this one, plus 2,162 the other way.
+//
+// Coercing null to 0 turns each of those into a FABRICATED TRADE. SAHLIBHFI's latest filing has no FII
+// figure and its prior one reported 2.15%; `(null ?? 0) - 2.15` renders "FII sold 2.15pp". Nobody sold
+// anything. The scoring layer already refuses this — `class_not_disclosed` is a not_evaluable reason on
+// N5 — and the read layer was the half that did not.
+//
+// The delta fields are ALREADY `number | null` and `ownershipTell` already accepts null on all three,
+// so this is arithmetic that had to stop lying, not a contract change.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+const instOrNull = (r: ShpLean): number | null => {
+  const f = numN(r.fiiPct);
+  const d = numN(r.diiPct);
+  return f === null || d === null ? null : f + d;
+};
+/** a − b, or null when either side is undisclosed. The one place the rule is written. */
+const deltaOrNull = (a: number | null, b: number | null): number | null =>
+  a === null || b === null ? null : round2(a - b);
+
+// ★ CLOSED AT STAGE 3. `spark` is `(number | null)[]` and an undisclosed quarter is a null point, so
+// the line breaks there instead of dipping to the disclosed remainder. The stage-2 blocker was the
+// frontend's `number[]`; measured before changing it, `OwnershipScanItem.spark` has NO frontend
+// consumer at all (every `spark` hit over there is an unrelated `Icons.spark`), so the twin narrowed
+// with nothing downstream to break.
 
 /** Pledge as % of promoter holding, from the reliable BigInt share counts (the
  *  Decimal pledge column is unit-inconsistent and unused). Genuine 0 → 0. */
@@ -296,13 +325,13 @@ async function buildOwnershipScan(): Promise<OwnershipScanItem[]> {
     const prev = shp[1] ?? null;
 
     const pledgedPctOfPromoter = cur ? pledgePctOfPromoter(cur.pledgedShares, cur.promoterShares) : null;
-    const instDelta = cur && prev ? round2(inst(cur) - inst(prev)) : null;
-    const fiiDelta = cur && prev ? round2((numN(cur.fiiPct) ?? 0) - (numN(prev.fiiPct) ?? 0)) : null;
-    const diiDelta = cur && prev ? round2((numN(cur.diiPct) ?? 0) - (numN(prev.diiPct) ?? 0)) : null;
+    const instDelta = cur && prev ? deltaOrNull(instOrNull(cur), instOrNull(prev)) : null;
+    const fiiDelta = cur && prev ? deltaOrNull(numN(cur.fiiPct), numN(prev.fiiPct)) : null;
+    const diiDelta = cur && prev ? deltaOrNull(numN(cur.diiPct), numN(prev.diiPct)) : null;
     // institutional share over time (oldest→newest, ≤ SPARK_MAX)
     const spark = shp
       .slice(0, SPARK_MAX)
-      .map((r) => round2(inst(r)))
+      .map((r) => { const v = instOrNull(r); return v === null ? null : round2(v); })
       .reverse();
 
     return [

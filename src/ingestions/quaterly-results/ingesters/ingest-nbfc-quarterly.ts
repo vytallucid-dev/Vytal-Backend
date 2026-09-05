@@ -90,6 +90,7 @@ export async function ingestNbfcQuarterly(
       runRef,
       scale: [["revenue", p.revenue]],
       yoy: revenueYoy,
+      yoyBase: yearAgoRow?.revenue?.toNumber() ?? null,
       yoyLabel: "revenueYoy",
     });
   }

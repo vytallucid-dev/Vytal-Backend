@@ -54,6 +54,21 @@
 //   duplicate   already on the card in its own slot — the verdict sentence, the finding's name, the
 //               dampening note. Rendering it twice is the R1 defect (see `pledgeRatioQ`).
 //
+// ── ★ THE TEST THAT SEPARATES A COMPANY MEASUREMENT FROM A MODEL CONSTANT ────────────────────────
+// ⚠ COUNT THE DISTINCT VALUES ACROSS EVERY ROW THAT CARRIES THE KEY. A measurement ABOUT A COMPANY
+// varies BY company: `absDecline` holds 40 distinct values over 54 rows, `pledgeFromPct` 5 over 5. A
+// threshold or a back-test statistic is a literal in the rule, so it is IDENTICAL on every row that
+// carries it: `hotForwardPct` is -7.3 on all 90, `qoqFallPp` is 10 on all 5.
+//
+// **A key with one distinct value across all its rows is a model constant and is never `reader`.**
+//
+// This is the check that decides which side of "show the magnitude, withhold the threshold" a key sits
+// on, and it is the ONLY reliable one: the name will not tell you. `qoqFallPp` and `ratioPct` read like
+// ownership magnitudes and are the bars N7 fires at, lifted straight out of `FACTS.thresholds`
+// (finding-facts.ts). `hotForwardPct` reads like a return and is back-test output, sibling to
+// `hotPositivePct` two lines above it in the same evidence bag. Five keys were classified from their
+// names on the first pass of this table and all five were wrong; the count caught every one.
+//
 // ⚠ AN `internal` CLASSIFICATION IS NOT A JUDGEMENT THAT THE VALUE IS UNIMPORTANT. `evidencedN` is one
 // of the most important facts about a pattern. It is withheld from the PIP surface because a bare
 // "Evidencedn: 22" beside a company's own numbers reads as a fact about that company. Where the study
@@ -208,6 +223,13 @@ const READER: Record<string, ReaderEvidenceFact> = {
   pledgeRatioQ: R("Promoter holding pledged", "%", 1),
   pledgeRatioQ1: R("Pledged a quarter ago", "%", 1),
   qoqRisePp: R("Change this quarter", "pp", 1),
+  // N7's release pair. Same quantity as `pledgeRatioQ1` / `pledgeRatioQ` above, under the rule that
+  // reads the fall rather than the rise — and the two keys the N7 verdict interpolates by name
+  // (catalogue/n-family-copy.ts). ⚠ PRECISION 2, NOT THE FINDING'S 1: the rule stores them through its
+  // own `r2` and the sentence prints them raw, so a pip inheriting displayPrecision would show 25.9
+  // beside a sentence saying 25.91. The override makes the chip and the sentence the same number.
+  pledgeFromPct: R("Promoter holding pledged before", "%", 2),
+  pledgeToPct: R("Promoter holding pledged now", "%", 2),
 
   // ── insider and block-deal activity ─────────────────────────────────────────────────────────────
   deals: R("Deals", null, 0),
@@ -237,6 +259,16 @@ const READER: Record<string, ReaderEvidenceFact> = {
   revenueGrowthPct: R("Revenue growth", "%", 1),
   outpacePp: R("Receivables outpaced revenue by", "pp", 1),
   receivablesToRevenue: R("Receivables as share of revenue", "%", 1),
+  // N2's starting point for the run — the same quantity as the line above, at the base year.
+  baseReceivablesToRevenue: R("Receivables as share of revenue, base year", "%", 1),
+  // ── N3's deleveraging run. `x` and 2dp to match `deRatioLatest`: a debt/equity ratio is read the
+  //    same way wherever it appears, and N3's own verdict prints these two with a "×".
+  deFrom: R("Debt to equity before", "x", 2),
+  deTo: R("Debt to equity now", "x", 2),
+  // The fall itself, both ways it is stated: absolute (a difference of two ratios, so still `x`) and
+  // relative (that difference as a share of where it started, an integer percentage).
+  absDecline: R("Debt to equity fell by", "x", 2),
+  relDeclinePct: R("Debt to equity, relative fall", "%", 0),
   latestTtmGrowthPct: R("Revenue growth (TTM)", "%", 1),
   priorTtmGrowthPct: R("Revenue growth a year ago", "%", 1),
   deltaPp: R("Change", "pp", 1),
@@ -259,6 +291,8 @@ const READER: Record<string, ReaderEvidenceFact> = {
   priorPeriod: R("Compared with", null),
   fromPeriod: R("From", null),
   toPeriod: R("To", null),
+  // N2 emits this beside `fromPeriod`/`toPeriod`: the year the receivables base was taken from.
+  basePeriod: R("Base period", null),
   sincePeriod: R("Standing since", null),
   peakPeriod: R("Widest at", null),
 
@@ -294,6 +328,15 @@ const INTERNAL: Readonly<Record<InternalReason, readonly string[]>> = {
     // T6's record of the mark it USED to borrow (the composite's 60, against Momentum's own 54). A
     // withdrawn bar is still a bar — see `borrowedThresholdFalseReading` under `study`.
     "borrowedThreshold",
+    // N3's two floors — the fall must clear 0.5x absolute OR 25% relative.
+    "minAbsDecline", "minRelDecline",
+    // ★ N7's TWO BARS, AND THEY READ LIKE OWNERSHIP MAGNITUDES. `qoqFallPp` is 10 and `ratioPct` is 50
+    //   on every row that carries them, because the rule lifts both straight out of its own
+    //   `FACTS.thresholds` (finding-facts.ts) and fires on them. The company's actual fall is `fallPp`,
+    //   which IS reader. Admitting these would have printed "Change this quarter: 10pp" — our
+    //   calibration — next to the real number, in the same list. See the distinct-value test in the
+    //   header: 1 distinct value over 5 rows is a constant, whatever the name suggests.
+    "qoqFallPp", "ratioPct",
   ],
   // ── THE PATTERN'S OWN BACK-TEST. Withheld from verdicts by ruling; the pips were the hole in it. ─
   study: [
@@ -318,6 +361,12 @@ const INTERNAL: Readonly<Record<InternalReason, readonly string[]>> = {
     "disclosureAnchoredN", "disclosureAnchoredPct", "disclosureAnchoredPositivePct",
     "twoSidedWindowMeanPct", "twoSidedAllNegative", "medianLeadDays",
     "afterTheMovePct", "afterTheMovePositivePct",
+    // D6's HOT-regime forward return. Sibling to `hotPositivePct` two lines above it in the same
+    // evidence bag (d6-quality-rolling-over.ts) and to `evidencedForwardPct` two lines below.
+    "hotForwardPct",
+    // T5's small-move split — the half of the back-test that carries the drift. Same construction as
+    // `frontRunPositivePct` / `frontRunSectorExcessPct` above; constant on all 45 rows.
+    "smallMovePositivePct", "smallMoveSectorExcessPct",
   ],
   // ── TOKENS THE ENGINE BRANCHES ON. Not language; meaningless outside the code that reads them. ──
   routing: [
@@ -331,17 +380,33 @@ const INTERNAL: Readonly<Record<InternalReason, readonly string[]>> = {
     "crossDownThrough60IsExcluded", "crossIntoStrongIsExcluded", "baseDoesNotCushion",
     "spansQuarterGap", "suppressedByBD", "firstBreach", "firedRule", "dilutionVerdict",
     "basedOn", "reason", "returnClaim", "flow", "guardClean",
+    // The coalescer's bookkeeping (scoring/findings/coalesce.ts): which constituent earned the right to
+    // speak, whether that claim resolves on the regime phase, that a merge happened at all, and what
+    // basis the merged evidence carries.
+    "claimSource", "claimSourceResolvesOnPhase", "isCoalesced", "evidenceBasis",
+    // ⚠ BOOLEANS, AND THAT SETTLES IT — booleans are routing tokens by construction (see the header on
+    //   ReaderEvidenceFact.precision). `smallMoveCarriedTheDrift` gates T5's R1 wording;
+    //   `priorR1Standing` records that N7's anti-double-count guard held. Neither is a sentence and
+    //   neither is a measurement, so neither is `prose` nor `structural`.
+    "smallMoveCarriedTheDrift", "priorR1Standing",
   ],
   // ── SENTENCES. They belong in the verdict or the boundary line, never chopped into a chip. ──────
   prose: [
     "caveat", "meanCaveat", "structuralNote", "driver", "inheritedFrom", "sectorWide", "calibration",
     "label", "tone",
+    // T5's authored counterweight, stored as a whole sentence: "Gains of 15+ points returned -0.5%,
+    // 50% positive (n=4). A bigger move is not a bigger signal." A caption, not a chip.
+    "largeMoveDidNothing",
   ],
   // ── OBJECTS AND ARRAYS. Named rather than left to a typeof check, so "why not shown" has an answer.
   structural: [
     "series", "opmSeries", "ttmSeries", "deHistory", "gapTrajectory", "trajectory", "profile",
     "pillarDeltas", "compositeHeld", "shareholding", "breaches", "legs", "trigger", "values",
     "triplet", "peer", "shares", "regimeAtEvent", "rawValue",
+    // The coalescer's arrays: the constituent findings in full, the keys they were merged from, and the
+    // marks the merged move crossed. `marksCrossed` holds bar values ([74], [62]) but is withheld as an
+    // ARRAY — the pips cannot render one either way.
+    "constituents", "coalescedFrom", "marksCrossed",
   ],
   // ── ALREADY ON THE CARD IN ITS OWN SLOT. Rendering twice is the defect, not the redundancy. ─────
   duplicate: [

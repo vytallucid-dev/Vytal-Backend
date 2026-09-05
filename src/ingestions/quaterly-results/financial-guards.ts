@@ -23,6 +23,7 @@ import {
   RESULTS_SOURCE,
   SCALE_CEIL_CR,
   REVENUE_YOY_MAX_PCT,
+  YOY_BASE_MIN_CR,
   checkPlContentless,
   checkScale,
   checkRevenueYoyAnomaly,
@@ -90,7 +91,10 @@ export async function financialShapeReject(o: {
     expected: `${o.coreLabel} present`,
     observed: "both null (no P&L content)",
     detail:
-      "Financial P&L tags did not resolve (likely an XBRL tag rename) — rejecting the upsert to preserve any existing row.",
+      "No P&L in this document for the period asked for. TWO CAUSES, and the row is refused either " +
+      "way: an XBRL tag rename (the tags moved), or a filing that simply HAS no column for that period " +
+      "— a quarterly instance read as an annual has an empty FourD. Check the document carries the " +
+      "block before hunting for a parser bug. Rejecting the upsert either way, to preserve any existing row.",
     runRef: o.runRef,
   });
   return true;
@@ -107,6 +111,9 @@ export async function financialRecordGuards(o: {
   scale: ReadonlyArray<readonly [string, number | null]>;
   yoy?: number | null;
   yoyLabel?: string;
+  /** The PRIOR-PERIOD line item the YoY was measured from — GUARD 5's materiality floor reads it.
+   *  See YOY_BASE_MIN_CR: below ₹10 Cr a growth percentage is arithmetic, not evidence. */
+  yoyBase?: number | null;
   npa?: { nnpa: number | null; gnpa: number | null }; // banking only
   solvency?: number | null; // insurance only
 }): Promise<void> {
@@ -158,14 +165,14 @@ export async function financialRecordGuards(o: {
     });
   }
 
-  if (o.yoy !== undefined && checkRevenueYoyAnomaly(o.yoy ?? null)) {
+  if (o.yoy !== undefined && checkRevenueYoyAnomaly(o.yoy ?? null, o.yoyBase ?? null)) {
     await reportIngestionError({
       ...base,
       guardType: "continuity",
       targetField: o.yoyLabel ?? "yoy",
       severity: "low",
       resolutionPath: "source_code",
-      expected: `|YoY| ≤ ${REVENUE_YOY_MAX_PCT}%`,
+      expected: `|YoY| ≤ ${REVENUE_YOY_MAX_PCT}% on a base ≥ ₹${YOY_BASE_MIN_CR} Cr`,
       observed: `${o.yoyLabel ?? "yoy"}=${o.yoy?.toFixed(0)}%`,
       detail: "Primary YoY beyond the sticky band — per-period scale break or real anomaly; eyeball.",
     });

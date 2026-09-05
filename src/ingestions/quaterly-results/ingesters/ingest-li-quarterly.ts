@@ -96,6 +96,7 @@ export async function ingestLifeInsuranceQuarterly(
       runRef,
       scale: [["grossPremiumIncome", p.grossPremiumIncome]],
       yoy: premiumYoy,
+      yoyBase: yearAgoRow?.grossPremiumIncome?.toNumber() ?? null,
       yoyLabel: "premiumYoy",
       solvency: p.solvencyRatio,
     });

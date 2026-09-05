@@ -26,7 +26,14 @@ export interface OwnershipQuarter extends ShareholdingRow {
   fiscalYear: string; // "FY26"
 
   // ── Counts (ground truth) ──────────────────────────────────────────────
+  /** NumberOfFullyPaidUpEquityShares. EXCLUDES depository receipts — read by N6 and the guards.
+   *  NOT the pledge denominator; see `promoterTotalShares`. */
   promoterShares: bigint | null;
+  /** NumberOfShares at the promoter aggregate context — the promoter group's TOTAL holding, and
+   *  the denominator the FILING's own pledge percentage uses. `null` on rows parsed before this
+   *  field existed, and on the 2020-vintage filings that do not carry the element; callers fall
+   *  back to `promoterShares`, which is what they always divided by. */
+  promoterTotalShares?: bigint | null;
   totalShares: bigint | null;
   /** NumberOfSharesEncumberedUnderPledged — PLEDGE-PROPER ONLY. NDU encumbrance
    * is deliberately NOT folded in here (flagged open spec item; see pledging.ts). */

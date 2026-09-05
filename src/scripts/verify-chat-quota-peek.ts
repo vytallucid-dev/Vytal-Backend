@@ -14,7 +14,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import "dotenv/config";
 import { prisma } from "../db/prisma.js";
-import { peekAiCallQuota, checkAndConsumeAiCall, userScopeOf, type Actor } from "../ai/quota.js";
+import { peekAiCallQuota, checkAndConsumeAiCall, userScopeOf, type Actor } from "../ai/core/quota.js";
 import { quotaStateFrom } from "../chat/unavailable.js";
 
 let failures = 0;

@@ -20,10 +20,10 @@
 //     field boundaries and loses which field carried the fault. See scanLeaves.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
-import { createGeminiAdapter } from "../../ai/adapters/gemini.js";
-import { checkAndConsumeAiCall, recordAiTokens, type Actor } from "../../ai/quota.js";
-import { scanUngroundedNumbers } from "../../ai/number-grounding.js";
-import { scanExplanationText } from "../../ai/guardrail.js";
+import { createGeminiAdapter } from "../../ai/core/adapters/gemini.js";
+import { checkAndConsumeAiCall, recordAiTokens, type Actor } from "../../ai/core/quota.js";
+import { scanUngroundedNumbers } from "../../ai/core/number-grounding.js";
+import { scanExplanationText } from "../../ai/core/guardrail.js";
 import { QUARTER_BRIEF_SYSTEM, renderFactText } from "./prompt.js";
 import {
   assembleBriefPayload,

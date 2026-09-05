@@ -23,6 +23,7 @@ import type {
   InsiderEvent,
   BlockEvent,
 } from "./ownership-series.types.js";
+import { pledgeDenominator } from "../ownership/pledging.js";
 
 const num = (d: unknown): number =>
   d == null
@@ -39,9 +40,13 @@ const numN = (d: unknown): number | null =>
 const ymd = (d: Date): string => d.toISOString().slice(0, 10);
 const round2 = (x: number): number => Math.round(x * 100) / 100;
 
-/** Pledge ratios from the BigInt SHARE COUNTS (the reliable source). The Decimal
- *  promoter_pledged_pct column has a unit inconsistency and is NOT used. A genuine
- *  zero-pledge (pledged = 0) reads as 0, not null. */
+/** Pledge ratios from the BigInt SHARE COUNTS, which is the ONE home for the magnitude. A genuine
+ *  zero-pledge (pledged = 0) reads as 0, not null.
+ *
+ *  ⚠ THE REASON FOR EXCLUDING promoter_pledged_pct HAS CHANGED, AND THE EXCLUSION HAS NOT. It used to
+ *  be excluded for a unit inconsistency (60.57 vs 0.6057); the parser now scales it by the same
+ *  vintage factor as every other percentage, so that specific fault is gone. It stays out because a
+ *  second derivation of one fact is how the two columns came to disagree in the first place. */
 function pledgeRatios(
   pledged: bigint | null,
   promoter: bigint | null,
@@ -143,6 +148,7 @@ type ShpRow = {
   othersPct: unknown;
   pledgedShares: bigint | null;
   promoterShares: bigint | null;
+  promoterTotalShares?: bigint | null;
   totalShares: bigint | null;
 };
 
@@ -197,6 +203,7 @@ export async function buildOwnershipView(
         othersPct: true,
         pledgedShares: true,
         promoterShares: true,
+        promoterTotalShares: true,
         totalShares: true,
       },
     }),
@@ -338,7 +345,9 @@ export async function buildOwnershipView(
 
   // one ShareholdingPattern row → the canonical holding split (pure raw data).
   const rowHolding = (r: ShpRow): OwnershipHolding => {
-    const ratios = pledgeRatios(r.pledgedShares, r.promoterShares, r.totalShares);
+    // ★ THE FILING'S OWN DENOMINATOR (see scoring/ownership/pledging.ts#pledgeDenominator) — the
+    //   read layer must print the same percentage R1 fires on, or the card and the flag disagree.
+    const ratios = pledgeRatios(r.pledgedShares, pledgeDenominator(r), r.totalShares);
     return {
       asOnDate: ymd(r.asOnDate),
       promoterPct: numN(r.promoterPct),
@@ -499,16 +508,26 @@ export async function buildOwnershipView(
   //   the window"), and the tell has always been the first one.
   const tellCur = shp.length ? shp[shp.length - 1] : null;
   const tellPrev = shp.length >= 2 ? shp[shp.length - 2] : null;
-  const instOf = (r: ShpRow): number => (numN(r.fiiPct) ?? 0) + (numN(r.diiPct) ?? 0);
+  // ★ AN UNDISCLOSED BUCKET IS NOT ZERO PERCENT (§3.4). Same rule, same reason, as
+  // stocks-list.service.ts — see the block there for the measurement. These two sites feed the SAME
+  // `ownershipTell` from the SAME two filings, so a divergence between them would put two different
+  // tells on one company depending on which surface asked.
+  const instOf = (r: ShpRow): number | null => {
+    const f = numN(r.fiiPct);
+    const d = numN(r.diiPct);
+    return f === null || d === null ? null : f + d;
+  };
+  const deltaOrNull = (a: number | null, b: number | null): number | null =>
+    a === null || b === null ? null : round2(a - b);
   const tell = tellCur
     ? ownershipTellOrNull(
         current?.r1Fired ?? false,
         pledgeRatios(tellCur.pledgedShares, tellCur.promoterShares, tellCur.totalShares)
           .pledgedPctOfPromoter,
         tellPrev != null,
-        tellPrev ? round2(instOf(tellCur) - instOf(tellPrev)) : null,
-        tellPrev ? round2((numN(tellCur.fiiPct) ?? 0) - (numN(tellPrev.fiiPct) ?? 0)) : null,
-        tellPrev ? round2((numN(tellCur.diiPct) ?? 0) - (numN(tellPrev.diiPct) ?? 0)) : null,
+        tellPrev ? deltaOrNull(instOf(tellCur), instOf(tellPrev)) : null,
+        tellPrev ? deltaOrNull(numN(tellCur.fiiPct), numN(tellPrev.fiiPct)) : null,
+        tellPrev ? deltaOrNull(numN(tellCur.diiPct), numN(tellPrev.diiPct)) : null,
       )
     : null;
 

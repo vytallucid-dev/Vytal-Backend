@@ -20,7 +20,7 @@
 import { prisma } from "../db/prisma.js";
 import { writeQuarterBrief } from "../insight/quarter-brief/write.js";
 import { QUARTER_BRIEF_MODEL } from "../insight/quarter-brief/generate.js";
-import { peekAiCallQuota } from "../ai/quota.js";
+import { peekAiCallQuota } from "../ai/core/quota.js";
 
 async function counterNow(): Promise<{ used: number; tokens: bigint }> {
   const tz = process.env.AI_QUOTA_TIMEZONE || "America/Los_Angeles";

@@ -108,6 +108,7 @@ export async function ingestLifeInsuranceAnnual(
         ["totalAssets", p.totalAssets],
       ],
       yoy: premiumGrowthYoy,
+      yoyBase: priorRow?.grossPremiumIncome?.toNumber() ?? null,
       yoyLabel: "premiumGrowthYoy",
       solvency: p.solvencyRatio,
     });

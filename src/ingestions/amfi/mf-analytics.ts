@@ -25,8 +25,8 @@ import { Prisma } from "../../generated/prisma/client.js";
 import { reportIngestionError } from "../shared/ingestion-error.js";
 import { streamHistoryWindow, historyWindowUrl } from "./amfi-history-source.js";
 import {
-  AMFI_HISTORY_HEADER, AMFI_HISTORY_SOURCE, AMFI_HISTORY_CRON,
-  HCOL, parseHistDate, parseHistNav, dayToIso, dayToDate,
+  REQUIRED_HISTORY_COLUMNS, AMFI_HISTORY_SOURCE, AMFI_HISTORY_CRON,
+  parseHistDate, parseHistNav, dayToIso, dayToDate,
 } from "./amfi-history-parse.js";
 import { SchemeAcc, H, type Horizon } from "./mf-accumulator.js";
 import { loadRiskFree, type RiskFree } from "./risk-free.js";
@@ -425,21 +425,21 @@ export async function runMfAnalytics(opts: MfAnalyticsOptions = {}): Promise<MfA
         const malformedLenAtStart = malformed.length;
 
         try {
-          stream = await streamHistoryWindow(from, to, (parts) => {
-            const code = parts[HCOL.schemeCode]!.trim();
+          stream = await streamHistoryWindow(from, to, (parts, cols) => {
+            const code = parts[cols.schemeCode]!.trim();
             const c = catalogue.get(code);
             if (!c) return; // not a fund we catalogue (delisted schemes) — ignore, don't allocate
 
-            const nav = parseHistNav(parts[HCOL.nav]!);
+            const nav = parseHistNav(parts[cols.nav]!);
             if (nav.kind === "absent") return; // NOT a data point. Never 0. (2016 shipped 4,431 of these.)
             if (nav.kind === "malformed") {
-              if (malformed.length < 50) malformed.push({ code, raw: nav.raw, day: parts[HCOL.date]!.trim() });
+              if (malformed.length < 50) malformed.push({ code, raw: nav.raw, day: parts[cols.date]!.trim() });
               res.malformedNavs++;
               return;
             }
-            const day = parseHistDate(parts[HCOL.date]!);
+            const day = parseHistDate(parts[cols.date]!);
             if (Number.isNaN(day)) {
-              if (malformed.length < 50) malformed.push({ code, raw: parts[HCOL.date]!.trim(), day: "(unparseable date)" });
+              if (malformed.length < 50) malformed.push({ code, raw: parts[cols.date]!.trim(), day: "(unparseable date)" });
               res.malformedNavs++;
               return;
             }
@@ -489,19 +489,27 @@ export async function runMfAnalytics(opts: MfAnalyticsOptions = {}): Promise<MfA
     res.windows++;
     res.bytes += stream.bytes;
 
-    // ── SHAPE GUARD — the column header. ──
-    // The history endpoint's layout differs from NAVAll.txt's. If AMFI renames a column our
-    // indices silently point at the wrong field and we would fold a SCHEME NAME as a NAV.
-    if (stream.headerLine !== AMFI_HISTORY_HEADER) {
+    // ── SHAPE GUARD — the columns we read must be NAMED in the header. ──
+    // The history endpoint's layout differs from NAVAll.txt's AND from its own past self. If a
+    // column we read is renamed or dropped we cannot know where that field went, and we would
+    // fold an ISIN as a NAV. Positions are resolved from the header (amfi-history-parse.ts);
+    // what remains to assert is that the three fields the fold reads are actually THERE.
+    //
+    // ⚠ MEMBERSHIP, NOT EQUALITY — the difference is 32 days of unrefreshed analytics. The old
+    //   guard compared the header to one frozen string, so AMFI's 2026-07-28 reshape (rename
+    //   "Scheme Name"→"NAV Name", insert Plan/Option, drop Repurchase/Sale, move NAV 4→6) took
+    //   the run down every night through 2026-08-28 even though all three fields we read were
+    //   present the whole time, merely somewhere else.
+    if (stream.columns.missing.length > 0) {
       res.faults++;
       await reportIngestionError({
         source: AMFI_HISTORY_SOURCE, cron: AMFI_HISTORY_CRON, guardType: "shape",
         targetTable: TARGET_TABLE, severity: "critical", resolutionPath: "source_code",
-        expected: AMFI_HISTORY_HEADER,
-        observed: stream.headerLine ?? "(no column header in the response)",
+        expected: `header to carry [${REQUIRED_HISTORY_COLUMNS.join(", ")}]`,
+        observed: `missing [${stream.columns.missing.join(", ")}] — header was ${stream.headerLine ?? "(no column header in the response)"}`,
         detail:
-          "AMFI NAV-history column header changed. Column indices would be wrong → the run was " +
-          "ABORTED BEFORE ANY WRITE rather than fold mis-mapped fields into every fund's analytics.",
+          "AMFI renamed or dropped a NAV-history column we read. Its position is unknowable → the " +
+          "run was ABORTED BEFORE ANY WRITE rather than fold mis-mapped fields into every fund's analytics.",
         runRef,
       });
       res.abortReason = "shape guard (history header)";
@@ -667,9 +675,49 @@ export async function runMfAnalytics(opts: MfAnalyticsOptions = {}): Promise<MfA
 
   // ── 6. WRITE — the barrier is behind us; every window landed. ──
   res.analyticsWritten = await upsertAnalytics(computed);
+
+  // ── AND THE FAULT THAT HELD THE BARRIER SHUT CAN NOW BE CLOSED. ──
+  // The history feed's 2026-07-28 reshape opened a critical shape row that survived its own fix,
+  // because the guard is only reachable from the branch that ABORTS the run — a healthy run never
+  // touched it. Same lifecycle completion as resolveHealedAmfiShape / resolveHealedDiscovery.
+  await resolveHealedHistoryShape();
+
   res.ok = true;
   res.durationMs = Date.now() - t0;
   return res;
+}
+
+/**
+ * AUTO-RESOLVE-ON-HEAL for the NAV-history shape guard.
+ *
+ * IDEMPOTENT (no open row ⇒ no-op) and BEST-EFFORT (never throws — a run that got all the way to a
+ * successful write must not be failed by its own bookkeeping).
+ */
+async function resolveHealedHistoryShape(): Promise<number> {
+  try {
+    const { count } = await prisma.ingestionError.updateMany({
+      where: {
+        source: AMFI_HISTORY_SOURCE,
+        cron: AMFI_HISTORY_CRON,
+        guardType: "shape",
+        status: "open",
+      },
+      data: {
+        status: "resolved",
+        resolvedBy: "auto:amfi-history-shape-heal",
+        resolvedAt: new Date(),
+        resolutionNote:
+          "Healed - every history window streamed and every column this fold reads resolved by " +
+          "name, so the shape guard that aborted the earlier runs no longer trips and the " +
+          "analytics were written.",
+      },
+    });
+    if (count > 0) console.log(`[mf-analytics] auto-resolved ${count} healed history-shape fault(s)`);
+    return count;
+  } catch (err) {
+    console.error(`[mf-analytics] resolveHealedHistoryShape failed:`, err);
+    return 0;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────

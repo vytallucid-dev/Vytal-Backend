@@ -164,16 +164,44 @@ export type DocumentLookup =
  * publishes now), legacy .xml second (still correct for everything before the cutover). The reader
  * tries them in order, so a stale first choice costs one request rather than the whole filing.
  */
-export function findStandaloneDocument(listing: BseListing, quarterCode: string): DocumentLookup {
+/**
+ * Find the instance for a period ON A GIVEN BASIS.
+ *
+ * ★ BSE PUBLISHES BOTH, IN TWO SEPARATE COLUMNS, AND WE READ ONLY ONE OF THEM. `fetchResultsListing`
+ *   has always parsed `Consol_XMLName` into `consolidatedXml` — the field was sitting there, unread,
+ *   because this lookup hard-coded `standaloneXml`. MEASURED on MARKSANS, SPARC and TARC at
+ *   JQ2025-2026: every one lists a DISTINCT consolidated document beside its standalone one, each
+ *   declares `NatureOfReportStandaloneConsolidated = "Consolidated"`, and each passes
+ *   assertPeriodAndBasis with `expectedBasis: "consolidated"` unchanged.
+ *
+ * ⚠ THE BASIS IS NOT A HINT — IT IS ASSERTED AGAINST THE DOCUMENT. The caller passes the basis it
+ *   asked for, and the period trap (bse-period-guard.ts) refuses any document whose own declared
+ *   basis disagrees with the URL field it came from. So picking the wrong column cannot silently
+ *   write a standalone P&L into a consolidated row: it fails loud and the document is discarded.
+ *
+ * The three outcomes are kept distinct on purpose and must not be collapsed:
+ *   found                → we have a document
+ *   listed_without_xbrl  → BSE HAS the filing but published no XBRL for it ON THIS BASIS. MEASURED
+ *                          on ASHOKLEY, whose Jun/Sep/Dec 2018 filings carry XBRL and whose
+ *                          March-2019 annual does not. This kills the ROW, and it is not the same
+ *                          fact as the next one.
+ *   not_listed           → BSE has no results row at that period at all.
+ */
+export function findDocument(
+  listing: BseListing,
+  quarterCode: string,
+  basis: "standalone" | "consolidated" = "standalone",
+): DocumentLookup {
   const hits = listing.rows.filter((r) => r.quarterCode === quarterCode);
   if (hits.length === 0) return { kind: "not_listed", quarterCode };
 
-  const names = [...new Set(hits.map((r) => r.standaloneXml).filter((n): n is string => Boolean(n)))];
+  const pick = (r: BseListingRow) => (basis === "consolidated" ? r.consolidatedXml : r.standaloneXml);
+  const names = [...new Set(hits.map(pick).filter((n): n is string => Boolean(n)))];
   if (names.length === 0) return { kind: "listed_without_xbrl", quarterCode };
 
   const rank = (n: string): number => (/_IFIndAs\.html?$/i.test(n) ? 0 : /\.html?$/i.test(n) ? 1 : 2);
   const ordered = [...names].sort((a, b) => rank(a) - rank(b));
-  const audited = hits.find((r) => r.standaloneXml === ordered[0])?.audited ?? null;
+  const audited = hits.find((r) => pick(r) === ordered[0])?.audited ?? null;
 
   return {
     kind: "found",
@@ -183,6 +211,11 @@ export function findStandaloneDocument(listing: BseListing, quarterCode: string)
     quarterCode,
     audited,
   };
+}
+
+/** The standalone lookup, unchanged in behaviour — `findDocument` defaults to this basis. */
+export function findStandaloneDocument(listing: BseListing, quarterCode: string): DocumentLookup {
+  return findDocument(listing, quarterCode, "standalone");
 }
 
 /**

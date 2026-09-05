@@ -17,8 +17,8 @@ import { prisma } from "../db/prisma.js";
 import { buildQuarterBriefFactBlock } from "../insight/quarter-brief/fact-block.js";
 import { renderFactText, QUARTER_BRIEF_SYSTEM } from "../insight/quarter-brief/prompt.js";
 import { generateQuarterBrief } from "../insight/quarter-brief/generate.js";
-import { scanUngroundedNumbers } from "../ai/number-grounding.js";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanUngroundedNumbers } from "../ai/core/number-grounding.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 
 let failures = 0;
 const fail = (m: string) => { failures++; console.error(`  ✗ ${m}`); };

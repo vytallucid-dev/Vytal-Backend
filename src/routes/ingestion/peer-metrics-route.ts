@@ -56,7 +56,7 @@ adminPeerMetricsRouter.get("/logs", getPeerMetricsLogs);
 //
 // WIRE INTO SCREENER UPLOAD (post_upload trigger):
 //   In src/lib/screener/ingest.ts, after successful ingest:
-//   import { runPostUploadPeerMetrics } from '../peer-metrics/peer-metrics.service'
+//   import { runPostUploadPeerMetrics } from '../peer-metrics/peer-metrics.service.js'
 //   // At the end of ingestScreenerFile(), after stock is saved:
 //   await runPostUploadPeerMetrics(stock.id)
 // ─────────────────────────────────────────────────────────────

@@ -20,7 +20,7 @@ import {
   REVENUE_YOY_MAX_PCT,
   checkPlContentless,
   checkScale,
-  checkRevenueNonPositive,
+  checkZeroedPnlBlock,
   checkBsImbalance,
   checkRevenueYoyAnomaly,
   resultsRunRef,
@@ -64,7 +64,12 @@ export async function ingestIndAsAnnual(
       expected: "revenue or netProfit present",
       observed: "both null (no P&L content)",
       detail:
-        "Annual P&L tags did not resolve (likely an XBRL tag rename) — rejecting the upsert to preserve any existing row.",
+        "No annual P&L in this document. TWO CAUSES, and the row is refused either way: an XBRL tag " +
+        "rename (the tags moved), or — measured more often — a filing that simply HAS no annual column, " +
+        "because it is a quarterly/half-yearly instance whose FourD is empty. HINDPETRO and CONCOR both " +
+        "raised this for FY19 consolidated, and NSE holds NO consolidated annual filing for either that " +
+        "year: their consolidated series starts at FY20. Check the document has a FourD block before " +
+        "hunting for a parser bug. Rejecting the upsert either way, to preserve any existing row.",
       runRef,
     });
     // REJECTED = the upsert never ran, so nothing was written and nothing could have
@@ -173,19 +178,25 @@ export async function ingestIndAsAnnual(
         runRef,
       });
     }
-    if (checkRevenueNonPositive(p.revenue)) {
+    // GUARD 4: a ZEROED P&L BLOCK — every line present reads exactly 0. NOT "revenue <= 0",
+    // which this was: a holding company genuinely earns nothing from operations, and 66 annual
+    // rows were sitting in the queue with a fill-button asking an admin to type in a figure that
+    // was already right. See checkZeroedPnlBlock for the measurements.
+    if (checkZeroedPnlBlock(p)) {
       await reportIngestionError({
         source: RESULTS_SOURCE,
         cron: RESULTS_CRON,
-        guardType: "range",
+        guardType: "shape",
         targetTable: "Fundamental",
         targetField: "revenue",
         targetEntity: entity,
-        severity: "medium",
-        resolutionPath: "admin_fill",
-        expected: "revenue > 0",
-        observed: `revenue=${p.revenue}`,
-        detail: "Non-positive revenue — verify against source.",
+        severity: "critical",
+        resolutionPath: "source_code",
+        expected: "at least one non-zero line in the year's P&L",
+        observed: `revenue=${p.revenue}, otherIncome=${p.otherIncome}, expenses=${p.expenses}, pbt=${p.profitBeforeTax}, netProfit=${p.netProfit}`,
+        detail:
+          "Every P&L line reads exactly 0 — a column the filer did not fill, not a year with no " +
+          "revenue, no expenses and no profit. A dormant company still pays its auditor.",
         runRef,
       });
     }
@@ -197,6 +208,7 @@ export async function ingestIndAsAnnual(
       totalEquity: p.totalEquity,
       currentLiabilities: p.currentLiabilities,
       noncurrentLiabilities: p.noncurrentLiabilities,
+      totalLiabilities: p.totalLiabilities, // the filing's OWN subtotal — see checkBsImbalance
     });
     if (bsImbalance != null) {
       await reportIngestionError({
@@ -208,14 +220,14 @@ export async function ingestIndAsAnnual(
         targetEntity: entity,
         severity: "medium",
         resolutionPath: "source_code",
-        expected: `|assets − (equity+curLiab+noncurLiab)| / assets ≤ ${(BS_IMBALANCE_MAX * 100).toFixed(0)}%`,
-        observed: `${(bsImbalance * 100).toFixed(1)}% off (assets=${p.totalAssets}, equity=${p.totalEquity}, curLiab=${p.currentLiabilities}, noncurLiab=${p.noncurrentLiabilities})`,
+        expected: `|assets − (equity + the filing's own Liabilities total)| / assets ≤ ${(BS_IMBALANCE_MAX * 100).toFixed(0)}%`,
+        observed: `${(bsImbalance * 100).toFixed(1)}% off (assets=${p.totalAssets}, equity=${p.totalEquity}, liabilities=${p.totalLiabilities ?? `${p.currentLiabilities}+${p.noncurrentLiabilities} (reconstructed — the filing tags no Liabilities total)`})`,
         detail: "Balance sheet doesn't balance — a major BS line was mis-parsed.",
         runRef,
       });
     }
     // GUARD 5: CONTINUITY — revenue YoY anomaly (NOT profit YoY).
-    if (checkRevenueYoyAnomaly(revenueGrowthYoy)) {
+    if (checkRevenueYoyAnomaly(revenueGrowthYoy, priorRow?.revenue?.toNumber() ?? null)) {
       await reportIngestionError({
         source: RESULTS_SOURCE,
         cron: RESULTS_CRON,
@@ -279,6 +291,7 @@ export async function ingestIndAsAnnual(
     deferredTaxLiabilitiesNet: safeNumber(p.deferredTaxLiabilitiesNet),
     currentLiabilities: safeNumber(p.currentLiabilities),
     noncurrentLiabilities: safeNumber(p.noncurrentLiabilities),
+    totalLiabilities: safeNumber(p.totalLiabilities),
 
     // BS — Non-current Assets
     propertyPlantAndEquipment: safeNumber(p.propertyPlantAndEquipment),

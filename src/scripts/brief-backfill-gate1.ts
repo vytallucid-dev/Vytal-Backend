@@ -17,7 +17,7 @@ import { prisma } from "../db/prisma.js";
 import { buildQuarterBriefFactBlock } from "../insight/quarter-brief/fact-block.js";
 import { renderFactText } from "../insight/quarter-brief/prompt.js";
 import { QUARTER_BRIEF_MODEL } from "../insight/quarter-brief/generate.js";
-import { peekAiCallQuota } from "../ai/quota.js";
+import { peekAiCallQuota } from "../ai/core/quota.js";
 
 const OUT = process.argv.find((a) => a.startsWith("--out="))?.slice(6);
 

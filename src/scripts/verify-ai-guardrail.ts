@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-// THE AI OUTPUT GUARDRAIL — BOTH FAILURE MODES, PROVEN. (Layer 1, src/ai/guardrail.ts)
+// THE AI OUTPUT GUARDRAIL — BOTH FAILURE MODES, PROVEN. (Layer 1, src/ai/core/guardrail.ts)
 //
 // A guard has TWO ways to be useless and this file refuses to test only one of them:
 //
@@ -17,7 +17,7 @@
 //
 // PURE — no DB, no network, no AI call. Runs in milliseconds.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-import { scanExplanationText, AI_HARD_LIST } from "../ai/guardrail.js";
+import { scanExplanationText, AI_HARD_LIST } from "../ai/core/guardrail.js";
 
 let fail = 0;
 const ok = (n: string, c: boolean, d = "") => {

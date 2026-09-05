@@ -21,7 +21,7 @@ import express from "express";
 import type { AddressInfo } from "net";
 import { prisma } from "../db/prisma.js";
 import { meChatRouter } from "../routes/me-chat-routes.js";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 
 process.env.AI_PROVIDER = "gemini";
 if (!process.env.AI_CHAT_MODEL) process.env.AI_CHAT_MODEL = "gemini-3.5-flash-lite";

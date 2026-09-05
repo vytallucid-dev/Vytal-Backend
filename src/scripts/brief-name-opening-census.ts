@@ -20,7 +20,7 @@ import { prisma } from "../db/prisma.js";
 import { writeQuarterBrief } from "../insight/quarter-brief/write.js";
 import { shortenCompanyName } from "../chat/web/news-filter.js";
 import { QUARTER_BRIEF_MODEL } from "../insight/quarter-brief/generate.js";
-import { peekAiCallQuota } from "../ai/quota.js";
+import { peekAiCallQuota } from "../ai/core/quota.js";
 import type { BriefPayload } from "../insight/quarter-brief/schema.js";
 
 /** Twenty stocks: all five families, both scored states, and — deliberately over-weighted — the thin

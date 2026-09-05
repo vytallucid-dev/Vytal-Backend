@@ -151,19 +151,15 @@ export async function scanSymbol(
   }
 
   // ★ GUARD 6 — a zero-filing discovery is NOT a success. See logDiscovery.
+  //
+  // ⚠ THE LOG IS WRITTEN NOW; THE FAULT IS JUDGED LATER, AND THE ORDER IS THE WHOLE FIX.
+  //   NSE returning nothing is a fact about NSE, and it belongs in the run log at the moment it
+  //   happens. Whether it is a FAULT depends on something that has not happened yet: the BSE
+  //   fallback below, which asks the OTHER exchange for the very periods NSE did not serve.
+  //   Judging before it ran is how 234 faults were opened on 2026-08-25..27 and 221 of them —
+  //   94% — were healed minutes later by the fallback, in the same run, and stayed open anyway.
+  //   A queue that is 94% already-fixed is not a queue; it is noise with a number on it.
   const empty = await logDiscovery(stock, filings.length, "per-symbol, whole history");
-  if (empty) {
-    // A stock we hold nothing for, or one that has gone silent, is a FAILED symbol —
-    // not a quiet one. Counting it here is what makes it visible to the run-level
-    // failure-rate guard and to every caller that reads `failed`, and it is the
-    // difference between "we looked and found nothing" and "we recorded a success".
-    result.failed++;
-    result.errors.push({
-      qeDate: "(discovery)",
-      filingType: "(n/a)",
-      error: `discovery returned 0 filings (${empty})`,
-    });
-  }
 
   const scanned = await scanDiscoveredFilings(stock, filings, result, options);
 
@@ -191,6 +187,32 @@ export async function scanSymbol(
       // truly unexpected. It is still not allowed to fail the NSE scan.
       console.log(`[BSE fallback] ${symbol}: unexpected ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  // ── Step 3: NOW judge the empty discovery — against what we hold AFTER both exchanges. ──
+  // `empty` says what NSE's silence meant BEFORE we asked BSE. This re-asks the same question of
+  // the same classifier, with the fallback's writes included, and only what survives that is a
+  // fault. A symbol BSE answered for is not a symbol we have no results for.
+  if (empty) {
+    const still = await judgeEmptyDiscovery(stock, "per-symbol, whole history");
+    if (still) {
+      // A stock we hold nothing for, or one that has gone silent, is a FAILED symbol — not a
+      // quiet one. Counting it here is what makes it visible to the run-level failure-rate guard
+      // and to every caller that reads `failed`, and it is the difference between "we looked and
+      // found nothing" and "we recorded a success".
+      scanned.failed++;
+      scanned.errors.push({
+        qeDate: "(discovery)",
+        filingType: "(n/a)",
+        error: `discovery returned 0 filings (${still})`,
+      });
+    }
+  } else {
+    // NSE DID serve filings. If this symbol carries an open discovery fault from a run when it
+    // did not, that fault has healed — close it. Without this there is no path back: the guard
+    // only ever fires when discovery is empty, so a symbol that starts filing again keeps its
+    // open row forever, and nothing in the queue can tell it from a symbol still silent.
+    await resolveHealedDiscovery(stock);
   }
 
   return scanned;
@@ -240,12 +262,22 @@ async function logDiscovery(
     return null;
   }
 
-  const { rowsHeld, newestReportMs } = await heldResultReach(stock.id);
-  const { kind, ageDays } = classifyEmptyDiscovery(rowsHeld, newestReportMs, Date.now());
+  const { rowsHeld, newestReportMs, firstSeenMs } = await heldResultReach(stock.id);
+  const { kind, ageDays, listedDays } = classifyEmptyDiscovery(rowsHeld, newestReportMs, Date.now(), firstSeenMs);
 
   if (kind === "quiet") {
     await logFetch(stock.id, stock.symbol, null, null, null, "no_new_filing", "nse_filings_api",
       `0 filings discovered (${context}) — ${rowsHeld} result row(s) held, newest ${ageDays}d old`);
+    return null;
+  }
+
+  // A company that listed days ago has filed nothing because there has been nothing to file. That
+  // is the calendar, not a fault — and no re-probe could ever clear it. Logged honestly, never
+  // queued. See LISTING_GRACE_DAYS.
+  if (kind === "not_due") {
+    await logFetch(stock.id, stock.symbol, null, null, null, "no_new_filing", "nse_filings_api",
+      `0 filings discovered (${context}) — listed ${listedDays}d ago, first results not yet due ` +
+        `(Reg 33 allows a full quarter plus 45 days)`);
     return null;
   }
 
@@ -258,6 +290,52 @@ async function logDiscovery(
   await logFetch(stock.id, stock.symbol, null, null, null, status, "nse_filings_api",
     `${observed} (${context})`);
 
+  // NOTE: the FAULT is deliberately NOT written here. See judgeEmptyDiscovery — it is written
+  // after the BSE fallback has had its turn, because until then we do not yet know whether
+  // anything is actually missing.
+  return kind;
+}
+
+/**
+ * ★ THE FAULT, JUDGED AGAINST WHAT WE HOLD AFTER BOTH EXCHANGES.
+ *
+ * WHY THIS IS A SECOND FUNCTION AND NOT THE TAIL OF logDiscovery: ORDERING WAS THE BUG.
+ * `logDiscovery` runs the moment NSE answers; the BSE fallback runs at the END of `scanSymbol`.
+ * So a symbol NSE has nothing for, and BSE has everything for, was reported as "0 filings, and 0
+ * result rows held in any result table" — and then given rows by the fallback, in the same run,
+ * seconds later. MEASURED on the 2026-08-25..27 expanded-universe backfill: 234 such faults
+ * opened, and 221 of them (94%) already held result rows. The evidence line on every one of those
+ * was false as written.
+ *
+ * AND THERE WAS NO WAY BACK. reportIngestionError only opens or bumps; nothing closes. The guard
+ * fires ONLY when discovery is empty, so once BSE (or NSE, later) filled the gap the row could
+ * never be re-evaluated — it sat open at occurrences=1 forever, indistinguishable from a symbol
+ * that is genuinely, permanently silent. That is the pair this function and resolveHealedDiscovery
+ * close: judge late, and heal when the condition lifts.
+ *
+ * @returns the fault kind if this symbol is STILL empty/stale after everything, else null.
+ */
+async function judgeEmptyDiscovery(
+  stock: Pick<Stock, "id" | "symbol">,
+  context: string,
+): Promise<"never" | "stopped" | null> {
+  const { rowsHeld, newestReportMs, firstSeenMs } = await heldResultReach(stock.id);
+  const { kind, ageDays, listedDays } = classifyEmptyDiscovery(rowsHeld, newestReportMs, Date.now(), firstSeenMs);
+
+  if (kind === "quiet" || kind === "not_due") {
+    // quiet   — the other exchange answered, or an earlier run already had.
+    // not_due — the company listed too recently to owe us a filing at all.
+    // Either way nothing is missing, so nothing is a fault, and any row opened when it looked
+    // otherwise is stale. Close it.
+    await resolveHealedDiscovery(stock, kind === "not_due" ? listedDays ?? null : null);
+    return null;
+  }
+
+  const observed =
+    kind === "never"
+      ? `0 filings, and 0 result rows held in any result table`
+      : `0 filings, and the newest period held is ${ageDays} days old (${rowsHeld} row(s))`;
+
   await reportIngestionError({
     source: RESULTS_SOURCE,
     cron: RESULTS_CRON,
@@ -267,9 +345,9 @@ async function logDiscovery(
     // Per-STOCK dedup: one open row per silent stock, occurrences counting the retries.
     targetEntity: stock.symbol,
     severity: kind === "never" ? "high" : "medium",
-    // Nothing an admin can hand-fill: the value does not exist to be entered. Either NSE
-    // starts serving it (the re-probe picks it up with no human action) or the source is
-    // wrong and that is a code/universe decision.
+    // Nothing an admin can hand-fill: the value does not exist to be entered. Either the exchanges
+    // start serving it (the re-probe picks it up with no human action) or the source is wrong and
+    // that is a code/universe decision.
     resolutionPath: "source_code",
     expected:
       kind === "never"
@@ -278,15 +356,61 @@ async function logDiscovery(
     observed,
     detail:
       kind === "never"
-        ? `NSE's filings API returns nothing for this symbol and we hold no results for it at all. ` +
-          `Probe it against a working control before assuming a transient fault: if the control ` +
-          `answers and this does not, the emptiness is real at the symbol NSE was asked about.`
-        : `This stock filed before and has now gone silent past a full filing cycle. Either it ` +
-          `stopped filing (corporate action, suspension) or discovery stopped finding it.`,
+        ? `Neither NSE's filings API nor the BSE fallback has anything for this symbol, and we hold ` +
+          `no results for it at all (${context}). Probe it against a working control before assuming ` +
+          `a transient fault: if the control answers and this does not, the emptiness is real at the ` +
+          `symbol the exchanges were asked about.`
+        : `This stock filed before and has now gone silent past a full filing cycle, on BOTH ` +
+          `exchanges. Either it stopped filing (corporate action, suspension) or discovery stopped ` +
+          `finding it.`,
     runRef: resultsRunRef(`discovery:${stock.symbol}`),
   });
 
   return kind;
+}
+
+/**
+ * AUTO-RESOLVE-ON-HEAL for the discovery guard — the same lifecycle completion the scoring class
+ * already has (failed-job-guard.ts / resolveHealedScoringErrors), for the same reason: a detection
+ * guard that can only ever OPEN a row leaves the queue growing monotonically, and an operator
+ * cannot tell a live fault from a dead one.
+ *
+ * IDEMPOTENT: a symbol with no open row is a no-op. BEST-EFFORT: never throws — closing a healed
+ * fault must never be able to fail the scan that healed it. Returns how many rows were closed.
+ */
+async function resolveHealedDiscovery(
+  stock: Pick<Stock, "id" | "symbol">,
+  notDueListedDays: number | null = null,
+): Promise<number> {
+  try {
+    const { count } = await prisma.ingestionError.updateMany({
+      where: {
+        cron: RESULTS_CRON,
+        guardType: "count",
+        targetField: "discovery",
+        targetEntity: stock.symbol,
+        status: "open",
+      },
+      data: {
+        status: "resolved",
+        resolvedBy: "auto:discovery-heal",
+        resolvedAt: new Date(),
+        resolutionNote:
+          notDueListedDays !== null
+            ? `Not a fault - this stock listed ${notDueListedDays} days ago and its first results are ` +
+              `not yet due (Reg 33 allows a full quarter plus 45 days to file). It has filed nothing ` +
+              `because there has been nothing to file. The guard read "zero result rows, ever" as a ` +
+              `break, which it is for an established company and is the calendar for a new one.`
+            : "Healed - this symbol now holds result rows (NSE served filings, or the BSE fallback did). " +
+              "The condition the guard fired on no longer obtains.",
+      },
+    });
+    if (count > 0) console.log(`[discovery] auto-resolved ${count} healed fault(s) for ${stock.symbol}`);
+    return count;
+  } catch (err) {
+    console.error(`[discovery] resolveHealedDiscovery failed for ${stock.symbol}:`, err);
+    return 0;
+  }
 }
 
 /** Rows held and newest reporting period, across EVERY result table. One query.
@@ -301,7 +425,7 @@ async function logDiscovery(
  *  backfill touched (3BBLACKBIO, listed 2026-04-20, nothing filed yet). In a cohort of 1,787 mostly
  *  small and recent companies, "NSE has nothing for this symbol" is a common case, not an edge one.
  */
-async function heldResultReach(stockId: string): Promise<{ rowsHeld: number; newestReportMs: number | null }> {
+async function heldResultReach(stockId: string): Promise<{ rowsHeld: number; newestReportMs: number | null; firstSeenMs: number | null }> {
   const [r] = await prisma.$queryRaw<Array<{ n: number; newest: Date | null }>>`
     SELECT count(*)::int AS n, max(rd) AS newest FROM (
       SELECT report_date rd FROM quarterly_results                    WHERE stock_id = ${stockId}
@@ -310,7 +434,17 @@ async function heldResultReach(stockId: string): Promise<{ rowsHeld: number; new
       UNION ALL SELECT report_date FROM life_insurance_quarterly_results    WHERE stock_id = ${stockId}
       UNION ALL SELECT report_date FROM general_insurance_quarterly_results WHERE stock_id = ${stockId}
     ) x`;
-  return { rowsHeld: r?.n ?? 0, newestReportMs: r?.newest ? new Date(r.newest).getTime() : null };
+  // THE LISTING PROXY. `stocks` carries no listing date, so the first day we hold market data for
+  // the symbol stands in for it — it cannot be earlier than the day the stock started trading, which
+  // is the direction that matters: it can only ever make a stock look OLDER than it is, never
+  // younger, so it can never excuse a genuinely late filer.
+  const [f] = await prisma.$queryRaw<Array<{ first: Date | null }>>`
+    SELECT min(date) AS first FROM daily_prices WHERE stock_id = ${stockId}`;
+  return {
+    rowsHeld: r?.n ?? 0,
+    newestReportMs: r?.newest ? new Date(r.newest).getTime() : null,
+    firstSeenMs: f?.first ? new Date(f.first).getTime() : null,
+  };
 }
 
 /**

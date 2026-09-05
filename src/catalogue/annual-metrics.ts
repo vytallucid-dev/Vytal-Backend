@@ -64,6 +64,7 @@ export const ANNUAL_METRIC_GLOSSES = {
       "Owning more is not the same as being worth more. A large part of this may have been bought with borrowed money, and what is owed is counted separately.",
   },
   basicEps: {
+    aliases: ["EPS", "earnings per share", "basic EPS"],
     label: "Profit per share",
     meaning:
       "The year's profit divided by the number of shares in issue, so it is the profit belonging to one single share.",
@@ -71,6 +72,7 @@ export const ANNUAL_METRIC_GLOSSES = {
       "This is not money handed to shareholders. Most of it usually stays inside the company; what is actually paid out is the dividend, which is a separate and normally much smaller figure.",
   },
   returnOnEquity: {
+    aliases: ["ROE", "RoE", "return on equity"],
     label: "Return on shareholders' money",
     meaning:
       "Out of every 100 rupees of shareholders' money in the business, how much the company earned as profit over the year.",
@@ -170,6 +172,7 @@ export const ANNUAL_METRIC_GLOSSES = {
       "There is no single right level. A steady utility with predictable bills can carry far more borrowing safely than a company whose sales swing about from year to year.",
   },
   interestCoverage: {
+    aliases: ["interest coverage ratio", "interest cover"],
     label: "Times profit covers the interest bill",
     meaning:
       "How many times over the year's trading profit would have covered the interest the company owed its lenders.",
@@ -214,6 +217,7 @@ export const ANNUAL_METRIC_GLOSSES = {
       "This is not spare money the bank could lend instead. Much of it must be held by law, and what it is worth moves up and down with interest rates.",
   },
   netInterestMargin: {
+    aliases: ["NIM"],
     label: "Net interest margin",
     meaning:
       "Out of every 100 rupees the lender has lent or invested, how much it kept over the year as the gap between what it earned and what it paid for that money.",
@@ -221,6 +225,7 @@ export const ANNUAL_METRIC_GLOSSES = {
       "A wider margin is not automatically better lending. It can also mean the lender is lending to riskier borrowers, who pay more precisely because they are riskier.",
   },
   creditCost: {
+    aliases: ["credit cost", "cost of credit"],
     label: "Cost of loans going bad",
     meaning:
       "Out of every 100 rupees lent, how much the lender had to set aside during the year against loans it expects will not be repaid in full.",

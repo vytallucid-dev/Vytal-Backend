@@ -62,7 +62,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { movementWithAnchor } from "./anchors.js";
-import { CLOSED_WORLD_HEADER } from "../../ai/grounding.js";
+import { CLOSED_WORLD_HEADER } from "../../ai/core/grounding.js";
 // ★ REUSED, NOT REIMPLEMENTED — the shared corporate-suffix strip. See briefProseName below for what
 // it does and does not cover, and why this file adds two steps on top rather than forking it.
 import { shortenCompanyName } from "../../chat/web/news-filter.js";

@@ -33,7 +33,23 @@ export const MIN_BATCH_FOR_RATE = 20;
 
 // ── GUARD 3: RANGE / validity (per-record) ──
 export const DIVIDEND_MAX = 1000; // real max 512/share; >1000 ⇒ regex grabbed the wrong number
-export const MIN_EVENT_YEAR = 2000; // real earliest 2005
+/**
+ * ★ THE FLOOR IS NSE'S OWN FIRST TRADING DAY, NOT A ROUND NUMBER.
+ *
+ * This was 2000 ("real earliest 2005") and it was a guess that the world outgrew. NSE's corporate-
+ * actions archive since served ten events from 1996-1999 and every one of them is REAL, checked
+ * against its own subject line: ELECTHERM "Dividend -7.5%" (1996-09-11), SHREDIGCEM "Allotment Of
+ * Shares Of Gujarat Composite Ltd & Digvijay Finlease Ltd" (1997-10-01), KJMCFIN "Agm/Dividend -
+ * 40%" (1997-08-27), HAWKINCOOK "Agm / Dividend - 30%" (1999-08-18) and the rest. A date-parse
+ * error does not produce ten coherent 1990s AGMs and dividends with matching purpose text; it
+ * produces 1970-01-01, or a year like 2097 from a two-digit "97". Those are what this guard is for.
+ *
+ * So the floor moves to the only date that is a FACT rather than an estimate: NSE opened its equity
+ * (capital market) segment on 3 November 1994, so no NSE corporate action can predate 1994. A year
+ * below it is still impossible and still faults — the guard keeps its teeth, and stops calling the
+ * exchange's own early history a bug.
+ */
+export const MIN_EVENT_YEAR = 1994; // NSE equity segment opened 1994-11-03; earliest real event 1996
 
 export const eventsRunRef = (label: string) => `events:${label}`;
 

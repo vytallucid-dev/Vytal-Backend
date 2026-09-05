@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-// THE PER-USER AI QUOTA SUB-CAP — PROVEN, NOT REVIEWED. (src/ai/quota.ts + src/ai/spend.ts)
+// THE PER-USER AI QUOTA SUB-CAP — PROVEN, NOT REVIEWED. (src/ai/core/quota.ts + src/ai/spend.ts)
 //
 // WHAT THIS ASSERTS:
 //   1. ★★ A user at their sub-cap is denied with scopeDenied "user" / reason "user_daily_limit_reached"
@@ -23,7 +23,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { readFileSync } from "fs";
 import { prisma } from "../db/prisma.js";
-import { checkAndConsumeAiCall, userScopeOf, type QuotaDecision } from "../ai/quota.js";
+import { checkAndConsumeAiCall, globalScopeOf, userScopeOf, type QuotaDecision } from "../ai/core/quota.js";
 import { spendFor } from "../ai/spend.js";
 
 let fail = 0;
@@ -39,7 +39,13 @@ const GLOBAL_LIMIT = 18;
 const USER_LIMIT = 5;
 const USER_A = "verify-subcap-user-a";
 const USER_B = "verify-subcap-user-b";
-const SCOPES = [MODEL, userScopeOf(USER_A, MODEL), userScopeOf(USER_B, MODEL)];
+// ⚠ THE GLOBAL SCOPE IS NO LONGER THE BARE MODEL ID — it carries a one-way fingerprint of the API
+//   key in use, so a key rotation opens a fresh window instead of charging the old key's total to the
+//   new one. This gate wrote `MODEL` directly and would have counted rows that no longer exist; it
+//   asks `globalScopeOf` for the same string the code under test uses, which is the point of that
+//   function having one home.
+const GLOBAL = globalScopeOf(MODEL);
+const SCOPES = [GLOBAL, userScopeOf(USER_A, MODEL), userScopeOf(USER_B, MODEL)];
 
 const wipe = () => prisma.aiUsageCounter.deleteMany({ where: { scope: { in: SCOPES } } });
 const countOf = async (scope: string): Promise<number | null> =>
@@ -60,9 +66,9 @@ async function main() {
     ok("…and `remaining` counts down the BINDING (user) ceiling", allowed.at(-1)!.remaining === 0 && allowed.at(-1)!.limit === USER_LIMIT,
       `limit=${allowed.at(-1)!.limit}, remaining=${allowed.at(-1)!.remaining}`);
 
-    const globalBefore = await countOf(MODEL);
+    const globalBefore = await countOf(GLOBAL);
     const denied = await checkAndConsumeAiCall(MODEL, asUser(USER_A));
-    const globalAfter = await countOf(MODEL);
+    const globalAfter = await countOf(GLOBAL);
 
     ok("★ call N+1 is DENIED", denied.allowed === false);
     ok('★★ scopeDenied === "user"', denied.scopeDenied === "user", String(denied.scopeDenied));
@@ -90,13 +96,13 @@ async function main() {
     // Drive the GLOBAL counter to its ceiling directly, and give user B a FRESH sub-counter. Now the
     // user UPDATE must succeed (0 < 5) and the global UPDATE must fail (18 < 18 is false) — which is
     // the ONLY interleaving in which a leak is possible, and therefore the only one worth proving.
-    await prisma.aiUsageCounter.updateMany({ where: { scope: MODEL }, data: { callCount: GLOBAL_LIMIT } });
+    await prisma.aiUsageCounter.updateMany({ where: { scope: GLOBAL }, data: { callCount: GLOBAL_LIMIT } });
     await prisma.aiUsageCounter.deleteMany({ where: { scope: userScopeOf(USER_B, MODEL) } });
 
     const userBefore = await countOf(userScopeOf(USER_B, MODEL));
     const denied = await checkAndConsumeAiCall(MODEL, asUser(USER_B));
     const userAfter = await countOf(userScopeOf(USER_B, MODEL));
-    const globalAfter = await countOf(MODEL);
+    const globalAfter = await countOf(GLOBAL);
 
     ok('★ denied with scopeDenied "global" / reason "daily_call_budget_exhausted"',
       denied.allowed === false && denied.scopeDenied === "global" && denied.reason === "daily_call_budget_exhausted",
@@ -120,7 +126,7 @@ async function main() {
     const d = await checkAndConsumeAiCall(MODEL, { kind: "system", job: "verify_subcap" });
     const userRows = await prisma.aiUsageCounter.count({ where: { scope: { startsWith: "user:verify-subcap" } } });
     ok("allowed", d.allowed === true);
-    ok("★ the GLOBAL counter moved by exactly 1", (await countOf(MODEL)) === 1);
+    ok("★ the GLOBAL counter moved by exactly 1", (await countOf(GLOBAL)) === 1);
     ok("★★ NO per-user row was created — there is no user to cap", userRows === 0, `${userRows} rows`);
     ok("★ and it reports the global ceiling", d.limit === GLOBAL_LIMIT && d.scopeDenied === null, `limit=${d.limit}`);
   }
@@ -142,7 +148,7 @@ async function main() {
     const metered = spendFor(MODEL, asUser(USER_A));
     const d1 = await metered();
     ok("★ real provider → spendFor METERS: the call is allowed and the global counter moved to 1",
-      d1.allowed === true && (await countOf(MODEL)) === 1, `allowed=${d1.allowed} global=${await countOf(MODEL)}`);
+      d1.allowed === true && (await countOf(GLOBAL)) === 1, `allowed=${d1.allowed} global=${await countOf(GLOBAL)}`);
     ok("★★ …and it counted against the USER sub-cap too (a per-user row was minted)",
       (await countOf(userScopeOf(USER_A, MODEL))) === 1, `user=${await countOf(userScopeOf(USER_A, MODEL))}`);
 
@@ -193,7 +199,7 @@ async function main() {
     // A cross-row predicate (`(SELECT call_count FROM … WHERE scope=$other) < $limit`) is an UNLOCKED
     // snapshot read and races. This is a shape assertion, not a behaviour one: it catches the
     // "simplify the two statements into one" edit that no unit test would.
-    const src = readFileSync("src/ai/quota.ts", "utf8");
+    const src = readFileSync("src/ai/core/quota.ts", "utf8");
     const guarded = [...src.matchAll(/updateMany\(\{\s*where:\s*\{([^}]*)\}/g)].map((m) => m[1]!);
     ok("★ the gate has exactly TWO guarded updateMany statements", guarded.length === 2, `${guarded.length} found`);
     ok("★★ …and BOTH gate on `callCount`, a column of the row being updated",

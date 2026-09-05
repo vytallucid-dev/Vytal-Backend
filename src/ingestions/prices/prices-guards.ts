@@ -70,6 +70,35 @@ export const CLOSE_MAX = 200000;
 export const CONTINUITY_MIN = 0.2;
 export const CONTINUITY_MAX = 0.5;
 
+/**
+ * ★ THE BAND SAYS "ABOVE CIRCUIT-BREAKERS" AND THEN INCLUDED ONE. `>=` 0.20 catches a move of
+ *   EXACTLY 20%, which is not a suspicious move — it is the single most common LEGITIMATE large
+ *   move on an Indian exchange, a stock closing at its upper circuit limit.
+ *
+ * MEASURED, and the measurement is unanimous: every DailyPrice continuity fault this guard has ever
+ * raised — 5 of 5 — is exactly ±20.0000% with the close sitting AT the day's high.
+ *     NIRAJISPAT  2026-08-31  O=H=L=C=355.08 on prev 295.90   ← locked upper circuit all session
+ *     SRIKPRIND   2026-09-02  C=30.42 = high, prev 25.35      ← and 19.97% the day before
+ *     CYBERMEDIA  2026-09-03  C=23.88 = high, prev 19.90
+ *     XTRANET     2026-09-04  C=234.24 = high, prev 195.20
+ *     NEXTMEDIA   2026-08-28  C=4.62 = high, prev 3.85        ← already triaged shut by hand
+ * Not one true positive, one false alarm per circuit-hitting day, forever, and a human already
+ * spent a triage on the fifth.
+ *
+ * ⚠ THE GUARD KEEPS ITS TEETH. Only a move landing ON a band edge is excused, within a tolerance
+ *   narrow enough that 20.5% still fires. A mis-scaled or mis-mapped price does not arrive at
+ *   1.2000 exactly — it arrives at 2×, 10×, 100×, or something arbitrary. Landing precisely on a
+ *   regulated limit is itself the evidence that the exchange, not the parser, produced the number.
+ */
+export const CIRCUIT_BANDS = [0.02, 0.05, 0.1, 0.2] as const;
+/** Half a basis point — absorbs float noise (234.24/195.2-1 is 0.20000000000000018) and nothing else. */
+export const CIRCUIT_BAND_EPS = 0.00005;
+
+/** True if a move lands on a regulated circuit-band edge — the exchange's limit, not a data break. */
+export function isCircuitLimitMove(absPct: number): boolean {
+  return CIRCUIT_BANDS.some((b) => Math.abs(absPct - b) <= CIRCUIT_BAND_EPS);
+}
+
 /** Soft run-log ref shared with PriceFetchLog's identity. */
 export const runRef = (priceDate: Date, provider: string) =>
   `${priceDate.toISOString().slice(0, 10)}:${provider}`;
@@ -156,9 +185,12 @@ export function checkCloseRange(close: number): boolean {
   return close < CLOSE_MIN || close > CLOSE_MAX;
 }
 
-/** GUARD 6 — true if a day move sits in the suspicious continuity band. */
+/** GUARD 6 — true if a day move sits in the suspicious continuity band.
+ *  A move that lands on a circuit-band edge is the exchange's own limit and is NOT suspicious —
+ *  see CIRCUIT_BANDS for the measurement that made this exclusion necessary. */
 export function checkContinuity(dayChangePct: number | null): boolean {
   if (dayChangePct == null) return false;
   const abs = Math.abs(dayChangePct);
+  if (isCircuitLimitMove(abs)) return false;
   return abs >= CONTINUITY_MIN && abs <= CONTINUITY_MAX;
 }

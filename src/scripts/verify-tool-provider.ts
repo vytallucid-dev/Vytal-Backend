@@ -22,8 +22,8 @@ import {
   toGeminiTools,
   parseGeminiToolCalls,
   createGeminiAdapter,
-} from "../ai/adapters/gemini.js";
-import { createMockAdapter, __setMockScript } from "../ai/adapters/mock.js";
+} from "../ai/core/adapters/gemini.js";
+import { createMockAdapter, __setMockScript } from "../ai/core/adapters/mock.js";
 import type { AiMessage, AiToolSpec } from "../ai/types.js";
 
 let failures = 0;

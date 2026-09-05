@@ -198,6 +198,129 @@ export function ratioCoherenceRefusals(
   };
 }
 
+/**
+ * ── RULE 4 · THE ZEROED P&L BLOCK. THE SAME RULING, ON THE OTHER TAXONOMY. ─────────
+ *
+ * Rules 1-3 above are about a BANK's asset-quality block. This is the identical failure on the
+ * IND-AS P&L, and it is the more common one: a filer publishes an instance in which EVERY line of
+ * the quarter's profit-and-loss reads exactly 0.00, because the quarter is not what that document
+ * is reporting.
+ *
+ * ⚠ IT IS NOT A COMPANY THAT EARNED NOTHING, AND THE DOCUMENT PROVES IT. MEASURED on
+ *   HEROMOTOCO's Q4 FY19 CONSOLIDATED instance (INDAS_43660_99669_27042019032910_WEB.xml):
+ *       OneD  (the quarter)   RevenueFromOperations 0.00 · ProfitLossForPeriod 0.00 · every line 0.00
+ *       FourD (the full year) RevenueFromOperations 33,972,23,00,000 · ProfitLossForPeriod 3,466,35,00,000
+ *   Hero MotoCorp did not have a zero quarter. It filed its CONSOLIDATED results annually and
+ *   zero-filled the quarterly column. Stored as written, that is ₹0 of revenue and ₹0 of profit
+ *   for a company that made ₹3,397 Cr that quarter — a wrong number wearing the clothes of a
+ *   measurement, which is this file's whole subject. VEDPOWER Q4 FY26 is the same shape on the
+ *   current in-capmkt taxonomy, so this is not a legacy-only artefact.
+ *
+ * ★ THE CONJUNCTION IS WHAT CONDEMNS — never "revenue is zero", which is ORDINARY. A holding
+ *   company, a dormant shell, a company between projects: all genuinely report zero revenue from
+ *   operations, and 225 rows in this database do exactly that with a real profit-and-loss beside
+ *   them. Every one would be destroyed by a rule that read the revenue line alone. What cannot
+ *   happen is a company that traded, filed, and reported ZERO ON EVERY LINE — no revenue, no
+ *   other income, NO EXPENSES, no tax, no profit — while the same instance reports a live year.
+ *   A dormant company still pays its auditor.
+ *
+ * ★ AND THE ESCAPE IS THE SAME CONJUNCTION. An instance whose comparative block is ALSO empty is
+ *   not condemned here: that is a genuinely contentless document, and GUARD 1 (checkPlContentless)
+ *   already rejects it by a route that does not need this evidence.
+ *
+ * REFUSAL WRITES NULL, NEVER 0 — and because revenue and netProfit both go null, the existing
+ * shape guard rejects the upsert and any good row already stored survives untouched.
+ */
+export const INDAS_PNL_TAGS = [
+  "RevenueFromOperations",
+  "OtherIncome",
+  "Expenses",
+  "ProfitBeforeTax",
+  "ProfitLossForPeriod",
+  "ProfitLossForPeriodFromContinuingOperations",
+] as const;
+
+export function pnlBlockRefused(
+  read: FactReader,
+  pnlContext: string,
+  comparativeContext: string,
+  balanceSheetContext?: string,
+): BlockVerdict {
+  const present = INDAS_PNL_TAGS
+    .map((t) => ({ tag: t as string, v: read(t, pnlContext) }))
+    .filter((x) => x.v !== null);
+
+  // Fewer than three lines present: not enough of a block to call it zeroed. A thin instance is
+  // GUARD 1's business, not this rule's.
+  if (present.length < 3) return { refused: false, note: null };
+  // Any non-zero line: a real disclosure. Not refused — INCLUDING the dormant company whose
+  // revenue is 0 but whose expenses are not, and including the tiny shell whose whole P&L is
+  // ₹35,000 (LCCINFOTEC Q3 FY26: real at parse time, and only 0.00 after Decimal(18,2) rounding).
+  if (present.some((x) => x.v !== 0)) return { refused: false, note: null };
+
+  // ── THE CONJUNCTION. Two witnesses, in order of strength. ──
+  // (a) The SAME instance reports a live COMPARATIVE period. Strongest: the document itself says
+  //     the company traded, in the very column beside the zeros.
+  const livePeriod = INDAS_PNL_TAGS
+    .map((t) => ({ tag: t as string, v: read(t, comparativeContext) }))
+    .find((x) => x.v !== null && x.v !== 0);
+  if (livePeriod) {
+    return {
+      refused: true,
+      note:
+        `P&L block REFUSED - all ${present.length} lines read exactly 0 in ${pnlContext} ` +
+        `(${present.map((x) => x.tag).join(", ")}) while ${livePeriod.tag}=${livePeriod.v} in ` +
+        `${comparativeContext}. A company that reported a live period did not also have a period ` +
+        `with no revenue, no expenses and no profit: this is a column the filer did not fill, not ` +
+        `a period that did not happen. Written NULL, never 0.`,
+    };
+  }
+
+  // (b) BOTH P&L columns are zero, but the instance still states a LIVE ENTITY — share capital,
+  //     or a balance sheet. Weaker than (a) and it has to be, because the case is real:
+  //     MEASURED on MRF's FY18 consolidated instance and NTPC's, both of which carry EVERY P&L
+  //     line at 0.00 in BOTH contexts and nothing else at all except
+  //     PaidUpValueOfEquityShareCapital — ₹4.24 Cr for MRF, ₹8,245.46 Cr for NTPC. A company with
+  //     ₹8,245 Cr of paid-up equity did not have a year with no revenue and no expenses. Without
+  //     this leg those rows land as a ₹0 year for a ₹90,000 Cr company, because GUARD 1 tests for
+  //     NULL and a zero is not a null.
+  const contexts = [pnlContext, comparativeContext, ...(balanceSheetContext ? [balanceSheetContext] : [])];
+  for (const tag of LIVE_ENTITY_WITNESSES) {
+    for (const ctx of contexts) {
+      const v = read(tag, ctx);
+      if (v !== null && v !== 0) {
+        return {
+          refused: true,
+          note:
+            `P&L block REFUSED - every line reads exactly 0 in BOTH ${pnlContext} and ` +
+            `${comparativeContext}, while ${tag}=${v} in ${ctx}. The instance states a live entity ` +
+            `and no profit-and-loss at all: it is a filing that did not carry a P&L, not a period ` +
+            `in which nothing happened. Written NULL, never 0.`,
+        };
+      }
+    }
+  }
+
+  // No live period, no capital, no balance sheet — nothing contradicts the zeros. The document is
+  // simply empty, which is GUARD 1's case and not this rule's.
+  return { refused: false, note: null };
+}
+
+/**
+ * Facts that prove the instance describes a LIVE ENTITY even when it carries no profit-and-loss.
+ * Deliberately short and deliberately structural: share capital and the balance-sheet totals are
+ * what a filer states about the COMPANY rather than about the PERIOD, so a non-zero one cannot be
+ * explained away by "this period had no activity".
+ */
+export const LIVE_ENTITY_WITNESSES = [
+  "PaidUpValueOfEquityShareCapital",
+  "Assets",
+  "EquityAndLiabilities",
+  "Equity",
+  "EquityShareCapital",
+  "NetWorth",
+] as const;
+
 /** All three rules for one banking instance, in one call. */
 export function evaluateZeroBlock(
   read: FactReader,

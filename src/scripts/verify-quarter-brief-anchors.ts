@@ -33,7 +33,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 
 import { readFileSync } from "node:fs";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 import { metricGloss, type MetricKey } from "../catalogue/quarter-metrics.js";
 import type { AnnualMetricKey } from "../catalogue/annual-metrics.js";
 import {

@@ -20,7 +20,7 @@ import type { AddressInfo } from "net";
 import { prisma } from "../db/prisma.js";
 import { meChatRouter } from "../routes/me-chat-routes.js";
 import { createThrowawayUser, cleanupThrowawayUsers } from "./lib/throwaway-user.js";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 import { getUniverseHealthView } from "../scoring/read/universe-view.cache.js";
 import { getUniverseMetricValues } from "../scoring/read/metric-values.cache.js";
 import { screenUniverse } from "../scoring/read/screen.service.js";

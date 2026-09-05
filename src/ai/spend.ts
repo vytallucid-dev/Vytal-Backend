@@ -16,8 +16,8 @@
 // Deliberately provider-neutral and card-free: no zod, no result envelope, no cache keys. Those were
 // the card surfaces' business and left with them.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-import { checkAndConsumeAiCall, type QuotaDecision, type Actor } from "./quota.js";
-import { CLOSED_WORLD_HEADER } from "./grounding.js";
+import { checkAndConsumeAiCall, type QuotaDecision, type Actor } from "./core/quota.js";
+import { CLOSED_WORLD_HEADER } from "./core/grounding.js";
 import type { TokenUsage } from "./types.js";
 
 /** The single user message. Header first (the rule), facts second (the world), ask last (the task).

@@ -262,7 +262,62 @@ export type NotEvaluableReason =
   // answer is that the check does not apply, and a reader is entitled to see that rather than a
   // silent pass. Score-neutral by construction: every rule carrying this arm left the scoring pass in
   // the same change.
-  | "industry_not_applicable";           // the rule's arithmetic is undefined for this industry
+  | "industry_not_applicable"            // the rule's arithmetic is undefined for this industry
+  // ── EXTENSION (the resolver layer, architecture spec §3.2) ──────────────────────────────────────
+  // ⚠ THESE TWO ARE ABOUT THE SUBJECT, NOT ABOUT A RULE. Every token above answers "we could not run
+  // this check on this company". These answer "there is no company here to check", which no existing
+  // token could say — and the nearest ones all state something false. `insufficient_quarters` on a
+  // stock with ZERO quarters implies we hold a few; the reader phrase says "more quarters of results
+  // than we hold yet", which promises a filing that was never ingested.
+  | "not_ingested"                       // in `stocks`, no quarterly row in ANY of the five industry tables
+  | "not_in_universe"                    // no such symbol or company in Vytal's coverage at all
+  // ── EXTENSION (F-3, the verification pass's third occurrence) ───────────────────────────────────
+  // ⚠⚠ EVERY TOKEN ABOVE IS A STATEMENT ABOUT THE COMPANY'S RECORD. Not one of them can say "our read
+  // did not complete", and that absence is why the same defect has now shipped three times: a
+  // `.catch(() => [])` around a query produces an empty result, the empty result takes a
+  // data-shaped branch, and a FAILURE ON OUR SIDE is rendered as a fact about the filings.
+  //
+  //   `resolve/attribution.ts` — the metrics query, caught at Phase 2 · Batch 1; a 42883 became the
+  //     authored sentence "we hold no field-level breakdown for this pillar on this reading".
+  //   `resolve/attribution.ts` — the HEAD query one line above it, still unguarded after that fix;
+  //     any failure became `no_prior_snapshots`, i.e. "a longer scoring history than this stock has
+  //     with us".
+  //   `resolve/blocks-stock.ts` — a failed `buildFundamentalsView` became `insufficient_quarters`,
+  //     a NUMERIC claim about how much we hold.
+  //
+  // ★ THE TOKEN IS THE FIX BECAUSE THE PHRASE IS. `REASON_PHRASES` renders every reason as a clause
+  //   about what the company has filed; this one renders as a clause about US. A reader who is told
+  //   we could not read something can ask again. A reader told the filings are thin cannot.
+  //
+  // ⚠ IT IS NEVER A SCORING OUTCOME. No rule may return it — a rule that cannot read its input has
+  //   an ingestion problem, not a not-evaluable one. It exists for the RESOLVER layer (§3.2), which
+  //   is why it sits in this extension block and not among the rule tokens above.
+  | "read_failed"                        // OUR read did not complete — never a statement about filings
+  // ── EXTENSION (the last nine, §3.1) ─────────────────────────────────────────────────────────────
+  // ⚠ `read_failed` IS ABOUT FILINGS AND A BOOK HAS NONE. Its phrase ends "…not a gap in what the
+  // company filed", which is the right reassurance for a company and a non-sequitur for the reader's
+  // own holdings: there is no company and no filing in the sentence at all.
+  //
+  // ★ AND THE FAILURE MODE IT PREVENTS IS SPECIFIC AND HAS SHIPPED. When `resolvePortfolio` returned
+  //   absent, `composition/families/reader.ts` dropped to `d = null` and fell through to its
+  //   `holdings === 0` branch — "your book is empty — no open positions are recorded against your
+  //   account". A reader whose positions we FAILED TO READ was told they hold nothing. That is worse
+  //   than an error message: it is a confident, checkable-looking claim about their own money.
+  //
+  // ⚠ IT COVERS THE READER'S OWN RECORDS, NOT ONLY HOLDINGS — the book, its NAV series and the
+  //   watchlist all fail the same way and all need a sentence about us rather than about coverage.
+  | "reader_read_failed"                 // OUR read of the READER'S own records did not complete
+  // ── EXTENSION (N-4, §3.2) ───────────────────────────────────────────────────────────────────────
+  // ⚠ A STOCK WITH NO PEER GROUP IS NOT A STOCK WHOSE PEER GROUP FAILED TO COMPUTE, and until now the
+  // nearest token said the second. `band_typical_unavailable` reads as "a band comparison we could not
+  // compute for this period" — a TRANSIENT computation failure, offered for a PERMANENT and entirely
+  // ordinary state. Same shape as `not_ingested` and `not_in_universe` at stage 1: the nearest honest
+  // token was still saying something false.
+  //
+  // ⚠⚠ AND IT IS THE MAJORITY CASE, WHICH IS WHY IT MATTERS. Measured: 2,143 of 2,291 stocks carry no
+  // peer-group row — 93.5% — including every one of the 11 insurers and 127 of 143 NBFCs. A token
+  // that misdescribes the normal state misdescribes almost the whole universe.
+  | "peers_unassigned";                  // no peer group assigned — a permanent state, not a failure
 
 /** The third rule outcome: "we could not check, and here is the machine-readable why."
  *  Discriminated from a FiredFinding (which has `kind`, never `status`) and from not_fired

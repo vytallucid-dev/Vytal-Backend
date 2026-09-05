@@ -223,8 +223,11 @@ export async function runBondIngest(opts: { asOf?: Date } = {}): Promise<BondIng
         cls.kind === "equity" ? "equity (another lane's instrument on an unclaimed board)"
         : cls.namespace === "fund" ? "fund unit (INF namespace)"
         : cls.namespace === "government" ? "government paper (IN0-9 namespace)"
-        : cls.securityType && ["04"].includes(cls.securityType) ? "preference share"
-        : null;
+        // Every type the taxonomy can NAME — preference share, InvIT unit, REIT unit. Read from
+        // the classifier rather than re-listed here, because a hard-coded ["04"] is exactly what
+        // made NXT-INFRA TRUST (type "23", an InvIT this catalogue ALREADY HOLDS) open a medium
+        // fault every night for 13 nights, asking whether it was debt. It never was.
+        : cls.namedRefusal;
       if (known) {
         res.excluded[known] = (res.excluded[known] ?? 0) + 1;
         continue;

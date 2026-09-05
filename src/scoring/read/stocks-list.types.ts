@@ -145,5 +145,9 @@ export interface OwnershipScanItem {
   fiiDelta: number | null;
   diiDelta: number | null;
   finalOwnership: number;
-  spark: number[]; // institutional % (FII+DII) over time
+  /** Institutional % (FII+DII) over time, oldest→newest.
+   *  ★ A POINT IS `null` WHEN THAT QUARTER'S FII OR DII WAS UNDISCLOSED (§3.4). It is not a dip to
+   *  the disclosed remainder — the company stopped reporting a class, it did not sell it. The
+   *  renderer must break the line there rather than draw through it. */
+  spark: (number | null)[];
 }

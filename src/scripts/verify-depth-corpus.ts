@@ -34,7 +34,7 @@ import { prisma } from "../db/prisma.js";
 import { meChatRouter } from "../routes/me-chat-routes.js";
 import { resolveChatModel } from "../chat/config.js";
 import { isBlankReply } from "../chat/voice.js";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 import type { AiToolCall } from "../ai/types.js";
 
 interface Turn {

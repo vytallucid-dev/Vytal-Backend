@@ -98,6 +98,7 @@ export async function ingestBankingQuarterly(
       runRef,
       scale: [["interestEarned", p.interestEarned]],
       yoy: niiYoy,
+      yoyBase: yearAgoRow?.nii?.toNumber() ?? null,
       yoyLabel: "niiYoy",
       npa: { nnpa: p.nnpaAbsolute, gnpa: p.gnpaAbsolute },
     });

@@ -51,6 +51,35 @@ export interface MetricGloss {
   meaning: string;
   /** The limit of what it says. Prose, not "≠". Required — see the header. */
   doesntMean: string;
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * ★★ WHAT A READER TYPES, WHICH IS NOT WHAT THIS METRIC IS CALLED HERE.
+   *
+   * ⚠ THE DEFECT THIS EXISTS FOR WAS DIAGNOSED AS AN AUTHORING BACKLOG AND WAS NOTHING OF THE KIND.
+   *   "What is ROCE" returned "we hold no written definition for it yet" — so the reading was that the
+   *   109 glosses were mostly unwritten. Measured: **all 109 are fully authored, zero stubs.** The
+   *   failure was REACHABILITY. `searchVocabularies` matches a gloss on its `label` and its `key`
+   *   only, and readers type ACRONYMS:
+   *
+   *     "what is ROE"                          -> metric_ROE, the contentless canonical key
+   *     "what is return on equity"             -> NULL
+   *     "what is return on shareholders' money" -> returnOnEquity, the authored gloss
+   *
+   *   `returnOnEquity` says "out of every 100 rupees of shareholders' money in the business, how much
+   *   the company earned as profit over the year" — and a reader typing ROE could not reach it. A
+   *   lookup defect wearing an authoring defect's clothes.
+   *
+   * ★ ALIASES LIVE WITH THE ENTRY THEY NAME (N-3/N-5), the way `concepts.ts#aliases` already does.
+   *   A separate acronym table would be a second home for "what this metric is called".
+   *
+   * ⚠ AND AN ALIAS TWO ENTRIES CLAIM IS A REFUSAL, NOT A COIN-FLIP. `returnOnAssetsQuarterly` and
+   *   `returnOnAssetsAnnual` are both "ROA"; `grossNpaAmount` and `grossNpaRatio` both answer to
+   *   "GNPA". Where the reader's word cannot pick between two entries the lookup returns nothing
+   *   rather than the first one — `verify-metric-aliases.ts` fails the build on any alias claimed
+   *   twice, so an ambiguous alias cannot be added by accident.
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   */
+  aliases?: readonly string[];
 }
 
 export const QUARTER_METRIC_GLOSSES = {
@@ -91,6 +120,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "No money left the company this quarter for this. It is an accounting charge for equipment bought and paid for in earlier years.",
   },
   financeCosts: {
+    aliases: ["interest expense"],
     label: "Interest cost",
     meaning: "What the company paid its lenders for the money it has borrowed.",
     doesntMean:
@@ -122,6 +152,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "Profit is not cash. A company can report a profit and still have less money in the bank than when the quarter started.",
   },
   operatingMargin: {
+    aliases: ["OPM", "operating profit margin"],
     label: "Operating margin",
     meaning:
       "Out of every 100 rupees of sales, how much was left as trading profit before interest and tax.",
@@ -129,6 +160,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "A margin says nothing about size. A very small company and a very large one can have exactly the same margin.",
   },
   netMargin: {
+    aliases: ["NPM", "net profit margin"],
     label: "Net margin",
     meaning:
       "Out of every 100 rupees of sales, how much the company kept as profit once everything, including tax, had been paid.",
@@ -151,6 +183,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "This is a cost of doing business, not a loss. A bank paying more interest is usually holding more deposits.",
   },
   netInterestIncome: {
+    aliases: ["NII"],
     label: "Net interest income",
     meaning:
       "The gap between what the bank earned on its loans and what it paid on deposits — a lender's main source of income.",
@@ -190,6 +223,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "Calling something one-off does not make it unimportant. It means the bank does not expect it to happen again.",
   },
   preProvisionOperatingProfit: {
+    aliases: ["PPOP", "pre-provision operating profit"],
     label: "Profit before bad-loan charges",
     meaning:
       "What the bank made from its business this quarter, before setting anything aside for loans that may go bad.",
@@ -216,6 +250,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "This describes the loan book as it stands today. On its own it does not say whether the problem is growing or shrinking.",
   },
   netNpaRatio: {
+    aliases: ["NNPA", "net NPA ratio"],
     label: "Uncovered bad-loan share",
     meaning:
       "Out of every 100 rupees lent, how much sits in bad loans the bank has not yet set money aside against.",
@@ -229,6 +264,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "High cover is not a verdict on the bank. It says how cautiously it has provided, not how good its lending was.",
   },
   cet1Ratio: {
+    aliases: ["CET1", "CET-1", "common equity tier 1", "tier 1 capital"],
     label: "Core capital",
     meaning:
       "The bank's own money, measured on the strictest definition regulators use, as a share of the lending it has to support.",
@@ -473,6 +509,7 @@ export const QUARTER_METRIC_GLOSSES = {
       "Commission tracks how much was sold and through which channel, not how good the business sold was.",
   },
   underwritingProfitOrLoss: {
+    aliases: ["underwriting profit", "underwriting loss"],
     label: "Underwriting result",
     meaning:
       "Whether the insurance business itself made or lost money this quarter — premiums earned, less claims, commission and running costs, before any investment income.",

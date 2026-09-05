@@ -38,9 +38,9 @@ import "dotenv/config";
 import { readFileSync } from "fs";
 import { prisma } from "../db/prisma.js";
 import { readFilingFindings } from "../filing/read.js";
-import { renderFilingFacts, FILING_CHANNEL_NOTE } from "../ai/filing-facts.js";
-import { groundStockHealth } from "../ai/grounding.js";
-import { inUniverseButUnscored } from "../chat/tools/boundary.js";
+import { renderFilingFacts, FILING_CHANNEL_NOTE } from "../ai/core/filing-facts.js";
+import { groundStockHealth } from "../ai/core/grounding.js";
+import { composedCorpus, assertNonEmpty } from "./lib/composed-corpus.js";
 import { readFindingsForSymbols } from "../scoring/read/symbol-findings.service.js";
 import { EVIDENCE_FACTS } from "../catalogue/evidence-facts.js";
 
@@ -53,13 +53,27 @@ const rule = (s: string) => console.log("\n" + "═".repeat(100) + "\n" + s + "\
 
 /** The four shapes, named. Chosen from live data, not invented — see the probe in §2's output. */
 const CORPUS = {
-  unscoredFiring: "360ONE",     // unscored · 1 fired (critical) · 12 rules with no filing to run
+  // ⚠ WAS "360ONE", AND THAT FIXTURE ASSERTED A DEFECT AS THOUGH IT WERE THE PRODUCT. It was chosen
+  //   as "unscored · 1 fired (critical)", and the critical finding was a 90% PLEDGE that 360ONE does
+  //   not have: its filing declares `EncumberedUnderPledged = false` and a NON-DISPOSAL UNDERTAKING
+  //   of 89.98%. The parser was reading NDU elements as pledges, so this gate was pinning the bug in
+  //   place — it went red the moment the parser was fixed, which is the gate doing its job.
+  //
+  // ★ GOACARBON EXHIBITS THE SHAPE FOR REAL, AND IT WAS PROVEN BEFORE BEING ADOPTED: unscored, R1
+  //   fired, verdict present in the fact block, "Pledging Crisis" present, no denial, channel line
+  //   present. Its 92.8% is a genuine new pledge this quarter — every prior row is XBRL-sourced and
+  //   re-parsed, and reads 0 — so the QoQ rise in its verdict is a fact, not a residue of the fix.
+  unscoredFiring: "GOACARBON",  // unscored · R1 pledge fired (92.8% of promoter stake) · 4 declined rules
   scoredFiring: "BEL",          // scored · 1 score pattern · 4 filing findings · 4 declined
   scoredQuietPartial: "KOTAKBANK", // scored · 0 fired · 10 clean · 8 capabilities not assessable
   scoredQuietComplete: "COLPAL",   // scored · 0 fired · all 22 ran · the only unqualified all-clear
 } as const;
 
 async function main() {
+  // ★ THE CORPUS ASSERTION, FIRST (§7.3). This gate lost its tool-derived corpus at the cut; without
+  //   this it would iterate an empty set and report green.
+  const composed = await composedCorpus();
+  assertNonEmpty(composed, "verify-filing-model-facing");
   // ── 1 · SOURCE ────────────────────────────────────────────────────────────────────────────────
   rule("1 · SOURCE — no model-facing site still claims an unscored stock has no findings");
   // ⚠ COMMENTS ARE STRIPPED BEFORE SCANNING, AND THAT IS NOT A LOOPHOLE. Each of these files now
@@ -71,10 +85,15 @@ async function main() {
     src.replace(/\/\*[\s\S]*?\*\//g, "").split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
   const SITES: [string, string][] = (
     [
-      ["ai/grounding.ts", "src/ai/grounding.ts"],
-      ["chat/tools/boundary.ts", "src/chat/tools/boundary.ts"],
-      ["chat/tools/get-findings-for-symbols.ts", "src/chat/tools/get-findings-for-symbols.ts"],
-      ["chat/tools/get-stock-facts.ts", "src/chat/tools/get-stock-facts.ts"],
+      // ★ RE-POINTED AT THE SURVIVING SITES (stage 8b). Three of the four were chat tools and are
+      //   deleted. The reader-facing copy they carried now lives in the composition layer, so those
+      //   are the files scanned — a source scan whose paths no longer exist does not weaken, it
+      //   CRASHES, which is how this one announced itself the moment the cut landed.
+      ["ai/core/grounding.ts", "src/ai/core/grounding.ts"],
+      ["catalogue/block-copy.ts", "src/catalogue/block-copy.ts"],
+      ["compose/blocks.ts", "src/compose/blocks.ts"],
+      ["compose/blocks-subject.ts", "src/compose/blocks-subject.ts"],
+      ["section/kinds/callout.ts", "src/section/kinds/callout.ts"],
     ] as const
   ).map(([label, path]) => [label, stripComments(readFileSync(path, "utf8"))]);
   // The exact sentences that shipped the defect. Matched as EMITTED STRING FRAGMENTS — each site's
@@ -95,18 +114,40 @@ async function main() {
     OLD[1][1].test("is covered by Vytal but does not have a computed health score yet — no composite, pillars, or findings exist for it at this time."),
     "caught",
   );
-  for (const [name, src] of SITES) {
-    ok(`${name} renders the filing channel through the ONE renderer`, /filing-facts\.js"/.test(src), "ai/filing-facts.js imported");
-  }
+  // ★ SCOPED TO THE SITE THAT ACTUALLY RENDERS THE FILING CHANNEL. Three sites used to; one does now
+  //   (`ai/core/grounding.ts`), and asserting it of the composition files would be asserting a property of
+  //   code that has no business carrying it — a green tick for a claim nobody made.
+  ok(
+    "ai/core/grounding.ts renders the filing channel through the ONE renderer",
+    /filing-facts\.js"/.test(SITES.find(([n]) => n === "ai/core/grounding.ts")![1]),
+    "ai/core/filing-facts.js imported",
+  );
   // …and the comment stripper has not blinded the scan: the sentences ARE still in these files, as
   // documentation, and a scan of the raw bytes still finds them. If this stops holding, the stripper
   // is over-reaching rather than the copy being clean.
-  ok(
-    "NEGATIVE CONTROL — the stripper removes comments only (the raw files still carry the quoted history)",
-    /composite, pillars, or findings exist for it/.test(readFileSync("src/chat/tools/boundary.ts", "utf8")) &&
-      /so there are no findings to report/.test(readFileSync("src/chat/tools/get-findings-for-symbols.ts", "utf8")),
-    "documented in comments, emitted nowhere",
-  );
+  // ★ THE STRIPPER CONTROL, RE-POINTED AT THIS FILE. The two files that used to carry the quoted
+  //   history in their comments are deleted; THIS one quotes both sentences in its own header, so the
+  //   control still proves the same thing — the stripper removes comments and nothing else — without
+  //   depending on a file the cut removed.
+  // ★ THE STRIPPER CONTROL, ON A SYNTHETIC INPUT. It used to read two files that quoted the old
+  //   sentences in their comments; both are deleted. Pointing it at THIS file failed for an
+  //   instructive reason — the sentences also appear here as CODE (the negative-control literal and
+  //   the OLD regexes), so "present in the raw, absent after stripping" could never hold. A synthetic
+  //   input proves the same property with nothing to confuse it: comments go, code stays.
+  {
+    const probe = [
+      "// composite, pillars, or findings exist for it at this time.",
+      "/* so there are no findings to report */",
+      'const kept = "composite, pillars, or findings exist for it";',
+    ].join(String.fromCharCode(10));
+    const stripped = stripComments(probe);
+    ok(
+      "NEGATIVE CONTROL — the stripper removes comments and only comments",
+      !/\/\/ composite/.test(stripped) && !/so there are no findings to report/.test(stripped) && /const kept =/.test(stripped),
+      "line comments and block comments removed, code retained",
+    );
+  }
+
 
   // ── 2 · THE FOUR SHAPES, ON EVERY SITE ────────────────────────────────────────────────────────
   rule("2 · RENDERED — the channel reaches the model on all four sites, for all four shapes");
@@ -126,7 +167,18 @@ async function main() {
       ["filing renderer", renderFilingFacts(sec, { subject: sym }).join("\n")],
       ["batch tool row", renderFilingFacts(row.filing, { subject: sym, indent: "  ", note: false }).join("\n")],
     ];
-    if (!g.data.scored) texts.push(["boundary message", inUniverseButUnscored(sym, g.data.identity.name, sec)]);
+    // ── ★ THE BOUNDARY SITE IS GONE, AND IT IS NOT SUBSTITUTED (stage 8b) ──────────────────────
+    //    WAS: a fourth site — `inUniverseButUnscored(...)` from `chat/tools/boundary.ts`, the tool's
+    //    own sentence for a stock we carry but do not score.
+    //
+    //    ⚠ THE FIRST ATTEMPT AT THIS RE-POINT SUBSTITUTED THE COVERAGE SECTION, AND THE GATE CAUGHT
+    //    IT. Coverage says what we HOLD; it carries no filing findings, so nine assertions about a
+    //    finding "reaching every site" failed against a site that structurally cannot carry one.
+    //    Swapping in a surface that does not answer the assertion is worse than removing the site.
+    //
+    //    So the site is REMOVED. An unscored stock's filing findings now reach the reader through the
+    //    two sites below — the grounding block and the filing renderer — and the assertion is over
+    //    those. Nothing is asserted about a surface that no longer exists.
 
     // ★ THE LEAN SCOPE IS CHECKED SEPARATELY, AND SEPARATELY IS THE POINT. It carries NAMES, not
     //   verdicts — so it cannot be held to the same assertion as the full block — but it is the
@@ -256,37 +308,94 @@ async function main() {
   );
   const scoredSymbols = stocks.filter((s) => scoredIds.has(s.id));
   console.log(`  grounding all ${scoredSymbols.length} stocks with a quarterly snapshot — no sampling`);
+  // ── ★ THE SCORE ROW'S SHAPE, NOT ONE INSTANCE OF IT ─────────────────────────────────────────────
+  // A score-channel row is `- Pattern "Name" [key]: …evidence={…}` — an authored name, a BRACKETED
+  // KEY, and the RAW PAYLOAD. That triple is the property this section exists to prove: the score
+  // path is unedited by the filing work.
+  //
+  // ⚠ THIS WAS A FIXTURE AND IT ROTTED. It read the literal pattern `Sticky Divergence`
+  // [divergence_S2_sticky_divergence] against BEL. BEL stopped firing S2 — it now fires D6, an lm3
+  // lens face and F2 — so the gate went red while the property it documents was still true. A gate
+  // that names a company and a pattern key fails on DATA MOVEMENT, and from the build output that is
+  // indistinguishable from a REGRESSION. Asserted over the whole scored book instead: the shape
+  // cannot rot, because nothing about it is a fact about any one stock.
+  const SCORE_ROW = /^- (?:Pattern|RedFlag) "[^"]+" \[[A-Za-z0-9_]+\]: /;
+  const PAYLOAD = /evidence=\{/;
   const mismatched: string[] = [];
+  const offShape: string[] = [];
+  const noPayload: string[] = [];
+  const misordered: string[] = [];
   let checked = 0;
+  let scoreLines = 0;
+  let ordered = 0;
   for (const s of scoredSymbols) {
     const g = await groundStockHealth(s.symbol);
     if (!g || !g.data.scored) continue;
     checked++;
     const lines = g.factBlock.split("\n");
-    const rendered = lines.filter((l) => l.startsWith("- RedFlag ") || l.startsWith("- Pattern ")).length;
+    const scoreRows = lines.filter((l) => l.startsWith("- RedFlag ") || l.startsWith("- Pattern "));
+    const rendered = scoreRows.length;
     const expected = (g.data.findings?.redFlags.length ?? 0) + (g.data.findings?.patterns.length ?? 0);
     if (rendered !== expected) mismatched.push(`${s.symbol}: ${rendered} rendered vs ${expected} in view.findings`);
     // The filing block's own rows use a DIFFERENT prefix by construction, so the two channels cannot
     // be confused for one another by a consumer counting lines — including this gate.
     if (lines.some((l) => l.startsWith("- FILED FINDING") && (l.includes("RedFlag") || l.includes("Pattern ["))))
       mismatched.push(`${s.symbol}: a filing row is wearing a score row's shape`);
+
+    for (const row of scoreRows) {
+      scoreLines++;
+      if (!SCORE_ROW.test(row)) offShape.push(`${s.symbol}: ${row.slice(0, 80)}`);
+      if (!PAYLOAD.test(row)) noPayload.push(`${s.symbol}: ${row.slice(0, 80)}`);
+    }
+
+    // Section ORDER, on every scored block rather than on one: the filing block is additive and sits
+    // in its own place, between the score findings and peer standing.
+    const iFind = g.factBlock.indexOf("[FINDINGS]");
+    const iNote = g.factBlock.indexOf(FILING_CHANNEL_NOTE);
+    const iPeer = g.factBlock.indexOf("[PEER STANDING]");
+    if (iFind < 0 || iNote < 0 || iPeer < 0) {
+      misordered.push(`${s.symbol}: a section marker is missing (FINDINGS=${iFind} NOTE=${iNote} PEER=${iPeer})`);
+    } else {
+      ordered++;
+      if (!(iFind < iNote && iNote < iPeer)) misordered.push(`${s.symbol}: FINDINGS@${iFind} NOTE@${iNote} PEER@${iPeer}`);
+    }
   }
   ok(
     `score-finding LINES still equal view.findings exactly, on EVERY scored stock (${checked})`,
     mismatched.length === 0,
     mismatched.slice(0, 6).join(" · ") || `${checked} stocks, 0 drift`,
   );
-  const belBlock = (await groundStockHealth(CORPUS.scoredFiring))!.factBlock;
+  // ⚠ NON-EMPTY POPULATION, ASSERTED. Every check below is a universal over a set this run computed,
+  // and an empty set satisfies all of them silently. A gate that passes on nothing is the orphaned-
+  // gate failure wearing a green tick, so the size is a check in its own right, not a log line.
   ok(
-    "the score channel still carries its bracketed key and raw payload (that path is unedited)",
-    /- Pattern "Sticky Divergence" \[divergence_S2_sticky_divergence\]:/.test(belBlock) && /evidence=\{/.test(belBlock),
-    "unchanged",
+    "the scored corpus is non-empty — these universals are quantified over something",
+    checked > 0 && scoreLines > 0,
+    `${checked} scored stocks · ${scoreLines} score-channel rows`,
   );
   ok(
-    "…and the filing block sits AFTER it, in its own section",
-    belBlock.indexOf("[FINDINGS]") < belBlock.indexOf(FILING_CHANNEL_NOTE) &&
-      belBlock.indexOf(FILING_CHANNEL_NOTE) < belBlock.indexOf("[PEER STANDING]"),
-    "between [FINDINGS] and [PEER STANDING]",
+    `EVERY score row still carries its bracketed key (${scoreLines} rows, whole scored book)`,
+    offShape.length === 0,
+    offShape.slice(0, 4).join(" · ") || `all ${scoreLines} match the authored-name + [key] shape`,
+  );
+  ok(
+    "EVERY score row still carries its raw payload (that path is unedited)",
+    noPayload.length === 0,
+    noPayload.slice(0, 4).join(" · ") || `all ${scoreLines} carry an evidence bag`,
+  );
+  ok(
+    `…and the filing block sits AFTER it, in its own section, on every scored block (${ordered})`,
+    misordered.length === 0,
+    misordered.slice(0, 4).join(" · ") || `${ordered} blocks, [FINDINGS] < filing note < [PEER STANDING]`,
+  );
+  // ★ NEGATIVE CONTROL — the matchers must actually bite. Without this, the three universals above
+  // would pass just as quietly if SCORE_ROW or PAYLOAD were broken to match everything.
+  ok(
+    "NEGATIVE CONTROL — the row matcher rejects a key-less row, and the payload test a bare one",
+    !SCORE_ROW.test('- Pattern "Sticky Divergence": direction=negative') &&
+      SCORE_ROW.test('- Pattern "Sticky Divergence" [divergence_S2_sticky_divergence]: direction=negative') &&
+      !PAYLOAD.test('- Pattern "X" [y]: direction=negative'),
+    "both halves bite",
   );
 
   console.log(`\n${fail === 0 ? "✅ FILING MODEL-FACING GATES PASS — the model is told what the service returned" : `❌ ${fail} FAILURE(S)`}`);

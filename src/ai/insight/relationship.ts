@@ -28,7 +28,7 @@
 import { prisma } from "../../db/prisma.js";
 import { buildPortfolioHealthView } from "../../portfolio/phs/portfolio-health-view.js";
 import type { HealthSnapshotView } from "../../scoring/read/health-view.types.js";
-import { NA, isNum, pctStr, scoreStr } from "../grounding.js";
+import { NA, isNum, pctStr, scoreStr } from "../core/grounding.js";
 
 /** held → MONITORING · watched-not-held → DECIDING · neither → ORIENTING (caller serves the shared card). */
 export type StockPosture = "monitoring" | "deciding" | "orienting";

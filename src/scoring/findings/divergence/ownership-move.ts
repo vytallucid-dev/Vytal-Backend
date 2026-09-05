@@ -27,6 +27,7 @@
 import type { FiringContext } from "../types.js";
 import { TRAJECTORY_DELTA_EPSILON } from "../trajectory/prev-now.js";
 import { roundToPrecision } from "../format.js";
+import { pledgeDenominator } from "../../ownership/pledging.js";
 
 /** What actually moved the pillar. */
 export type OwnershipMoveCause =
@@ -102,8 +103,9 @@ function shareholdingDeltas(ctx: FiringContext): ShareholdingDeltas | null {
   const prior = rows[rows.length - 2];
   const d = (a: number | null, b: number | null): number | null =>
     a === null || b === null ? null : r2(a - b);
-  const curPledge = pctOf(cur.pledgedShares, cur.promoterShares);
-  const priorPledge = pctOf(prior.pledgedShares, prior.promoterShares);
+  // Same denominator as R1 — see pledgeDenominator.
+  const curPledge = pctOf(cur.pledgedShares, pledgeDenominator(cur));
+  const priorPledge = pctOf(prior.pledgedShares, pledgeDenominator(prior));
   return {
     promoterPp: d(cur.promoterPct, prior.promoterPct),
     fiiPp: d(cur.fiiPct, prior.fiiPct),

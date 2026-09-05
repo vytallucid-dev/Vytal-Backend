@@ -131,6 +131,52 @@ function gcd(a: number, b: number): number {
   return b === 0 ? a : gcd(b, a % b);
 }
 
+/**
+ * ★ "Re" IS NOT A TYPO — IT IS THE SINGULAR OF "Rs", AND MISSING IT NULLED 3,477 DIVIDENDS.
+ *
+ * MEASURED. The null_rate guard tripped on 2026-08-30 at 26.1% of dividends carrying no amount
+ * against a 25% ceiling, and the cause was not a "subject-format change" as the fault text
+ * guessed. NSE writes a one-rupee dividend as "Dividend - Re 1 Per Share" — Indian usage puts the
+ * singular rupee as "Re" and the plural as "Rs" — and the old pattern matched only `Rs`. So every
+ * dividend of exactly ₹1, ₹0.50, ₹0.25 … the smallest and most common ones … parsed as NULL:
+ * 3,477 of the 3,992 unparsed rows, measured across the whole table. The split branch below has
+ * ALWAYS handled `Rs/Re` (see "Face Value Split From Rs.10/- To Re.1/-"); only this branch did not,
+ * and the two had drifted apart on the same feed's own spelling.
+ *
+ * ★ AMOUNTS ARE SUMMED, BECAUSE A COMPOUND DIVIDEND IS ONE PAYMENT IN TWO CLAUSES. NSE ships
+ *   "Dividend - Rs 3 Per Share/Special Dividend - Rs 2 Per Share": the holder receives ₹5. Taking
+ *   the FIRST match stored ₹3 and taking the LAST stored ₹2 — both wrong, and wrong in the way this
+ *   file most fears, a plausible number rather than an honest absence. 274 rows carried such a
+ *   subject; every one of them is now the sum.
+ *
+ * ⚠ THE FACE-VALUE CLAUSE MUST BE CUT FIRST, OR THE SUM EATS A SPLIT. Four subjects announce a
+ *   dividend AND a split together — "Interim Dividend - Rs 1.50/- Per Share / Face Value Split -
+ *   From Rs 10/- Per Share To Rs 5/- Per Share". Summing blind gives ₹16.50 for a ₹1.50 dividend,
+ *   because the face values are rupee amounts too. In all four the dividend PRECEDES the clause, so
+ *   the subject is truncated at it and only the dividend side is read. Verified against all 15,263
+ *   dividend subjects in the table: 11,512 unchanged, 3,477 newly parsed, 274 corrected, 0 lost.
+ *
+ * Returns NULL for the 515 percentage-of-face-value subjects ("Agm/Dividend-10%"). That is an
+ * HONEST ABSENCE, not a failure: the payout is 10% of a face value the subject never states, and
+ * inventing one would be exactly the fabricated number the whole guard layer exists to prevent.
+ */
+const FACE_VALUE_CLAUSE = /(face\s*value|sub-?division|stock\s*split|fv\s*split)/i;
+const RUPEES_PER_SHARE = /(?:@\s*)?\bR(?:s|e)\.?\s*(\d+(?:\s*\.\s*\d+)?)/gi;
+
+export function parseRupeesPerShare(subject: string): number | null {
+  // Cut at the face-value/split clause so a split's "From Rs 10 To Rs 2" never joins the sum.
+  const cut = subject.search(FACE_VALUE_CLAUSE);
+  const scope = cut >= 0 ? subject.slice(0, cut) : subject;
+
+  const amounts = [...scope.matchAll(RUPEES_PER_SHARE)]
+    .map((m) => parseFloat(m[1]!.replace(/\s+/g, ""))) // "0 .70" → "0.70"
+    .filter((v) => Number.isFinite(v));
+  if (amounts.length === 0) return null;
+
+  // Rounded to 4dp: summing "8.35 + 3.35" in binary floating point yields 11.700000000000001.
+  return Math.round(amounts.reduce((a, b) => a + b, 0) * 10_000) / 10_000;
+}
+
 function parseSubject(subject: string): ParsedSubject {
   const s = subject.toLowerCase().trim();
 
@@ -140,11 +186,17 @@ function parseSubject(subject: string): ParsedSubject {
     if (s.includes("interim")) dividendType = "interim";
     else if (s.includes("special")) dividendType = "special";
 
-    // Extract amount: "Rs 29 Per Share" or "Rs. 29/-" or "@ Rs 5"
-    const amountMatch = subject.match(
-      /(?:Rs\.?\s*|@\s*Rs\.?\s*)(\d+(?:\.\d+)?)/i,
-    );
-    const dividendAmount = amountMatch ? parseFloat(amountMatch[1]) : null;
+    // Extract amount: "Rs 29 Per Share" / "Rs. 29/-" / "@ Rs 5" / "Re 1 Per Share"
+    //
+    // ⚠ THE WHITESPACE INSIDE THE NUMBER IS NOT HYPOTHETICAL, AND IT COST A DIVIDEND. NSE ships
+    //   " Dividend - Rs 0 .70 Per Share" — a space between the integer part and the decimal point.
+    //   Against `\d+(?:\.\d+)?` that matches "0", stops at the space, and stores ₹0.00 for a real
+    //   ₹0.70 dividend: not an absence, which would be honest, but a WRONG NUMBER, which scores.
+    //   The guard caught it (JKTYRE, ex-date 2020-09-14) and it is the only occurrence in all 5,833
+    //   dividend events — so the tolerance is deliberately narrow: whitespace is allowed only
+    //   BETWEEN the digits and the point, never anywhere else, and never across a "Rs 5 Per Share"
+    //   boundary where a following number would be a different field.
+    const dividendAmount = parseRupeesPerShare(subject);
 
     return {
       eventType: "dividend",

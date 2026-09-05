@@ -15,8 +15,8 @@ import express from "express";
 import type { AddressInfo } from "net";
 import { prisma } from "../db/prisma.js";
 import { meChatRouter } from "../routes/me-chat-routes.js";
-import { scanExplanationText } from "../ai/guardrail.js";
-import { groundStockHealth } from "../ai/grounding.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
+import { groundStockHealth } from "../ai/core/grounding.js";
 
 // Force the real provider regardless of stray env (the test seam is NEVER set here).
 process.env.AI_PROVIDER = "gemini";

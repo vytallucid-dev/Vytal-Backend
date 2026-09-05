@@ -28,8 +28,8 @@ import { __setDefaultChatProviderForTests, runChatTurn } from "../chat/engine.js
 import { resolveOpening } from "../chat/openings.js";
 import { composeDiscussOpening } from "../chat/compose.js";
 import type { DiscussContext } from "../chat/discuss-context.js";
-import { scanExplanationText } from "../ai/guardrail.js";
-import { checkAndConsumeAiCall, userScopeOf } from "../ai/quota.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
+import { checkAndConsumeAiCall, userScopeOf } from "../ai/core/quota.js";
 import { resolveChatModel } from "../chat/config.js";
 import { runRetention } from "../retention/engine.js";
 import { EXEMPTIONS } from "../retention/policy.js";

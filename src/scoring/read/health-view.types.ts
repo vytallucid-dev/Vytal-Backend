@@ -484,13 +484,50 @@ export interface MetricView {
   l1Score: number | null;
   l2Score: number | null;
   l3Score: number | null;
-  /** null when scoreState ≠ scored (not_scored metrics carry weights/contribution as 0). */
+  /** null when scoreState ≠ scored. (So do the three weight/contribution fields below — closed at
+   *  stage 3; this parenthetical used to say they carried 0, and no longer do.) */
   metricScore: number | null;
   l1Band: MetricBand | null;
   scoreState: MetricScoreState;
-  nominalWeight: number;
-  effectiveWeight: number;
-  contribution: number;
+  // ═════════════════════════════════════════════════════════════════════════════════════════════
+  // ✅ RESOLVER #5 — CLOSED. These three are `number | null` and an unscored metric carries `null`.
+  //
+  // ⚠ THE PARAGRAPH BELOW IS HISTORY, IN THE PAST TENSE ON PURPOSE. It stood here in the present
+  //   tense for two stages AFTER the defect was fixed, and that cost real time: the Phase-0 plan
+  //   carried T-3 as a live blocker on Attribution on the strength of this text, and T-3 turned out
+  //   to be a measurement with nothing left to change. A comment describing a closed defect as open
+  //   is the same class of lie as a log nobody reads — it survives because nothing contradicts it.
+  //
+  // WHAT THE DEFECT WAS. A metric with no row in `score_metrics` was built as a placeholder carrying
+  // `nominalWeight: 0, effectiveWeight: 0, contribution: 0` (health-view.service.ts). A metric that
+  // scored and moved the pillar by nothing carried the same three zeros. On these fields alone the
+  // two were identical, and `contribution` is exactly what the Attribution waterfall draws a bar
+  // from — so the waterfall could not tell "we did not score this" from "this contributed nothing".
+  //
+  // ★ CLOSED AT STAGE 3, RE-VERIFIED END TO END AT T-3 (2026-08-31). `null` is the ONLY value an
+  //   unscored metric can take on these three, so the wrong reading is unrepresentable rather than
+  //   merely documented. Verified across the whole chain, not just this declaration:
+  //     · health-view.service.ts:415  — the placeholder emits `null, null, null`
+  //     · health-view.service.ts:512-514 — the mapper's `num()` sits behind `scoreState === "scored"`
+  //     · Vytal-Frontend/types/health.ts:305-307 — the hand-maintained twin is `number | null` too
+  //     · the only reader anywhere, composition/families/orientation.ts:142, filters
+  //       `p.contribution !== null` before sorting on it
+  //   `scoreState` remains the discriminator and a consumer should still test it first, but a
+  //   consumer that forgets now gets `null` rather than a plausible zero.
+  //
+  //   The stage-2 blocker was that `contribution: number` is declared independently by the frontend
+  //   (Vytal-Frontend/types/health.ts). Measured before changing it: those three fields are DECLARED
+  //   on the frontend and NEVER READ — the only mention is a comment in health-score/methodology
+  //   recording that they are deliberately not rendered ("nor any product, ratio or bar width using
+  //   them"). So the twin was real and the consumer was not, and both sides narrowed together.
+  //
+  // Measured 2026-08-29: `score_metrics` holds 16,382 rows, ALL `score_state='scored'`, zero nulls in
+  // these three columns — so the mapper's `num()` coercion never fires today and the placeholder path
+  // is the whole of the exposure.
+  // ═════════════════════════════════════════════════════════════════════════════════════════════
+  nominalWeight: number | null;
+  effectiveWeight: number | null;
+  contribution: number | null;
   /** Suppression reason when scoreState ≠ scored (from SuppressionDirective). null otherwise. */
   suppressionReason: string | null;
   /** The 5 L1 thresholds + direction (MetricBarSet); null when no bar set is linked. */

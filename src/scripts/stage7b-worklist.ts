@@ -53,7 +53,7 @@ const fyOf = (p: string): { fy: string; q: string | null } => fyqShared(p);
 // ⚠ THE MATCH MUST BE ANCHORED AND MUST NOT SWALLOW THE NEXT DIGIT. A substring
 //   test for "L1" also matches L10, L11, L12, L13 and L14 — five extra fetches
 //   per unit whose forms would then refuse to parse. `(?![0-9])` is the whole
-//   defence, and `_` cannot be used as the boundary because  treats it as a
+//   defence, and `_` cannot be used as the boundary because \b treats it as a
 //   word character, so `L1_Consolidated` would not terminate.
 const FORM_CODE = /^(n?l)[\s._-]*0*(\d{1,2})(?![0-9])/i;
 export function wantedCode(filename: string, fam: "life" | "general"): number | null {

@@ -41,7 +41,7 @@ export const env = {
   // one resolved string is threaded into BOTH the quota scope and the provider call so they can never
   // diverge. Swap the model with one env change; hardcode nothing about Flash-Lite.
   AI_CHAT_MODEL: process.env.AI_CHAT_MODEL,
-  // AI quota guard (src/ai/quota.ts) — NON-SECRET operational levers, listed for
+  // AI quota guard (src/ai/core/quota.ts) — NON-SECRET operational levers, listed for
   // discoverability; quota.ts reads process.env directly (lazily) and applies the defaults
   // (per-model budgets flash-lite 480 / flash 18 / unlisted 18, America/Los_Angeles, enabled
   // unless "false"), so these are informational.

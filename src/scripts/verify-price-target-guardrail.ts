@@ -16,7 +16,7 @@
 // PURE — no DB, no network, no AI call.
 //   npx tsx src/scripts/verify-price-target-guardrail.ts
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-import { scanExplanationText, AI_TARGET_LIST, AI_HARD_LIST, isAttributed } from "../ai/guardrail.js";
+import { scanExplanationText, AI_TARGET_LIST, AI_HARD_LIST, isAttributed } from "../ai/core/guardrail.js";
 
 let fail = 0;
 const ok = (n: string, c: boolean, d = "") => {

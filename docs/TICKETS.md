@@ -9,6 +9,26 @@ reviewed for the reasons it was actually made.
 
 ---
 
+## `shp-bse-json-rows-unreparsable` · Ingestion · 4,024 shareholding rows can no longer be re-parsed from their source
+
+**What is wrong.** `shareholding_patterns.xbrl_url` is populated on all 25,168 rows, but it is not one kind of URL.
+
+| source | rows | with a pledge | span |
+|---|---|---|---|
+| XBRL `.xml` (NSE/BSE archive) | 21,144 | 2,349 | 2017-09-30 → 2026-08-26 |
+| **BSE JSON API** (`api.bseindia.com/BseIndiaAPI/...`) | **3,950** | 861 | 2018-09-30 → 2026-06-30 |
+| other | 74 | 1 | — |
+
+The BSE endpoint **now returns an HTML page, not JSON** — verified 2026-09-04 by fetching one directly. So those rows cannot be re-read from their own source: not to re-parse them, and not to check them.
+
+**What it costs.** The 2026-09-04 pledge correction re-parsed the 21,144 XBRL rows and fixed 3,905 of them — wrong context (a promoter sub-entity instead of the group), NDU counted as a pledge, and a fabricated zero where the filing said nothing. **The 4,024 non-XBRL rows received none of that.** They are not known to be wrong; they are **known to be unverified**, which is a different and worse thing to leave unlabelled. 861 of them carry a pledge and therefore feed R1.
+
+**Why it was not fixed in that batch.** The batch's scope was the parser and the rows it could reach. Recovering these needs a different source — the BSE archive's XBRL files, or a re-ingest from the NSE side for the same periods — which is an ingestion project, not a parser fix.
+
+**The fix.** Re-ingest those 3,950 rows from an XBRL source and re-run the filing pass over the affected stocks. Until then, treat any pledge figure whose row has a non-`.xml` `xbrl_url` as unverified against its filing.
+
+    SELECT COUNT(*) FROM shareholding_patterns WHERE xbrl_url NOT LIKE '%.xml';
+
 ## `T-6` · `entryIncludesAccruedInterest` tells the entry form a T-bill's price includes accrued interest — it has none
 
 **Found:** the `T-4 · T-3 · T-1 · T-5` batch, verifying T-1's fix. **Sibling of `T-1` — same root cause, a

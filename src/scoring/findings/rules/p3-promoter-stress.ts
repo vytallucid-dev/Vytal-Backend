@@ -16,6 +16,7 @@
 // does not fire (never a false "no stress" from missing data; it simply can't evaluate).
 
 import type { RetiredRule } from "../types.js";
+import { pledgeDenominator } from "../../ownership/pledging.js";
 
 export const P3_PLEDGE_MATERIAL = 0.20; // ≥20% of promoter holding pledged — FLAG: provisional
 export const P3_PLEDGE_RISE_PP = 3;     // OR pledge ratio rose ≥3pp QoQ — FLAG: provisional
@@ -34,9 +35,11 @@ export const ruleP3: RetiredRule = (ctx) => {
   if (sh.length < 2) return null;
   const cur = sh[sh.length - 1], prior = sh[sh.length - 2];
 
-  const ratioQ = pledgeRatio(cur.pledgedShares, cur.promoterShares);
+  // Same denominator as R1 — see pledgeDenominator. P3 is retired, but a revived rule must not
+  // inherit a different basis from the one the filings use.
+  const ratioQ = pledgeRatio(cur.pledgedShares, pledgeDenominator(cur));
   if (ratioQ === null) return null; // pledging column absent → conditional suppression (§11.5.1)
-  const ratioQ1 = pledgeRatio(prior.pledgedShares, prior.promoterShares);
+  const ratioQ1 = pledgeRatio(prior.pledgedShares, pledgeDenominator(prior));
   const risePp = ratioQ1 === null ? null : (ratioQ - ratioQ1) * 100;
 
   // R1 crisis already owns the acute case — P3 is the sub-crisis stress tier.

@@ -163,6 +163,21 @@ const CLAIM_WINDOW = 2;
  * ⚠ DECLARED NON-BUILD CLAIMERS. Each names WHY the claim is true-ish but the script is not a build
  * gate, and WHERE it actually runs. Adding a claiming script without adding a line here fails.
  */
+/** §8 · Source paths written as literals that are CORRECTLY absent. Two honest reasons exist, and
+ *  neither is "we forgot": a path a gate asserts is ABSENT, and a path created and deleted inside a
+ *  run. Declared with a reason and reconciled both ways below — a declaration for a path that has
+ *  started existing is itself a failure, exactly as in §4. */
+const PATH_ABSENT_OK: Record<string, string> = {
+  "src/portfolio/phs/catalog.ts":
+    "ASSERTED ABSENT, not missing. verify-phs-copy.ts:419 proves the phantom the design prose ruled " +
+    "for deletion never existed — its EXISTENCE would be the failure. Flagging it would invert the claim.",
+  "src/scoring/read/_baseline-health-view.service.ts":
+    "TRANSIENT. scripts/lib/health-view-baseline.ts writes this baseline copy, diffs the live service " +
+    "against it, and deletes it on exit. Absent at rest is the correct state.",
+  "src/scoring/read/_baseline-step4-health-view.service.ts":
+    "TRANSIENT, as above — the step-4 baseline under its own name so both gates can run in one session.",
+};
+
 const BUILD_CLAIM_EXEMPT: Record<string, string> = {
   "src/scripts/verify-personal-section.ts":
     "DELIBERATELY WIRED NOWHERE, and its own header says so at :5 — it reaches the frontend, so §3 " +
@@ -178,7 +193,7 @@ const BUILD_CLAIM_EXEMPT: Record<string, string> = {
     "key that is not a column'), which overstates it. Runs in `npm run verify:live`.",
   "src/scripts/verify-evaluative-tier.ts":
     "Imports src/db/prisma.ts and scans the live chat corpus, and reads A/B arm files from an absolute " +
-    "temp path — twice disqualified from `build` (§2). Claimed of at src/ai/guardrail.ts:411. " +
+    "temp path — twice disqualified from `build` (§2). Claimed of at src/ai/core/guardrail.ts:411. " +
     "Runs in `npm run verify:live`.",
   "src/scripts/verify-number-grounding.ts":
     "Imports src/db/prisma.ts and grounds numbers against live instrument rows — cannot be a build gate " +
@@ -620,6 +635,69 @@ async function main() {
     "…and does NOT fire on prose that merely mentions building",
     claimHits("this module is built from the manifest and the build order matters").length === 0,
     "mention is not a claim",
+  );
+
+  rule("8 · ★ A SOURCE PATH NAMED AS TEXT MUST EXIST — the class that rots in silence");
+  //
+  // §7 asks whether a script that PROMISES to run actually runs. This asks the question that caught
+  // nothing until the src/ai/core/ move: a script that reads another file BY PATH holds a reference
+  // no compiler can see. `tsc` does not check a string. If the target moves, the read does not fail
+  // to compile — it fails when someone finally runs it, and if nothing runs it, never.
+  //
+  // ⚠ AND IT IS DELIBERATELY NOT SCOPED TO THE BUILD SET. verify-ai-quota-subcap.ts was wired into
+  //   nothing and read src/ai/quota.ts by path; §7 missed it because it never CLAIMED build
+  //   enforcement, and a string sweep during the move was the only thing that caught it. Scanning
+  //   only wired gates would reproduce exactly that blind spot, so this scans the whole tree — an
+  //   unwired script's stale path is still a false record of what this codebase checks.
+  //
+  // Literal paths only. `readFileSync(somePath)` is unknowable here and is not pretended otherwise.
+  const PATH_LIT = /["'`](src\/[A-Za-z0-9_@\-./]+\.(?:ts|tsx|json|prisma))["'`]/g;
+  const dead: string[] = [];
+  let pathsChecked = 0;
+  for (const f of srcTree) {
+    const lines = readFileSync(f, "utf8").split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // A path inside a comment is documentation. It can still go stale, but asserting on prose would
+      // make this gate fire on history and worked examples — §6's discipline, applied to itself.
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) continue;
+      for (const m of line.matchAll(PATH_LIT)) {
+        pathsChecked++;
+        if (!isFile(resolve(ROOT, m[1])) && !PATH_ABSENT_OK[m[1]]) dead.push(`${rel(f)}:${i + 1} → ${m[1]}`);
+      }
+    }
+  }
+  ok(
+    "★ every source path written as a string literal resolves to a real file",
+    dead.length === 0,
+    dead.join("\n       ") || `${pathsChecked} literal path(s) across ${srcTree.length} files, all live`,
+  );
+  // Reconciled the other way, as §4 and §7 do: a declaration for a path that now EXISTS is stale, and
+  // one whose path is no longer named anywhere is describing nothing.
+  const namedLits = new Set<string>();
+  for (const f of srcTree) {
+    for (const line of readFileSync(f, "utf8").split("\n")) {
+      if (/^\s*(?:\/\/|\*|\/\*)/.test(line)) continue;
+      for (const m of line.matchAll(PATH_LIT)) namedLits.add(m[1]);
+    }
+  }
+  const staleAbsent = Object.keys(PATH_ABSENT_OK).filter((p) => isFile(resolve(ROOT, p)) || !namedLits.has(p));
+  ok(
+    "…and no absent-path declaration is stale (the file appeared, or nothing names it any more)",
+    staleAbsent.length === 0,
+    staleAbsent.join(", ") || `${Object.keys(PATH_ABSENT_OK).length} declarations, all live`,
+  );
+  for (const [p, why] of Object.entries(PATH_ABSENT_OK)) console.log(`     ${p}\n        ↳ ${why}`);
+
+  // NEGATIVE CONTROL — the scan is live, not a regex that can never fire. ⚠ The path is ASSEMBLED
+  // rather than written as a literal: spelling it out would make this control trip the scan above,
+  // which is what the first run of this section did.
+  const goneNow = ["src", "ai", "quota.ts"].join("/");
+  const hereNow = ["src", "ai", "core", "quota.ts"].join("/");
+  ok(
+    "NEGATIVE CONTROL — the path scan rejects a file that does not exist",
+    !isFile(resolve(ROOT, goneNow)) && isFile(resolve(ROOT, hereNow)),
+    `${goneNow} is gone and ${hereNow} is present — exactly the rot this catches`,
   );
 
   console.log(

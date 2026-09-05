@@ -27,7 +27,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { prisma } from "../db/prisma.js";
-import { groundStockHealth } from "../ai/grounding.js";
+import { groundStockHealth } from "../ai/core/grounding.js";
 import { buildHealthSnapshotView } from "../scoring/read/health-view.service.js";
 
 const FRONTEND_DIR = process.env.VYTAL_FRONTEND_DIR ?? resolve(process.cwd(), "../Vytal-Frontend");

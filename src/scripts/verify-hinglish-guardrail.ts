@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-// THE HINGLISH / DEVANAGARI GUARDRAIL — BOTH FAILURE MODES, PROVEN. (src/ai/guardrail-hinglish.ts)
+// THE HINGLISH / DEVANAGARI GUARDRAIL — BOTH FAILURE MODES, PROVEN. (src/ai/core/guardrail-hinglish.ts)
 //
 // Same discipline as verify-ai-guardrail.ts, because a guard has the same two ways to be useless in
 // every language:
@@ -20,8 +20,8 @@
 //
 // PURE — no DB, no network, no AI call. Runs in milliseconds.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-import { scanExplanationText, AI_HARD_LIST } from "../ai/guardrail.js";
-import { AI_HARD_LIST_HI, AI_SOFT_EXTRA_HI } from "../ai/guardrail-hinglish.js";
+import { scanExplanationText, AI_HARD_LIST } from "../ai/core/guardrail.js";
+import { AI_HARD_LIST_HI, AI_SOFT_EXTRA_HI } from "../ai/core/guardrail-hinglish.js";
 import { buildLayer3Redirect, detectReaderRegister, lastReaderTextOf } from "../chat/voice.js";
 
 let fail = 0;

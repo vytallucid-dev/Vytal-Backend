@@ -100,16 +100,42 @@ export async function runBseFallbackForStock(
   const want = quarterEnds(from, horizon);
   if (want.length === 0) return empty;
 
-  const heldQ = new Set(
-    (await prisma.$queryRawUnsafe<Array<{ d: string }>>(
-      `SELECT DISTINCT report_date::date::text d FROM "${qTable}" WHERE stock_id = $1`, stock.id)).map((r) => r.d));
-  const heldA = new Set(
-    (await prisma.$queryRawUnsafe<Array<{ d: string }>>(
-      `SELECT DISTINCT report_date::date::text d FROM "${aTable}" WHERE stock_id = $1`, stock.id)).map((r) => r.d));
+  // ── WHAT WE HOLD, PER BASIS. ────────────────────────────────────────────────────────────────
+  // ⚠ THIS USED TO IGNORE result_type, AND THAT MADE ONE BASIS HIDE THE OTHER. A period held only
+  //   as CONSOLIDATED counted as "held", so the standalone gap beneath it was never asked for, and
+  //   vice versa. The two bases are separate rows with a separate unique key; they have to be
+  //   counted separately or the fallback is blind to half its own job.
+  const heldPer = async (table: string): Promise<Map<string, Set<string>>> => {
+    const rows = await prisma.$queryRawUnsafe<Array<{ d: string; rt: string }>>(
+      `SELECT DISTINCT report_date::date::text d, result_type rt FROM "${table}" WHERE stock_id = $1`, stock.id);
+    const m = new Map<string, Set<string>>([["standalone", new Set()], ["consolidated", new Set()]]);
+    for (const r of rows) m.get(r.rt)?.add(r.d);
+    return m;
+  };
+  const heldQ = await heldPer(qTable);
+  const heldA = await heldPer(aTable);
+
+  // ── WHICH BASES TO ASK FOR. ─────────────────────────────────────────────────────────────────
+  // Standalone always: every listed company files one.
+  //
+  // ⚠ CONSOLIDATED ONLY WHERE THE COMPANY DEMONSTRABLY HAS ONE, and that gate is the whole reason
+  //   this is cheap. MEASURED over the 2,173 stocks holding results: 683 of them have NEVER filed a
+  //   consolidated result anywhere, because they have no subsidiaries to consolidate. Asking BSE for
+  //   their consolidated statements would be a request that cannot succeed, repeated nightly, per
+  //   stock, per period, against a source that rate-limits us to one call every four seconds. The
+  //   evidence that a company HAS a consolidated basis is that we already hold at least one
+  //   consolidated row for it — from either exchange, at any period. 1,490 stocks qualify, and 1,190
+  //   of those have gaps worth asking about.
+  const holdsConsolidated =
+    heldQ.get("consolidated")!.size > 0 || heldA.get("consolidated")!.size > 0;
+  const bases: Array<"standalone" | "consolidated"> = holdsConsolidated
+    ? ["standalone", "consolidated"]
+    : ["standalone"];
 
   const iso = (d: Date): string => d.toISOString().slice(0, 10);
-  const missQ = want.filter((d) => !heldQ.has(iso(d)));
-  const missA = want.filter((d) => iso(d).endsWith("-03-31") && !heldA.has(iso(d)));
+  const missQ = bases.flatMap((b) => want.filter((d) => !heldQ.get(b)!.has(iso(d))).map((d) => ({ d, b })));
+  const missA = bases.flatMap((b) =>
+    want.filter((d) => iso(d).endsWith("-03-31") && !heldA.get(b)!.has(iso(d))).map((d) => ({ d, b })));
   if (missQ.length === 0 && missA.length === 0) return empty;   // ← the common case: no BSE request
 
   // ── resolve the scrip only once we know there is work ────────────────────────────────────────
@@ -124,13 +150,14 @@ export async function runBseFallbackForStock(
   }
 
   const targets: BseTarget[] = [
-    ...missQ.map((periodEnd) => ({ symbol: stock.symbol, stockId: stock.id, scripCode: scrip.scripCode,
-      grain: "quarterly" as const, periodEnd, basis: "standalone" as const, industryType: stock.industryType })),
-    ...missA.map((periodEnd) => ({ symbol: stock.symbol, stockId: stock.id, scripCode: scrip.scripCode,
-      grain: "annual" as const, periodEnd, basis: "standalone" as const, industryType: stock.industryType })),
+    ...missQ.map(({ d: periodEnd, b: basis }) => ({ symbol: stock.symbol, stockId: stock.id, scripCode: scrip.scripCode,
+      grain: "quarterly" as const, periodEnd, basis, industryType: stock.industryType })),
+    ...missA.map(({ d: periodEnd, b: basis }) => ({ symbol: stock.symbol, stockId: stock.id, scripCode: scrip.scripCode,
+      grain: "annual" as const, periodEnd, basis, industryType: stock.industryType })),
   ];
 
-  log(`[BSE fallback] ${stock.symbol}: NSE left ${targets.length} period(s) unserved in the last ${windowQ} quarters — asking BSE`);
+  const perBasis = bases.map((b) => `${targets.filter((t) => t.basis === b).length} ${b}`).join(" + ");
+  log(`[BSE fallback] ${stock.symbol}: NSE left ${targets.length} period(s) unserved in the last ${windowQ} quarters (${perBasis}) — asking BSE`);
   try {
     const summary = await runBseBackfill(prisma, targets, {
       dryRun: false,

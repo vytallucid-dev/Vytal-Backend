@@ -63,7 +63,11 @@ export async function loadFilingContext(subject: FilingSubject, asOf: Date, cuto
     orderBy: { asOnDate: "asc" },
     select: {
       asOnDate: true, quarter: true, fiscalYear: true,
-      promoterShares: true, totalShares: true, pledgedShares: true,
+      // ⚠ `promoterTotalShares` IS NOT OPTIONAL HERE. This is the filing pass's OWN read path —
+      //   separate from score-pass.ts's — and it is the one that writes R1 to stock_findings. Threading
+      //   the pledge denominator through score-pass alone left THIS pass still dividing by the
+      //   fully-paid-up count, so a full run finished with ASHOKLEY still at 51.4% and still flagged.
+      promoterShares: true, promoterTotalShares: true, totalShares: true, pledgedShares: true,
       promoterPct: true, fiiPct: true, diiPct: true, retailPct: true,
     },
   });
@@ -73,7 +77,7 @@ export async function loadFilingContext(subject: FilingSubject, asOf: Date, cuto
   //   rules (r2-promoter-exit, primary.ts) treat adjacent elements as consecutive quarters.
   const shareholding: OwnershipQuarter[] = collapseToOneRowPerQuarter(shRows).map((r) => ({
     asOnDate: r.asOnDate, quarter: r.quarter, fiscalYear: r.fiscalYear,
-    promoterShares: r.promoterShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares,
+    promoterShares: r.promoterShares, promoterTotalShares: r.promoterTotalShares, totalShares: r.totalShares, pledgedShares: r.pledgedShares,
     promoterPct: num(r.promoterPct), fiiPct: num(r.fiiPct), diiPct: num(r.diiPct), retailPct: num(r.retailPct),
   }));
 

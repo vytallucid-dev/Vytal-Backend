@@ -85,14 +85,54 @@ export async function sweepStaleSnapshots(): Promise<StaleSweepResult> {
     if (inForce.size === 0) return result;
 
     // 2. Per-stock latest IMMUTABLE-APPEND createdAt of each score input (NEVER updatedAt).
-    const [shAgg, fuAgg, qrAgg] = await Promise.all([
+    //
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // ★★ ALL FIVE INDUSTRY FAMILIES — F-2, AND THIS READ TWO TABLES OF TEN.
+    //
+    // ⚠ `fundamentals` AND `quarterly_results` ARE THE NON-FINANCIAL TABLES. A bank's fundamentals
+    //   live in `banking_fundamentals`, an NBFC's in `nbfc_fundamentals`, and so on for the two
+    //   insurance families. So for every one of those companies both lookups returned `undefined`,
+    //   `fuNewer` and `qrNewer` were permanently FALSE, and the stock **could never be flagged stale
+    //   on fundamentals** however many filings landed after its snapshot.
+    //
+    // ⚠⚠ AND IT REPORTED `scanned = <every snapshot>`, which is the reports-success-while-measuring-
+    //    nothing class: the guard looked like coverage. Measured at the time of the fix: 12 of 95
+    //    scored companies invisible (all banks), with 143 NBFCs and 11 insurers latent behind it.
+    //
+    // ★ FOURTH OCCURRENCE OF THE SAME NARROWING — after `resolveCompanySnapshot`, `blocks-stock` and
+    //   `statements`. The other three are reader surfaces where the gap is at least VISIBLE as a
+    //   missing figure. Here the gap is an alert that never fires, which nothing can see.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    const [shAgg, fuAgg, qrAgg, bkF, bkQ, nbF, nbQ, liF, liQ, giF, giQ] = await Promise.all([
       prisma.shareholdingPattern.groupBy({ by: ["stockId"], _max: { createdAt: true, asOnDate: true } }),
       prisma.fundamental.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
       prisma.quarterlyResult.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.bankingFundamental.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.bankingQuarterlyResult.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.nbfcFundamental.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.nbfcQuarterlyResult.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.lifeInsuranceFundamental.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.lifeInsuranceQuarterlyResult.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.generalInsuranceFundamental.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
+      prisma.generalInsuranceQuarterlyResult.groupBy({ by: ["stockId"], _max: { createdAt: true } }),
     ]);
     const SH = new Map(shAgg.map((r) => [r.stockId, r._max]));
-    const FU = new Map(fuAgg.map((r) => [r.stockId, r._max.createdAt]));
-    const QR = new Map(qrAgg.map((r) => [r.stockId, r._max.createdAt]));
+
+    // ★ ONE MAP PER ROLE, NOT PER TABLE. A stock belongs to exactly one family, so the five sources
+    //   never collide on a key — and taking the LATEST across them means a company that was
+    //   reclassified between filings is still read correctly rather than losing its older rows.
+    const latest = (
+      groups: readonly { stockId: string; _max: { createdAt: Date | null } }[][],
+    ): Map<string, Date> => {
+      const m = new Map<string, Date>();
+      for (const g of groups) for (const r of g) {
+        const d = r._max.createdAt;
+        if (d && (!m.has(r.stockId) || d > m.get(r.stockId)!)) m.set(r.stockId, d);
+      }
+      return m;
+    };
+    const FU = latest([fuAgg, bkF, nbF, liF, giF]);
+    const QR = latest([qrAgg, bkQ, nbQ, liQ, giQ]);
 
     // 3. Open scoring_stale rows, keyed by symbol (targetEntity) — to self-heal.
     const openStale = await prisma.ingestionError.findMany({

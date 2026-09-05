@@ -17,12 +17,12 @@
 // proof harness can script provider replies (to force the guardrail path) and force a denial, without a
 // live counter or a real key. Both default to the real registry provider + the real spend gate.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-import { createAiProvider } from "../ai/registry.js";
+import { createAiProvider } from "../ai/core/registry.js";
 import type { AiGenerateResult, AiMessage, AiProvider, AiToolCall, AiToolResult, AiToolSpec, TokenUsage } from "../ai/types.js";
 import { spendFor, servedByMock, type Spend } from "../ai/spend.js";
-import { recordAiTokens, type Actor, type QuotaDecision } from "../ai/quota.js";
-import { scanExplanationText } from "../ai/guardrail.js";
-import { scanUngroundedNumbers, buildNumberHaystack } from "../ai/number-grounding.js";
+import { recordAiTokens, type Actor, type QuotaDecision } from "../ai/core/quota.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
+import { scanUngroundedNumbers, buildNumberHaystack } from "../ai/core/number-grounding.js";
 import { scanUserInput, scanOutputText } from "../ai/moderation.js";
 import { CHAT_MAX_OUTPUT_TOKENS, CHAT_MAX_TOOL_ROUNDS } from "./config.js";
 import {

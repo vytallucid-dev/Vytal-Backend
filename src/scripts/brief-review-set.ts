@@ -21,7 +21,7 @@
 import { prisma } from "../db/prisma.js";
 import { writeQuarterBrief } from "../insight/quarter-brief/write.js";
 import { QUARTER_BRIEF_MODEL } from "../insight/quarter-brief/generate.js";
-import { peekAiCallQuota } from "../ai/quota.js";
+import { peekAiCallQuota } from "../ai/core/quota.js";
 import { emptySections, type BriefPayload } from "../insight/quarter-brief/schema.js";
 
 const SET: { symbol: string; period: string; exercises: string }[] = [

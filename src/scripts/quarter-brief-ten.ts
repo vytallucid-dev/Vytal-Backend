@@ -21,7 +21,7 @@ import { buildQuarterBriefFactBlock } from "../insight/quarter-brief/fact-block.
 import { renderFactText } from "../insight/quarter-brief/prompt.js";
 import { writeQuarterBrief } from "../insight/quarter-brief/write.js";
 import { QUARTER_BRIEF_MODEL } from "../insight/quarter-brief/generate.js";
-import { peekAiCallQuota } from "../ai/quota.js";
+import { peekAiCallQuota } from "../ai/core/quota.js";
 import type { QuarterBriefFactBlock } from "../insight/quarter-brief/types.js";
 
 interface Pick { symbol: string; exercises: string }

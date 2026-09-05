@@ -17,7 +17,7 @@ import type { ChatTitleGeneratePayload } from "../types.js";
 import { prisma } from "../../db/prisma.js";
 import { resolveChatProvider } from "../../chat/engine.js";
 import { spendFor, servedByMock } from "../../ai/spend.js";
-import { recordAiTokens, type Actor } from "../../ai/quota.js";
+import { recordAiTokens, type Actor } from "../../ai/core/quota.js";
 import { resolveChatModel } from "../../chat/config.js";
 
 const TITLE_SYSTEM =

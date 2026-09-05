@@ -49,7 +49,7 @@ import type { PrismaClient } from "../../../generated/prisma/client.js";
 import { BsePacer, ThrottleStopError } from "./bse-http.js";
 import {
   fetchResultsListing,
-  findStandaloneDocument,
+  findDocument,
   fetchInstance,
   quarterCodeFor,
   type BseListing,
@@ -113,7 +113,14 @@ export interface BseTarget {
   grain: Grain;
   /** The period END we want. For an annual row this is the fiscal-year end. */
   periodEnd: Date;
-  basis: "standalone";
+  /**
+   * Which basis this unit is for. The ledger key, the period trap and the writer's conflict target
+   * all carry it already, so the two bases are independent units end to end: they cannot collide in
+   * the ledger (unitKey includes it), cannot be confused at parse time (assertPeriodAndBasis refuses
+   * a document whose own declared basis disagrees), and cannot overwrite each other in the database
+   * (every ON CONFLICT target includes result_type).
+   */
+  basis: "standalone" | "consolidated";
   /**
    * S8.4b — the ROUTING KEY. `Stock.industryType`, carried on the target so the
    * writer never has to ask the document which family it belongs to. See
@@ -295,7 +302,7 @@ async function runUnit(
   }
 
   const qc = quarterCodeFor(t.periodEnd, t.grain);
-  const doc = findStandaloneDocument(listing, qc);
+  const doc = findDocument(listing, qc, t.basis);
   if (doc.kind === "not_listed") return { outcome: "not_listed", note: `no results row at ${qc}` };
   if (doc.kind === "listed_without_xbrl") {
     return { outcome: "listed_without_xbrl", note: `BSE lists the ${qc} filing but publishes no XBRL for it` };
@@ -423,10 +430,15 @@ async function runUnit(
   if (t.grain === "quarterly" && banking) {
     // ★ CARVE-OUT: the quarterly instance has no Advances, so fetch the bank's nearest ANNUAL once
     //   and use its Advances as the cross-document denominator. Cached per scrip.
-    if (!advancesRefs.has(t.scripCode)) {
-      advancesRefs.set(t.scripCode, await resolveAdvancesReference(pacer, listing, t.periodEnd));
+    // ⚠ CACHED PER (SCRIP, BASIS), NOT PER SCRIP. The denominator has to come from the SAME basis as
+    //   the numerator: a consolidated quarterly NPA ratio measured against a standalone Advances is
+    //   a ratio between two different companies' worth of loan book. Keying on the scrip alone was
+    //   correct only while this lane fetched one basis.
+    const advKey = `${t.scripCode}|${t.basis}`;
+    if (!advancesRefs.has(advKey)) {
+      advancesRefs.set(advKey, await resolveAdvancesReference(pacer, listing, t.periodEnd, t.basis));
     }
-    const r = extractBankingQuarterlyCells(xml, advancesRefs.get(t.scripCode) ?? undefined);
+    const r = extractBankingQuarterlyCells(xml, advancesRefs.get(advKey) ?? undefined);
     table = "banking_quarterly_results";
     rawCells = r.cells as unknown as Record<string, number | null | undefined>;
     refused = r.ratioVerdicts.filter((v) => !v.accepted).map((v) => v.field);
@@ -602,6 +614,7 @@ async function resolveAdvancesReference(
   pacer: BsePacer,
   listing: BseListing,
   periodEnd: Date,
+  basis: "standalone" | "consolidated",
 ): Promise<CrossDocReference | null> {
   const y = periodEnd.getUTCFullYear();
   const m = periodEnd.getUTCMonth() + 1;
@@ -612,7 +625,7 @@ async function resolveAdvancesReference(
   let fetched = 0;
   for (const qc of candidates) {
     if (fetched >= 2) break;
-    const doc = findStandaloneDocument(listing, qc);
+    const doc = findDocument(listing, qc, basis);
     if (doc.kind !== "found") continue;
     fetched++;
     let xml: string;

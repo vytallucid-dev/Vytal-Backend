@@ -15,7 +15,7 @@ import {
   REVENUE_YOY_MAX_PCT,
   checkPlContentless,
   checkScale,
-  checkRevenueNonPositive,
+  checkZeroedPnlBlock,
   checkRevenueYoyAnomaly,
   resultsRunRef,
 } from "../fundamentals-guards.js";
@@ -153,24 +153,37 @@ export async function ingestIndAsQuarterly(
         runRef,
       });
     }
-    if (checkRevenueNonPositive(parsed.revenue)) {
+    // GUARD 4: a ZEROED P&L BLOCK — every line present reads exactly 0.
+    //
+    // NOT "revenue <= 0", which this was and which was wrong about the world: a holding company
+    // or a dormant shell genuinely earns nothing from operations, and a Q4 derived as
+    // (full year - 9M) is legitimately negative when the year is revised down. Both were being
+    // shown to an admin with a fill-button and a value to type that was already correct. See
+    // checkZeroedPnlBlock for the measurements.
+    //
+    // Reaching here at all means the parse-time refusal (zero-block-guard.ts RULE 4) did not
+    // catch it — a different route in, or a document with no live comparative to convict on. It
+    // is a SHAPE break, not a value an admin can source, so it is critical/source_code.
+    if (checkZeroedPnlBlock(parsed)) {
       await reportIngestionError({
         source: RESULTS_SOURCE,
         cron: RESULTS_CRON,
-        guardType: "range",
+        guardType: "shape",
         targetTable: "QuarterlyResult",
         targetField: "revenue",
         targetEntity: entity,
-        severity: "medium",
-        resolutionPath: "admin_fill",
-        expected: "revenue > 0",
-        observed: `revenue=${parsed.revenue}`,
-        detail: "Non-positive revenue — verify against source.",
+        severity: "critical",
+        resolutionPath: "source_code",
+        expected: "at least one non-zero line in the quarter's P&L",
+        observed: `revenue=${parsed.revenue}, otherIncome=${parsed.otherIncome}, expenses=${parsed.expenses}, pbt=${parsed.profitBeforeTax}, netProfit=${parsed.netProfit}`,
+        detail:
+          "Every P&L line reads exactly 0 — a column the filer did not fill, not a quarter with no " +
+          "revenue, no expenses and no profit. A dormant company still pays its auditor.",
         runRef,
       });
     }
     // GUARD 5: CONTINUITY — revenue YoY anomaly (NOT profit YoY).
-    if (checkRevenueYoyAnomaly(revenueYoy)) {
+    if (checkRevenueYoyAnomaly(revenueYoy, yearAgoRow?.revenue?.toNumber() ?? null)) {
       await reportIngestionError({
         source: RESULTS_SOURCE,
         cron: RESULTS_CRON,

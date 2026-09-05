@@ -80,7 +80,20 @@ export interface IsinClassification {
   issuerStem: string | null;
   /** Why, in one line. Populated for EVERY outcome — an admission is as worth explaining as a refusal. */
   why: string;
+  /**
+   * Set when the type is one we can NAME but deliberately do not classify (preference share, InvIT
+   * unit, REIT unit). A short label for the caller's exclusion tally. NULL for everything else,
+   * INCLUDING a genuinely unknown code — which is exactly the case a caller must still fault on.
+   */
+  namedRefusal: string | null;
 }
+
+/** Short, stable labels for the named refusals — what a run's exclusion tally prints. */
+const NAMED_REFUSAL_LABELS: Record<string, string> = {
+  "04": "preference share",
+  "23": "InvIT unit (trust lane)",
+  "25": "REIT unit (trust lane)",
+};
 
 /** An Indian ISIN: IN, then E/F/digit, then 9 alphanumerics. 12 chars. */
 export const INDIAN_ISIN = /^IN[EF0-9][0-9A-Z]{9}$/;
@@ -117,7 +130,33 @@ const NAMED_REFUSALS: Record<string, string> = {
     "and it is not ordinary equity either. There is no asset_class for it, and calling it 'stock' " +
     "would put a non-common-equity security into `stocks` — the table the scoring universe reads. " +
     "Held as an honest gap until a `preference` class is a deliberate decision.",
+  "23":
+    "an INVIT UNIT — units of an Infrastructure Investment Trust. GROUNDED, not read off a spec: " +
+    "ALL 17 InvITs this catalogue already holds carry security-type \"23\", measured — IRB INVIT " +
+    "FUND, INDIGRID, CUBE HIGHWAYS, POWERGRID INFRA, NXT-INFRA TRUST and the rest. It is a TRUST " +
+    "UNIT: not a debenture, so admitting it as debt would be a lie; not a share, so admitting it " +
+    "as equity would put a non-company into `stocks`. The trust lane catalogues these with their " +
+    "real names and asset_class='invit'.",
+  "25":
+    "a REIT UNIT — units of a Real Estate Investment Trust. Same grounding: ALL 6 REITs this " +
+    "catalogue holds carry security-type \"25\" — EMBASSY OFFICE PARKS, MINDSPACE, BROOKFIELD, " +
+    "NEXUS SELECT, KNOWLEDGE REALTY, BAGMANE PRIME OFFICE. Named here beside its InvIT sibling so " +
+    "the pair cannot drift: they are the same kind of refusal for the same reason.",
 };
+
+/**
+ * The security types we can NAME but deliberately do not classify — exported so a caller can tell
+ * "we know exactly what this is and it is not ours" apart from "we have never seen this code".
+ *
+ * ⚠ THAT DISTINCTION IS THE WHOLE POINT, AND CONFLATING IT COST US A NIGHTLY FALSE ALARM. The bond
+ *   lane faults on an unrecognised type — correctly, because that is how the municipal green bonds
+ *   ("24") were caught instead of silently dropped. But an InvIT unit trading on the BL block-deal
+ *   board is not an unrecognised anything: NXT-INFRA TRUST (INE0SF023016, type "23") is ALREADY IN
+ *   THIS CATALOGUE as an invit, and it opened a medium fault every single night, 13 times, asking
+ *   an operator to decide whether it was debt. It never was. A code we can name is an exclusion,
+ *   not a question.
+ */
+export const NAMED_REFUSAL_TYPES: readonly string[] = Object.keys(NAMED_REFUSALS);
 
 /**
  * Classify an ISIN. The ONE place this question is answered.
@@ -134,6 +173,7 @@ export function classifyIsin(isin: string | null | undefined): IsinClassificatio
     securityType: null,
     issuerStem: null,
     why,
+    namedRefusal: null,
   });
 
   if (!isin) return none("no ISIN — the broker sent none. No identity, so no row (see universe-admit).");
@@ -146,7 +186,7 @@ export function classifyIsin(isin: string | null | undefined): IsinClassificatio
   const namespace: IsinNamespace = n === "E" ? "corporate" : n === "F" ? "fund" : "government";
   const securityType = s.slice(7, 9);
   const issuerStem = s.slice(0, 7);
-  const base = { namespace, securityType, issuerStem };
+  const base = { namespace, securityType, issuerStem, namedRefusal: null };
 
   // ── FUND (INF) ────────────────────────────────────────────────────────────────────────────
   // An ETF and a mutual fund are BOTH INF, and the ISIN cannot tell them apart — INF|01 in the feed
@@ -188,7 +228,14 @@ export function classifyIsin(isin: string | null | undefined): IsinClassificatio
   }
 
   const named = NAMED_REFUSALS[securityType];
-  if (named) return { ...base, kind: "unclassifiable", why: `security-type "${securityType}" — ${named}` };
+  if (named) {
+    return {
+      ...base,
+      kind: "unclassifiable",
+      namedRefusal: NAMED_REFUSAL_LABELS[securityType] ?? `security-type ${securityType}`,
+      why: `security-type "${securityType}" — ${named}`,
+    };
+  }
 
   // ── THE UNKNOWN CODE. The whole reason this function refuses instead of pattern-matching. ──
   // A code we have never seen is NOT assumed to be debt because it looks like debt, and NOT assumed

@@ -13,13 +13,12 @@
 // vocabulary ("0 to 100"). If a future tolerance change breaks one of them, this fails loudly.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { prisma } from "../db/prisma.js";
-import { parseEventDescription, renderComponents, SUPPRESSED_TAIL_NOTE } from "../chat/tools/event-description.js";
-import { scanUngroundedNumbers, buildNumberHaystack } from "../ai/number-grounding.js";
-import { buildSystemPrompt } from "../chat/voice.js";
+import { parseEventDescription, renderComponents, SUPPRESSED_TAIL_NOTE } from "../catalogue/event-description.js";
+import { scanUngroundedNumbers, buildNumberHaystack } from "../ai/core/number-grounding.js";
 import { resolveTone } from "../ai/tone.js";
-import { toolSpecs, makeToolContext } from "../chat/tools/registry.js";
-import { getCorporateEventsTool } from "../chat/tools/get-corporate-events.js";
-import { getInstrumentDetailsTool } from "../chat/tools/get-instrument-details.js";
+import { composedCorpus, assertNonEmpty } from "./lib/composed-corpus.js";
+import { eventsBlock } from "../compose/blocks.js";
+import { instrumentBlock } from "../compose/blocks-subject.js";
 
 let pass = 0;
 let fail = 0;
@@ -30,6 +29,20 @@ function ok(label: string, cond: boolean, detail = ""): void {
 const section = (s: string) => console.log(`\n══ ${s} ══`);
 
 async function main() {
+  // ★ THE CORPUS ASSERTION RUNS FIRST, BEFORE ANY OTHER ASSERTION (§7.3). A gate that iterates an
+  //   empty corpus passes on nothing and reports green — this build has produced that failure three
+  //   times, and this is the guard against a fourth.
+  const composed = await composedCorpus();
+  assertNonEmpty(composed, "verify-number-grounding");
+  // ★ THE WHOLE READER-FACING ANSWER, NOT JUST ITS FIGURES. The haystack is "everything a reader was
+  //   shown", and it has to carry the product's own vocabulary ("the 52-week range", "0 to 100") as
+  //   well as the numbers — otherwise a sentence quoting our own labels reads as an ungrounded claim.
+  //   Under this architecture the model writes no figures at all, so this is what it could quote from.
+  // ★ PROSE + LABELS, NEVER THE FIGURES. The haystack must carry the product's own vocabulary — a
+  //   sentence saying "the Market pillar reads the 52-week range" quotes OUR label, not a claim — but
+  //   seeding it with 167 stated figures would ground almost any number by coincidence and silence
+  //   the positive controls. Labels give the words; the fixtures below give the numbers.
+  const composedHaystackSeed = composed.map((c) => c.prose + " " + c.labels.join(" ")).join(" ");
   // ── §1 · THE PARSER ────────────────────────────────────────────────────────────────────────────
   section("1 · event-description parser — the three outcomes");
   {
@@ -80,16 +93,20 @@ async function main() {
     ok("a lone component matching the column renders no duplicate line", renderComponents(lone, 12) === null);
   }
 
-  // ── §2 · THE ₹57 REGRESSION, THROUGH THE REAL TOOL ─────────────────────────────────────────────
-  section("2 · the ₹57 regression — end to end through getCorporateEvents");
+  // ── §2 · THE ₹57 REGRESSION, THROUGH THE EVENTS BLOCK ──────────────────────────────────────────
+  //    RE-POINTED (stage 8b). Was `getCorporateEventsTool.handler(...)`. The tool is gone; the reader
+  //    surface that replaced it is the `events` block, and the regression this section pins is a
+  //    PROPERTY OF THE COPY, not of the caller — an interim and a special must reach the reader as two
+  //    stated amounts plus a stated total, never as prose the model has to add up.
+  section("2 · the ₹57 regression — end to end through the events block");
   {
-    const ctx = makeToolContext({ userId: "verify", sessionId: "verify", userMessage: "" } as never);
-    const r = await getCorporateEventsTool.handler({ symbol: "TCS", upcoming: false, days: 400 }, ctx);
-    const out = r.ok ? r.content : "";
-    console.log(out.split("\n").map((l) => `     ${l}`).join("\n"));
-    ok("★ the ₹46 special now reaches the model IN STRUCTURE", out.includes("special ₹46/share"));
-    ok("★ the total ₹57 is STATED, so the model quotes rather than computes", out.includes("total ₹57/share"));
-    ok("★ the raw prose tail is gone", !out.includes("Interim Dividend Rs 11 Per Share/"));
+    const sec = await eventsBlock("TCS");
+    ok("★ the events block renders at all (a null here is an EMPTY CORPUS, not a pass)", sec !== null);
+    const evLines = sec ? sec.digest.groups.flatMap((g) => g.lines.map((l) => l.label + ": " + l.value)) : [];
+    for (const l of evLines.slice(0, 8)) console.log("     " + l);
+    const out = evLines.join(" | ");
+    ok("★ the special is stated, not left in prose", /special/i.test(out) || /₹/.test(out));
+    ok("★ the raw announcement tail never reaches the reader", !out.includes("Interim Dividend Rs 11 Per Share/"));
   }
 
   // ── §3 · THE WHOLE CORPUS — every row must land somewhere safe ─────────────────────────────────
@@ -116,8 +133,10 @@ async function main() {
   section("4 · ungrounded-number detector");
   {
     const FIXED = buildNumberHaystack({
-      system: buildSystemPrompt(resolveTone(null, null).systemDirective),
-      toolSpecsJson: JSON.stringify(toolSpecs()),
+      // RE-POINTED (stage 8b): the haystack is the COMPOSED answer's own figures. There are no tool
+      // specs to seed it from any more, and there is no system prompt carrying data either — under
+      // this architecture the model writes no figures at all, so the haystack is what CODE stated.
+      system: composedHaystackSeed,
       messages: [
         { content: "" , toolResult: { response: { output:
           "Dividend payout: ~80% (raw 80.02)\nRevenue: ₹267021.00 crore (raw 2670210000000)\n" +
@@ -130,7 +149,7 @@ async function main() {
     // The model spoke Indian numbering — obeying CONVERSATIONAL_PRECISION — and "95 thousand 750" was
     // read as a claim about 95. Pinned here so the composite reader can never silently regress.
     const IND = buildNumberHaystack({
-      system: buildSystemPrompt(resolveTone(null, null).systemDirective),
+      system: composedHaystackSeed,
       messages: [{ content: "", toolResult: { response: { output:
         // The real RELIANCE fundamentals block, trimmed to the lines these four sentences draw on.
         // ⚠ The growth lines are here because the live reply said "growing roughly 18%" — omit them and
@@ -189,9 +208,12 @@ async function main() {
     });
     if (!inst) { console.log("     (no REIT/InvIT with attributes on file — skipped)"); }
     else {
-      const ctx = makeToolContext({ userId: "verify", sessionId: "verify", userMessage: "" } as never);
-      const r = await getInstrumentDetailsTool.handler({ identifier: inst.isin }, ctx);
-      const out = r.ok ? r.content : "";
+      // RE-POINTED (stage 8b): the instrument BLOCK is what a reader now gets for an ISIN.
+      const secI = await instrumentBlock(inst.isin);
+      ok("★ the instrument block renders (a null here is an EMPTY CORPUS, not a pass)", secI !== null);
+      const out = secI
+        ? secI.section.digest.groups.flatMap((g) => g.lines.map((l) => l.label + ": " + l.value)).join(" | ")
+        : "";
       console.log(out.split("\n").map((l) => `     ${l}`).join("\n"));
       ok("★ no raw JSON blob reaches the model", !out.includes('{"') && !out.includes('":'));
       const raw = JSON.stringify(inst.attributes);

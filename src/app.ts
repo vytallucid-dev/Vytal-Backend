@@ -46,6 +46,7 @@ import {
 import { jobsRouter } from "./routes/job-routes.js";
 import { pipelinesRouter } from "./routes/pipelines-route.js";
 import { retentionAdminRouter } from "./routes/admin/retention-route.js";
+import { missLogAdminRouter } from "./routes/admin/miss-log-route.js";
 import { ingestionErrorsRouter } from "./routes/ingestion/ingestion-errors-route.js";
 import { catalogueRouter } from "./routes/catalogue-route.js";
 import { resultsRouter } from "./routes/results-route.js";
@@ -58,6 +59,8 @@ import { mePortfolioRouter } from "./routes/me-portfolio-routes.js";
 import { meActivityRouter } from "./routes/me-activity-routes.js";
 import { meWatchlistRouter } from "./routes/me-watchlist-routes.js";
 import { meAlertsRouter } from "./routes/me-alerts-routes.js";
+import { meMemoriesRouter } from "./routes/me-memories-routes.js";
+import { meAskRouter } from "./routes/me-ask-routes.js";
 import { meRemindersRouter } from "./routes/me-reminders-routes.js";
 import { meBrokerRouter } from "./routes/me-broker-routes.js";
 import { meChatRouter } from "./routes/me-chat-routes.js";
@@ -151,6 +154,8 @@ export const createApp = () => {
   app.use("/api/v1/admin/jobs", requireAdmin, jobsRouter);
   app.use("/api/v1/admin/pipelines", requireAdmin, pipelinesRouter);
   app.use("/api/v1/admin/retention", requireAdmin, retentionAdminRouter);
+  // T-0 · the persisted miss-log — "what are readers asking that has no family?" (§6.4, T-22).
+  app.use("/api/v1/admin/miss-log", requireAdmin, missLogAdminRouter);
   app.use("/api/v1/admin/ingestion-errors", requireAdmin, ingestionErrorsRouter);
 
   // Read API — cross-stock results feed (reported + upcoming) for the Results landing.
@@ -207,6 +212,12 @@ export const createApp = () => {
   //    A fourth router on the same base path — the three above are untouched. Evaluation
   //    (firing) is the daily pass; this layer never sends email. ──
   app.use("/api/v1/me", requireAuth, meAlertsRouter);
+
+  // The reader's stated preferences (stage 8) — the endpoint the memory controls call.
+  app.use("/api/v1/me", requireAuth, meMemoriesRouter);
+
+  // ★ THE COMPOSITION PATH (stage 8). Router → resolvers → sections; no tools, no model-visible data.
+  app.use("/api/v1/me", requireAuth, meAskRouter);
 
   // ── Authenticated user's OWN event reminders (requireAuth). Date-triggered sibling of
   //    alerts: "remind me N days before this stock's next <eventType>". Owner always

@@ -45,6 +45,8 @@ export interface ParsedShareholding {
   totalShares: number | null;
   promoterShares: number | null;
   pledgedShares: number | null;
+  /** Promoter group's TOTAL holding (incl. depository receipts) — the pledge denominator. */
+  promoterTotalShares: number | null;
 
   /**
    * PROVENANCE, not data: true when fiiPct/diiPct were DERIVED from the
@@ -86,7 +88,7 @@ function stripNs(name: string): string {
   return i >= 0 ? name.slice(i + 1) : name;
 }
 
-type Fact = { contextRef: string; value: number | null };
+type Fact = { contextRef: string; value: number | null; raw: string };
 
 // ── Multi-vintage context resolution ───────────────────────────
 // SEBI Reg-31 XBRL ships in multiple taxonomy vintages whose category context
@@ -257,7 +259,7 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
       if (!contextRef) continue;
       const rawVal = obj["#text"] ?? null;
       if (!factMap[key]) factMap[key] = [];
-      factMap[key].push({ contextRef, value: safeNum(rawVal) });
+      factMap[key].push({ contextRef, value: safeNum(rawVal), raw: String(rawVal ?? "") });
     }
   }
 
@@ -397,45 +399,101 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
   const SHARES = ["fullypaid", "equity"];
   const totalShares = byCtxV(SHARES, VINTAGE_CTX.total);
   const promoterShares = byCtxV(SHARES, VINTAGE_CTX.promoter);
+  // THE PLEDGE DENOMINATOR. `SHARES` is ["fullypaid","equity"] and EXCLUDES depository receipts;
+  // the filing divides its own pledge percentage by the TOTAL holding. ASHOKLEY files 1,203,500,000
+  // as 40.1% = 1.2035bn / 3,001,320,522 (NumberOfShares), not / 2,342,920,242 (fully paid = 51.4%).
+  // Its own field so `promoterShares` - read by N6, the guards and the snapshot - is not widened.
+  //
+  // EXACT ELEMENT MATCH, NOT A KEYWORD. `byCtxV` matches element names by SUBSTRING, and
+  // "numberofshares" is a prefix of `NumberOfSharesUnderlyingOutstandingDepositoryReceipts` —
+  // which it returned first, giving ASHOKLEY 658,400,280 and a pledge ratio of 182.8%. Caught by
+  // checking the parse against the filing's own printed 40.1% instead of trusting the keyword.
+  const promoterTotalShares = ((): number | null => {
+    const facts = factMap["numberofshares"];
+    if (!facts) return null;
+    for (const c of VINTAGE_CTX.promoter) {
+      const ref = typeof c === "string" ? c : c.ref;
+      const hit = facts.find((f) =>
+        typeof c === "string" ? f.contextRef === ref : f.contextRef.includes(ref));
+      if (hit && hit.value !== null) return hit.value;
+    }
+    return null;
+  })();
 
-  // ── Pledge / encumbrance ───────────────────────────────────
-  // When no shares are pledged, these elements may be absent or zero.
-  let promoterPledgedPct: number | null = null;
-  let promoterPledgedSharesPct: number | null = null;
-  let pledgedShares: number | null = null;
+  // ── Pledge / encumbrance — RESOLVED BY CONTEXT, like every other field ──────────────────────────
+  //
+  // ★★ THIS WAS THE ONLY FIELD IN THIS PARSER THAT IGNORED `contextRef`, AND IT COST REAL SCORES.
+  //    Every other value resolves through `byCtxV` to an aggregate category context. The pledge block
+  //    iterated every fact of every context and took the FIRST one for the count and the MAX for the
+  //    percentage. SEBI's SHP taxonomy repeats each pledge fact at the promoter-group aggregate AND
+  //    once per promoter sub-entity, so both columns described a SUB-ENTITY — usually whichever the
+  //    file happened to list first (`IndividualsOrHinduUndividedFamily_ContextI`).
+  //
+  //    Verified against the filings themselves, 265 live-pledge stocks read from their stored
+  //    `xbrl_url`: 175 matched, 73 were UNDERSTATED, 0 overstated. Zero overstatements is what
+  //    "take the first sub-entity" predicts. BAJAJHIND filed 100% of its promoter stake pledged and
+  //    was stored at 35%, with no R1 red flag.
+  //
+  // ⚠ PLEDGE-PROPER, NOT ALL ENCUMBRANCE. `NumberOfSharesEncumberedUnderPledged` is pledge only;
+  //   `NumberOfSharesEncumbered` is pledge + NDU + other. They carry equal values in many filings and
+  //   are NOT the same field — requiring "pledged" in the element name is what separates them, and
+  //   matches the scope `scoring/ownership/pledging.ts` declares.
+  //
+  // ⚠ THE 2020-09-30 VINTAGE CANNOT MAKE THAT SEPARATION. It ships a single combined element,
+  //   `PledgedOrEncumberedNumberOfShares` ("pledged OR otherwise encumbered"), because SEBI's format
+  //   had one column before 2022. For those filings the number is combined encumbrance and there is
+  //   no pledge-only figure to recover. Recorded here rather than silently treated as pledge-proper.
+  const PLEDGE_SHARES = ["numberofshares", "encumb", "pledg"];
+  const PLEDGE_PCT = ["encumb", "pledg", "percentage"];
 
+  const pledgedSharesRaw = byCtxV(PLEDGE_SHARES, VINTAGE_CTX.promoter);
+  const pledgePctPromoter = byCtxV(PLEDGE_PCT, VINTAGE_CTX.promoter);
+  const pledgePctWhole = byCtxV(PLEDGE_PCT, VINTAGE_CTX.total);
+
+  // ★ THE FILING'S OWN "IS ANYTHING PLEDGED?" DECLARATION, WHICH IS WHAT MAKES A ZERO MEAN SOMETHING.
+  //   A company with nothing pledged omits the numeric elements entirely and answers the boolean
+  //   `false` (measured: SUPREMEIND carries six such booleans and no pledge number). So an absent
+  //   number is NOT automatically zero — it is zero when the filing SAID no, and NOT DISCLOSED when
+  //   the filing said nothing at all. §3.1: ingest records what the filing said, including that it
+  //   said nothing; interpretation happens at read time.
+  //
+  //   `safeNum` turns "false" into null, which is why `Fact` now carries the raw text.
+  //  ⚠ AND "PLEDGE" APPEARS IN THE NAME OF THE ELEMENT THAT MEANS *NOT* A PLEDGE.
+  //    `WhetherAnySharesHeldByPromotersAreEncumberedOtherThanByWayOfPledgeOrNDU` declares OTHER
+  //    encumbrance, and a `true` there is not a pledge declaration. Matching on "pledg" alone read it
+  //    as one and turned 70 filings that plainly said "no pledge" into NOT DISCLOSED — caught by
+  //    checking the nulls against their own filings rather than trusting the count.
+  let pledgeDeclared: boolean | null = null;
   for (const [key, facts] of Object.entries(factMap)) {
-    if (!key.includes("pledge") && !key.includes("encumb")) continue;
-
-    for (const fact of facts) {
-      if (fact.value == null) continue; // null only — allow 0 through
-
-      if (key.includes("percent")) {
-        if (key.includes("held") || key.includes("promoter")) {
-          // % of promoter's own shares that are pledged
-          if (promoterPledgedPct === null || fact.value > promoterPledgedPct) {
-            promoterPledgedPct = fact.value;
-          }
-        } else if (key.includes("total")) {
-          // % of total company shares pledged by promoters
-          if (
-            promoterPledgedSharesPct === null ||
-            fact.value > promoterPledgedSharesPct
-          ) {
-            promoterPledgedSharesPct = fact.value;
-          }
-        }
-      } else if (key.includes("noshare") || key.includes("numberofshare")) {
-        if (pledgedShares === null) pledgedShares = fact.value;
-      }
+    if (!key.startsWith("whether")) continue;
+    if (key.includes("otherthan")) continue;          // "…OtherThanByWayOfPledgeOrNDU" is not a pledge
+    if (!key.includes("underpledged") && !key.includes("pledgeorotherwiseencumbered")) continue;
+    for (const f of facts) {
+      const v = f.raw.trim().toLowerCase();
+      if (v === "false" || v === "0") pledgeDeclared = pledgeDeclared ?? false;
+      else if (v === "true" || v === "1") pledgeDeclared = true;  // any `true` wins
     }
   }
 
-  // Default to 0 when elements are absent — absence means no pledging declared
-  // This is the correct interpretation per SEBI LODR filing norms.
-  promoterPledgedPct = promoterPledgedPct ?? 0;
-  promoterPledgedSharesPct = promoterPledgedSharesPct ?? 0;
-  pledgedShares = pledgedShares ?? 0;
+  // ⚠ THREE STATES, AND `null` IS ONE OF THEM. The old code ended `?? 0` on all three fields, which
+  //   is the fabricated-absence defect this build has now hit five times: 21,957 rows carried
+  //   `pledged_shares = 0` and not one carried NULL, which is not a column that always knew the
+  //   answer. `r1-pledging.ts` already guards for a null and that guard has never been reachable.
+  const pledgedShares =
+    pledgedSharesRaw !== null ? pledgedSharesRaw
+    : pledgeDeclared === false ? 0        // the filing was asked and said no
+    : null;                               // the filing did not say — not disclosed
+
+  // ⚠ AND THE VINTAGE SCALE IS NOW HANDLED EXPLICITLY, NOT LEFT "UNVERIFIED". Measured on both
+  //   taxonomies at the same context: 2020-09-30 files SUZLON's category share as 14.92 and its
+  //   pledge share as 88.54 (both percent); 2025-10-31 files ASHOKLEY's as 0.5151 and 0.401 (both
+  //   fractions). The pledge percentage carries the SAME unit as the category percentages in every
+  //   filing checked, so it takes the same `toPct` factor those already use.
+  const scalePct = (v: number | null): number | null =>
+    v === null ? (pledgeDeclared === false ? 0 : null) : v * toPct;
+  const promoterPledgedPct = scalePct(pledgePctPromoter);
+  const promoterPledgedSharesPct = scalePct(pledgePctWhole);
+
 
   return {
     promoterPct: round4(promoterPct),
@@ -454,7 +512,9 @@ export function parseXbrlShareholding(xmlText: string): ParsedShareholding {
     promoterPledgedSharesPct,
     totalShares: totalShares ? Math.round(totalShares) : null,
     promoterShares: promoterShares ? Math.round(promoterShares) : null,
-    pledgedShares: pledgedShares ? Math.round(pledgedShares) : 0,
+    promoterTotalShares: promoterTotalShares ? Math.round(promoterTotalShares) : null,
+    // ⚠ `? : 0` HERE WOULD UNDO THE WHOLE THREE-STATE FIX ABOVE — null must survive to the row.
+    pledgedShares: pledgedShares === null ? null : Math.round(pledgedShares),
     legacyInstitutionsDerived,
   };
 }

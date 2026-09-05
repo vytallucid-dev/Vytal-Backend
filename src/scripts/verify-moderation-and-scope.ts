@@ -17,7 +17,7 @@
 import { scanUserInput, scanOutputText, MODERATION_LIST } from "../ai/moderation.js";
 import { buildFairUseWarning, buildOrientationHeader, detectReaderRegister } from "../chat/voice.js";
 import { VYTAL_CONTEXT_LAYER } from "../ai/context-layer.js";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 
 let fail = 0;
 const ok = (n: string, c: boolean, d = "") => { console.log(`  ${c ? "✅" : "❌"} ${n}${d ? ` — ${d}` : ""}`); if (!c) fail++; };

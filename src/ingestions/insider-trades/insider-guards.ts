@@ -26,7 +26,41 @@ export const MIN_BATCH_FOR_RATE = 30; // daily in-universe batch ~12 is too smal
 
 // ── NULL-RATE (batch) ──  always-present fields vs the ~1.3% value field.
 export const CORE_NULL_MAX = 0.05; // securitiesTraded/tradeDate/holdingPctPost normal 0%
-export const VALUE_NULL_MAX = 0.1; // tradeValueCr normal 1.3%
+export const VALUE_NULL_MAX = 0.1; // tradeValueCr normal 1.3% — measured over PRICEABLE trades only
+
+/**
+ * ACQUISITION MODES THAT CARRY NO PRICE, AND SO CANNOT CARRY A VALUE.
+ *
+ * ⚠ THE NULL-RATE ON tradeValueCr WAS BEING MEASURED OVER THE WRONG DENOMINATOR. An inter-se
+ *   transfer between promoters is a TRANSFER, not a trade: SEBI's PIT disclosure has no price
+ *   field to fill, so `trade_price` is null and `trade_value_cr` with it. Same for most off-market
+ *   transfers. Counting those as "the field was nulled across the batch — an XBRL field rename /
+ *   parse break" is the honest-empty-read-as-a-fault error, and it fired: a manual backfill of 201
+ *   records whose mix happened to be 10.9% transfers opened a medium fault against a parser that
+ *   was working perfectly.
+ *
+ * MEASURED across all 5,849 insider trades held:
+ *     inter_se_transfer  36/100   null — a transfer has no price, by construction
+ *     off_market         52/367   null
+ *     other             112/1871  null
+ *     ─────────────────────────────────────────────────────────────
+ *     market             12/2433  null  (0.49%)
+ *     esos                0/1049  null
+ *     preferential…       0/28    null
+ * The priceable modes run at 12/3,510 = 0.34% null. THAT is the population a parse break would
+ * move, and the 10% ceiling is a real ceiling over it. Over the whole batch the ceiling was
+ * measuring the transfer mix instead.
+ */
+export const UNPRICED_ACQUISITION_MODES: ReadonlySet<string> = new Set([
+  "inter_se_transfer",
+  "off_market",
+  "other",
+]);
+
+/** Does this record's mode mean a price SHOULD have been disclosed? */
+export function isPriceableTrade(acquisitionMode: string | null | undefined): boolean {
+  return acquisitionMode != null && !UNPRICED_ACQUISITION_MODES.has(acquisitionMode);
+}
 
 export const insiderRunRef = (fetchDate: Date, fetchType: string) =>
   `${fetchDate.toISOString().slice(0, 10)}:${fetchType}`;

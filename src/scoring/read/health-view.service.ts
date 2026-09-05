@@ -411,7 +411,8 @@ function synthesizeMissingMetric(
     l1Score: null, l2Score: null, l3Score: null, metricScore: null,
     l1Band: null,
     scoreState: suppressionReason ? "suppressed" : "missing_renorm",
-    nominalWeight: 0, effectiveWeight: 0, contribution: 0,
+    // ★ null, never 0 — an unmeasured metric did not contribute nothing (§3.6, resolver #5).
+    nominalWeight: null, effectiveWeight: null, contribution: null,
     suppressionReason,
     bars,
     peer: null,
@@ -506,9 +507,11 @@ function mapMetric(
     metricScore: ms.scoreState === "scored" ? num(ms.metricScore) : null,
     l1Band: (ms.l1Band as MetricView["l1Band"]) ?? null,
     scoreState: ms.scoreState as MetricView["scoreState"],
-    nominalWeight: num(ms.nominalWeight),
-    effectiveWeight: num(ms.effectiveWeight),
-    contribution: num(ms.contribution),
+    // Gated on scoreState exactly as `metricScore` two lines above is — one rule, applied to every
+    // field that is meaningless unless the metric scored.
+    nominalWeight: ms.scoreState === "scored" ? num(ms.nominalWeight) : null,
+    effectiveWeight: ms.scoreState === "scored" ? num(ms.effectiveWeight) : null,
+    contribution: ms.scoreState === "scored" ? num(ms.contribution) : null,
     suppressionReason: null, // filled below from SuppressionDirective when applicable
     bars,
     peer,

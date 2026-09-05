@@ -29,6 +29,7 @@ import type { DiscussContext } from "./discuss-context.js";
 import type { PersistedToolTurn } from "./engine.js";
 import { canonicalSubjectSymbol } from "./compose.js";
 import { denialFor, type DeniedScope } from "./unavailable.js";
+import { readEnvelope, type SectionEnvelope } from "../composition/section-envelope.js";
 
 /** The sidebar resume window — measured from lastMessageAt. */
 export const RESUME_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -63,6 +64,18 @@ export function serializeSession(s: ChatSessionRow) {
  *  Substituting here, at the single serialization point, is what makes every read path agree: open,
  *  resume, and GET-by-id all render the same line without any of them knowing about the split. The
  *  model's copy is untouched — loadHistoryForModel reads the row directly and never comes through here. */
+/** Read a row's stored envelope, or null. Never throws — a bad row costs its structure, not the page. */
+function sectionsFor(m: ChatMessageRow): { v: number; compositionId: string; sections: unknown[]; prose: unknown } | null {
+  const read = readEnvelope((m as { sections?: unknown }).sections);
+  if (!read.ok) return null;
+  return {
+    v: read.envelope.v,
+    compositionId: read.envelope.compositionId,
+    sections: read.envelope.sections as unknown[],
+    prose: read.envelope.prose,
+  };
+}
+
 function serializeMessage(m: ChatMessageRow, changed: string[] = []) {
   return {
     id: m.id,
@@ -83,6 +96,11 @@ function serializeMessage(m: ChatMessageRow, changed: string[] = []) {
     //   instant (see unavailable.ts), so a denial read tomorrow never promises a reset that has passed.
     undelivered: m.undelivered,
     denial: m.undelivered ? denialFor(m) : null,
+    // ★ THE PERSISTED STRUCTURE, REPLAYED — or `null` and the client renders `content`.
+    //   `readEnvelope` REFUSES an unreadable or wrong-version payload rather than guessing at it; a
+    //   renderer reading an old shape under new assumptions draws something plausible and false,
+    //   which is worse than the prose the reader gets instead. See section-envelope.ts.
+    sections: sectionsFor(m),
     usage:
       m.promptTokens != null || m.outputTokens != null
         ? { promptTokens: m.promptTokens, outputTokens: m.outputTokens, cachedTokens: m.cachedTokens, modelVersion: m.modelVersion }
@@ -185,6 +203,25 @@ export async function findResumableDiscussSession(userId: string, ctx: DiscussCo
     },
     orderBy: { lastMessageAt: "desc" },
   });
+}
+
+/**
+ * ★ THE RAW `sections` COLUMN OF THE MOST RECENT ASSISTANT REPLY — stage 9, for follow-up context.
+ *
+ * Raw and unvalidated on purpose: `readEnvelope` is the one place that decides whether a stored
+ * payload may be read, and duplicating that judgement here would give the system two answers to
+ * "is this envelope readable" (N-3). This just finds the row.
+ *
+ * ⚠ SCOPED TO THE SESSION, WHICH THE CALLER HAS ALREADY PROVEN THE READER OWNS. It carries no userId
+ *   of its own because it takes none — there is no way to ask it for someone else's conversation.
+ */
+export async function lastAssistantSections(sessionId: string): Promise<unknown | null> {
+  const row = await prisma.chatMessage.findFirst({
+    where: { sessionId, role: "assistant", sections: { not: Prisma.DbNull } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { sections: true },
+  });
+  return row?.sections ?? null;
 }
 
 export async function getSessionWithMessages(userId: string, id: string): Promise<{ session: ChatSessionRow; messages: ChatMessageRow[] } | null> {
@@ -310,6 +347,14 @@ export interface FollowupInput {
    *  message and the final assistant message. Empty/absent ⇒ a plain exchange, exactly as before. */
   toolTurns?: PersistedToolTurn[];
   assistantText: string;
+  /**
+   * ★ THE RENDERED ANSWER, PERSISTED WITH THE ROW THAT PRODUCED IT (stage 8b).
+   *
+   * `undefined` on any turn that produced no structure — a guardrail block, a denial, an old-path
+   * turn — and the row is then written with both columns NULL, which the read path renders as
+   * `content`. That is what every row did before this field existed, so absence is not a new state.
+   */
+  assistantSections?: SectionEnvelope;
   assistantUsage: TokenUsage | null;
   guardrailBlocked: boolean;
   regenerated: boolean;
@@ -455,6 +500,11 @@ export async function appendFollowup(input: FollowupInput): Promise<{ session: C
         sessionId: session.id,
         role: "assistant",
         content: input.assistantText,
+        // ⚠ BOTH COLUMNS OR NEITHER — the DB CHECK enforces it, and this is the only writer. A payload
+        //   with no version cannot be read back by any future renderer.
+        ...(input.assistantSections
+          ? { sections: input.assistantSections as unknown as object, sectionsVersion: input.assistantSections.v }
+          : {}),
         isOpening: false,
         kind: "text",
         guardrailBlocked: input.guardrailBlocked,
@@ -648,6 +698,8 @@ export interface EditedReplyInput {
   session: ChatSessionRow;
   toolTurns?: PersistedToolTurn[];
   assistantText: string;
+  /** The rendered answer, persisted with the regenerated row — same contract as FollowupInput. */
+  assistantSections?: SectionEnvelope;
   assistantUsage: TokenUsage | null;
   guardrailBlocked: boolean;
   regenerated: boolean;
@@ -680,6 +732,9 @@ export async function appendReplyAfterEdit(input: EditedReplyInput): Promise<{ s
         sessionId: session.id,
         role: "assistant",
         content: input.assistantText,
+        ...(input.assistantSections
+          ? { sections: input.assistantSections as unknown as object, sectionsVersion: input.assistantSections.v }
+          : {}),
         isOpening: false,
         kind: "text",
         guardrailBlocked: input.guardrailBlocked,

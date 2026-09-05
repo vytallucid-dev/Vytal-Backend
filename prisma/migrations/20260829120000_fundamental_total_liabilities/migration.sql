@@ -1,0 +1,20 @@
+-- ═══════════════════════════════════════════════════════════════════════════════════════════
+-- THE LIABILITY TOTAL THE FILING PUBLISHES AND WE WERE THROWING AWAY.
+--
+-- The Ind-AS balance sheet identity is  Assets = Equity + Liabilities.  The balance-sheet guard
+-- (fundamentals-guards.ts checkBsImbalance) could not read `Liabilities` — no column held it — so
+-- it RECONSTRUCTED the right-hand side as equity + currentLiabilities + noncurrentLiabilities.
+-- Those two subtotals are not the whole of Liabilities. A filer with a disposal group tags
+-- LiabilitiesDirectlyAssociatedWithAssetsInDisposalGroupClassifiedAsHeldForSale as a THIRD bucket,
+-- and a regulated utility tags others again.
+--
+-- MEASURED over all 48 open balance-sheet faults: every single one closes when the filing's own
+-- `Liabilities` subtotal is used instead of the two-part reconstruction — 48 of 48, none left over.
+-- RAYMOND FY25's ₹1,350.41 Cr "gap" IS its held-for-sale liability, to the paisa; UPL FY24's
+-- ₹3,665.00 Cr likewise. Not one of those balance sheets was ever out of balance. The identity was.
+--
+-- So this stores the number the document states, and the guard checks the identity the document
+-- states. NULLABLE and NOT backfilled: rows ingested before this migration have no value, and the
+-- guard falls back to the old reconstruction for them rather than pretend to a number nobody read.
+-- ═══════════════════════════════════════════════════════════════════════════════════════════
+ALTER TABLE "fundamentals" ADD COLUMN IF NOT EXISTS "total_liabilities" DECIMAL(18,2);

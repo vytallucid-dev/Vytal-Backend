@@ -5,6 +5,32 @@ Routine implementation choices are not logged. Newest first.
 
 ---
 
+## `pledge-denominator-total-holding` · Scoring · The pledge percentage divides by the promoter's TOTAL holding, not the fully-paid-up count
+
+**The call.** "X% of the promoter's stake is pledged" had two defensible denominators, and we were using the one the filings do not.
+
+| basis | ASHOKLEY | 
+|---|---|
+| `NumberOfFullyPaidUpEquityShares` (what we used) | 1,203,500,000 ÷ 2,342,920,242 = **51.4%** |
+| `NumberOfShares`, the promoter group's total holding incl. depository receipts (what the filing uses) | 1,203,500,000 ÷ 3,001,320,522 = **40.1%** |
+
+Ashok Leyland's own SHP filing prints **40.1%**. R1 fires at ≥50%, so on our basis the company was over the pledging bar and on its own disclosure it is under it. A reader who opened the filing to check us would have found us wrong.
+
+**Why it could have gone the other way.** 51.4% is a true statement about fully-paid-up shares, and R1's 50% threshold may have been calibrated against that basis. Switching the denominator moves a company across a line nobody decided to move.
+
+**MEASURED 2026-09-04, before the ruling** — every one of the **353** stocks with a live pledge, each read from its own filed XBRL:
+
+- **351** have the two counts identical (the promoter holds no depository receipts)
+- **2** differ at all
+- **exactly 1** changes sides of the 50% bar: ASHOKLEY, 51.4% → 40.1%, losing its R1 flag
+- **0** gain a flag
+
+That measurement is recorded because without it the change looks like the bar was quietly lowered. It was not. One stock moved, in the direction of its own filing.
+
+**Implementation.** `promoter_shares` KEEPS its meaning (`NumberOfFullyPaidUpEquityShares`) — N6 promoter accumulation, the ingestion guards and the company snapshot read it, and widening it would have changed those silently. The denominator is a new nullable column, `promoter_total_shares`, and one home reads it: [`pledgeDenominator`](../src/scoring/ownership/pledging.ts). All four pledge-ratio sites use it (R1's ladder, P3, the ownership-move divergence, the read layer's `pledgedPctOfPromoter`) so the card and the flag cannot print different percentages for one fact.
+
+**The fallback is narrow and deliberate.** `promoter_total_shares` is null on 2020-vintage filings that do not carry the element and on rows never re-parsed; those divide by `promoter_shares`, which is exactly what they divided by before.
+
 ## `retention-shareholding-row-vs-quarter` · Retention · The Ownership baseline counts ROWS, not quarter-ends — and the floor cannot fix it
 
 **The defect.** `countConsecutiveTrailingQuarters` ([baseline.ts:44-55](../src/scoring/ownership/baseline.ts)) walks `rows` and increments once per row, breaking only when `isPriorQuarterGap` sees a gap larger than `GAP_MONTHS_THRESHOLD = 4` months ([dilution.ts:65,216-221](../src/scoring/ownership/dilution.ts)). An interim filing sits well inside 4 months of its neighbours, so it does not break the run — **it counts as a quarter.** `established_75` therefore claims "8 consecutive trailing quarters present" on a series that may hold only 6 real quarter-ends.

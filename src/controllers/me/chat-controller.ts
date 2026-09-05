@@ -25,10 +25,9 @@
 import type { Request, Response } from "express";
 import { z } from "zod";
 import { DiscussContextSchema } from "../../chat/discuss-context.js";
-import { composeDiscussOpening, composeChatPageOpening, resolveTurnSystem, modelFacingUserTurn } from "../../chat/compose.js";
-import { resolveChatModel, CHAT_MAX_TOOL_ROUNDS_WRITE } from "../../chat/config.js";
+import { composeDiscussOpening, composeChatPageOpening } from "../../chat/compose.js";
+import { resolveChatModel } from "../../chat/config.js";
 import { runChatTurn } from "../../chat/engine.js";
-import { toolSpecs, makeToolContext, makeToolExecutorFor, EXTENDED_ROUND_TOOLS } from "../../chat/tools/registry.js";
 import {
   findResumableDiscussSession,
   createDiscussSessionWithOpening,
@@ -49,14 +48,68 @@ import {
   serializeSession,
   serializeVisibleMessages,
 } from "../../chat/sessions.js";
-import { peekProposal, sweepProposal } from "../../chat/proposals.js";
 import { unavailableState, quotaStateFrom, type ChatQuotaState } from "../../chat/unavailable.js";
-import { peekAiCallQuota } from "../../ai/quota.js";
+import { peekAiCallQuota } from "../../ai/core/quota.js";
 import { withAppLinks, withExternalSources } from "../../chat/voice.js";
 import { resolveAppLinks } from "../../chat/links.js";
 import { enqueueJob } from "../../jobs/enqueue.js";
 import { JobTypes } from "../../jobs/types.js";
-import type { Actor } from "../../ai/quota.js";
+import type { Actor } from "../../ai/core/quota.js";
+import { route, modelClassifier } from "../../router/route.js";
+import { composeTurn } from "../../composition/compose.js";
+import { accessibleText } from "../../composition/accessible-text.js";
+import { wrapSections } from "../../composition/section-envelope.js";
+import type { AnswerProse } from "../../composition/contract.js";
+import type { AnySection } from "../../composition/contract.js";
+import type { TurnResult } from "../../composition/compose.js";
+import { readEnvelope } from "../../composition/section-envelope.js";
+import { lastAssistantSections } from "../../chat/sessions.js";
+import type { TurnContext } from "../../router/contract.js";
+
+/** What the transcript renders, off ANY branch — see the note at the call site. */
+function renderableOf(r: TurnResult): { sections: readonly AnySection[]; prose: AnswerProse } {
+  return r.kind === "composed" ? { sections: r.sections, prose: r.prose } : r.render;
+}
+const compositionIdOf = (r: TurnResult): string => (r.kind === "composed" ? r.compositionId : r.kind);
+
+/**
+ * ★ THE CONTEXT THE NEXT TURN INHERITS, STAMPED WITH WHICH FAMILY ANSWERED — Phase 3 · MT.
+ *
+ * ⚠ THE ROUTER CANNOT FILL `lastFamily` AND CORRECTLY DECLARES `null`: which family answers is decided
+ *   one layer later, by the composer. This is the one place that holds BOTH the context and the
+ *   composed id, so it is the only place the stamp can honestly be made.
+ *
+ * ★ THE FAMILY, NOT THE ID. `patterns.stock` becomes `patterns` — a follow-up cares which KIND of
+ *   answer is on screen, and variant names are a family's private business. See
+ *   `TurnContext.lastFamily`.
+ *
+ * ⚠ AND ONLY FOR A COMPOSED FAMILY ANSWER. `planned:*` and `clarify_*` are not families; stamping
+ *   either would teach the next turn to route toward a shape nothing owns.
+ */
+const withLastFamily = (ctx: TurnContext, r: TurnResult): TurnContext => {
+  if (r.kind !== "composed") return { ...ctx, lastFamily: null };
+  const id = r.compositionId;
+  if (id.startsWith("planned:") || !id.includes(".")) return { ...ctx, lastFamily: null };
+  return { ...ctx, lastFamily: id.split(".")[0]! };
+};
+
+/**
+ * The slots the previous assistant turn settled, for a follow-up to inherit.
+ *
+ * ★ IT FAILS TO `null`, NEVER TO A GUESS. A missing envelope, an unreadable one, or one written
+ * before stage 9 all mean "no context" — and no context is the behaviour every turn had until now,
+ * so the worst case is the old behaviour rather than a wrong one.
+ */
+async function lastTurnContext(sessionId: string): Promise<TurnContext | null> {
+  try {
+    const raw = await lastAssistantSections(sessionId);
+    if (!raw) return null;
+    const read = readEnvelope(raw);
+    return read.ok ? (read.envelope.context ?? null) : null;
+  } catch {
+    return null;
+  }
+}
 
 // ── THE COMPOSER'S QUOTA STATE ──────────────────────────────────────────────────────────────────────
 /**
@@ -90,65 +143,6 @@ const EditBody = z.object({
   acknowledgeWrites: z.boolean().optional(),
 });
 
-/**
- * ── THE ONE PLACE A GENERATED REPLY BECOMES THE TEXT THAT IS PERSISTED ─────────────────────────────
- *
- * ★ THE STRUCTURAL EXTERNAL-SOURCE FOOTER. If a web tool actually put outside headlines in front of the
- * model this turn, the reply carries the "not Vytal, not verified" line AND the real links to every item,
- * whether or not the model remembered either — appended here, so it is persisted in the transcript rather
- * than re-derived on every render. Skipped on a guardrail redirect: that text carries no news.
- *
- * ★ ORDER MATTERS: in-app links first, external sources last, so the "not verified by Vytal" sentence
- * stays adjacent to the external headlines it describes and never reads as though it applied to Vytal's
- * own comparison page.
- *
- * ★ THE PLACEHOLDER RESOLVER RUNS FIRST, AND UNCONDITIONALLY.
- *   FIRST, because it writes real paths into the body, and withAppLinks dedupes on `(${path})` — so a turn
- *   where the model already pointed at the comparison inline does not also get a footer repeating it.
- *   UNCONDITIONALLY (unlike the two footers, which a guardrail redirect skips) because its last act is to
- *   sweep malformed `{{link…` debris: a footer that goes missing on a redirect costs nothing, but raw
- *   braces reaching a reader is a visible defect. Best-effort — a resolver failure must never fail a turn
- *   that has already been generated and paid for.
- *
- * ⚠ EXTRACTED SO THE EDIT PATH CANNOT DRIFT FROM THE SEND PATH. An edited message is regenerated by the
- * same engine with the same tools, so its reply needs the same three post-processing steps in the same
- * order. Two copies of this would mean an edited turn that quietly lost its external-source disclaimer,
- * which is the one footer that must never be optional.
- */
-async function composeDeliveredText(rawText: string, guardrailBlocked: boolean, toolCtx: ReturnType<typeof makeToolContext>): Promise<string> {
-  let text = rawText;
-  try {
-    const linked = await resolveAppLinks(text);
-    text = linked.text;
-    if (linked.unresolved.length) {
-      // The signal that the vocabulary is drifting from what the model reaches for — a kind it wants
-      // that does not exist, or a ticker it invented. Cheap to log, and it is the input to whether
-      // the four kinds should become five.
-      console.warn(`[chat] unresolved link placeholders (${linked.unresolved.length}):`, linked.unresolved.join(" · "));
-    }
-    if (linked.strippedPaths.length) {
-      // The model typed a link destination instead of writing a marker. The reader is protected —
-      // the destination is gone and the words remain — but this is the vocabulary being ignored,
-      // and it is the signal that a page the model keeps reaching for may need a marker of its own.
-      console.warn(`[chat] typed link destinations stripped (${linked.strippedPaths.length}):`, linked.strippedPaths.join(" · "));
-    }
-    if (linked.malformed.length) {
-      // ★ A SYNTAX failure, not a coverage one — which is why it is logged apart from `unresolved`
-      // rather than folded into it. "The ticker did not exist" is answered by the universe; "the
-      // model wrote one brace" is answered by the vocabulary, and a log that merges the two reports
-      // a number with no cause attached. The reader is protected either way: the marker is gone and
-      // the subject remains as ordinary words.
-      console.warn(`[chat] MALFORMED link markers stripped (${linked.malformed.length}):`, linked.malformed.join(" · "));
-    }
-  } catch (e) {
-    console.warn("[chat] link resolution failed (non-fatal):", (e as Error).message);
-  }
-  if (!guardrailBlocked) {
-    if (toolCtx.appLinks.length) text = withAppLinks(text, toolCtx.appLinks);
-    if (toolCtx.webCitations.length) text = withExternalSources(text, toolCtx.webCitations);
-  }
-  return text;
-}
 
 /** Provisional title for a chat-page session: the truncated first user message. */
 function truncateTitle(text: string, max = 48): string {
@@ -274,10 +268,9 @@ export const sendMessage = async (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: "validation_error", details: parsed.error.flatten() });
   }
   const message = parsed.data.message;
-  // ★ THE SEND INSTANT, TAKEN NOW — before the grounding read, before the generation, before anything that
-  //   takes time. It becomes the user row's createdAt (appendFollowup §sentAt), which the transcript now
-  //   renders as "4m ago"; stamping it at the end of the turn instead would report the reader's message as
-  //   having been sent when the reply finished.
+  // ★ THE SEND INSTANT, TAKEN NOW — before routing, before composing. It becomes the user row's
+  //   createdAt, which the transcript renders as "4m ago"; stamping it at the end of the turn would
+  //   report the reader's message as having been sent when the answer finished.
   const sentAt = new Date();
 
   try {
@@ -286,103 +279,66 @@ export const sendMessage = async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, error: "not_found", message: "Not your chat session" });
     }
     const { session } = got;
-
-    // Is this a chat_page session's FIRST real exchange? (drives the provisional title + the title job)
     const priorUserMessages = await countVisibleUserMessages(id);
     const isFirstChatPageExchange = session.origin === "chat_page" && priorUserMessages === 0;
 
-    // Grounding + orientation are carried in message[0]; the follow-up system is tone + context-layer only.
-    const system = await resolveTurnSystem(userId);
-    const history = await loadHistoryForModel(id);
-    const subjectLabel = session.subjectName ?? session.subjectSymbol ?? "this";
-    const actor: Actor = { kind: "user", userId };
+    // ═══ THE SWITCHOVER (stage 8b) ═══════════════════════════════════════════════════════════════
+    //
+    // What used to be here: build a system prompt, replay history, ship 33 tool schemas, let the model
+    // choose reads, loop up to N tool rounds, sweep a pending proposal, then compose text out of
+    // whatever came back.
+    //
+    // What is here now: classify, resolve, compose. The model sees a small fixed prompt and a manifest
+    // of what we HOLD; every figure is a query result it never saw (§5.3, N-1).
+    //
+    // ⚠ THERE IS NO `unavailable` BRANCH ANY MORE, AND ITS ABSENCE IS A FEATURE. The old path refused
+    //   the turn when the spend gate said no. The router and planner each carry their own quota gate
+    //   now and DEGRADE instead — a denied turn falls to the lexical classifier and the deterministic
+    //   planner, so the reader still gets an answer and `RouterOutput.source` records that we could
+    //   not ask (§6.5). Refusing to answer at all is strictly worse than answering plainly.
+    // ★ THE PREVIOUS TURN, SO A FOLLOW-UP CAN REFER TO IT (stage 9). Read from the last assistant row
+    //   this conversation stored. `null` on the first question, and null after a row written before
+    //   stage 9 — in both cases the turn routes exactly as it did before, on its own text.
+    const prior = await lastTurnContext(id);
+    const routed = await route(message, modelClassifier, { userId }, prior);
+    const composed = await composeTurn(routed, { userId });
 
-    // ★ THE PROPOSAL THAT WAS PENDING WHEN THIS MESSAGE ARRIVED (Stage 3). Recorded now, swept below.
-    //   A write tool proposes but does not write; the write happens only if THIS turn calls
-    //   confirmPendingAction. So consent is scoped to exactly one message — see the sweep.
-    const proposalIdAtTurnStart = (await peekProposal(id, userId))?.id ?? null;
-
-    // ★ THE TOOL CONTEXT IS BUILT HERE, not inside makeToolExecutor, because the controller needs to
-    //   READ it after the turn: `effects` carries which domains a confirmed write actually changed, and
-    //   that is the only signal the client can use to refresh its caches (tool turns are hidden from the
-    //   transcript, so the browser cannot see the write happen).
-    const toolCtx = makeToolContext({ userId, sessionId: id, userMessage: message });
-
-    // Follow-ups can call tools (the opening is already grounded, so it doesn't). The executor binds the
-    // ToolContext — ★ userId from req.authUser, NEVER from the model — so a tool cannot reach another user.
-    const turn = await runChatTurn({
-      model: resolveChatModel(),
-      system,
-      // ★ The MODEL-FACING copy carries the per-turn language directive; the PERSISTED message is the
-      //   reader's raw text (appendFollowup below). See compose.ts §modelFacingUserTurn.
-      messages: [...history, { role: "user", content: modelFacingUserTurn(message) }],
-      actor,
-      subjectLabel,
-      tools: toolSpecs(),
-      // ★ userMessage (on the context above) is the reader's RAW text — recordTransaction's date guard
-      //   checks a proposed tradeDate against what they actually said, not the model's reading of it.
-      executeTool: makeToolExecutorFor(toolCtx),
-      // A write chain needs more tool rounds than a question does; the budget is raised only once the
-      // turn actually reaches for one of these, so ordinary turns cost nothing extra.
-      extendedRounds: { tools: EXTENDED_ROUND_TOOLS, maxRounds: CHAT_MAX_TOOL_ROUNDS_WRITE },
-    });
-
-    if (turn.status === "unavailable") {
-      // ★ PERSIST THE READER'S MESSAGE, MARKED UNDELIVERED. Nothing was generated and nothing was spent,
-      //   but they still typed a question, and it has to survive a refresh. The denial's scope + reset
-      //   instant ride on that row, so the reason can be re-rendered later against the clock rather than
-      //   frozen into a sentence. Retrying it updates the row instead of stacking duplicates.
-      //   The pending proposal is left ALONE on purpose: this message was never processed, so the reader's
-      //   "yes" has not been spent and their next attempt should still find something to confirm.
-      const denied = await appendUndeliveredUserMessage({
-        session,
-        userText: message,
-        reason: turn.reason ?? null,
-        scopeDenied: turn.scopeDenied ?? null,
-        resetAt: turn.resetAt ? new Date(turn.resetAt) : null,
-        // A conversation holding one undelivered question is still a conversation — title it, or the list
-        // shows the blank "New conversation" this whole fix is about.
-        provisionalTitle: isFirstChatPageExchange ? truncateTitle(message) : undefined,
-      });
-      return res.json({
-        success: true,
-        data: {
-          session: serializeSession(denied.session),
-          // The transcript comes back on this path too, so the client can swap its optimistic row for the
-          // persisted one and a retry after a refresh behaves exactly like a retry before one.
-          messages: serializeVisibleMessages(denied.messages),
-          reply: null,
-          ...unavailablePayload(turn.reason, turn.scopeDenied, turn.resetAt),
-        },
-      });
-    }
-
-    // ── THE SWEEP. Clear the pending proposal iff it is STILL the one this turn started with — i.e. the
-    //    turn neither confirmed it (confirmPendingAction consumed it) nor replaced it with a new one.
-    //    This is what makes an unconfirmed proposal unable to linger and fire against a later, unrelated
-    //    "yes": consent lives for exactly one message. Best-effort — a sweep failure must not fail a
-    //    turn that has already been generated (the next turn's sweep catches it).
-    try {
-      await sweepProposal(id, userId, proposalIdAtTurnStart);
-    } catch (e) {
-      console.warn("[chat] pending-proposal sweep failed (non-fatal):", (e as Error).message);
-    }
-
-    const assistantText = await composeDeliveredText(turn.text!, turn.guardrailBlocked, toolCtx);
+    // ── One composed answer, two representations. `content` is the accessible/searchable form; the
+    //    envelope is what the transcript replays. Both come from the SAME compose — never two runs.
+    //
+    // ★ `render` IS READ OFF EVERY BRANCH, NOT JUST `composed`. This used to take `sections` from a
+    //   composed result and flatten everything else to a single sentence — which is how three
+    //   resolved candidate companies reached the reader as one line of grey text with nothing to
+    //   press. See composition/ask-back.ts.
+    const { sections, prose } = renderableOf(composed);
+    const assistantText = accessibleText(sections, prose);
+    // Sections are stored whenever there ARE any — a clarify turn with chips replays as a clarify
+    // turn with chips, rather than as prose that lost its affordances on reload.
+    // ★ ONLY AN ANSWERED TURN SEEDS THE NEXT ONE'S CONTEXT.
+    //
+    // ⚠ A CLARIFY TURN RESOLVED NOTHING, AND LETTING IT SEED CONTEXT PRODUCED A REAL WRONG ANSWER:
+    //   "how is HDFC doing" (ambiguous — no subject resolved, but the slots still said `orient`)
+    //   followed by "TCS" inherited `orient` from a question that was never answered, so the bare
+    //   ticker got a full orientation instead of being asked what the reader wanted to know. The
+    //   context of a turn that asked the reader a question back is the reader's turn, not ours.
+    const envelope = sections.length > 0
+      ? wrapSections(sections, prose, compositionIdOf(composed), composed.kind === "composed" ? withLastFamily(routed.context, composed) : undefined)
+      : undefined;
 
     const updated = await appendFollowup({
       session,
       sentAt,
       userText: message,
-      toolTurns: turn.toolTurns, // hidden tool_call/tool_result turns, persisted between user & assistant
       assistantText,
-      assistantUsage: turn.usage,
-      guardrailBlocked: turn.guardrailBlocked,
-      regenerated: turn.regenerated,
+      assistantSections: envelope,
+      assistantUsage: null,
+      // ⚠ NOT A GUARDRAIL BLOCK. The model writes no figures on this path, so there is nothing for the
+      //   number guardrail to catch — the flag stays false rather than being repurposed.
+      guardrailBlocked: false,
+      regenerated: false,
       provisionalTitle: isFirstChatPageExchange ? truncateTitle(message) : undefined,
     });
 
-    // Chat-page first exchange → enqueue the model-written title job (best-effort; never fail the message).
     if (isFirstChatPageExchange) {
       try {
         await enqueueJob({ type: JobTypes.CHAT_TITLE_GENERATE, payload: { sessionId: id }, triggeredBy: `user:${userId}` });
@@ -391,13 +347,25 @@ export const sendMessage = async (req: Request, res: Response) => {
       }
     }
 
-    // The reply is the last assistant message.
     const reply = serializeVisibleMessages(updated.messages).at(-1) ?? null;
-    // ★ `changed` — the semantic domains a CONFIRMED write touched this turn (empty on an ordinary
-    //   question). The client maps these to its own cache keys; we deliberately do not put query keys
-    //   on the wire. Always present so the client never has to test for the field.
-    const changed = [...toolCtx.effects];
-    return res.json({ success: true, data: { session: serializeSession(updated.session), messages: serializeVisibleMessages(updated.messages), reply, changed } });
+    return res.json({
+      success: true,
+      data: {
+        session: serializeSession(updated.session),
+        messages: serializeVisibleMessages(updated.messages),
+        reply,
+        // ★ `changed` IS NOW ALWAYS EMPTY, AND STAYS ON THE WIRE. Nothing this endpoint does writes to
+        //   the reader's data — a write happens when they tap an ACTION control, which calls its own
+        //   endpoint and invalidates its own caches. The field remains so no client has to test for it.
+        changed: [] as string[],
+        // What the router made of the question. Diagnostic, and what lets a bad answer be traced from
+        // a transcript rather than only from a server log.
+        routed: {
+          scope: routed.router.scope, operation: routed.router.operation, lens: routed.router.lens,
+          perspective: routed.router.perspective, action: routed.router.action, source: routed.router.source,
+        },
+      },
+    });
   } catch (e) {
     console.error("[POST /me/chat/sessions/:id/messages]", e);
     return res.status(500).json({ success: false, error: "server_error", message: "Failed to send message" });
@@ -481,57 +449,29 @@ export const editMessage = async (req: Request, res: Response) => {
     //    The pending proposal is cleared inside this transaction; see applyMessageEdit.
     await applyMessageEdit(userId, id, plan, content);
 
-    const system = await resolveTurnSystem(userId);
-    // ★ The edited row is EXCLUDED from history and re-appended below as the model-facing turn, so this
-    //   generation is byte-identical in shape to an ordinary send (see loadHistoryForModel).
-    const history = await loadHistoryForModel(id, { excludeMessageId: messageId });
-    const subjectLabel = got.session.subjectName ?? got.session.subjectSymbol ?? "this";
-    const actor: Actor = { kind: "user", userId };
-    const toolCtx = makeToolContext({ userId, sessionId: id, userMessage: content });
-
-    const turn = await runChatTurn({
-      model: resolveChatModel(),
-      system,
-      messages: [...history, { role: "user", content: modelFacingUserTurn(content) }],
-      actor,
-      subjectLabel,
-      tools: toolSpecs(),
-      executeTool: makeToolExecutorFor(toolCtx),
-      extendedRounds: { tools: EXTENDED_ROUND_TOOLS, maxRounds: CHAT_MAX_TOOL_ROUNDS_WRITE },
-    });
-
-    if (turn.status === "unavailable") {
-      // The edit stands; the send did not. Mark the row exactly as a denied ordinary send is marked, so it
-      // renders as "Not sent" with its own retry and is excluded from the model's history until it lands.
-      const denied = await markMessageUndelivered(userId, id, messageId, {
-        reason: turn.reason ?? null,
-        scopeDenied: turn.scopeDenied ?? null,
-        resetAt: turn.resetAt ? new Date(turn.resetAt) : null,
-      });
-      return res.json({
-        success: true,
-        data: {
-          session: serializeSession(denied!.session),
-          messages: serializeVisibleMessages(denied!.messages),
-          reply: null,
-          ...unavailablePayload(turn.reason, turn.scopeDenied, turn.resetAt),
-        },
-      });
-    }
-
-    // ★ NO PROPOSAL SWEEP HERE, AND THAT IS CORRECT RATHER THAN AN OMISSION. The sweep exists to clear a
-    //   proposal that was pending BEFORE the turn and that the turn neither confirmed nor replaced —
-    //   applyMessageEdit already cleared the slot unconditionally, so this turn began with nothing
-    //   pending. Anything pending now was minted by this turn and is the reader's live "shall I?".
-    const assistantText = await composeDeliveredText(turn.text!, turn.guardrailBlocked, toolCtx);
+    // ── ★ THE SAME SWITCHOVER AS `sendMessage` (stage 8b). Regenerating an edited message is the same
+    //    operation as answering a new one: classify, resolve, compose. There is no history to replay
+    //    because the answer is a pure function of the question and the reader, which is also why an
+    //    edit cannot inherit a premise from the turn it replaced.
+    // ⚠ NO PRIOR CONTEXT ON AN EDIT, DELIBERATELY. An edited question replaces the one that was asked,
+    //   so the turns after it no longer describe this conversation — inheriting a subject from a turn
+    //   the edit has just invalidated is how a follow-up ends up answered about the wrong company.
+    const routedEdit = await route(content, modelClassifier, { userId }, null);
+    const composedEdit = await composeTurn(routedEdit, { userId });
+    const { sections: editSections, prose: editProse } = renderableOf(composedEdit);
+    const editEnvelope = editSections.length > 0
+      ? wrapSections(editSections, editProse, compositionIdOf(composedEdit), withLastFamily(routedEdit.context, composedEdit))
+      : undefined;
+    const assistantText = accessibleText(editSections, editProse);
 
     const updated = await appendReplyAfterEdit({
       session: got.session,
-      toolTurns: turn.toolTurns,
+      
       assistantText,
-      assistantUsage: turn.usage,
-      guardrailBlocked: turn.guardrailBlocked,
-      regenerated: turn.regenerated,
+      assistantSections: editEnvelope,
+      assistantUsage: null,
+      guardrailBlocked: false,
+      regenerated: true,
     });
 
     // ★ THE TITLE DOES NOT MOVE, and it structurally cannot: the model title job fires only when
@@ -540,7 +480,9 @@ export const editMessage = async (req: Request, res: Response) => {
     //   leaves the name describing the question as it was first asked. Deliberate — a title that silently
     //   rewrote itself under a reader who was editing one word would be the surprising behaviour.
     const reply = serializeVisibleMessages(updated.messages).at(-1) ?? null;
-    const changed = [...toolCtx.effects];
+    // Nothing on this path writes to the reader's data — a write happens when they tap a control,
+    // which calls its own endpoint. The field stays so no client has to test for it.
+    const changed: string[] = [];
     return res.json({
       success: true,
       data: {

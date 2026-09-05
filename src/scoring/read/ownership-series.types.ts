@@ -19,9 +19,13 @@ import type { OwnershipTell } from "./stocks-list.types.js";
  *  asOnDate ≤ the period's asOfDate — no lookahead).
  *
  *  PLEDGING is derived from the BigInt SHARE COUNTS, never the Decimal
- *  promoter_pledged_pct column (which has a unit inconsistency — 60.57 vs 0.6057 for
- *  the same value; an ingestion bug). `pledgedPctOfPromoter` (pledged ÷ promoter
- *  shares) is the headline — it matches the scoring engine's R1 definition. */
+ *  promoter_pledged_pct column. `pledgedPctOfPromoter` (pledged ÷ promoter shares) is the headline —
+ *  it matches the scoring engine's R1 definition.
+ *
+ *  ⚠ The old note here blamed a unit inconsistency (60.57 vs 0.6057). That was real and is fixed —
+ *  the parser now applies the vintage scale factor. The deeper fault was that BOTH columns were read
+ *  without a contextRef and described a promoter SUB-ENTITY rather than the group; the counts are the
+ *  single home for the magnitude, and that is why this still reads them and not the percentage. */
 export interface OwnershipHolding {
   asOnDate: string; // YYYY-MM-DD — the observation actually used (point-in-time)
   promoterPct: number | null;

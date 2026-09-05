@@ -10,7 +10,7 @@ import { prisma } from "../db/prisma.js";
 import { buildQuarterBriefFactBlock } from "../insight/quarter-brief/fact-block.js";
 import { renderFactText } from "../insight/quarter-brief/prompt.js";
 import { generateQuarterBrief } from "../insight/quarter-brief/generate.js";
-import { scanExplanationText } from "../ai/guardrail.js";
+import { scanExplanationText } from "../ai/core/guardrail.js";
 import type { QuarterBriefFactBlock } from "../insight/quarter-brief/types.js";
 
 interface Pick { symbol: string; why: string }

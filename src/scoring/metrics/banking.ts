@@ -318,19 +318,180 @@ function mk(key: string, label: string, value: number, formula: string, inputs: 
 // ── Dispatch maps (engine key → banking live-value fn) ──────────────────────────
 export type BankingFn = (c: BankingCtx) => MetricValue;
 
-export const BANKING_FOUNDATION_FNS: Record<string, BankingFn> = {
+/** The ANNUAL readings. Not a v1 survival - changes 2.2/2.3 fall back to these when a bank
+ *  is short of quarterly history, so they are a branch of the current instrument. */
+export const BANKING_FOUNDATION_FNS_ANNUAL: Record<string, BankingFn> = {
   Tier1: f1Tier1, GNPA: f2Gnpa, NNPA: f3Nnpa, PCR: f4Pcr, ROA: f5Roa, CI: f6CostIncome, CASA: f7Casa,
 };
-export const BANKING_MOMENTUM_FNS: Record<string, BankingFn> = {
+export const BANKING_MOMENTUM_FNS_ANNUAL: Record<string, BankingFn> = {
   NIM: m1NimTtm, PPOP: m2PpopYoy, NII: m3NiiYoy, NPyoy: m4NpYoy, GNPAttm: m5GnpaTtm,
 };
 
 /** Compute one PG's banking foundation + momentum live values for the given keys. */
+// ═══════════════════════════════════════════════════════════════════════════════════
+// CHANGES 2.2 / 2.3 — BANK CADENCE (v2)
+//
+// v1 reads banks almost entirely from the ANNUAL cohort: all seven Foundation metrics
+// plus PPOP, NII and net-profit growth step once a year, so a bank's Foundation takes
+// SIX distinct values across twelve quarters. The quarterly data exists for every one of
+// them (144 of 144 bank-quarters for gross NPA and provision cover, 141-143 for the rest).
+//
+// PER METRIC TYPE, and the type is what decides the construction:
+//   Tier1 / GNPA / NNPA / PCR are POINT-IN-TIME LEVELS. A balance-sheet ratio's current
+//     value IS its current value; there is nothing to average, and the annual figure is
+//     simply a stale copy of the same number. Use the quarter's own.
+//   ROA is a FLOW ratio, and roaQuarterly is ALREADY ANNUALISED — so a trailing year is
+//     the MEAN of four, never the sum. (Verified against roa_disclosed: AXISBANK
+//     0.015/0.015, CANBK 0.011/0.011, ICICIBANK 0.023/0.023.)
+//   PPOP / NII / net profit are FLOWS. Trailing-twelve-months against trailing-twelve-
+//     months, matching the non-financial construction.
+//
+// ★ COST-TO-INCOME IS DELIBERATELY EXCLUDED AND STAYS ANNUAL. Checked at the fiscal year
+//   end, where the quarterly and annual figures describe the same date, every other metric
+//   agrees with its annual source at a ratio of 1.000 (ROA 0.998). Cost-to-income comes out
+//   at 0.653 with 0% of readings inside 20%. A trailing-twelve-month costs-over-net-income
+//   figure gives 38-55% for most banks against the stored annual 64-83%, and it LOOKS more
+//   like a real cost-to-income ratio — but "looks more plausible" is not a scale check
+//   passing. CI keeps its stored annual value and the discrepancy stays on the defect list.
+//
+// ★ CASA is unchanged (BankSupplementary, already percent).
+//
+// ★ THE UNITS TRAP IS ALREADY HANDLED HERE. Defect R34-extended: all six bank fields are
+//   stored as FRACTIONS in both the quarterly and annual tables while every bar is cut in
+//   percentage points. Feeding a fraction to a percentage-point bar pins every reading at
+//   one end and the run still completes looking clean. banking.ts already multiplies via
+//   pctFromFraction, and the quarterly path below uses the same helper - so this is one
+//   trap that needed no new work, only not to be re-introduced.
+//
+// ★ EVERY ONE FALLS BACK TO ITS ANNUAL FORM. Same discipline as the rolling Foundation:
+//   a bank short of quarterly history keeps the metric it already had rather than losing
+//   it and thinning its pillar against the §14.4 floor.
+
+/** Mean of the last four quarterly values of an ALREADY-ANNUALISED fraction, as a percent. */
+function meanOf4Annualised(run: BankingQuarter[], pick: (q: BankingQuarter) => number | null): number | null {
+  if (run.length < 4) return null;
+  let s = 0;
+  for (const q of run.slice(-4)) {
+    const v = pick(q);
+    if (v === null) return null;
+    s += v;
+  }
+  return (s / 4) * 100;
+}
+
+/** TTM sum of a quarterly flow over the last 4; null if short or any leg is null. */
+function ttmFlow(run: BankingQuarter[], pick: (q: BankingQuarter) => number | null): number | null {
+  if (run.length < 4) return null;
+  let s = 0;
+  for (const q of run.slice(-4)) {
+    const v = pick(q);
+    if (v === null) return null;
+    s += v;
+  }
+  return s;
+}
+
+/** Fall back to the v1 (annual) reading, stamping WHY, so a mixed-cadence pillar is
+ *  legible in the stored metric rather than silently indistinguishable. */
+function annualFallback(v1: MetricValue, why: string): MetricValue {
+  return { ...v1, flags: [...v1.flags, `changes 2.2/2.3: quarterly form unavailable (${why}) — fell back to the annual value`] };
+}
+
+// ── Foundation, quarterly ────────────────────────────────────────────────────────
+/** Tier-1 from the QUARTER's own cet1 + at1, with the same at1-plausibility guard v1 uses. */
+export function f1Tier1Q(c: BankingCtx): MetricValue {
+  const q = latestQuarter(c);
+  if (!q || q.cet1Ratio === null) return annualFallback(f1Tier1(c), q ? "quarter carries no cet1" : "no quarterly row");
+  const cet1 = q.cet1Ratio * 100;
+  let at1 = q.additionalTier1Ratio !== null ? q.additionalTier1Ratio * 100 : 0;
+  const flags: string[] = [];
+  if (at1 >= cet1) { flags.push(`at1 (${r2(at1)}%) >= cet1 (${r2(cet1)}%) — implausible AT1 (corrupt source); dropped, using CET1 alone`); at1 = 0; }
+  const value = cet1 + at1;
+  if (!inBand(value, BOUNDS.tier1)) return annualFallback(f1Tier1(c), `quarterly tier-1 ${r2(value)}% out of band`);
+  return mk("Tier1", "Tier-1 Capital %", value, `Tier-1 = (CET1 ${r2(cet1)}% + AT1 ${r2(at1)}%) [${q.fiscalYear}${q.quarter} XBRL] = ${r2(value)}%`,
+    { cet1Pct: r2(cet1), at1Pct: r2(at1), quarter: `${q.fiscalYear}${q.quarter}` }, [...flags, "change 2.2: the quarter's own point-in-time level"]);
+}
+
+/** Gross NPA from the QUARTER's own ratio. */
+export function f2GnpaQ(c: BankingCtx): MetricValue {
+  const q = latestQuarter(c);
+  const v = q ? pctFromFraction(q.gnpaPct) : null;
+  if (v === null || !inBand(v, BOUNDS.gnpa)) return annualFallback(f2Gnpa(c), q ? "quarterly gnpaPct null or out of band" : "no quarterly row");
+  return mk("GNPA", "Gross NPA %", v, `GNPA = gnpaPct ${r2(q!.gnpaPct!)} x100 = ${r2(v)}% [${q!.fiscalYear}${q!.quarter}]`,
+    { gnpaPctFrac: q!.gnpaPct, quarter: `${q!.fiscalYear}${q!.quarter}` }, ["change 2.2: the quarter's own point-in-time level"]);
+}
+
+/** Net NPA from the QUARTER's own ratio. */
+export function f3NnpaQ(c: BankingCtx): MetricValue {
+  const q = latestQuarter(c);
+  const v = q ? pctFromFraction(q.nnpaPct) : null;
+  if (v === null || !inBand(v, BOUNDS.nnpa)) return annualFallback(f3Nnpa(c), q ? "quarterly nnpaPct null or out of band" : "no quarterly row");
+  return mk("NNPA", "Net NPA %", v, `NNPA = nnpaPct ${r2(q!.nnpaPct!)} x100 = ${r2(v)}% [${q!.fiscalYear}${q!.quarter}]`,
+    { nnpaPctFrac: q!.nnpaPct, quarter: `${q!.fiscalYear}${q!.quarter}` }, ["change 2.2: the quarter's own point-in-time level"]);
+}
+
+/** PCR from the QUARTER's own absolutes, ex-technical-write-offs — v1's derivation,
+ *  applied to the quarter. The quarterly table carries no `pcr` column, so this is the
+ *  same formula rather than a different source. */
+export function f4PcrQ(c: BankingCtx): MetricValue {
+  const q = latestQuarter(c);
+  if (!q || q.gnpaAbsolute === null || q.nnpaAbsolute === null || q.gnpaAbsolute === 0)
+    return annualFallback(f4Pcr(c), q ? "quarterly GrossNPA/NetNPA null or zero" : "no quarterly row");
+  const value = ((q.gnpaAbsolute - q.nnpaAbsolute) / q.gnpaAbsolute) * 100;
+  if (value < 0 || value > 100) return annualFallback(f4Pcr(c), `quarterly PCR ${r2(value)}% outside [0,100]`);
+  return mk("PCR", "Provision Coverage Ratio %", value, `PCR(ex-TWO) = (Gross ${r2(q.gnpaAbsolute)} - Net ${r2(q.nnpaAbsolute)})/Gross x100 = ${r2(value)}% [${q.fiscalYear}${q.quarter}]`,
+    { grossNpa: q.gnpaAbsolute, netNpa: q.nnpaAbsolute, quarter: `${q.fiscalYear}${q.quarter}` }, ["change 2.2: the quarter's own point-in-time level"]);
+}
+
+/** ROA as the MEAN of the last four ALREADY-ANNUALISED quarterly figures. */
+export function f5RoaQ(c: BankingCtx): MetricValue {
+  const run = consecutiveQtrTail(c.quarterly);
+  const value = meanOf4Annualised(run, (q) => q.roaQuarterly);
+  if (value === null) return annualFallback(f5Roa(c), `need 4 consecutive quarters with roaQuarterly, have ${run.length}`);
+  if (!inBand(value, BOUNDS.roa)) return annualFallback(f5Roa(c), `quarterly ROA ${r2(value)}% out of band`);
+  const ttm = run.slice(-4);
+  return mk("ROA", "Return on Assets %", value, `ROA = mean of 4 annualised quarterly ROA [${ttm[0].fiscalYear}${ttm[0].quarter}..${ttm[3].fiscalYear}${ttm[3].quarter}] = ${r2(value)}%`,
+    { quarters: ttm.map((q) => `${q.fiscalYear}${q.quarter}`).join(","), }, ["change 2.2: roaQuarterly is already annualised, so a trailing year is the MEAN of four, not the sum"]);
+}
+
+// ── Momentum, trailing-twelve-months vs trailing-twelve-months ───────────────────
+/** TTM-vs-TTM growth on a quarterly flow. Needs EIGHT consecutive quarters (two windows). */
+function ttmYoy(c: BankingCtx, key: string, label: string, pick: (q: BankingQuarter) => number | null, v1: MetricValue): MetricValue {
+  const run = consecutiveQtrTail(c.quarterly);
+  if (run.length < 8) return annualFallback(v1, `need 8 consecutive quarters, have ${run.length}`);
+  const now = ttmFlow(run, pick);
+  const prior = ttmFlow(run.slice(0, run.length - 4), pick);
+  if (now === null || prior === null) return annualFallback(v1, "a leg is null inside a TTM window");
+  if (prior <= 0) return annualFallback(v1, `prior TTM ${r2(prior)} <= 0 — YoY undefined`);
+  const value = ((now - prior) / prior) * 100;
+  const span = `${run[run.length - 4].fiscalYear}${run[run.length - 4].quarter}..${run[run.length - 1].fiscalYear}${run[run.length - 1].quarter}`;
+  return mk(key, label, value, `${label} = (TTM ${r2(now)} [${span}] / prior TTM ${r2(prior)} - 1) x100 = ${r2(value)}%`,
+    { ttmNow: r2(now), ttmPrior: r2(prior) }, ["change 2.3: TTM-vs-TTM, matching the non-financial construction"]);
+}
+
+export const m2PpopYoyTtm = (c: BankingCtx): MetricValue => ttmYoy(c, "PPOP", "Pre-Provision Operating Profit YoY %", (q) => q.ppop, m2PpopYoy(c));
+export const m3NiiYoyTtm = (c: BankingCtx): MetricValue => ttmYoy(c, "NII", "Net Interest Income YoY %", niiOf, m3NiiYoy(c));
+export const m4NpYoyTtm = (c: BankingCtx): MetricValue => ttmYoy(c, "NPyoy", "Net Profit YoY %", (q) => q.netProfit, m4NpYoy(c));
+
+/** The v2 banking tables. CI and CASA are absent from the Foundation override on purpose
+ *  (CI's scale check failed; CASA does not move), and NIM/GNPAttm are absent from the
+ *  Momentum override because they already move quarterly. */
+export const BANKING_FOUNDATION_FNS: Record<string, (c: BankingCtx) => MetricValue> = {
+  ...BANKING_FOUNDATION_FNS_ANNUAL,
+  Tier1: f1Tier1Q, GNPA: f2GnpaQ, NNPA: f3NnpaQ, PCR: f4PcrQ, ROA: f5RoaQ,
+};
+export const BANKING_MOMENTUM_FNS: Record<string, (c: BankingCtx) => MetricValue> = {
+  ...BANKING_MOMENTUM_FNS_ANNUAL,
+  PPOP: m2PpopYoyTtm, NII: m3NiiYoyTtm, NPyoy: m4NpYoyTtm,
+};
+
 export function computeBankingLiveValues(c: BankingCtx, foundationKeys: string[], momentumKeys: string[]): {
   foundation: MetricValue[]; momentum: MetricValue[]; snapshotFy: string | null; snapshotQuarter: string | null;
 } {
-  const foundation = foundationKeys.map((k) => (BANKING_FOUNDATION_FNS[k] ? BANKING_FOUNDATION_FNS[k](c) : bUnavailable(k, k, "missing_line_item", `DISPATCH GAP: no banking fn for foundation key "${k}"`, {}, [`⚠ DISPATCH GAP: ${k}`])));
-  const momentum = momentumKeys.map((k) => (BANKING_MOMENTUM_FNS[k] ? BANKING_MOMENTUM_FNS[k](c) : bUnavailable(k, k, "missing_line_item", `DISPATCH GAP: no banking fn for momentum key "${k}"`, {}, [`⚠ DISPATCH GAP: ${k}`])));
+  const fFns = BANKING_FOUNDATION_FNS;
+  const mFns = BANKING_MOMENTUM_FNS;
+  const foundation = foundationKeys.map((k) => (fFns[k] ? fFns[k](c) : bUnavailable(k, k, "missing_line_item", `DISPATCH GAP: no banking fn for foundation key "${k}"`, {}, [`⚠ DISPATCH GAP: ${k}`])));
+  const momentum = momentumKeys.map((k) => (mFns[k] ? mFns[k](c) : bUnavailable(k, k, "missing_line_item", `DISPATCH GAP: no banking fn for momentum key "${k}"`, {}, [`⚠ DISPATCH GAP: ${k}`])));
   const la = latestAnnual(c), lq = latestQuarter(c);
   return { foundation, momentum, snapshotFy: la?.fiscalYear ?? null, snapshotQuarter: lq ? `${lq.fiscalYear}${lq.quarter}` : null };
 }
@@ -353,17 +514,26 @@ function suppSeries(m: BankingCtx["casa"]): number[] {
  *  BankSupplementary FY series (the curated history incl pre-FY23); the XBRL-derived
  *  metrics re-dispatch over annual prefixes; NIM/GNPAttm over quarterly prefixes. */
 export function bankingSeriesForKey(c: BankingCtx, key: string): number[] {
+  // CASA never moves to a quarterly cadence, and Tier-1's own-history is the curated
+  // BankSupplementary FY series (which reaches back past FY23 where XBRL does not) — so
+  // both keep the annual series even under v2. Tier-1's LIVE VALUE does move to the
+  // quarter (f1Tier1Q); its HISTORY is a different question with a different best source.
   if (key === "Tier1") return suppSeries(c.tier1);
   if (key === "CASA") return suppSeries(c.casa);
-  if (key === "NIM" || key === "GNPAttm") {
-    const fn = BANKING_MOMENTUM_FNS[key];
-    const out: number[] = [];
+  // Quarterly-cadence keys: the two that always were, plus the five changes 2.2/2.3 move.
+  const quarterly = new Set(["NIM", "GNPAttm", "GNPA", "NNPA", "PCR", "ROA", "PPOP", "NII", "NPyoy"]);
+  const fFns = BANKING_FOUNDATION_FNS;
+  const mFns = BANKING_MOMENTUM_FNS;
+  const fn = fFns[key] ?? mFns[key];
+  if (!fn) return [];
+  const out: number[] = [];
+  if (quarterly.has(key)) {
+    // ⚠ THE HISTORY MUST ROLL IN THE METRIC'S OWN CADENCE. Feed a now-quarterly metric
+    //   annual prefixes and L3 sees six points where it should see twelve, which is the
+    //   very starvation change 2.2 exists to end — and it would fail silently.
     for (let j = 1; j <= c.quarterly.length; j++) { const v = fn(subCtxQuarterly(c, j)); if (v.available && v.value !== null) out.push(v.value); }
     return out;
   }
-  const fn = BANKING_FOUNDATION_FNS[key] ?? BANKING_MOMENTUM_FNS[key];
-  if (!fn) return [];
-  const out: number[] = [];
   for (let i = 1; i <= c.annual.length; i++) { const v = fn(subCtxAnnual(c, i)); if (v.available && v.value !== null) out.push(v.value); }
   return out;
 }

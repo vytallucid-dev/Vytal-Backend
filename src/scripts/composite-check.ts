@@ -176,7 +176,9 @@ async function main() {
   const basePillars = subject.pillars.map((p) => ({ ...p }));
   const reassemble = (pillars: PillarInput[]) => assembleComposite(subject.stockId, subject.symbol, pillars, { snapshotType: "quarterly", periodKey, asOfDate: asOf });
 
-  // (a) §14.4 Market-unavailable → F .4375 / M .3125 / Own .25, reason market_unavailable
+  // (a) §14.4 Market-unavailable → F .4375 / M .3125 / Own .25, reason market_unavailable.
+  //     ★ UNCHANGED BY CHANGE 2.4, and that is the point of testing it: with no Market weight
+  //       there is nothing to halve, so the freed share is zero and §14.4 stands alone.
   {
     const pillars = basePillars.map((p) => p.pillar === "market" ? { ...p, subtotal: null, state: "unavailable_redistributed" as const } : p);
     const r = reassemble(pillars); const w = r.appliedWeights;
@@ -186,13 +188,23 @@ async function main() {
     checks.push({ name: "(a) §14.4 Market unavailable → F .4375 / M .3125 / Own .25 (FY21/FY22 case)", ok: ok && Math.abs((r.composite ?? NaN) - expected) < 1e-9, detail: `w=[${w.foundation.toFixed(4)},${w.momentum.toFixed(4)},${w.market},${w.ownership.toFixed(4)}] reason=${r.redistributionReason} composite=${r.composite?.toFixed(4)} (=${expected.toFixed(4)})` });
   }
 
-  // (b) general redistribution — Momentum unavailable → reason missing_pillar, proportions preserved
+  // (b) §14.4 THEN change 2.4 — Momentum unavailable. THE ORDER IS THE WHOLE TEST.
+  //
+  //     §14.4 renormalises the locked set over the survivors: F .4667 / Mkt .2667 / Own .2667.
+  //     Change 2.4 then halves MARKET and pushes the freed .1333 onto Foundation+Momentum
+  //     pro-rata — and Momentum is gone, so Foundation takes all of it: F .6000 / Mkt .1333 /
+  //     Own .2667. Those are the values VYTAL_V2_REFERENCE_PANEL.csv actually carries for the
+  //     rows in this state (POLYCAB FY23Q4-FY24Q1, NESTLEIND FY24Q4-FY25Q3, LT FY25Q4-FY26Q3).
+  //
+  //     ⚠ HALVING THE LOCKED CONSTANTS INSTEAD would give F .5763 / Mkt .1412 / Own .2825 —
+  //       a different composite on every row where a pillar is missing. This check is what
+  //       stops someone "simplifying" the post-§14.4 transform into the constant table.
   {
     const pillars = basePillars.map((p) => p.pillar === "momentum" ? { ...p, subtotal: null, state: "unavailable_redistributed" as const } : p);
     const r = reassemble(pillars); const w = r.appliedWeights;
-    const ok = Math.abs(w.foundation - 0.35 / 0.75) < 1e-9 && Math.abs(w.market - 0.2 / 0.75) < 1e-9 && Math.abs(w.ownership - 0.2 / 0.75) < 1e-9 && w.momentum === 0 && r.redistributionReason === "missing_pillar";
-    const ratioPreserved = Math.abs((w.foundation / w.market) - (0.35 / 0.2)) < 1e-9;
-    checks.push({ name: "(b) general redistribution: Momentum unavailable → missing_pillar, relative proportions preserved", ok: ok && ratioPreserved, detail: `w=[${w.foundation.toFixed(4)},0,${w.market.toFixed(4)},${w.ownership.toFixed(4)}] reason=${r.redistributionReason}; F/Mkt ratio ${(w.foundation / w.market).toFixed(4)}==1.75` });
+    const ok = Math.abs(w.foundation - 0.6) < 1e-9 && Math.abs(w.market - 0.2 / 0.75 / 2) < 1e-9 && Math.abs(w.ownership - 0.2 / 0.75) < 1e-9 && w.momentum === 0 && r.redistributionReason === "missing_pillar";
+    const sumsToOne = Math.abs(w.foundation + w.momentum + w.market + w.ownership - 1) < 1e-9;
+    checks.push({ name: "(b) §14.4 then 2.4: Momentum unavailable → F .6000 / Mkt .1333 / Own .2667 (the reference panel's values)", ok: ok && sumsToOne, detail: `w=[${w.foundation.toFixed(4)},0,${w.market.toFixed(4)},${w.ownership.toFixed(4)}] reason=${r.redistributionReason}; sums to 1 = ${sumsToOne}` });
   }
 
   // (c) minimum-pillars: Foundation (anchor) unavailable → composite UNAVAILABLE
@@ -211,9 +223,17 @@ async function main() {
 
   // (d) label boundary handling (lower-bound-inclusive, on full precision)
   {
-    const cases: [number, string][] = [[54.99, "fragile"], [54.7, "fragile"], [55, "below_par"], [61.7, "below_par"], [61.99, "below_par"], [62, "steady"], [68, "healthy"], [73.99, "healthy"], [74, "pristine"], [90, "pristine"]];
+    // The cut-points IN FORCE (2026.2). They are population-preserving: each sits at the
+    // percentile its predecessor occupied, so v2's ~2.5-point-lower distribution lands the
+    // same share of the universe in each band instead of nearly tripling Fragile.
+    const cases: [number, string][] = [[49.99, "fragile"], [49.7, "fragile"], [50, "below_par"], [57.7, "below_par"], [57.99, "below_par"], [58, "steady"], [65, "healthy"], [71.99, "healthy"], [72, "pristine"], [90, "pristine"]];
     const ok = cases.every(([v, b]) => labelFor(v).band === b);
-    checks.push({ name: "(d) label boundary: <55 fragile, [55,62) below_par, [62,68) steady, [68,74) healthy, ≥74 pristine", ok, detail: cases.map(([v, b]) => `${v}→${labelFor(v).band}${labelFor(v).band === b ? "" : "✗"}`).join(" ") });
+    checks.push({ name: "(d) label boundary: <50 fragile, [50,58) below_par, [58,65) steady, [65,72) healthy, ≥72 pristine", ok, detail: cases.map(([v, b]) => `${v}→${labelFor(v).band}${labelFor(v).band === b ? "" : "✗"}`).join(" ") });
+    // ★ AND THE SUPERSEDED MAP MUST STILL RESOLVE, or every snapshot written before the
+    //   re-band silently changes the band it was published under.
+    const legacy: [number, string][] = [[54.99, "fragile"], [55, "below_par"], [62, "steady"], [68, "healthy"], [74, "pristine"]];
+    const legacyOk = legacy.every(([v, b]) => labelFor(v, "2026.1").band === b);
+    checks.push({ name: "(d2) the SUPERSEDED 2026.1 map still resolves — history keeps the band it was published under", ok: legacyOk, detail: legacy.map(([v, b]) => `${v}→${labelFor(v, "2026.1").band}${labelFor(v, "2026.1").band === b ? "" : "✗"}`).join(" ") });
   }
 
   // (e) DRY-RUN: snapshot write plan produced, references 4 pillar FKs, commits NOTHING

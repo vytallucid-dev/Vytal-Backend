@@ -220,6 +220,18 @@ export interface MatchesResult {
   structural: StructuralFilters;
   evaluable: Evaluable;
   matches: Capped<ScreenRow>;
+  /**
+   * ★ EVERY MATCHING SYMBOL, UNCAPPED — for INTERSECTING with another universe, never for rendering.
+   *
+   * ⚠ `matches` is `Capped` at the table's transport budget, and an intersection computed from a
+   *   capped list is silently wrong: "health above 70 and revenue above 100cr" would drop every
+   *   scored company past the 60th and report the result as the whole overlap. A cap is a rendering
+   *   decision; a set operation must see the set.
+   *
+   * Symbols only, and bounded by the scored universe itself (95), so this cannot become a second fat
+   * payload.
+   */
+  matchedSymbols: string[];
   /** Reader-facing description of the ordering, e.g. "health score, highest first". */
   sortedBy: string;
 }

@@ -1162,6 +1162,167 @@ export function iWindowStated(a: AnswerUnderTest): Violation[] {
   }];
 }
 
+/**
+ * ★ I-STATES-SURVIVE — a screen over FINDINGS keeps "ran and did not fire" apart from "could not run".
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ⚠ THIS IS THE ONE PROPERTY A FINDINGS SCREEN CAN DESTROY THAT NOTHING ELSE WOULD NOTICE.
+ *
+ * `FindingEvaluationState` is three-valued and the schema's own note says why the third exists:
+ * "inferring that from a missing row conflates 'it was clean' with 'we never ran'". A screen is where
+ * that gets destroyed — filter to `fired`, call everything else the denominator, and every company we
+ * COULD NOT CHECK has been silently reported as clean.
+ *
+ * ⚠ AND THE SIZES MAKE IT MATTER. Measured live at each stock's latest period: R3 fires at 42, runs
+ * clean at 317, and CANNOT BE RUN at 1,889. A fold would turn "we checked 359 companies" into "we
+ * checked 2,248" — and the answer would look more authoritative for it, which is the danger.
+ *
+ * ★ THE ASSERTION IS ON THE TOTALS, NOT ON THE PROSE, because §4.3's amendment is that the component
+ *   is what the reader believes: "a component contradicting the sentence above it is worse than one
+ *   that says nothing, because the figure looks like the harder evidence". A sentence can say the two
+ *   are different while the card shows one number, and the card wins.
+ *
+ * ⚠ IT FIRES ONLY ON A FINDINGS SCREEN. A metric screen has no such states — its own
+ *   not-evaluable half is `Evaluable.reasons`, which `I-DENOMINATOR` already covers — so the test is
+ *   keyed on the counts that identify one rather than on a composition id, which a rename would break.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ RE-ANCHORED WHEN THE COUNTS STOPPED BEING RENDERED TOTALS, AND THAT MOVE IS THE INTERESTING PART.
+ *
+ * The four states used to be `payload.totals` and this gate read them there. They now travel in the
+ * section's DIGEST (model-facing) and in the answer's PROSE (reader-facing), because five figures over
+ * two lines restated the paragraph directly above the card.
+ *
+ * ⚠ A GATE LEFT POINTING AT THE OLD HOME WOULD HAVE GONE GREEN, NOT RED. `payload.totals` is now `[]`,
+ *   so the "is there a Fired total?" test simply never matches and every findings screen skips the
+ *   whole check — a guard that stops guarding while still reporting success, which this file's own
+ *   header calls out as the failure mode invariants exist to avoid. So it follows the property to
+ *   wherever the property lives.
+ *
+ * ★ AND IT NOW CHECKS BOTH AUDIENCES, WHICH IT COULD NOT BEFORE. The rule was never "these must be
+ *   rendered as totals" — it is "a company we could not check must not be counted as one that
+ *   passed", and that has to hold for the reader AND for the model, which composes over the digest.
+ *   Splitting the channels made the two testable separately, so both are tested.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ */
+export function iStatesSurvive(a: AnswerUnderTest): Violation[] {
+  const v: Violation[] = [];
+  for (const s of a.sections) {
+    if (s.renderer !== "set-table") continue;
+    const at = `${a.label} · ${s.kind}:${s.renderer}`;
+    const p = (s.payload ?? {}) as Record<string, unknown>;
+
+    // ★ THE COUNTS ARE READ FROM WHEREVER THEY TRAVEL. Rendered totals for a caller that shows them;
+    //   the digest for the findings screen, which tells the model and leaves the card clean. Reading
+    //   both is what stops this gate going quiet the next time a caller moves them.
+    const shownTotals = (p.totals as { label: string; value: string | null }[] | undefined) ?? [];
+    const digestLines: { label: string; value: string | null }[] = [];
+    for (const g of (s.digest as { groups?: { lines?: { label?: string; value?: unknown }[] }[] } | undefined)?.groups ?? []) {
+      for (const l of g.lines ?? []) {
+        digestLines.push({ label: String(l.label ?? ""), value: l.value == null ? null : String(l.value) });
+      }
+    }
+    const totals = [...shownTotals, ...digestLines];
+
+    // A findings screen is the one that reports a FIRED count. Nothing else in the product does.
+    const fired = totals.find((t) => /^fired$/i.test(t.label));
+    if (!fired) continue;
+
+    const ranClean = totals.find((t) => /did not fire/i.test(t.label));
+    const couldNot = totals.find((t) => /could not be checked/i.test(t.label));
+
+    if (!ranClean || !couldNot) {
+      v.push({
+        invariant: "I-STATES-SURVIVE", where: at,
+        detail: "a findings screen reports a fired count without BOTH of the other two states "
+          + `(ran-and-did-not-fire: ${ranClean ? "present" : "MISSING"}, `
+          + `could-not-be-checked: ${couldNot ? "present" : "MISSING"}) — a company we could not check `
+          + "is being counted as one that passed",
+      });
+      continue;
+    }
+
+    // ⚠ AND THEY MUST BE TWO ROWS, NOT ONE LABEL CARRYING A SUM. A single "did not fire" row whose
+    //   value happens to include the unevaluable set is the fold wearing the right label.
+    if (ranClean.value !== null && couldNot.value !== null && ranClean.value === couldNot.value
+        && Number(String(ranClean.value).replace(/[^0-9]/g, "")) > 0) {
+      v.push({
+        invariant: "I-STATES-SURVIVE", where: at,
+        detail: `both states report the identical figure (${ranClean.value}) — either a genuine `
+          + "coincidence or one value being written into both rows; the second is the fold",
+      });
+    }
+
+    // ★ THE ARITHMETIC HAS TO CLOSE, which is the only way to know nothing was quietly dropped. Every
+    //   company we hold is in exactly one of the four states.
+    const num = (t: { value: string | null } | undefined): number | null => {
+      if (!t || t.value === null) return null;
+      const m = /-?[\d,]+/.exec(String(t.value));
+      return m ? Number(m[0].replace(/,/g, "")) : null;
+    };
+    const outOf = num(totals.find((t) => /^out of$/i.test(t.label)));
+    const parts = [num(fired), num(ranClean), num(couldNot), num(totals.find((t) => /never checked/i.test(t.label))) ?? 0];
+    if (outOf !== null && parts.every((x) => x !== null)) {
+      const sum = (parts as number[]).reduce((x, y) => x + y, 0);
+      // ⚠ A BAND NARROWS THE SHOWN SET WITHOUT CHANGING THE CENSUS, so the four states still sum to
+      //   the whole population — the band is reported as its own row, not by shrinking these.
+      if (sum !== outOf) {
+        v.push({
+          invariant: "I-STATES-SURVIVE", where: at,
+          detail: `the four states sum to ${sum} against a stated population of ${outOf} — `
+            + `${Math.abs(sum - outOf)} companies are in no state at all, or in two`,
+        });
+      }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // ★★ AND THE READER'S HALF. The digest above is what the MODEL is told; this is what the person
+    //    reading the answer is told, and it is now the ONLY place they are told it.
+    //
+    // ⚠ THE CARD NO LONGER CARRIES THE COUNTS, so "it is in the payload somewhere" has stopped being
+    //   a defence. If the opening does not distinguish a check that ran and found nothing from a
+    //   check that could not run, the reader has been handed a list of firing companies and an
+    //   unqualified denominator — which reads as "everyone else is clean" and is false on most rules
+    //   by a factor of five.
+    //
+    // ⚠⚠ IT ASSERTS THE PROPERTY, NOT A WORDING, AND THAT DISTINCTION IS THE WHOLE POINT OF THE ARM.
+    //
+    //    The first version demanded the phrase "could not run" or "not a clean bill of health" — which
+    //    is a gate asserting COPY, and it locked in the alarmed register the Operator then (rightly)
+    //    asked to remove. An answer can be perfectly honest with no warning word in it.
+    //
+    // ★ THE PROPERTY IS: THE READER IS GIVEN THE DENOMINATOR THE CHECK ACTUALLY RAN ON. If 2,058 of
+    //   2,291 could be checked, "59 of 2,291" is the misleading sentence and "59 out of the 2,058 the
+    //   check could be run on" is the honest one — and no adjective is required to tell them apart,
+    //   only the number. Where the check ran everywhere there is nothing to distinguish and the arm
+    //   does not fire.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    const num2 = (t: { value: string | null } | undefined): number | null => {
+      if (!t || t.value === null) return null;
+      const m = /-?[\d,]+/.exec(String(t.value));
+      return m ? Number(m[0].replace(/,/g, "")) : null;
+    };
+    const nFired = num2(fired);
+    const nClean = num2(ranClean);
+    const nPop = num2(totals.find((t) => /^out of$/i.test(t.label)));
+    if (nFired !== null && nClean !== null && nPop !== null && nFired + nClean < nPop) {
+      const said = (a.prose?.opening ?? []).join(" ");
+      const checked = nFired + nClean;
+      // The checked count, however it is grouped — "2,058" or "2058".
+      const shown = said.includes(checked.toLocaleString("en-IN")) || said.includes(String(checked));
+      if (!shown) {
+        v.push({
+          invariant: "I-STATES-SURVIVE", where: `${a.label} · prose.opening`,
+          detail: `the check ran on ${checked} of ${nPop} companies and the opening never states that `
+            + `denominator — so the reader reads the count against the whole book, and the `
+            + `${nPop - checked} it could not run on are silently counted as clean`,
+        });
+      }
+    }
+  }
+  return v;
+}
+
 /** Every per-answer invariant, in one call. `iDistinct` is cross-answer and runs separately. */
 export const PER_ANSWER: readonly { id: string; run: (a: AnswerUnderTest) => Violation[] }[] = [
   { id: "I-FALSE-ZERO", run: iFalseZero },
@@ -1189,6 +1350,9 @@ export const PER_ANSWER: readonly { id: string; run: (a: AnswerUnderTest) => Vio
   { id: "I-SPLIT-HONEST", run: iSplitHonest },
   // ── Phase 3. A shorter answer than the one asked for says so.
   { id: "I-WINDOW-STATED", run: iWindowStated },
+  // ── The screens batch. A findings screen keeps its three evaluation states apart — the one thing
+  //    a filter over that layer can destroy, and the reason the layer records three rather than two.
+  { id: "I-STATES-SURVIVE", run: iStatesSurvive },
 ];
 
 export function checkAnswer(a: AnswerUnderTest): Violation[] {

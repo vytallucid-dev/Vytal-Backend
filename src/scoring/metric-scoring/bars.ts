@@ -33,16 +33,25 @@ export const resolveBarPath = (barPath: string): string =>
   BAR_PATH_INHERITANCE[barPath] ?? barPath;
 
 /** Resolve the bar set in force at `asOf` for (barPath, metricKey). null if none.
- *  Follows PG6→PG5 inheritance. Surfaces unit (registry) + sscu (provenance). */
+ *  Follows PG6→PG5 inheritance. Surfaces unit (registry) + sscu (provenance).
+ *
+ *  `barSpecVersion` selects the VINTAGE (see scoring/v2/spec.ts for why the vintage is
+ *  named rather than dated: bars resolve at "now" by design, so a date cannot separate
+ *  two of them). Omitted ⇒ no vintage filter, i.e. exactly the pre-v2 behaviour, so any
+ *  caller that does not care is byte-identical. */
 export async function loadBarSet(
   barPath: string,
   metricKey: string,
   asOf: Date,
+  barSpecVersion?: string,
 ): Promise<MetricBarSetInput | null> {
   const effectivePath = resolveBarPath(barPath);
   const row = await prisma.metricBarSet.findFirst({
-    where: { barPath: effectivePath, metricKey, inForceFrom: { lte: asOf } },
-    orderBy: { inForceFrom: "desc" },
+    where: {
+      barPath: effectivePath, metricKey, inForceFrom: { lte: asOf },
+      ...(barSpecVersion ? { specVersion: { version: barSpecVersion } } : {}),
+    },
+    orderBy: [{ inForceFrom: "desc" }, { version: "desc" }],
     include: { provenance: true },
   });
   if (!row) return null;
@@ -71,7 +80,7 @@ export async function loadBarSet(
       concerning: row.concerning.toNumber(),
       distress: row.distress.toNumber(),
     },
-    note: `score_metric_bar_sets v${row.version} (real CN-4 bars${effectivePath !== barPath ? `, inherited ${barPath}→${effectivePath}` : ""})`,
+    note: `score_metric_bar_sets v${row.version}${barSpecVersion ? ` [${barSpecVersion}]` : ""} (real CN-4 bars${effectivePath !== barPath ? `, inherited ${barPath}→${effectivePath}` : ""})`,
     illustrative: false,
     barPath,
     resolvedFromBarPath: effectivePath,

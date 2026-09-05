@@ -223,7 +223,11 @@ export function pledgeDenominator(q: {
 
 /** pledgeRatio from counts, or null when undefined (missing pledge data, or the
  * denominator ≤ 0). PLEDGE-PROPER only. */
-function pledgeRatio(q: OwnershipQuarter): number | null {
+/** ★ EXPORTED so the v2 Ownership pillar reads the pledge through the SAME derivation R1 and
+ *  N7 do. That sharing is this file's stated discipline — one home means "N7's view of R1
+ *  matches R1's" is structural rather than something that happens to hold today, and the v2
+ *  pillar joins that guarantee rather than deriving a third opinion about the same ratio. */
+export function pledgeRatio(q: OwnershipQuarter): number | null {
   if (q.pledgedShares === null) return null; // pledge data absent
   const denom = pledgeDenominator(q);
   if (denom === null || denom <= 0n) return null; // guard > 0

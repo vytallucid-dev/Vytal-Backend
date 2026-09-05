@@ -259,6 +259,11 @@ async function buildHealthMovement(stockId: string, periodKey: string): Promise<
     orderBy: [{ asOfDate: "asc" }, { version: "asc" }],
     select: {
       id: true, periodKey: true, version: true, asOfDate: true, composite: true, labelBand: true,
+      // ★ THE SNAPSHOT'S OWN BAND MAPPING. The comment below already says each snapshot pins the
+      //   mapping in force when it was written — this is what makes that true of the ROUNDING as
+      //   well as the label. Without it, band-safe rounding judges an old snapshot against today's
+      //   cut points, which is the drift bandSafeScore exists to prevent.
+      bandMappingVersion: { select: { version: true } },
       foundationSubtotal: true, momentumSubtotal: true, marketSubtotal: true, ownershipSubtotal: true,
     },
   });
@@ -317,12 +322,12 @@ async function buildHealthMovement(stockId: string, periodKey: string): Promise<
     return { pillar, label, current, prior: priorVal, delta, display };
   });
 
-  const curShown = scoreDisplay(curComposite, curBand.band);
+  const curShown = scoreDisplay(curComposite, curBand.band, cur.bandMappingVersion.version);
   const priorComposite = prior ? Number(prior.composite) : null;
   // Both endpoints go through the SAME band-safe rounding, each against its OWN stored band, and the
   // delta is the difference of what is printed. Three figures on one line that a reader can add up.
   const priorShown =
-    prior && priorComposite !== null ? scoreDisplay(priorComposite, prior.labelBand as string) : null;
+    prior && priorComposite !== null ? scoreDisplay(priorComposite, prior.labelBand as string, prior.bandMappingVersion.version) : null;
   const shownDelta =
     priorShown !== null && Number.isFinite(Number(curShown)) && Number.isFinite(Number(priorShown))
       ? Number(curShown) - Number(priorShown)

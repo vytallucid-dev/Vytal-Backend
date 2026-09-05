@@ -215,7 +215,23 @@ export const meta: Composition = {
       //   read over a number computed a different way.
       if (d.vytalBasis) opening.push(d.vytalBasis);
     } else {
-      opening.push(d.sourceSentence);
+      // ═══════════════════════════════════════════════════════════════════════════════════════════
+      // ⚠⚠ `sourceSentence` IS NOT PUSHED HERE ANY MORE — IT WAS SAID THREE TIMES.
+      //
+      //    Measured on "what is revenue", which reaches a metric gloss with no parts:
+      //      opening      "This is a line item companies file, defined as we read it."
+      //      the LEAD above the card, for a partless term  — the same sentence
+      //      the CARD's own footer (`payload.sourceSentence`) — the same sentence again
+      //
+      //    Three copies, two of them within four lines of each other on screen. Exactly the defect
+      //    the header of this block records for `description`/`doesntMean` and the one the band card
+      //    had with its five cuts. ONE STATEMENT, ONE PLACE — and the place is the card, which has a
+      //    slot for it and renders it as the quiet provenance line it is.
+      //
+      // ★ WHAT THE OPENING SAYS INSTEAD IS WHAT THE CARD DOES NOT: what kind of thing this is. That
+      //   is this block's own stated rule ("the opening says what kind of thing this is and where it
+      //   sits… the definition is left to the card").
+      // ═══════════════════════════════════════════════════════════════════════════════════════════
     }
     // ★ THE BOUNDARY IS THE SECOND SENTENCE, NOT THE LAST. §4.3's test is that the prose alone is a
     //   complete and true answer, and the limit of a claim is half of what makes it true.
@@ -230,11 +246,14 @@ export const meta: Composition = {
     const after: Record<string, string> = {};
     const termIdx = sections.findIndex((s) => s.renderer === "defined-term");
     const key = `ANCHOR:defined-term#${termIdx}`;
-    leads[key] = d.parts.length
-      ? `${d.name} is not one measure — it is made of parts, and it is worth seeing which.`
-      + (d.example ? ` The figures beneath are ${d.example.symbol}'s own, as a worked example.` : "")
-      : d.sourceSentence;
-    if (d.parts.length) after[key] = d.sourceSentence;
+    // ⚠ AND THE LEAD NO LONGER REPEATS IT EITHER. A partless term's lead WAS `sourceSentence`, which
+    //   is the second of the three copies — and a lead whose whole content is also printed inside the
+    //   card it introduces is a caption describing itself. A partless term needs no lead at all: the
+    //   card is one object and the opening already framed it.
+    if (d.parts.length) {
+      leads[key] = `${d.name} is not one measure — it is made of parts, and it is worth seeing which.`
+        + (d.example ? ` The figures beneath are ${d.example.symbol}'s own, as a worked example.` : "");
+    }
 
     return {
       sections,

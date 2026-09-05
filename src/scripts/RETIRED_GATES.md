@@ -8,6 +8,57 @@ ground it used to hold.
 
 ---
 
+## `verify-ux.ts` — retired 2026-09-05, by Operator decision
+
+**Ran:** `npm run verify:ux` (never wired into `build`; needed both servers, a driver and a session)
+
+**What it asserted.** Layer 3b — a real Chromium, a real signed-in session, and the product read at
+three widths. Seven sections, 79 assertions:
+
+- **U1** a loader that never resolves · **U2** a chart with no axis labels · **U3** an answer that
+  overflows its column · **U4** follow-up chips that do not change per turn · **U5** the reader
+  dragged back down by auto-scroll while they had scrolled up.
+- The **three viewports** — the real sidekick panel (~326px), mobile (390), full width (1440) —
+  asserting nothing overflows its box and the page never scrolls sideways.
+- **4b** the send-time spacer, asserted as a recorded measurement rather than a target, so the pin
+  could not move silently.
+- **6** negative controls: a stuck loader injected, a chart stripped of its ticks, an overflow forced
+  — each check made to fire, so the gate could not go quiet while still reporting green.
+
+**Last run — 2026-09-05: ✅ ALL PASS — 79 passed, 0 failed.**
+
+**Why it is retired.** The Operator verifies UI by eye, and the gate cost ten minutes a run to prove
+what a glance proves faster. That is a judgement about where verification time is worth spending, and
+it is the Operator's to make.
+
+⚠ **WHAT IS GIVEN UP, RECORDED HONESTLY, BECAUSE THIS GATE DID FIND THINGS NO OTHER LAYER COULD.**
+Three defects in this repository's history were caught here and by nothing else, and the comments
+naming it still sit in the files it corrected:
+
+- `composition/families/attribution.ts` — **U12** read *"no shortfall section found — the A renderer
+  is UNEXERCISED in the browser"*, which is how a whole family was found unreachable.
+- `section/kinds/relative.ts` and `composition/families/peer-group.ts` — **U3** found a 662px grid
+  inside a 346px panel, and a peer roster whose entity column pushed the only value column off the
+  right edge. Both were invisible at 1440px and to every offline gate.
+- `composition/families/ownership.ts` — a copy change was made only after this gate went red.
+
+The pattern is that all three were **narrow-viewport and unexercised-renderer** defects: correct in
+the payload, correct at full width, wrong in the panel. Those are the class that now depends on
+somebody looking.
+
+**What holds the ground now.**
+
+- `verify:browser` (kept) still drives a real session and asserts the two things an eye cannot check:
+  that a request arrives at the API **authenticated** and returns 2xx, and that a control's handler
+  is bound to something that happens. It also carries `I-INTERPOLATION` and the placeholder scan over
+  the rendered DOM, so a `${}` hole or a `[missing …]` on screen is still caught mechanically.
+- `verify:answer-invariants` holds every property that is about the ANSWER rather than its layout —
+  `I-FALSE-ZERO`, `I-DENOMINATOR`, `I-STATES-SURVIVE`, `I-RAW-TOKEN` and the rest — and needs no
+  browser at all.
+- The three widths themselves survive as `harness/browser.ts#VIEWPORTS`, so anything that needs them
+  again does not have to re-derive which widths this product is read at.
+- Layout regressions at 326px and 390px are now caught by the Operator looking at them.
+
 ## `filing-step4-reconcile.ts` — retired 2026-08-10
 
 **Ran:** `npx tsx src/scripts/filing-step4-reconcile.ts` (read-only, never wired into `build`)

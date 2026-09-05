@@ -26,6 +26,10 @@ import {
   type ScreenCondition,
 } from "../resolve/blocks-market.js";
 import { blockCopy } from "../catalogue/block-copy.js";
+import { resolveFindingScreen } from "../resolve/blocks-market.js";
+import { resolveLineItemScreen } from "../resolve/line-item-screen.js";
+import type { LineItemCondition } from "../composition/line-item-conditions.js";
+import { SET_TABLE_TRANSPORT } from "../section/kinds/set-table.js";
 import {
   resolvePortfolioValueSeries, resolvePortfolioHealthSeries,
 } from "../resolve/blocks-portfolio-series.js";
@@ -346,8 +350,13 @@ export async function screenBlock(
    *   above it is worse than one that says nothing, because the figure looks like the harder evidence.
    */
   mode: "filter" | "ranking" = "filter",
+  /**
+   * ★ THE BAND, PASSED THROUGH — a filter on the LABEL rather than on a metric. See `resolveScreen`.
+   *   It narrows before the conditions do, so the totals below must name it or the denominator lies.
+   */
+  band: string | null = null,
 ): Promise<BuiltBlock | null> {
-  const r = await resolveScreen(conditions);
+  const r = await resolveScreen(conditions, band);
   if (!r.ok) return null;
   const d = r.data;
 
@@ -399,7 +408,17 @@ export async function screenBlock(
             { label: "Matched", value: String(d.matched) },
             // ⚠ THE DENOMINATOR IS PART OF THE ANSWER. "12 matched" over 94 evaluable and over 2,290
             // are different findings, and only the first pair is a screen result.
-            { label: "Out of", value: `${d.considered} with a comparable figure` },
+            //
+            // ★ AND A BAND CHANGES WHICH DENOMINATOR IS HONEST. `screenUniverse` narrows on the band
+            //   BEFORE the conditions, so `considered` is already the post-band figure — printing it
+            //   alone gives "Matched 15 · Out of 15", every word true and the line misleading in the
+            //   exact way `mode: "ranking"` was added to stop one filter along. With a band the count
+            //   the reader needs is the scored universe the 15 came out of, and the band is named as
+            //   the thing that did the narrowing.
+            d.band
+              ? { label: "Out of", value: `${d.scoredUniverse} scored companies` }
+              : { label: "Out of", value: `${d.considered} with a comparable figure` },
+            ...(d.band ? [{ label: "Band", value: d.band }] : []),
             ...d.conditions.map((c) => ({ label: c.label, value: `${c.bound} · ${c.evaluable} evaluable` })),
           ],
       // ★ THE HONEST EMPTY, PRESERVED FROM T-1. A screen matching zero is a RESULT — the filter ran
@@ -410,6 +429,205 @@ export async function screenBlock(
   };
 }
 
+
+// ═══ 14b · THE FINDING SCREEN ══════════════════════════════════════════════════════════════════════
+//
+// ★ SAME RENDERER, DIFFERENT LAYER. `set-table` is `ANCHOR`'s "what is this collection" at working
+//   resolution and a findings match set is exactly that — so no renderer is added and §4.1's counts
+//   do not move. What changes is the population underneath: 2,291 stocks rather than 95.
+//
+// ── ★★ THE THREE STATES ARE IN THE TOTALS, NOT IN A FOOTNOTE ──────────────────────────────────────
+// The rows are the FIRED set. Everything else about the census would be invisible if it lived only in
+// the prose, and §4.3's amendment is explicit that a component contradicting the sentence above it is
+// worse than one that says nothing, "because the figure looks like the harder evidence". So the
+// component carries all four counts itself:
+//
+//   Fired · Ran, did not fire · Could not be checked · Never checked
+//
+// ⚠ "Could not be checked" AND "Ran, did not fire" ARE TWO ROWS AND MUST NEVER BECOME ONE. That is
+//   the distinction the findings layer exists to preserve, and a screen is where it is most easily
+//   destroyed — see `resolveFindingScreen` for the measured sizes (on R3 the could-not-run set is
+//   five times the ran-and-clean set).
+//
+// ── ⚠ THE COUNT SHAPE IS A PRESENTATION CHOICE, NOT A DIFFERENT QUERY ─────────────────────────────
+// `shape: "count"` puts the number first and keeps the same bounded set beneath it. A reader who
+// asked "how many" is owed the number AND the set behind it; a list of twelve with the count nowhere
+// on it is the failure, and so is a refusal.
+export async function findingScreenBlock(
+  ruleKeys: readonly string[],
+  what: string,
+  band: string | null = null,
+): Promise<BuiltBlock | null> {
+  const r = await resolveFindingScreen(ruleKeys, what, band);
+  if (!r.ok) return null;
+  const d = r.data;
+  const c = d.census;
+
+  // ★ COLUMNS THE READER CAN ACTUALLY USE HERE, AND THEY ARE NOT THE METRIC SCREEN'S.
+  //   · `What fired` matters only where several rules were in scope; on a named rule every row would
+  //     repeat the same string, which is a column carrying no information.
+  //   · `As of` is load-bearing on this table in a way it is not on the metric one: these rows come
+  //     from FILINGS at each company's own period, so two rows can be a year apart.
+  //   · `Health score` is mostly absent by construction — most of this set is unscored — and it sorts
+  //     `null` LAST rather than as zero, which is the renderer's own rule.
+  // ★ GROUPED, like every other number this layer renders (`blocks.ts` is en-IN throughout). These
+  //   are the largest counts in the product — "2291" is four digits to parse, "2,291" is a figure.
+  const n = (x: number): string => x.toLocaleString("en-IN");
+  const several = ruleKeys.length > 1;
+  const columns: SetTableColumn[] = [
+    ...(several ? [{ key: "fired", label: "What fired", align: "text" as const, primary: true }] : []),
+    { key: "asof", label: "As of", align: "text", primary: !several },
+    { key: "health", label: "Health score", align: "number" },
+  ];
+
+  const rows: SetTableRow[] = d.matches.slice(0, SET_TABLE_TRANSPORT).map((m) => ({
+    key: m.symbol,
+    title: m.name || m.symbol,
+    symbol: m.symbol,
+    tag: m.band,
+    cells: {
+      ...(several
+        ? { fired: { display: m.fired.join(" · ") || what, sort: m.fired.length } }
+        : {}),
+      asof: { display: m.period, sort: m.periodSort },
+      // ⚠ "not scored" IS NOT A MISSING VALUE AND IS NOT ZERO. It is the honest state of 2,196 of the
+      //   2,291 this screen reaches, and `sort: null` keeps them out of the ranking rather than at
+      //   the bottom of it.
+      health: { display: m.score === null ? "not scored" : String(Math.round(m.score)), sort: m.score },
+    },
+  }));
+
+  return {
+    section: setTableSection({
+      heading: `What fired ${what}`,
+      columns,
+      rows,
+      // ⚠ THE SET THIS TABLE IS A WINDOW ONTO, WHICH IS THE BAND-FILTERED ONE. `c.fired` is the global
+      //   count and the renderer reads this as "showing N of M" — so with a band it rendered
+      //   "showing 0 of 59" over a table whose set is genuinely empty. The 59 is on the card as its
+      //   own total, where it is a fact rather than a denominator this table is part of.
+      totalAvailable: d.matches.length,
+      // ═══════════════════════════════════════════════════════════════════════════════════════════
+      // ⚠⚠ NOTHING IS SHOWN AS A TOTAL HERE, AND THE FOUR COUNTS ARE NOT GONE — THEY MOVED CHANNEL.
+      //
+      //    They rendered as five figures over two lines above a twelve-row table, restating the
+      //    paragraph immediately above the card almost word for word. Operator's call to drop them,
+      //    and the badge — "showing 12 of 59" — already carries the only fact the TABLE itself needs
+      //    to make about its own bounds.
+      //
+      // ★ BUT THEY ARE THE ONE THING THIS SCREEN MAY NOT LOSE. `FindingEvaluationState` is
+      //   three-valued precisely so a could-not-check is never counted as a company that passed, and
+      //   the model composes prose over this section. So they travel in `digestTotals`: the model is
+      //   told all four, the reader is told all four IN THE PROSE, and neither audience loses
+      //   anything — which is what N-2's payload/digest split is for.
+      //
+      // ⚠ `I-STATES-SURVIVE` FOLLOWED THEM. It read these totals; it now reads the digest and the
+      //   prose, because that is where the property lives now. A gate left pointing at the old home
+      //   would have gone quiet rather than red, which is the worse of the two failures.
+      // ═══════════════════════════════════════════════════════════════════════════════════════════
+      totals: [],
+      digestTotals: [
+        { label: "Fired", value: n(c.fired) },
+        { label: "Ran, did not fire", value: n(c.notFired) },
+        // ★ THE THIRD STATE, BESIDE THE SECOND AND NEVER MERGED INTO IT.
+        { label: "Could not be checked", value: n(c.notEvaluable) },
+        ...(c.notEvaluated > 0 ? [{ label: "Never checked", value: n(c.notEvaluated) }] : []),
+        { label: "Out of", value: `${n(c.considered)} companies we hold` },
+        ...(d.band ? [{ label: "Band", value: `${d.band} only — ${n(d.bandDropped)} fired outside it` }] : []),
+      ],
+      // ⚠ AN EMPTY FINDING SCREEN IS A RESULT AND ITS WORDS ARE ITS OWN. `screen_no_match` says "no
+      //   company in our coverage MEETS THOSE CONDITIONS", which is a sentence about numeric bounds
+      //   and would be the wrong words here: nothing was bounded, a check ran and raised nothing.
+      // ⚠ AN EMPTY BANDED SET IS A DIFFERENT SENTENCE FROM AN EMPTY ONE. Companies ARE firing this
+      //   check; none of them is in the band asked for, and "not standing at any company we hold"
+      //   would be false.
+      //
+      // ⚠ AND THE CHECK IS NOT NAMED IN EITHER — `I-PLEDGE-SILENT` fired on the first draft of the
+      //   banded one. An absence word within eighty characters of a pledge word is the shape of the
+      //   false statement that shipped once, and on this screen it would be false for the same
+      //   reason one layer up: R1's not-fired count inherits the zero-filled pledge column. The
+      //   heading above this table already names what was searched for.
+      emptyPhrase: band
+        ? `${n(d.census.fired)} ${d.census.fired === 1 ? "company carries" : "companies carry"} this `
+          + `flag, and not one of them is in the ${band} band.`
+        : `The check ran and no company we hold carries this flag — `
+          + `${n(c.notFired)} came back clean, and ${n(c.notEvaluable + c.notEvaluated)} could not be checked.`,
+    }, r.coverage) as AnySection,
+    coverage: r.coverage,
+  };
+}
+
+// ═══ 14c · THE LINE-ITEM SCREEN ════════════════════════════════════════════════════════════════════
+//
+// ★ SAME RENDERER, THIRD POPULATION. `set-table` again — no renderer is added and §4.1's counts do not
+//   move. What changes is what the rows are drawn from: filed statements rather than scores.
+//
+// ── ⚠ EVERY ROW STATES ITS OWN BASIS, AND A MIXED SET IS THE NORMAL RESULT ───────────────────────
+// 15,935 stock-periods across 1,495 stocks hold both a standalone and a consolidated figure for the
+// same quarter, and `chooseBasis` resolves per company — banks to standalone, non-financials to
+// consolidated. So one result set legitimately mixes them, and a reader comparing two rows is
+// comparing two different sets of books unless the row says which. It is a COLUMN rather than a
+// footnote for that reason.
+export async function lineItemScreenBlock(
+  conditions: readonly LineItemCondition[],
+  requestedBasis: "standalone" | "consolidated" | null,
+  /** Symbols the rest of the screen already narrowed to — the cross-universe intersection. */
+  restrictTo: ReadonlySet<string> | null = null,
+): Promise<BuiltBlock | null> {
+  const r = await resolveLineItemScreen(conditions, requestedBasis, restrictTo);
+  if (!r.ok) return null;
+  const d = r.data;
+  // ⚠ NO SECOND FILTER HERE. The resolver narrows, so its `matched` and `basisSplit` describe exactly
+  //   what this table draws — see the note on `restrictTo`.
+  const kept = d.matches;
+
+  const conditionCols: SetTableColumn[] = d.conditions.map((c, i) => ({
+    key: `c${i}`, label: c.label, align: "number", primary: i === 0,
+  }));
+  const columns: SetTableColumn[] = [
+    ...conditionCols,
+    { key: "period", label: "As of", align: "text" },
+    // ★ THE BASIS COLUMN. Only where the set actually mixes — a column reading "consolidated" 60
+    //   times is furniture, and the answer's own sentence carries it instead.
+    ...(d.basisSplit.standalone > 0 && d.basisSplit.consolidated > 0
+      ? [{ key: "basis", label: "Basis", align: "text" as const }]
+      : []),
+  ];
+
+  const rows: SetTableRow[] = kept.slice(0, SET_TABLE_TRANSPORT).map((m) => {
+    const cells: Record<string, SetTableCell> = {};
+    d.conditions.forEach((c, i) => {
+      const v = m.values.find((x) => x.label === c.label);
+      cells[`c${i}`] = { display: v?.display ?? "not held", sort: v?.sort ?? null };
+    });
+    cells.period = { display: m.period, sort: m.periodSort };
+    cells.basis = { display: m.basis, sort: null };
+    return { key: m.symbol, title: m.name || m.symbol, symbol: m.symbol, tag: null, cells };
+  });
+
+  return {
+    section: setTableSection({
+      heading: "What matched",
+      columns,
+      rows,
+      totalAvailable: kept.length,
+      totals: [],
+      // ⚠ THE COUNTS GO TO THE MODEL, NOT ONTO THE CARD — the same split the findings screen uses.
+      //   The reader has them in the opening sentence; a row of figures restating it is the noise the
+      //   Operator asked to remove.
+      digestTotals: [
+        { label: "Matched", value: String(kept.length) },
+        { label: "Carrying every figure asked for", value: String(d.evaluable) },
+        { label: "Out of", value: `${d.considered} companies that have filed` },
+        ...d.conditions.map((c) => ({ label: c.label, value: `${c.bound} · ${c.evaluable} filed it` })),
+      ],
+      emptyPhrase:
+        `${d.evaluable} companies have filed every figure asked for, and none of them clears the `
+        + `bounds — the filter ran over what they filed rather than finding nothing to read.`,
+    }, r.coverage) as AnySection,
+    coverage: r.coverage,
+  };
+}
 
 // ═══ 15b · THE BOOK OVER TIME (T-1b, finding 6) ════════════════════════════════════════════════════
 //

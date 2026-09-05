@@ -136,19 +136,45 @@ export async function expectedBook(userId: string): Promise<{ symbols: number; n
  */
 export const SUBJECTS = {
   healthy: "TCS",
-  thin: "MOLBIO",
+  // ⚠ THIS ROLE IS PERISHABLE BY CONSTRUCTION, AND IT HAS ALREADY EXPIRED ONCE.
+  //   A tier-0 subject is one we hold NO results for, so the role is only ever filled by a stock
+  //   ingestion has not reached yet — and the day it does, the subject silently becomes tier 1 and
+  //   every "does this degrade honestly" assertion on the thin arm starts testing the wrong state.
+  //   That is exactly what happened to MOLBIO: it was measured tier 0 when it was cast, then picked
+  //   up its first quarterly rows (FY27Q1, both bases) on 2026-09-05 and the live gate failed with
+  //   "this role needs tier 0 — pick another subject for it".
+  //
+  //   TO RE-MEASURE when it expires again — tier is ,
+  //   quarters counted across ALL FIVE industry tables (resolve/stock-coverage.ts):
+  //
+  //     WITH q AS (SELECT stock_id FROM quarterly_results
+  //       UNION SELECT stock_id FROM banking_quarterly_results
+  //       UNION SELECT stock_id FROM nbfc_quarterly_results
+  //       UNION SELECT stock_id FROM life_insurance_quarterly_results
+  //       UNION SELECT stock_id FROM general_insurance_quarterly_results)
+  //     SELECT s.symbol, (SELECT count(*) FROM shareholding_patterns sp WHERE sp.stock_id = s.id) sh
+  //       FROM stocks s
+  //      WHERE s.id NOT IN (SELECT stock_id FROM q)
+  //        AND s.id NOT IN (SELECT stock_id FROM score_snapshots)
+  //      ORDER BY sh DESC;
+  //
+  //   Measured 2026-09-05: only SEVEN stocks are tier 0. BLEL matches MOLBIO's original shape
+  //   exactly — 0 quarters in all five tables, one shareholding filing — so the arm exercises the
+  //   same state it always did: a company we have listed and hold a register for, and nothing else.
+  thin: "BLEL",
   bank: "HDFCBANK",
 
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   // ★★ FOUR ROLES ADDED AT PHASE 1 · BATCH 1, AND THE FIRST ONE IS A DEFECT IN THIS FILE.
   //
-  // ⚠ `thin: "MOLBIO"` IS TIER 0 — measured through `resolveStockCoverage`: 0 quarters in ALL FIVE
+  // ⚠ THE `thin` ROLE IS TIER 0 — measured through `resolveStockCoverage`: 0 quarters in ALL FIVE
   //   industry tables, and one shareholding filing. Both families authored in this batch declare
-  //   `minTier: 1`, and so do both orientation families, so **MOLBIO can never reach any of them**.
+  //   `minTier: 1`, and so do both orientation families, so **a tier-0 subject can never reach any
+  //   of them**.
   //   Every "does this degrade honestly" assertion the matrix runs on the thin arm has been testing
   //   the PLANNER's degradation, not the family's — which is the same shape as the stage-5b finding
-  //   that three registered families were dead code, one layer down. MOLBIO stays, because a tier-0
-  //   subject is a real state worth exercising; it is no longer the only thin arm.
+  //   that three registered families were dead code, one layer down. The tier-0 arm stays, because
+  //   it is a real state worth exercising; it is no longer the only thin arm.
   //
   //   `thinTier1` is the thin arm a FAMILY can actually reach: measured, MANIPALHOS is tier 1 with 1
   //   quarter, 0 annual years and exactly 1 shareholding filing. That single filing is also what the

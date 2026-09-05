@@ -24,6 +24,7 @@
 // off the snapshot — so Pillar + OwnershipScore are fully writable without a snapshot.
 
 import { createHash } from "node:crypto";
+import type { OwnershipV2Result } from "./v2-pillar.js";
 import { prisma } from "../../db/prisma.js";
 import type { PrimaryOwnershipResult } from "./primary.js";
 import type { OwnershipResult } from "./ownership.js";
@@ -310,7 +311,7 @@ export interface OwnershipFullWritePlan {
 
 /** Fingerprint over shareholding-data hash + spec version + a deterministic flow
  * summary, so any flow-affecting input change → new PillarScore version. */
-export function fullInputsFingerprint(result: OwnershipResult): string {
+export function fullInputsFingerprint(result: OwnershipResult, v2?: OwnershipV2Result | null): string {
   const flow = (["A", "B", "C", "D"] as const).map((k) => {
     const c = result.flow[k];
     return { k, s: c.state, v: c.cappedSubScore, r: c.firedRule, b: c.bandLanded, n: c.netFlowValue, t: c.trendState };
@@ -321,6 +322,13 @@ export function fullInputsFingerprint(result: OwnershipResult): string {
     flow,
     fac: result.flowAdjustmentClamped,
     fin: result.finalOwnership,
+    // ★ THE v2 LEGS ARE PART OF THE IDENTITY, AND LEAVING THEM OUT WAS A REAL BUG WAITING.
+    //   PillarScore rows are get-or-created on this fingerprint. Under change 2.5 the v1
+    //   decomposition above can be byte-identical while the pillar's SUBTOTAL is completely
+    //   different — so without these fields a v2 pass would find the existing v1 row, reuse
+    //   it, and silently keep the v1 subtotal. Undefined on a v1 pass, so v1 fingerprints are
+    //   unchanged and no existing row is orphaned.
+    v2: v2 ? { s: v2.subtotal, p: v2.pledgeScore, pr: v2.promoterScore, i: v2.institutionalScore } : undefined,
   });
   return createHash("sha256").update(payload).digest("hex");
 }
@@ -358,7 +366,7 @@ export const FLOW_BAND_CUTS: Record<"c_net_insider" | "d_net_block" | "trend_bon
 /** Pure builder: the OwnershipScore data (Primary terms + Flow rollup + R1 firing
  *  record) from an OwnershipResult. Single-sourced by writeOwnershipFull and the
  *  scoring-pass orchestrator so the row shape cannot drift. */
-export function buildOwnershipScoreData(result: OwnershipResult) {
+export function buildOwnershipScoreData(result: OwnershipResult, v2?: OwnershipV2Result | null) {
   const p = result.primary;
   const r1 = p.redFlags.find((f) => f.flagKey === "ownership_R1_pledge");
   const r1Fired = !!r1;
@@ -379,6 +387,16 @@ export function buildOwnershipScoreData(result: OwnershipResult) {
       finalOwnership: result.finalOwnership,
       r1Fired,
       r1TriggeringValues,
+      // CHANGE 2.5 — the rebuilt pillar's legs. Absent on a v1 pass, and then every column
+      // stays NULL, which reads as "not scored under v2" rather than as a zero.
+      v2Subtotal: v2?.subtotal ?? null,
+      v2PledgePct: v2?.pledgePct ?? null,
+      v2PledgeScore: v2?.pledgeScore ?? null,
+      v2PledgeAdjustment: v2 ? v2.pledgeAdjustment : null,
+      v2PromoterScore: v2?.promoterScore ?? null,
+      v2InstitutionalScore: v2?.institutionalScore ?? null,
+      v2PromoterChange: v2?.promoterChange ?? null,
+      v2InstitutionalChange: v2?.institutionalChange ?? null,
     },
   };
 }

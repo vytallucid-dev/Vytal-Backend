@@ -270,19 +270,6 @@ const num = (v: number) => (Math.round(v * 10) / 10).toFixed(1);
 async function workedExample(concept: ConceptEntry, symbol: string): Promise<WorkedExample | null> {
   if (concept.example === "none") return null;
 
-  if (concept.example === "band") {
-    return {
-      symbol,
-      lead: `The five labels, and where the cuts fall.`,
-      rows: LABEL_BAND_MAP.map((b) => ({
-        label: b.label,
-        value: b.max === null ? `${b.min} and above` : Number.isFinite(b.min) ? `${b.min}–${b.max}` : `under ${b.max}`,
-        note: null,
-      })),
-      close: null,
-    };
-  }
-
   if (concept.example === "coverage") {
     const cov = await resolveStockCoverage(symbol);
     // No example rather than a wrong one: a failed coverage read cannot tell us what this stock
@@ -309,6 +296,56 @@ async function workedExample(concept: ConceptEntry, symbol: string): Promise<Wor
   const dec = await resolvePillarDecomposition(symbol);
   if (!dec.ok) return null;
   const d = dec.data;
+
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ THE BAND EXAMPLE — REWRITTEN, BECAUSE IT WAS RENDERING THE CARD'S OWN PARTS A SECOND TIME.
+  //
+  // ⚠ OBSERVED LIVE: the five-labels card lists the five bands with their cuts under "What it is made
+  //   of", and then a table underneath repeated THE IDENTICAL CONTENT. Both halves came from
+  //   `LABEL_BAND_MAP` — `BAND_PARTS` in concepts.ts for the first, and this arm for the second, one
+  //   rendering "55 to under 62" and the other "55–62". Same five rows, same five cuts, twice, four
+  //   lines apart. Same defect as the ROCE answer's triple repetition, in a component rather than in
+  //   prose. ONE STATEMENT, ONE PLACE.
+  //
+  // ★ AND THE HALF THAT WAS WRONG IS THIS ONE, WHICH IS WHY IT IS REPLACED RATHER THAN DELETED.
+  //   `parts` is the right home for the cuts: the five labels ARE what the scale is made of, and
+  //   `BAND_PARTS` is projected from `LABEL_BAND_MAP` already. What this arm was doing was not a
+  //   worked example at all — it took a `symbol`, ignored it, and restated a static registry. This
+  //   file's own header says the difference: "what is stored is what is true ALWAYS; this is what is
+  //   true of ONE COMPANY today, and it says which company."
+  //
+  //   So the example now does that: the reader's own company, its composite, and the cut it cleared.
+  //   With no company in context there is no example and the card renders the cuts once — which is
+  //   the observed case ("what does pristine mean" resolves no subject) and is now the whole fix.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  if (concept.example === "band") {
+    const def = LABEL_BAND_MAP.find((b) => b.band === d.band);
+    return {
+      symbol,
+      lead: `Where ${symbol} falls on that scale, as an example.`,
+      rows: [
+        { label: "Health score", value: num(d.composite), note: `for ${d.periodKey}` },
+        {
+          label: "Which reads as",
+          value: d.bandLabel,
+          // ⚠ THE CUT IS READ OFF `LABEL_BAND_MAP`, AND THE BAND IS READ OFF THE SNAPSHOT. The
+          //   decomposition's own note is explicit that `band` is persisted and never re-derived from
+          //   the composite; this names the boundary that band sits above without recomputing which
+          //   band it is.
+          note: def
+            ? def.max === null
+              ? `the top band starts at ${def.min}`
+              : Number.isFinite(def.min)
+                ? `that band runs from ${def.min} to under ${def.max}`
+                : `that band is everything under ${def.max}`
+            : null,
+        },
+      ],
+      close: def && def.max !== null
+        ? `${num(def.max - d.composite)} more points would move it into the next band up.`
+        : null,
+    };
+  }
 
   if (concept.example === "composite") {
     return {

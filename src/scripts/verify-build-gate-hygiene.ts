@@ -235,6 +235,15 @@ const BUILD_CLAIM_EXEMPT: Record<string, string> = {
 };
 
 const ENV_OR_DB_ALLOWANCE: Record<string, string> = {
+  "src/scripts/verify-screen-ask.ts":
+    "asserts the set-request boundary — that a request for a SET never routes to the definition path, "
+    + "and that a definition question still does. It reaches db/prisma.ts TRANSITIVELY and only "
+    + "transitively: `resolve/concept.ts` imports the pillar decomposition for a definition's worked "
+    + "example, and `filing/registry.ts` imports the 22 rule modules. Neither is called here. The gate "
+    + "itself touches three frozen registries (STOCK_FINDINGS, FILING_REGISTRY, the band map) and one "
+    + "file in this checkout (src/composition/compose.ts, read to prove the two paths share one "
+    + "detector). MEASURED env-free: it runs green with DATABASE_URL and DIRECT_URL unset, so the pool "
+    + "is constructed and never connected, exactly as the endpoint gate below records.",
   "src/scripts/verify-catalogue-endpoint.ts":
     "boots the real app in-process to assert the SERIALISED bytes. app.ts's router imports pull in " +
     "db/prisma.ts (a pg Pool is constructed but never connected — the pool is lazy) and config/env.ts. " +

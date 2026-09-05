@@ -23,11 +23,11 @@
 import {
   f1Roce, f2Roe, f3CashConversion, f4DebtEquity, f5InterestCoverage,
   f6ReceivablesDays, f7AssetTurnover, f8FcfPatAvg, f9OcfConsistency, f10Revenue3yCagr,
-  fOpmOperatingMargin,
+  fOpmOperatingMargin, FOUNDATION_TTM,
 } from "../metrics/foundation.js";
 import {
-  m1TtmOpm, m2TtmNpm, m3RevenueYoyTtm, m4NetProfitYoyTtm, m5TtmInterestCoverage,
-  consecutiveTail,
+  m1TtmOpm, m2TtmNpm, m3RevenueYoyTtm, m4NetProfitYoyTtm,
+  m5TtmOperatingShareOfPbt, consecutiveTail,
 } from "../metrics/momentum.js";
 import { computeBankingLiveValues } from "../metrics/banking.js";
 import type { BankingCtx } from "../metrics/banking-types.js";
@@ -41,6 +41,11 @@ export interface FoundationCtx {
   prior: FoundationAnnual | null; // FY-1 (for the F3 buyback inference)
   snapshotOrdinal: number;
   periodAvgPrice: number | null;
+  /** CHANGE 2.1 — the consecutive quarterly run ending at the scored period, oldest->newest.
+   *  Six Foundation metrics take their NUMERATOR from here while their balance-sheet
+   *  denominator stays on `snap`. Empty on a v1 pass, and empty for a stock with no
+   *  quarterly rows, in which case every rolling metric falls back to its annual form. */
+  run: MomentumQuarter[];
 }
 export interface MomentumCtx {
   run: MomentumQuarter[]; // the consecutive-tail run (oldest→newest)
@@ -55,7 +60,9 @@ export type MomentumFn = (c: MomentumCtx) => MetricValue;
 // non_financial is BUILT; banking keys are DECLARED but mapped to a deferred stub
 // (gated — see dispatchLiveValues). Review each key→function row.
 // ════════════════════════════════════════════════════════════════════════════
-export const FOUNDATION_DISPATCH: Record<string, FoundationFn> = {
+/** The ANNUAL forms. Not a v1 survival — they are the fallback branch of the rolling table
+ *  below, which is TTM-first by design and annual when the quarters are not there. */
+const FOUNDATION_ANNUAL: Record<string, FoundationFn> = {
   F1:     (c) => f1Roce(c.snap),
   F2:     (c) => f2Roe(c.snap),
   F3:     (c) => f3CashConversion(c.snap, c.prior, c.periodAvgPrice),
@@ -69,6 +76,36 @@ export const FOUNDATION_DISPATCH: Record<string, FoundationFn> = {
   F1_OPM: (c) => fOpmOperatingMargin(c.snap), // NEW — PG8 Foundation OPM (EBITDA-based)
 };
 
+// ── CHANGE 2.1 — the v2 Foundation dispatch ──────────────────────────────────────
+// TTM FIRST, ANNUAL FALLBACK, exactly as _tools/u6.cjs foundationGrid does it:
+//
+//     if (cadence && TTM6[k] && Q) v = TTM6[k](...);
+//     if (v === null)              v = BASE[k](...);
+//
+// ★ THE FALLBACK IS NOT A CONVENIENCE, IT IS WHY COVERAGE DOES NOT DROP. A rolling F1
+//   needs 4 consecutive quarters and a rolling F10 needs 16; a company short of either
+//   would otherwise LOSE the metric entirely and its Foundation pillar would thin out
+//   against the §14.4 floor. Falling back to the annual value keeps the metric present
+//   and merely un-refreshed — which is exactly what v1 already gave it.
+//
+// The four R31-frozen metrics (F3, F4, F8, F9) are absent from FOUNDATION_TTM and so
+// resolve to the annual table untouched.
+export const FOUNDATION_DISPATCH: Record<string, FoundationFn> = Object.fromEntries(
+  Object.keys(FOUNDATION_ANNUAL).map((key) => {
+    const annual = FOUNDATION_ANNUAL[key];
+    const rolling = FOUNDATION_TTM[key];
+    if (!rolling) return [key, annual];
+    return [key, (c: FoundationCtx): MetricValue => {
+      if (c.run.length > 0) {
+        const ttm = rolling(c.snap, c.run);
+        if (ttm.available) return ttm;
+      }
+      const a = annual(c);
+      return { ...a, flags: [...a.flags, "change 2.1: rolling form unavailable (" + (c.run.length ? "insufficient consecutive quarters" : "no quarterly rows") + ") - fell back to the annual value"] };
+    }];
+  }),
+);
+
 // emitAs: route a key to an existing live-value fn but stamp the result with a
 // different metric key/label (the §"emit rename"). Used for PG8's M1_OPM_TTM, which
 // reuses the SHARED EBITDA m1TtmOpm but must surface under its own key.
@@ -80,10 +117,12 @@ export const MOMENTUM_DISPATCH: Record<string, MomentumFn> = {
   M2:         (c) => m2TtmNpm(c.run),
   M3:         (c) => m3RevenueYoyTtm(c.run),
   M4:         (c) => m4NetProfitYoyTtm(c.run),
-  M5:         (c) => m5TtmInterestCoverage(c.run),
   // PG8 OPM: the SHARED EBITDA m1TtmOpm, emit-renamed to M1_OPM_TTM. NOT a separate
   // fn — M1 and M1_OPM_TTM are the identical EBITDA computation (model-wide OPM fix).
   M1_OPM_TTM: emitAs("M1_OPM_TTM", "TTM OPM % (EBITDA)", (c) => m1TtmOpm(c.run)),
+  // change 2.9 — selected only where the PG's v2 bar set defines it (see score-pass's key
+  // enumeration); M5 and M5_OPSHARE are never both in a PG's set.
+  M5_OPSHARE: (c) => m5TtmOperatingShareOfPbt(c.run),
 };
 
 // Banking keys (now BUILT — see metrics/banking.ts). Foundation 7 / Momentum 5.
@@ -124,7 +163,7 @@ export const DISPATCH_TABLE: DispatchEntry[] = [
   { key: "M2",  pillar: "momentum",   industry: "non_financial", fn: "m2TtmNpm",            status: "implemented", note: "TTM NPM %" },
   { key: "M3",  pillar: "momentum",   industry: "non_financial", fn: "m3RevenueYoyTtm",     status: "implemented", note: "Revenue YoY (TTM) %" },
   { key: "M4",  pillar: "momentum",   industry: "non_financial", fn: "m4NetProfitYoyTtm",   status: "implemented", note: "Net Profit YoY (TTM) %" },
-  { key: "M5",  pillar: "momentum",   industry: "non_financial", fn: "m5TtmInterestCoverage", status: "implemented", note: "TTM Interest Coverage (x)" },
+  { key: "M5_OPSHARE", pillar: "momentum", industry: "non_financial", fn: "m5TtmOperatingShareOfPbt", status: "implemented", note: "TTM Operating Share of PBT % (change 2.9 — replaced TTM Interest Coverage, which correlated 4% with the accounts it tracked and was already carried by Foundation as F5)" },
   { key: "M1_OPM_TTM", pillar: "momentum", industry: "non_financial", fn: "m1TtmOpm", status: "reuse_rekey", note: "PG8 OPM = the SHARED EBITDA m1TtmOpm, emit-renamed to M1_OPM_TTM. Same computation as M1 (model-wide OPM fix; no separate PG8 fn)" },
   // Banking — BUILT (metrics/banking.ts). Computed when a BankingCtx is supplied.
   ...BANKING_FOUNDATION_KEYS.map((k): DispatchEntry => ({ key: k, pillar: "foundation", industry: "banking", fn: BANKING_FN_NAME[k], status: "implemented", note: "banking foundation live-value" })),
@@ -153,6 +192,10 @@ export interface DispatchInput {
   momentumKeys: string[];
   foundationRows: FoundationAnnual[];
   momentumQuarters: MomentumQuarter[];
+  /** CHANGE 2.8 x 2.1 — the quarters FOUNDATION's rolling numerator reads, which is not
+   *  always the same set Momentum reads. Omitted => momentumQuarters, so every existing
+   *  caller is byte-identical. See the note on the dispatcher below. */
+  foundationQuarters?: MomentumQuarter[];
   periodAvgPrice?: number | null;
   /** Banking compute context (BankingFundamental + Quarterly + BankSupplementary).
    *  Required when industryType="banking"; ignored otherwise. When absent on a
@@ -225,7 +268,26 @@ export function dispatchLiveValues(input: DispatchInput): DispatchOutput {
   if (fRows.length > 0) {
     const snap = fRows[fRows.length - 1];
     const prior = fRows.find((r) => r.fyOrdinal === snap.fyOrdinal - 1) ?? null;
-    const ctx: FoundationCtx = { rows: fRows, snap, prior, snapshotOrdinal: snap.fyOrdinal, periodAvgPrice: input.periodAvgPrice ?? null };
+    // ★ FOUNDATION'S ROLLING NUMERATOR MUST SHARE A BASIS WITH ITS DENOMINATOR.
+    //   Change 2.8 moves nine companies to CONSOLIDATED annual accounts, and change 2.1 makes
+    //   six Foundation metrics take a QUARTERLY numerator. The calibration switches only the
+    //   annual side (u6.cjs srcIndex reads cfg.basis; momentumGrid reads L.Qs with no basis),
+    //   which was coherent while Foundation was wholly annual and stopped being so the moment
+    //   2.1 landed: it computes a STANDALONE numerator over a CONSOLIDATED denominator.
+    //
+    //   MEASURED on the nine — ROCE as (standalone/standalone, consolidated/standalone,
+    //   consolidated/consolidated): RELIANCE 7.26 / 3.97 / 9.93, TATAPOWER 7.66 / 2.68 / 8.20,
+    //   M&M 28.15 / 8.88 / 14.65. The mixed arm is the outlier low every time, and those nine
+    //   dominate the largest score falls in the whole v1->v2 diff. The spec's own open concern
+    //   ("M&M's Foundation drops roughly 17-25 points on consolidated") is very likely this
+    //   artefact rather than a property of consolidated M&M.
+    //
+    //   So Foundation reads its own quarters. Momentum is UNCHANGED and stays standalone —
+    //   its metric definitions are untouched by v2 (`mom: null`) and 2.8 is an argument about
+    //   which accounts describe the business, which the calibration applies to the Foundation
+    //   cohort alone.
+    const fRun = consecutiveTail(input.foundationQuarters ?? input.momentumQuarters);
+    const ctx: FoundationCtx = { rows: fRows, snap, prior, snapshotOrdinal: snap.fyOrdinal, periodAvgPrice: input.periodAvgPrice ?? null, run: fRun };
     snapshotFy = snap.fiscalYear;
     foundation = input.foundationKeys.map((k) => (FOUNDATION_DISPATCH[k] ? FOUNDATION_DISPATCH[k](ctx) : noFn(k, "foundation")));
   } else {

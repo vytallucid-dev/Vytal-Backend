@@ -52,6 +52,10 @@ export interface CompositeResult {
   labelBand: LabelBand | null;
   labelText: string | null;
   bandMappingVersion: string; // the mapping VERSION that produced labelBand (cache-with-provenance)
+  /** The scoring SPEC version that produced this composite ("2026.1" v1 / "2026.2" v2).
+   *  Carried on the result rather than read from a module constant, so a pass cannot
+   *  compute under one instrument and be fingerprinted under another. */
+  specVersion: string;
 
   /** The weight set ACTUALLY APPLIED this snapshot (sums to 1.0 over surviving
    *  pillars; 0 for an unavailable pillar). Stored per snapshot — NOT assumed from

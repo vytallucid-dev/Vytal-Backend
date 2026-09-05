@@ -76,10 +76,7 @@ export async function buildFundamentalsView(
   // insurance-specific disclosures (persistency, combined ratio, solvency) live there.
   // Non-financials default to consolidated.
   const basisAvailable = await resolveBasisAvailable(stock.id, family);
-  const preferredDefault: Basis =
-    family === "banking" || family === "life_insurance" || family === "general_insurance"
-      ? "standalone"
-      : "consolidated";
+  const preferredDefault: Basis = preferredBasisFor(family);
   const basis = chooseBasis(opts.basis, basisAvailable, preferredDefault);
 
   // Shared envelope — present for EVERY family, built or not.
@@ -2075,7 +2072,26 @@ async function resolveBasisAvailable(stockId: string, family: IndustryFamily): P
 
 /** Requested basis if it has data; else the family's preferred default if available;
  *  else the only available basis; else the preferred default (stable even with no rows). */
-function chooseBasis(requested: Basis | undefined, available: Basis[], preferred: Basis = "consolidated"): Basis {
+/**
+ * ★ THE FAMILY-AWARE DEFAULT, LIFTED OUT OF `buildFundamentalsView` SO A SECOND CALLER CANNOT INVENT
+ *   ITS OWN — the screen is that second caller (N-5).
+ *
+ * Banks default to STANDALONE: standalone Q4 rows are always complete, while consolidated Q4 carries
+ * `audit_pending = true` (null NPA/capital) for some banks. Insurers default to standalone too — the
+ * regulated entity files standalone, several insurers are standalone-only (SBILIFE, ICICIGI), and the
+ * insurance-specific disclosures live there. Non-financials and NBFCs default to consolidated.
+ *
+ * ⚠ A SCREEN WITH ITS OWN DEFAULT WOULD SHOW A READER TCS's CONSOLIDATED REVENUE IN ONE ANSWER AND
+ *   ITS STANDALONE REVENUE IN THE NEXT, in one session. 15,935 stock-periods across 1,495 stocks hold
+ *   both bases, so that is not an edge case — it is most of the book.
+ */
+export function preferredBasisFor(family: IndustryFamily): Basis {
+  return family === "banking" || family === "life_insurance" || family === "general_insurance"
+    ? "standalone"
+    : "consolidated";
+}
+
+export function chooseBasis(requested: Basis | undefined, available: Basis[], preferred: Basis = "consolidated"): Basis {
   if (requested && available.includes(requested)) return requested;
   if (available.includes(preferred)) return preferred;
   return available[0] ?? preferred;

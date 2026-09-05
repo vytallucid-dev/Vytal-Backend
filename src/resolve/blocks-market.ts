@@ -24,6 +24,11 @@ import { buildFundAnalyticsView } from "../scoring/read/fund-analytics.service.j
 import { getUniverseHealthView } from "../scoring/read/universe-view.cache.js";
 import { getUniverseMetricValues } from "../scoring/read/metric-values.cache.js";
 import { screenUniverse } from "../scoring/read/screen.service.js";
+import { BAND_LABEL } from "../scoring/read/universe-projection.types.js";
+import { STOCK_FINDINGS } from "../catalogue/stock-findings.js";
+import { SET_TABLE_TRANSPORT } from "../section/kinds/set-table.js";
+import { GRAIN_LABEL } from "../filing/read.js";
+import { parsePeriodKey } from "../filing/period.js";
 import { getPeerGroupForStock } from "../scoring/read/peer-group-lookup.js";
 import { resolveStockCoverage } from "./stock-coverage.js";
 import {
@@ -392,6 +397,20 @@ export interface ScreenRead {
   readonly considered: number;
   readonly conditions: readonly { readonly label: string; readonly bound: string; readonly evaluable: number }[];
   readonly sortedBy: string;
+  /**
+   * ★ THE STRUCTURAL FILTER, ECHOED — added with the band condition.
+   *
+   * ⚠ WITHOUT IT A BAND SCREEN REPORTS ITS OWN DENOMINATOR AND HIDES THE REAL ONE. `screenUniverse`
+   *   narrows on the band BEFORE the conditions, so `considered` becomes 15 for the Pristine band and
+   *   the table would read "Matched 15 · Out of 15" — arithmetically true and the whole line
+   *   misleading, exactly the defect `mode: "ranking"` was added for one filter along. The band is
+   *   named and `scoredUniverse` carries the 95 the 15 came out of.
+   */
+  readonly band: string | null;
+  /** The scored universe BEFORE any structural narrowing. The honest denominator for a band screen. */
+  readonly scoredUniverse: number;
+  /** ★ Every matching symbol, uncapped — for intersecting with the filed-line-item universe. */
+  readonly matchedSymbols: readonly string[];
 }
 
 /**
@@ -420,7 +439,17 @@ export interface ScreenRead {
  *   as_of_date of 2026-07-04 — so a condition on it would be filtering 22% of the universe on a
  *   two-month-old reading, and the answer would have to say so.
  */
-export async function resolveScreen(conditions: readonly ScreenCondition[]): Promise<Resolved<ScreenRead>> {
+export async function resolveScreen(
+  conditions: readonly ScreenCondition[],
+  /**
+   * ★ THE BAND, AS A FIRST-CLASS CONDITION — added this batch. `ScreenRequest.band` already existed
+   *   and was unreachable from chat: "all the stocks in the pristine band" is a filter on the LABEL,
+   *   not on a metric, and no `ScreenFieldId` can express it. `parseBand` (the projection service's
+   *   own) is what resolves the word, so a band nobody publishes resolves to nothing rather than to
+   *   the nearest one.
+   */
+  band: string | null = null,
+): Promise<Resolved<ScreenRead>> {
   // ⚠ C-1, AND HERE THERE IS ONLY ONE ARM — DELIBERATELY. `getUniverseHealthView` and
   //   `getUniverseMetricValues` are typed `Promise<UniverseHealthView>` / `Promise<UniverseMetricValues>`:
   //   NEITHER can resolve to null. The only way `view` or `metrics` was ever falsy is the catch, so
@@ -446,7 +475,7 @@ export async function resolveScreen(conditions: readonly ScreenCondition[]): Pro
   // answers `{ kind: "empty" }` for an unscored universe or an empty scope, so BOTH arms are real —
   // a screen that could not run, and a screen that ran and matched nothing.
   let ran = true;
-  const proj = await screenUniverse(view, metrics, null, { conditions: [...conditions] })
+  const proj = await screenUniverse(view, metrics, null, { conditions: [...conditions], band: band ?? undefined })
     .catch(() => { ran = false; return null; }) as Record<string, unknown> | null;
   if (!ran) return absent<ScreenRead>("read_failed", { subject: null, query: baseQ });
   if (!proj || proj.kind !== "matches") {
@@ -471,17 +500,39 @@ export async function resolveScreen(conditions: readonly ScreenCondition[]): Pro
   // ★ EVERY CONDITION IS ECHOED WITH ITS OWN EVALUABLE COUNT. A screen narrowed by a field only 40
   //   of 2,290 stocks carry has answered a much smaller question than it looks, and `AppliedCondition`
   //   carries exactly that number for exactly this reason.
+  const structuralBand = (() => {
+    const st = proj.structural as Record<string, unknown> | undefined;
+    return typeof st?.band === "string" ? st.band : null;
+  })();
+  const considered = Number(evaluable?.considered ?? 0);
   const q: QueryCoverage = {
     ...baseQ,
-    universeSearched: Number(evaluable?.considered ?? baseQ.universeSearched),
-    dropped: applied.map((c) => ({
-      filter: String(c.field),
-      dropped: Math.max(0, Number(evaluable?.considered ?? 0) - Number(c.evaluable ?? 0)),
-      why: `no comparable value held for ${String(c.label)}`,
-    })).filter((d) => d.dropped > 0),
+    // ⚠ THE BAND IS A NARROWING, NOT A SMALLER UNIVERSE. `screenUniverse` filters on it before the
+    //   conditions, so `considered` is already the post-band figure — and writing that into
+    //   `universeSearched` would report "we searched 15 companies" for a screen that searched 95 and
+    //   kept 15. A silent filter makes a shortened set read as a complete one; this is the field
+    //   whose whole job is to stop that.
+    universeSearched: structuralBand ? baseQ.universeSearched : considered,
+    dropped: [
+      ...(structuralBand
+        ? [{
+            filter: "band",
+            dropped: Math.max(0, baseQ.universeSearched - considered),
+            why: `not in the ${structuralBand} band`,
+          }]
+        : []),
+      ...applied.map((c) => ({
+        filter: String(c.field),
+        dropped: Math.max(0, considered - Number(c.evaluable ?? 0)),
+        why: `no comparable value held for ${String(c.label)}`,
+      })).filter((d) => d.dropped > 0),
+    ],
   };
 
-  const matches: ScreenMatch[] = items.slice(0, 20).map((r) => ({
+  // ⚠ THIS READ `.slice(0, 20)` AND WAS A SECOND, LOWER CAP UNDER THE PROJECTION'S OWN. Two caps on
+  //   one list is how a stated bound comes to be wrong: the projection says "showing 60 of 422", this
+  //   quietly kept 20, and the card would have paged through a third of what it claimed to hold.
+  const matches: ScreenMatch[] = items.slice(0, SET_TABLE_TRANSPORT).map((r) => ({
     symbol: String(r.symbol ?? ""), name: String(r.name ?? ""),
     score: typeof r.score === "number" ? r.score : null,
     band: typeof r.band === "string" ? r.band : null,
@@ -501,7 +552,342 @@ export async function resolveScreen(conditions: readonly ScreenCondition[]): Pro
       evaluable: Number(c.evaluable ?? 0),
     })),
     sortedBy: String(proj.sortedBy ?? "health score, highest first"),
+    band: (() => {
+      const st = proj.structural as Record<string, unknown> | undefined;
+      return typeof st?.band === "string" ? st.band : null;
+    })(),
+    scoredUniverse: baseQ.universeSearched,
+    matchedSymbols: Array.isArray(proj.matchedSymbols) ? (proj.matchedSymbols as string[]) : [],
   }, { subject: null, query: q }, PROV_SCORED);
+}
+
+// ═══ 16 · THE FINDING SCREEN — the evaluative layer with tier-0-inclusive reach ════════════════════
+//
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★★ THIS IS A WIDER SCREEN THAN THE METRIC ONE, AND THE DIFFERENCE IS THE WHOLE REASON IT EXISTS.
+//
+//   the metric screen   reads `getUniverseHealthView()` — the 95 SCORED companies
+//   this                reads `stock_findings` — 48,907 rows over ALL 2,291 stocks we hold
+//
+// "How many stocks show a pledging red flag" is a count over findings, and answering it from the
+// scored universe would report 95 companies' worth of an answer that is really 2,291's.
+//
+// ── ★★ THE THREE STATES SURVIVE THE FILTER. THAT IS THIS RESOLVER'S ONE NON-NEGOTIABLE ────────────
+// `FindingEvaluationState` is `fired | not_fired | not_evaluable`, and the schema's own note says the
+// third exists because "inferring that from a missing row conflates 'it was clean' with 'we never
+// ran'". A screen is exactly where that distinction gets destroyed: filter to `fired`, count the rest
+// as the denominator, and every company we COULD NOT CHECK has been silently reported as clean.
+//
+// Measured on live rows, this is not hypothetical — per rule, at each stock's latest period:
+//   R1  pledge             59 fired · 1,999 not_fired ·     0 not_evaluable
+//   R3  earnings quality   42 fired ·   317 not_fired · 1,889 not_evaluable
+//   N1  cash-backed       108 fired ·   280 not_fired · 1,860 not_evaluable
+// On R3 the could-not-run set is FIVE TIMES the ran-and-was-clean set. Folding it into "did not
+// match" would turn "we checked 359 companies" into "we checked 2,248", and the 1,889 difference is
+// companies with too little annual history for the rule to have an opinion about.
+//
+// ── ⚠ AND THERE IS A FOURTH STATE, WHICH IS NOT A FOURTH KIND OF ANSWER ───────────────────────────
+// R1 holds rows for 2,058 of 2,291 stocks. The other 233 have NO ROW AT ALL — the rule never ran
+// against them, because it is a shareholding-grain rule and they have filed no shareholding. That is
+// recorded by ABSENCE rather than by a `not_evaluable` row, so it cannot be counted by the same query
+// arm. It is counted separately and reported separately, and it is NEVER described as clean.
+//
+// The same choice the witness census made (`resolve/patterns.ts` counts four states and describes
+// three), for the same reason: the arithmetic on screen has to close, and claiming "we tried and
+// could not" about a rule that never ran would be inventing an attempt.
+//
+// ── ★ NO DEPTH FLOOR IS DECLARED, AND THAT IS A DECISION RATHER THAN AN OMISSION ──────────────────
+// §3.3 makes a floor mandatory the moment a screen sees an unscored stock, and this one sees 2,196 of
+// them. The universe is bimodal — 1,391 stocks at exactly 8 quarters, 411 below, against 369 at 30-34
+// — so a METRIC screen over that set would need a floor and would need to say what it excluded.
+//
+// ⚠ THIS SCREEN EXCLUDES NOBODY FOR DEPTH, ON PURPOSE, BECAUSE THE FINDINGS LAYER ALREADY DID IT
+//   BETTER AND PER RULE. A rule needing more history than a stock has returns `not_evaluable` with
+//   `insufficient_annual_history` / `insufficient_quarters` — the exclusion is already recorded, on
+//   the row, with its reason, by the rule that knows how much history IT needs. A global floor laid
+//   over that would drop stocks a shallow-history rule can evaluate perfectly well, and would report
+//   one number where the rows carry a reason each. So `depthFloor` stays null and `excludedForDepth`
+//   stays 0 — a floor that never fires must not be declared, which is the ruling `resolveScreen`
+//   already records — and the not-evaluable REASONS are carried instead, in words.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+/** One company that fired, with what fired at it and when. */
+export interface FindingMatch {
+  readonly symbol: string;
+  readonly name: string;
+  /** The finding names that fired, already in the catalogue's words. Never a key, never a ref. */
+  readonly fired: readonly string[];
+  /** The filing period the finding is as of. Stocks sit at their own, so it is per row. */
+  readonly period: string;
+  /** For ordering the period column — the row's `period_end`, never rendered. */
+  readonly periodSort: number;
+  /** `null` for the 2,196 we do not score, which is most of this set. */
+  readonly score: number | null;
+  readonly band: string | null;
+}
+
+/** ★ THE THREE STATES, PLUS THE ONE THE ROWS RECORD BY ABSENCE. Total over `considered`. */
+export interface FindingCensus {
+  /** Every stock the screen ran over. */
+  readonly considered: number;
+  readonly fired: number;
+  /** Ran, and did not match. A RESULT — the checks completed and raised nothing. */
+  readonly notFired: number;
+  /** Could not run. NEVER folded into the line above. */
+  readonly notEvaluable: number;
+  /** No row at all — the rule has never been evaluated against this company. Never called clean. */
+  readonly notEvaluated: number;
+  /** Why the check could not run, in the reader's words, commonest first. Never a token. */
+  readonly reasons: readonly { readonly why: string; readonly count: number }[];
+}
+
+export interface FindingScreenRead {
+  /** What was filtered on, in words — one rule's name, or a kind. */
+  readonly what: string;
+  readonly matches: readonly FindingMatch[];
+  readonly census: FindingCensus;
+  /** Set when a band narrowed the result — see below for why that costs reach. */
+  readonly band: string | null;
+  readonly bandDropped: number;
+  readonly sortedBy: string;
+}
+
+/**
+ * ⚠ THE READER-FACING SENTENCE FOR EACH `NotEvaluableReason`, AND IT IS AUTHORED RATHER THAN
+ *   PROJECTED. The tokens are engine vocabulary ("insufficient_annual_history") and `I-RAW-TOKEN`
+ *   exists precisely to stop one reaching prose. The fallback says we could not run the check rather
+ *   than inventing a reason for it, so a token a new rule introduces degrades to the truth.
+ */
+const NOT_EVALUABLE_PHRASE: Readonly<Record<string, string>> = {
+  insufficient_annual_history: "too few filed annual accounts for the check to have an opinion",
+  insufficient_quarters: "too few filed quarters for the check to have an opinion",
+  insufficient_shareholding_history: "too few shareholding filings to compare against",
+  negative_equity: "net worth is at or below zero, so the ratio the check reads is meaningless",
+  no_debt: "no interest cost to measure coverage against",
+  class_not_disclosed: "the shareholding filing did not break out that class of holder",
+  share_count_unavailable: "the absolute promoter share count is missing from the filing",
+  pledging_not_disclosed: "pledging is not disclosed for this company's peer group",
+  no_prior_snapshots: "no earlier reading to compare this one against",
+  opm_unavailable: "no operating-margin series held",
+  pillar_unavailable: "one of the parts the check reads is unscored",
+  band_typical_unavailable: "the band-typical profiles this check compares against were not computed",
+  feed_not_wired: "the insider and block-deal feeds do not cover this company",
+  missing_line_item: "a figure the check needs is absent from the latest filing",
+  industry_not_applicable: "the check's arithmetic is not defined for this industry",
+};
+const notEvaluablePhrase = (token: string | null): string =>
+  (token && NOT_EVALUABLE_PHRASE[token]) || "the check could not be run on what this company has filed";
+
+interface FindingStateRow {
+  symbol: string;
+  name: string | null;
+  fired_names: string[] | null;
+  state: string;
+  reason: string | null;
+  period_key: string | null;
+  period_end: Date | null;
+}
+
+/**
+ * ★ ONE QUERY, AND THE PER-STOCK STATE IS DECIDED IN SQL RATHER THAN OVER 2,291 ROUND TRIPS.
+ *
+ * ⚠ THE PRECEDENCE IS THE THREE-STATE CONTRACT, NOT A CONVENIENCE. With several rules in scope (a
+ *   KIND filter names up to eleven), a company can be `fired` on one and `not_evaluable` on another.
+ *   The ladder is fired then not_evaluable then not_fired, so a company is only ever reported as
+ *   "ran and did not match" when EVERY selected rule that has a row ran and did not match. Putting
+ *   not_fired above not_evaluable is the exact silent fold this resolver exists to prevent.
+ *
+ * ⚠ `DISTINCT ON (stock_id, rule_key) ... ORDER BY period_end DESC` IS THE LATEST-PER-RULE HEAD. Rows
+ *   stack one per (stock, rule, filing period) by the table's own unique key, and a screen must read
+ *   the current state rather than every period a rule ever fired in.
+ */
+const FINDING_SCREEN_SQL = `
+WITH latest AS (
+  SELECT DISTINCT ON (f.stock_id, f.rule_key)
+         f.stock_id, f.symbol, f.rule_key, f.evaluation_state, f.not_evaluable_reason,
+         f.period_key, f.period_end
+  FROM stock_findings f
+  WHERE f.rule_key = ANY($1::text[])
+  ORDER BY f.stock_id, f.rule_key, f.period_end DESC
+),
+rolled AS (
+  SELECT l.stock_id,
+         l.symbol,
+         CASE
+           WHEN bool_or(l.evaluation_state = 'fired')         THEN 'fired'
+           WHEN bool_or(l.evaluation_state = 'not_evaluable') THEN 'not_evaluable'
+           ELSE 'not_fired'
+         END AS state,
+         (array_agg(l.not_evaluable_reason) FILTER (WHERE l.evaluation_state = 'not_evaluable'))[1] AS reason,
+         (array_agg(l.rule_key ORDER BY l.period_end DESC) FILTER (WHERE l.evaluation_state = 'fired')) AS fired_keys,
+         max(l.period_end) FILTER (WHERE l.evaluation_state = 'fired') AS fired_end
+  FROM latest l GROUP BY l.stock_id, l.symbol
+)
+SELECT r.symbol,
+       s.name,
+       r.state,
+       r.reason,
+       r.fired_keys AS fired_names,
+       (SELECT l2.period_key FROM latest l2
+         WHERE l2.stock_id = r.stock_id AND l2.evaluation_state = 'fired'
+         ORDER BY l2.period_end DESC LIMIT 1) AS period_key,
+       r.fired_end AS period_end
+FROM rolled r JOIN stocks s ON s.id = r.stock_id`;
+
+/** How many stocks exist at all — the denominator the "never evaluated" count is taken against. */
+const STOCK_COUNT_SQL = `SELECT COUNT(*)::int AS n FROM stocks`;
+
+export async function resolveFindingScreen(
+  /** The catalogue keys in scope. One for a named rule; the whole kind otherwise. */
+  ruleKeys: readonly string[],
+  /** What the reader filtered on, in words. Rendered; never derived from a key here. */
+  what: string,
+  /** ★ A BAND NARROWS THIS TO THE SCORED 95, AND THAT COST IS STATED — see below. */
+  bandLabel: string | null = null,
+): Promise<Resolved<FindingScreenRead>> {
+  if (ruleKeys.length === 0) {
+    return absent<FindingScreenRead>("missing_line_item", { subject: null, query: null });
+  }
+
+  // ⚠ `query: null` ON A FAILED READ, NEVER A ZEROED COVERAGE. `universeSearched` is a `number`, so a
+  //   `?? 0` here would state "we searched 0 companies" about a read that never ran — the same choice
+  //   `resolveUniverse` documents, reached the same way.
+  let read = true;
+  const fail = () => { read = false; return null; };
+  const [rows, totals] = await Promise.all([
+    prisma.$queryRawUnsafe<FindingStateRow[]>(FINDING_SCREEN_SQL, [...ruleKeys]).catch(fail),
+    prisma.$queryRawUnsafe<{ n: number }[]>(STOCK_COUNT_SQL).catch(fail),
+  ]);
+  if (!read || !rows || !totals) {
+    return absent<FindingScreenRead>("read_failed", { subject: null, query: null });
+  }
+
+  const universe = Number(totals[0]?.n ?? 0);
+  const evaluated = rows.length;
+  // ★ THE FOURTH STATE. Every stock we hold, minus every stock this rule set has a row for.
+  const notEvaluated = Math.max(0, universe - evaluated);
+
+  // ★ THE BAND, WHERE ONE WAS ASKED FOR — and it is a genuine narrowing of REACH, not just of rows.
+  //   A band is a reading, so only the 95 scored companies have one; filtering this 2,291-wide screen
+  //   by band restricts it to those, and `bandDropped` is what the answer says out loud.
+  let bandMembers: Map<string, { score: number | null; band: string }> | null = null;
+  const view = await getUniverseHealthView().catch(() => null);
+  if (view?.members) {
+    bandMembers = new Map(
+      view.members.map((m) => [
+        m.symbol,
+        { score: typeof m.composite === "number" ? m.composite : null, band: BAND_LABEL[m.labelBand] },
+      ]),
+    );
+  }
+
+  const nameOf = (key: string): string =>
+    (STOCK_FINDINGS as Record<string, { name?: string }>)[key]?.name ?? key;
+
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ⚠⚠ THE PERIOD KEY IS AN ENGINE TOKEN AND WAS GOING STRAIGHT ONTO THE CARD — caught composing the
+  //    first live findings screen, which printed `A:FY26`, `S:FY27Q2` and `W:FY27Q2` in a column a
+  //    reader reads. `I-RAW-TOKEN` exists for exactly this and the grain prefix is the definition of
+  //    one: "<grain>:<period>" is identity, documented on the column as "Identity, never the sort".
+  //
+  // ★ AND NEITHER HALF IS RE-DERIVED HERE. `parsePeriodKey` splits it and `GRAIN_LABEL` says what
+  //   each grain MEANS — its own comment is "never a raw 'A:FY26' on a surface". Two existing homes,
+  //   no third (N-3).
+  //
+  // ⚠ `W` TAKES THE LABEL ALONE, AND THAT IS NOT A SPECIAL CASE FOR ITS OWN SAKE. P6 and H read dated
+  //   event streams over a window ending at the evaluation date, so `GRAIN_LABEL.W` is already a SPAN
+  //   ("trailing 90 days") rather than a filing name. "FY27Q2 trailing 90 days" would pair a quarter
+  //   with a window that is not that quarter — the grain's own note says the reader is told what the
+  //   span IS rather than shown a filing label it does not have.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  const periodPhrase = (key: string | null): string => {
+    if (!key) return "an unlabelled period";
+    const parsed = parsePeriodKey(key);
+    if (!parsed) return key;
+    return parsed.grain === "W"
+      ? GRAIN_LABEL.W
+      : `${parsed.label} ${GRAIN_LABEL[parsed.grain]}`;
+  };
+
+  const firedAll = rows.filter((r) => r.state === "fired");
+  const inBand = (symbol: string): boolean =>
+    bandLabel === null || (bandMembers?.get(symbol)?.band ?? null) === bandLabel;
+  const firedKept = firedAll.filter((r) => inBand(r.symbol));
+
+  const matches: FindingMatch[] = firedKept
+    .map((r) => {
+      const meta = bandMembers?.get(r.symbol) ?? null;
+      return {
+        symbol: r.symbol,
+        name: r.name ?? r.symbol,
+        fired: (r.fired_names ?? []).map(nameOf),
+        period: periodPhrase(r.period_key),
+        periodSort: r.period_end ? new Date(r.period_end).getTime() : 0,
+        score: meta?.score ?? null,
+        band: meta?.band ?? null,
+      };
+    })
+    // ⚠ MOST RECENT FILING FIRST, AND NOT BY SCORE. Most of this set carries no score at all, so a
+    //   health sort would put the entire unscored majority in one undifferentiated block at the end.
+    .sort((a, b) => b.periodSort - a.periodSort || a.symbol.localeCompare(b.symbol));
+
+  const notEvaluableRows = rows.filter((r) => r.state === "not_evaluable");
+  const byReason = new Map<string, number>();
+  for (const r of notEvaluableRows) {
+    const why = notEvaluablePhrase(r.reason);
+    byReason.set(why, (byReason.get(why) ?? 0) + 1);
+  }
+
+  const census: FindingCensus = {
+    considered: universe,
+    fired: firedAll.length,
+    notFired: rows.filter((r) => r.state === "not_fired").length,
+    notEvaluable: notEvaluableRows.length,
+    notEvaluated,
+    reasons: [...byReason].map(([why, count]) => ({ why, count })).sort((a, b) => b.count - a.count),
+  };
+
+  // ⚠ EVERY NON-FIRING STATE IS A NAMED `dropped` ROW. That is what `DroppedFilter` is for: "a set
+  //   that quietly lost members reads as a complete set", and three of these four are the ways this
+  //   set loses members without the reader being able to see it.
+  const q: QueryCoverage = {
+    universeSearched: universe,
+    depthFloor: null,
+    excludedForDepth: 0,
+    // ⚠ EACH `why` IS A NOUN PHRASE, BECAUSE THE HEADER PUTS IT AFTER THE WORD "excluded".
+    //   `coverage-header.tsx` renders `· excluded {why} ({n}); …`, so a clause reads as a fragment:
+    //   "excluded the check ran and Pledging Crisis did not fire (1,999)". Seen on the rendered page.
+    //
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // ⚠⚠ AND "DID NOT FIRE" IS NO LONGER LISTED, BECAUSE IT WAS NEVER AN EXCLUSION.
+    //
+    //    `DroppedFilter` is for members removed from consideration for want of data — its own note is
+    //    "a set that quietly lost members reads as a complete set". A company the check RAN on and
+    //    cleared was not lost; it is the result. Listing 1,999 of them under "excluded" put the
+    //    largest and least informative number on the coverage line and made a working screen read
+    //    like a heavily-filtered one.
+    //
+    // ★ WHAT STAYS IS THE GENUINE GAP: companies the check could not run on, and companies it has
+    //   never been run against. Those two ARE missing data, they are what the reader cannot see, and
+    //   together they are the difference between the book and the denominator the answer states.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    dropped: [
+      { filter: "could not be checked", dropped: census.notEvaluable, why: `companies the check could not be run on` },
+      { filter: "never checked", dropped: census.notEvaluated, why: `companies with no filing for the check to read` },
+      ...(bandLabel
+        ? [{ filter: "band", dropped: firedAll.length - firedKept.length, why: `companies firing it outside the ${bandLabel} band` }]
+        : []),
+    ].filter((d) => d.dropped > 0),
+  };
+
+  return resolved<FindingScreenRead>({
+    what,
+    matches,
+    census,
+    band: bandLabel,
+    bandDropped: firedAll.length - firedKept.length,
+    sortedBy: "most recent filing first",
+  }, { subject: null, query: q }, ["stocks", "score_snapshots"]);
 }
 
 export type { ScreenCondition, ScreenFieldId };

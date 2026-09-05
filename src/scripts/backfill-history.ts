@@ -19,8 +19,34 @@
 
 import { prisma } from "../db/prisma.js";
 import { computePgScores, ensureScaffold, finalizeRun, persistMember, requireFindingsEvaluated, type PgRef, type MemberWriteResult } from "../scoring/composite/score-pass.js";
+import { SCORING_SPEC_VERSION } from "../scoring/v2/spec.js";
+import { BAND_MAPPING_VERSION } from "../scoring/composite/label.js";
 
 const COMMIT = process.argv.includes("--commit");
+// ═══════════════════════════════════════════════════════════════════════════════════
+// --supersede — REBUILD PERIODS THAT ALREADY HAVE A SNAPSHOT.
+//
+// Without it this script is APPEND-ONLY: it skips any (stock, period) that already has a
+// snapshot, so re-running fills gaps and touches nothing else. That is the right default and
+// what you want for ordinary use.
+//
+// With it the skip is dropped and every targeted period is re-scored onto the head of its
+// chain. Needed whenever the INSTRUMENT changes underneath existing history — the 2026.2
+// migration is the case it was written for: every period already had a snapshot, so an
+// append-only pass would have skipped all of them and written nothing WHILE REPORTING
+// SUCCESS. That exact failure is on record in docs/Runbook_Migration_Rescore.md.
+//
+// ★ IT IS NOT AN OVERWRITE. persistMember chains a NEW VERSION onto the existing head
+//   (version+1, supersedesId = the old row) and reads take the highest version. Superseded
+//   rows stay, still pointing at the spec and band mapping they were written under, so they
+//   keep describing themselves correctly forever. That is what makes a rollback a version
+//   pin rather than a restore.
+//
+// ★ AND A SPEC CHANGE CANNOT NO-OP BY ACCIDENT. The spec version is inside
+//   snapshotInputsFingerprint, so a composite from a new spec can never match an old head's
+//   fingerprint — skip-identical is structurally unreachable across a version boundary
+//   rather than merely unlikely.
+const SUPERSEDE = process.argv.includes("--supersede");
 // --resume reuses the most recent ScoringRun (keeps the whole backfill under ONE run
 // when an earlier attempt committed some PGs before stopping). Already-written periods
 // are skipped, so resuming only fills the gaps.
@@ -96,7 +122,13 @@ async function pgTargetPeriods(pgName: string, banking: boolean): Promise<string
 const f = (v: number | null | undefined, d = 1) => (v == null ? "—" : v.toFixed(d));
 
 async function main() {
-  console.log(`HISTORICAL BACKFILL — point-in-time, append-only, max-depth — ${COMMIT ? "REAL WRITE (--commit)" : "DRY (no --commit)"}\n`);
+  console.log(`HISTORICAL BACKFILL — point-in-time, ${SUPERSEDE ? "REBUILD (supersedes)" : "append-only"}, max-depth — ${COMMIT ? "REAL WRITE (--commit)" : "DRY (no --commit)"}`);
+  console.log(`  scoring under spec ${SCORING_SPEC_VERSION} / band mapping ${BAND_MAPPING_VERSION}\n`);
+  if (SUPERSEDE) {
+    console.log(`  --supersede: existing snapshots are chained to (version+1), never overwritten.`);
+    console.log(`               Superseded rows keep their own spec and band-mapping FKs, so history`);
+    console.log(`               stays self-describing.\n`);
+  }
   const beforeSnap = await prisma.scoreSnapshot.count();
   console.log(`  pre-backfill score_snapshots: ${beforeSnap}\n`);
 
@@ -137,9 +169,13 @@ async function main() {
       const writeOne = async (tx: any) => {
         const out: { action: string; composite: number | null }[] = [];
         for (const m of requireFindingsEvaluated(computed)) {
-          // SKIP any already-existing (stock, periodKey) — protects FY26Q4 & re-runs (append-only).
-          const exists = await tx.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: "quarterly", periodKey: pk }, select: { id: true } });
-          if (exists) { out.push({ action: "skipped_existing", composite: null }); continue; }
+          // SKIP any already-existing (stock, periodKey) — protects re-runs (append-only).
+          // ⚠ NOT under --supersede: the whole point of a rebuild is to chain onto those rows,
+          //   and skipping them would write nothing while reporting success.
+          if (!SUPERSEDE) {
+            const exists = await tx.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: "quarterly", periodKey: pk }, select: { id: true } });
+            if (exists) { out.push({ action: "skipped_existing", composite: null }); continue; }
+          }
           if (m.composite.state !== "scored" || m.composite.composite == null) { out.push({ action: "no_snapshot", composite: null }); continue; }
           // A snapshot needs an Ownership pillar (and a Market pillar) row — both FKs are
           // NOT NULL. Point-in-time, a member may have NO shareholding (or no Market result)
@@ -161,14 +197,14 @@ async function main() {
         res = [];
         for (const m of computed.members) {
           const exists = await prisma.scoreSnapshot.findFirst({ where: { stockId: m.stockId, snapshotType: "quarterly", periodKey: pk }, select: { id: true } });
-          if (exists) res.push({ action: "skipped_existing", composite: null });
+          if (exists && !SUPERSEDE) res.push({ action: "skipped_existing", composite: null });
           else if (m.composite.state !== "scored" || m.composite.composite == null) res.push({ action: "no_snapshot", composite: null });
           else if (!m.own || !m.market) res.push({ action: "no_snapshot", composite: null });
-          else res.push({ action: "would_create", composite: m.composite.composite });
+          else res.push({ action: exists ? "would_supersede" : "would_create", composite: m.composite.composite });
         }
       }
 
-      const created = res.filter((r) => r.action === "created" || r.action === "would_create");
+      const created = res.filter((r) => r.action === "created" || r.action === "would_create" || r.action === "would_supersede");
       pgCreated += created.length;
       pgSkip += res.filter((r) => r.action === "skipped_existing").length;
       pgNoSnap += res.filter((r) => r.action === "no_snapshot").length;

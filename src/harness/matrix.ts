@@ -298,6 +298,76 @@ export const MARKET_CASES: readonly Case[] = [
   { label: "SC · ★ frame decline · superlative", question: "what are the best stocks to buy", scope: "market",
     slots: { operation: "screen", subjects: [] } },
 
+  // ═══ ★★ THE SCREENS BATCH — A SET REQUEST IS NOT A DEFINITION QUESTION ════════════════════════
+  //
+  // ⚠ BOTH OF THE FIRST TWO WERE OBSERVED LIVE BEING ANSWERED WITH A DEFINITION CARD, and neither
+  //   could have been caught here before: there was no band case and no findings case in this matrix
+  //   at all, which is the same gap that let finding 8 ship (see the T-1 note above — "nothing in the
+  //   suite ever built a screen, so nothing could see it").
+  //
+  // ★ AND THE SLOTS ARE DELIBERATELY `unresolved` ON THREE OF THEM. That is what the lexical
+  //   classifier actually returns for these sentences, and driving them with `operation: "screen"`
+  //   declared would test the composer through a router that had already been told the answer —
+  //   which is exactly how "companies with return on equity above 900" passed this suite while
+  //   clarifying for every real reader. The point of these rows is that the SENTENCE is enough.
+  { label: "SC · ★ band as a condition", question: "give me a list of all the stocks which are in pristine health band",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  { label: "SC · ★ a count over findings", question: "how many stocks are showing pledging red flag",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ THE THIRD STATE, EXERCISED. R3 cannot be run on 1,889 of the 2,291 — the largest could-not-run
+  //   set of any rule — so this is the row `I-STATES-SURVIVE` has something to check.
+  { label: "SC · ★ findings · a large could-not-run set", question: "which stocks have an earnings quality red flag",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ A KIND RATHER THAN A RULE, which is the arm where one company can fire several and the
+  //   per-stock state has to be rolled up rather than read off a row.
+  { label: "SC · ★ findings · a kind, not a rule", question: "which companies have red flags",
+    scope: "market", slots: { operation: "screen", subjects: [] } },
+  // ★★ THE ZERO. It must read as a RESULT, and its sentence must not be the unbanded one — that draft
+  //    said "Pledging Crisis is not standing at any of the 2,291 companies we hold" while 59 were
+  //    standing it. A zero and a zero-in-this-band are different findings.
+  { label: "SC · ★ a count that is zero", question: "how many stocks in the pristine band have a pledging red flag",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ═══ ★★ FILED LINE ITEMS — THE THIRD UNIVERSE ═════════════════════════════════════════════════
+  //
+  // ⚠ "Revenue" IS THE ROW THAT SHOWS WHY THE VOCABULARY HAD TO BE DERIVED. It is the plainest screen
+  //   anybody will ask for, it is not a scored metric, and it was answered with a definition card
+  //   because the filterable set was thirteen hand-kept fields. 85 filed columns are reachable now.
+  { label: "SC · ★ a filed line item", question: "give me a list of stocks whose revenue in its latest quarter is greater than 100cr",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ A DIFFERENT INDUSTRY, A DIFFERENT UNIT, AND A DIGIT IN THE COLUMN NAME. `cet1_ratio` is stored
+  //   as a FRACTION (0.15 = 15%) on the BANKING table, and its column name defeated a `^[a-z_]+$`
+  //   guard — so this row exercises the unit scaling, the family basis default (standalone for banks)
+  //   and the column-name guard at once.
+  { label: "SC · ★ a filed item nobody has screened on", question: "companies with core capital above 15%",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ TWO UNIVERSES IN ONE SENTENCE. 95 scored against 2,284 that have filed — the answer is the
+  //    overlap, and §2's requirement is that it SAYS so rather than applying the narrower silently.
+  { label: "SC · ★ a combined filter across two universes", question: "stocks with health score above 70 and revenue above 500cr",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+
+  // ═══ ⚠⚠ THE DOOR THIS FIX MUST NOT CLOSE — AND WHY THERE IS NO ROW FOR IT HERE ════════════════
+  //
+  //   A definition question must still reach the definition path. It is the half every previous fix
+  //   to this class broke, so it wanted a row beside the screens. Two were tried and `I-DISTINCT`
+  //   rejected both, correctly:
+  //
+  //     "what does pristine mean"          ≡ `M · the published bands` (both resolve concept_bands)
+  //     "what does Pledging Crisis mean"   ≡ `M · ★ a named FINDING`   (both are finding definitions)
+  //
+  //   ★ THAT IS NOT A GAP IN THE MATRIX, IT IS THE MATRIX WORKING. A definition answer is a property
+  //     of the TERM, not of the phrasing, and M's rows carry the generic meta prose by design — so
+  //     any second definition row at different slots is one answer asserted twice, which proves
+  //     nothing and hides a real collision the day one appears. The existing
+  //     `M · ★ unresolved-routed (the variance case)` already drives a definition at
+  //     `operation: "unresolved"`, which IS this door: it is the branch a set request now returns
+  //     before, and if `screenAsk` ever widens far enough to swallow definitions, that row goes red.
+  //
+  //   ★ AND THE BAND- AND FINDING-SPECIFIC DOORS ARE ASSERTED WHERE THEY BELONG:
+  //     `src/scripts/verify-screen-ask.ts` §2 runs twelve definition phrasings — the bands, a rule by
+  //     name, a KIND, a metric gloss, and the bare word "distribution" — through the real detector and
+  //     fails if any is captured. Offline, no DB, in `verify:copy`. One property, one home, and the
+  //     home is the one that can afford twelve phrasings where a matrix row can afford one.
+
   // ═══ ★★ PHASE 1 · BATCH 2 — C · THE VARIANTS ══════════════════════════════════════════════════
   //
   // ★★ THE DANGEROUS ONE. `comparable: false` was one sentence for three different facts, and the

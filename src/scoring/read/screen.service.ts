@@ -70,6 +70,7 @@ import {
   type UniverseReadSet,
 } from "./universe-projection.service.js";
 import { BAND_LABEL, type Capped, type CompanyRef, type UniverseScopeId } from "./universe-projection.types.js";
+import { SET_TABLE_TRANSPORT } from "../../section/kinds/set-table.js";
 import type { UniverseHealthView, UniverseMemberView } from "./universe-view.types.js";
 import type { UniverseMetricValues } from "./metric-values.cache.js";
 import {
@@ -494,7 +495,14 @@ function matchesResult(
     conditions: applied,
     structural,
     evaluable: buildEvaluable(considered, evaluableMembers, blocked),
-    matches: capped(matched, LIST_CAP) as Capped<ScreenRow>,
+    // ⚠ NOT `LIST_CAP`, AND THE DIFFERENCE IS WHAT A SCREEN IS FOR. `LIST_CAP` is 12 because a
+    //   universe SLICE is a sentence — "the six that moved most". A screen result is the answer
+    //   itself, and 12 of 33 is a sample presented as a set. `SET_TABLE_TRANSPORT` is the renderer's
+    //   own stated budget and the table pages through it. `Capped.total` is unchanged, so "showing N
+    //   of M" still tells the truth about the whole match set.
+    matches: capped(matched, SET_TABLE_TRANSPORT) as Capped<ScreenRow>,
+    // ★ THE SET, NOT THE PAGE. See the field's note — an intersection off a capped list is wrong.
+    matchedSymbols: matched.map((m) => m.symbol),
     sortedBy,
   };
 }

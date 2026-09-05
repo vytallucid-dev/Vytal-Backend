@@ -97,6 +97,35 @@ export const PLEDGE_PHRASE: Record<PledgeState, string> = {
     "There is no promoter holding here, so there is nothing that could be pledged.",
 };
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ⚠⚠ `PLEDGE_ACROSS_A_SET` WAS ADDED HERE AND HAS BEEN REMOVED. RE-MEASURED, THE RULING DOES NOT
+ *    EXTEND TO A SET, BECAUSE THE EVIDENCE IT RESTED ON HAS BEEN REPAIRED.
+ *
+ * It said, over a findings screen: "a company this check did not flag is not a company we can call
+ * unpledged — the pledge field is zero-filled rather than left empty". That was written from the three
+ * measurements in the header above. All three were re-run on the live table:
+ *
+ *   rows where pledged_shares = 0 AND promoter_pledged_pct > 0   1,555 / 213 stocks  →  **0 / 0**
+ *   rows with both positive                                       3,205             →   4,523
+ *   …agreeing within half a point                                   891 (27.8%)     →   4,437 (98.1%)
+ *   …more than five points apart                                  2,007             →      44 (1.0%)
+ *
+ * The self-contradiction is GONE and the two columns now agree on 98.1% of rows — which is exactly
+ * what `readPledge`'s own note predicted would happen once the parser resolved every pledge fact to
+ * the promoter-group aggregate context ("verified against 265 filings").
+ *
+ * ★ SO THE CAVEAT WAS TELLING READERS THE DATA WAS UNRELIABLE ON THE STRENGTH OF A DEFECT THAT HAD
+ *   ALREADY BEEN FIXED. That is worse than saying nothing: it costs trust in figures that are sound.
+ *
+ * ⚠ WHAT IS **NOT** RETIRED IS THE PER-STOCK RULING BELOW. `PLEDGE_PHRASE` guards a different claim —
+ *   quoting a pledge MAGNITUDE for one company — and `pledged_shares` still carries 20,541 zeros with
+ *   zero NULLs, so "this filing disclosed nothing" and "this filing disclosed none" remain
+ *   indistinguishable at the row level. R1 fires on a RATIO that now reconciles with the disclosed
+ *   percentage; quoting the number itself is still a separate question and still declined.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ */
+
 /** One filing's pledge columns, exactly as the read layer hands them over. */
 export interface PledgeInput {
   /** `pledged_shares`, as a number. Zero is the suspect value — see the header. */

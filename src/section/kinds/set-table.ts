@@ -24,6 +24,27 @@
 import type { Coverage } from "../../resolve/contract.js";
 import { digest, line, withheld, type DigestLine, type Section } from "../contract.js";
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ HOW MANY ROWS TRAVEL. Not how many are SHOWN — the renderer pages through these.
+ *
+ * ⚠ IT WAS 12, AND 12 WAS THE WHOLE SET THE READER COULD EVER SEE. `LIST_CAP` is the projection
+ *   layer's slice cap and it is right there: a universe slice is a sentence ("the six that moved
+ *   most"). A screen is not a slice — the reader asked for a SET and 12 of 422 is a sample of one.
+ *   Worse, "give me a list of ALL the stocks in the pristine band" returned 12 of 15, so the word the
+ *   reader actually typed was the one being ignored.
+ *
+ * ★ SIXTY, AND IT IS A BOUND RATHER THAN AN ANSWER. Five pages at the renderer's twelve. It is stated
+ *   in the prose wherever it bites, so a truncated set never reads as a complete one — the same rule
+ *   `Capped` exists for. Raising it is a payload decision: these answers are PERSISTED per turn, so
+ *   the cost is storage per conversation, not just wire.
+ *
+ * ⚠ AND IT IS DECLARED HERE, BESIDE THE RENDERER, because it is a property of THIS renderer's payload
+ *   budget rather than of any one caller. Three callers already page through it.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ */
+export const SET_TABLE_TRANSPORT = 60;
+
 export interface SetTableColumn {
   readonly key: string;
   readonly label: string;
@@ -111,6 +132,26 @@ export function setTableSection(
     rows: readonly SetTableRow[];
     totalAvailable?: number | null;
     totals?: readonly { label: string; value: string | null }[];
+    /**
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     * ★★ FACTS THE MODEL MUST HAVE AND THE READER MUST NOT BE SHOWN AS A ROW OF FIGURES.
+     *
+     * This is N-2's payload/digest split used for what it is for. The findings screen carries four
+     * evaluation-state counts — fired · ran-and-did-not-fire · could-not-be-checked · never-checked —
+     * and every one is load-bearing: a could-not-check silently folded into a did-not-fire reports a
+     * company we could not evaluate as one that passed. The MODEL must never lose them.
+     *
+     * ⚠ BUT AS RENDERED TOTALS THEY WERE FIVE FIGURES AND TWO LINES ABOVE A TWELVE-ROW TABLE, and
+     *   the reader had already been told all four in the prose directly above the card. Operator's
+     *   call, and it is the right one: the badge says "showing 12 of 59" and the sentences carry the
+     *   states. A card restating its own paragraph is noise, and §4.3's rule that prose and component
+     *   must agree is satisfied by saying it once.
+     *
+     * ★ SO THE COUNTS TRAVEL IN THE DIGEST AND NOT IN THE PAYLOAD. Nothing is deleted; one audience
+     *   keeps them. A caller that wants a fact SHOWN uses `totals`.
+     * ═════════════════════════════════════════════════════════════════════════════════════════════
+     */
+    digestTotals?: readonly { label: string; value: string | null }[];
     emptyPhrase: string;
   },
   coverage: Coverage,
@@ -127,7 +168,8 @@ export function setTableSection(
   // ⚠ THE DIGEST GETS THE TOTALS AND A BOUNDED SAMPLE, NEVER EVERY ROW. A model handed 93 rows will
   //   count them, average a column, or name "the top three" from an order it did not verify.
   const lines: DigestLine[] = [];
-  for (const t of input.totals ?? []) {
+  // ★ BOTH CHANNELS REACH THE MODEL. `totals` is shown AND told; `digestTotals` is told only.
+  for (const t of [...(input.totals ?? []), ...(input.digestTotals ?? [])]) {
     lines.push(t.value === null ? withheld(t.label, "not held") : line(t.label, t.value));
   }
   if (input.rows.length === 0) {

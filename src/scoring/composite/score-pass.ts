@@ -56,6 +56,8 @@ import { computeOwnership, type OwnershipContext, type OwnershipResult } from ".
 import { loadFlowFeeds } from "../ownership/flow-feeds-load.js";
 import type { OwnershipQuarter } from "../ownership/types.js";
 import { collapseToOneRowPerQuarter } from "../ownership/collapse-quarters.js";
+import { computeOwnershipV2, type OwnershipV2Result } from "../ownership/v2-pillar.js";
+import { loadUniverseFlowPools, readingsAt } from "../ownership/v2-flow.js";
 import { rangePositionAsOf, MIN_TRAILING_DAYS, type DailyClose } from "../price/range.js";
 import type { A1PriceEval, FlowFeeds, PriceProbe } from "../ownership/flow.js";
 import { FLOW_BAND_VERSION } from "../ownership/flow-bands.js";
@@ -63,6 +65,10 @@ import { fullInputsFingerprint, buildOwnershipScoreData, buildFlowCategoryRows, 
 import { assembleComposite } from "./composite.js";
 import { bandMappingJson, BAND_MAPPING_VERSION } from "./label.js";
 import { COMPOSITE_SPEC_VERSION, snapshotInputsFingerprint, toScoreSnapshotRow, type SnapshotFindingsEval } from "./persist.js";
+import { SCORING_SPEC_VERSION, BAR_SPEC_VERSION, SCORING_SPEC_NOTES } from "../v2/spec.js";
+import { basisFor } from "../v2/basis.js";
+import { FOUNDATION_TTM } from "../metrics/foundation.js";
+import { consecutiveTail } from "../metrics/momentum.js";
 import type { CompositeResult, Pillar, PillarInput } from "./types.js";
 // §2/§5 findings engine — the fire-and-persist contract. Hook runs AFTER composite
 // assembly (reads the assembled pillars/composite/trajectory), emitting fired findings.
@@ -84,8 +90,24 @@ import type { FiredHeadline } from "../lens-patterns/index.js";
 
 type Db = Prisma.TransactionClient;
 
-const F_CFG: WiringConfig = { peerMinN: 5, l3MinN: 5, l3Window: 10 };
-const M_CFG: WiringConfig = { peerMinN: 5, l3MinN: 6, l3Window: 12 };
+// CHANGE 2.1 — a ROLLING Foundation metric's own-history is TWELVE QUARTERS, where an annual
+// one is ten fiscal years. The window is per-pillar in WiringConfig, so it is 12 here and
+// seriesForKey caps the ANNUAL branch at 10 itself; otherwise a company with more than ten
+// annual rows would silently get a longer L3 window on F3/F4/F8/F9 than it was calibrated on.
+//
+// CHANGE 2.6 as amended by Addendum C.1 — EACH GUARD ON THE ONE PILLAR WHERE IT HAS A CASE.
+// sigma on Foundation, bad-class on Momentum. Not "both" (the frozen panel's configuration)
+// and not "sigma Foundation-only" (B.1's, superseded). See metric-scoring/lens-guards.ts.
+const F_CFG: WiringConfig = { peerMinN: 5, l3MinN: 5, l3Window: 12, l2SigmaGuard: true };
+const M_CFG: WiringConfig = { peerMinN: 5, l3MinN: 6, l3Window: 12, l2BadClassGuard: true };
+// ⚠ BANKS ARE UNGATED, AND THAT IS NOT AN OVERSIGHT. Every guard figure in the record is on
+//   the 83 non-banks: the calibration's lens pass is non-bank by construction and bank
+//   Momentum comes from a separate stack the guards never touch. Production happens to share
+//   one wiring function between the two, so the bank arm must opt OUT explicitly — otherwise
+//   a guard nobody measured on banks would silently start suppressing their peer lens.
+const F_CFG_BANK: WiringConfig = { peerMinN: 5, l3MinN: 5, l3Window: 12 };
+const M_CFG_BANK: WiringConfig = { peerMinN: 5, l3MinN: 6, l3Window: 12 };
+const F_ANNUAL_WINDOW = 10;
 // Fallback only: a member with no shareholding has no ownership at all (own=null), so
 // its feeds are never read. The LIVE C/D feeds come from loadFlowFeeds (see below).
 const NO_FEEDS: FlowFeeds = { insiderTxns: null, blockTxns: null, marketCapInrCr: null };
@@ -110,8 +132,38 @@ function makePriceProbe(series: DailyClose[]): PriceProbe {
   };
 }
 
-/** Own-history series for L3 — re-dispatch the metric over each prefix of the rows. */
-function seriesForKey(fRows: FoundationAnnual[], qRows: MomentumQuarter[], key: string, pillar: "foundation" | "momentum"): number[] {
+/** Own-history series for L3 — re-dispatch the metric over each prefix of the rows.
+ *
+ *  ★ CHANGE 2.1 PUTS A SECOND CADENCE IN HERE, AND GETTING IT WRONG IS SILENT. A rolling
+ *    metric's history must roll in ITS OWN cadence — twelve quarterly windows — not over
+ *    annual prefixes. Feed it annual prefixes and L3 sees three points where it should see
+ *    twelve, which halves the lens's discrimination without failing anything.
+ *
+ *  ★ THE ANNUAL ANCHOR DOES NOT ROLL WITH THE HISTORY. _tools/u6.cjs histSeries holds the
+ *    balance-sheet row FIXED at the snapshot FY (`TTM6[k](S.rows, S.i, Q.rows, j)` — S.i is
+ *    constant, only j moves) and rolls the quarterly window alone. That is the same frozen
+ *    denominator the current value uses, so the series and the value are commensurable. */
+function seriesForKey(fRows: FoundationAnnual[], qRows: MomentumQuarter[], key: string, pillar: "foundation" | "momentum", fQRows?: MomentumQuarter[]): number[] {
+  if (pillar === "foundation" && FOUNDATION_TTM[key]) {
+    const sorted = [...fRows].sort((a, b) => a.fyOrdinal - b.fyOrdinal);
+    const snap = sorted[sorted.length - 1];
+    // The history must roll on the SAME quarters the current value does, or the series and the
+    // value are not the same quantity — which is the whole point of the basis fix above.
+    const run = consecutiveTail(fQRows ?? qRows);
+    if (snap && run.length >= 4) {
+      const roll: number[] = [];
+      for (let back = 11; back >= 0; back--) {
+        const w = run.slice(0, run.length - back);
+        if (w.length < 4) continue;                 // the window is not yet a trailing year
+        const mv = FOUNDATION_TTM[key](snap, w);
+        if (mv.available && mv.value !== null) roll.push(mv.value);
+      }
+      if (roll.length) return roll;
+    }
+    // Too little quarterly history to roll: the CURRENT value fell back to the annual form
+    // (FOUNDATION_DISPATCH_V2), so the history must fall back with it or the two are not
+    // the same quantity. Drop through to the annual branch.
+  }
   const out: number[] = [];
   const rows = pillar === "foundation" ? [...fRows].sort((a, b) => a.fyOrdinal - b.fyOrdinal) : [...qRows].sort((a, b) => a.qOrdinal - b.qOrdinal);
   for (let i = 0; i < rows.length; i++) {
@@ -120,7 +172,10 @@ function seriesForKey(fRows: FoundationAnnual[], qRows: MomentumQuarter[], key: 
     const arr = d.status === "computed" ? (pillar === "foundation" ? d.foundation : d.momentum) : [];
     if (arr[0]?.available && arr[0].value !== null) out.push(arr[0].value);
   }
-  return out;
+  // v2 raises the Foundation L3 window to 12 for the ROLLING metrics. An ANNUAL series must
+  // not lengthen with it, so it is capped here at the ten fiscal years v1 used - otherwise
+  // F3/F4/F8/F9 would quietly get a longer own-history than they were calibrated on.
+  return pillar === "foundation" ? out.slice(-F_ANNUAL_WINDOW) : out;
 }
 
 // ── COMPUTE (pure-ish: reads DB inputs, computes results; no score writes) ──────────
@@ -130,6 +185,11 @@ export interface MemberComputed {
   mPillar: PillarScoreResult; mMetrics: ScoredMetric[]; mBarSetIds: Map<string, string | null>;
   market: MarketUniversalResult | null; marketSourcePeriod: string;
   own: OwnershipResult | null;
+  /** CHANGE 2.5 — the rebuilt Ownership pillar. Present only on a v2 pass. The v1 `own`
+   *  above is STILL COMPUTED on a v2 pass and still carries the R1 breach observation and
+   *  the flow decomposition the findings rules read; what v2 replaces is the pillar's
+   *  SUBTOTAL, not the register reading underneath it. */
+  ownV2: OwnershipV2Result | null;
   composite: CompositeResult;
   /** §2/§5 fired findings — present only when computePgScores ran with withFindings.
    *  undefined ⇒ the findings hook did not run, and such a member CANNOT be persisted (see
@@ -237,6 +297,10 @@ export interface PeerStatsCapture {
 export interface PgComputed {
   ref: PgRef; peerGroupId: string; asOf: Date; periodKey: string; industry: IndustryType;
   members: MemberComputed[]; peerStats: PeerStatsCapture[]; dampenReport?: DampenReport;
+  /** The band mapping this pass labelled against. Mirrors `v2`; pass it to ensureScaffold. */
+  bandMappingVersion: string;
+  /** The spec version this pass stamped. Carried so a persist path never has to look it up. */
+  specVersion: string;
   /** LAYER-1 result for this pass. Always present so "was this pass gate-screened?"
    *  is answerable from the returned object, never inferred: `ran:false` + a `reason`
    *  when it was skipped (flag off / cascade rescore), `ran:true` with the filtered
@@ -310,6 +374,10 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   if (!pgRow) throw new Error(`computePgScores: PG '${ref.pgName}' not found`);
 
   // POINT-IN-TIME cutoff (backfill) — restricts every raw input to ≤ quarterEnd.
+  const specVersion = SCORING_SPEC_VERSION;
+  const barSpec = BAR_SPEC_VERSION;
+  const bandMapping = BAND_MAPPING_VERSION;
+
   const pit = opts.pointInTime ?? null;
   const cutoff: Date | undefined = pit?.quarterEnd;
 
@@ -331,7 +399,10 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   // Which metric keys this PG actually has committed bars for. resolveBarPath follows
   // PG6→PG5 inheritance so an inheriting bank PG finds the parent's keys.
   const barPath = resolveBarPath(ref.pgId);
-  const keyRows = await prisma.metricBarSet.findMany({ where: { barPath }, select: { metricKey: true }, distinct: ["metricKey"] });
+  // ⚠ THE VINTAGE FILTER BELONGS HERE TOO, not only on loadBarSet. This query decides WHICH
+  //   METRICS the PG scores at all; without it a v1 pass would discover a metric key that only
+  //   the v2 bar set defines and try to score it against bars it will then fail to resolve.
+  const keyRows = await prisma.metricBarSet.findMany({ where: { barPath, specVersion: { version: barSpec } }, select: { metricKey: true }, distinct: ["metricKey"] });
   const allKeys = keyRows.map((r) => r.metricKey);
   // Industry-aware pillar classification via the engine registry (NOT an F/M prefix —
   // banking keys are Tier1/GNPA/…/NIM, classified by canonicalMetric.pillar).
@@ -413,16 +484,20 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       snapshotQuarter = d.status === "computed" ? d.snapshotQuarter : null;
       seriesFor = (key) => bankingSeriesForKey(ctx, key);
     } else {
-      const fRows = await loadFoundationStandalone(id, cutoff);
+      // CHANGE 2.8 - nine named companies read CONSOLIDATED accounts under v2, on BOTH sides of
+      // Foundation's rolling ratios. `qRows` stays standalone because Momentum does.
+      const basis = basisFor(symbol);
+      const fRows = await loadFoundationStandalone(id, cutoff, basis);
       const qRows = await loadMomentumStandalone(id, cutoff);
+      const fQRows = basis === "standalone" ? qRows : await loadMomentumStandalone(id, cutoff, basis);
       qRowsForFindings = qRows;
       fRowsForFindings = fRows;
-      const d = dispatchLiveValues({ industryType: "non_financial", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: fRows, momentumQuarters: qRows });
+      const d = dispatchLiveValues({ industryType: "non_financial", foundationKeys: fKeys, momentumKeys: mKeys, foundationRows: fRows, momentumQuarters: qRows, foundationQuarters: fQRows });
       foundation = d.status === "computed" ? d.foundation : [];
       momentum = d.status === "computed" ? d.momentum : [];
       snapshotFy = d.status === "computed" ? d.snapshotFy : null;
       snapshotQuarter = d.status === "computed" ? d.snapshotQuarter : null;
-      seriesFor = (key, pillar) => seriesForKey(fRows, qRows, key, pillar);
+      seriesFor = (key, pillar) => seriesForKey(fRows, qRows, key, pillar, fQRows);
     }
 
     // ── THE FILED-DATA RESOLVE (findings only; never the scoring path) ────────────────────────────
@@ -509,7 +584,7 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
   const peerStatsCaps: PeerStatsCapture[] = [];
   const scorePillarKeys = async (keys: string[], pillar: "foundation" | "momentum", bucket: Map<string, ScoredMetric[]>, ids: Map<string, string | null>, cfg: WiringConfig, snap: string) => {
     for (const key of keys) {
-      const bs = await loadBarSet(ref.pgId, key, barAsOf);
+      const bs = await loadBarSet(ref.pgId, key, barAsOf, barSpec);
       if (!bs) continue;
       ids.set(key, bs.metricBarSetId ?? null);
       const xsMembers: CrossSectionMember[] = raws.map((r) => {
@@ -524,8 +599,10 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
       peerStatsCaps.push({ pillar, metricKey: key, barPath, mean: xs.peerStats.mean, stdDev: xs.peerStats.stdDev, sampleN: xs.peerStats.sampleN, anchorLiftFired: xs.lift531.fired });
     }
   };
-  await scorePillarKeys(fKeys, "foundation", fMetrics, fBarSetIds, F_CFG, fSnap);
-  await scorePillarKeys(mKeys, "momentum", mMetrics, mBarSetIds, M_CFG, mSnap);
+  // Banks are ungated by design — every guard figure in the record is on the 83 non-banks.
+  const bankPg = industry === "banking";
+  await scorePillarKeys(fKeys, "foundation", fMetrics, fBarSetIds, bankPg ? F_CFG_BANK : F_CFG, fSnap);
+  await scorePillarKeys(mKeys, "momentum", mMetrics, mBarSetIds, bankPg ? M_CFG_BANK : M_CFG, mSnap);
 
   // ── C/D FLOW FEEDS (insider + block) — replaces the NO_FEEDS stub ──────────────
   // Load each member's insider/block feeds + end-of-window market cap, CUTOFF-CORRECT
@@ -543,6 +620,10 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     feedsByStock.set(r.stockId, loaded.feeds);
   }
 
+  // CHANGE 2.5 — the UNIVERSE-WIDE flow distributions this period, loaded once per pass and
+  // cached per cutoff across the sweep. Skipped entirely on a v1 pass.
+  const flowPools = await loadUniverseFlowPools(cutoff);
+
   const members: MemberComputed[] = raws.map((r) => {
     const fPillar = assemblePillar({ pillar: "foundation", stockId: r.stockId, symbol: r.symbol, snapshot: fSnap, metrics: fMetrics.get(r.symbol)! });
     const mPillar = assemblePillar({ pillar: "momentum", stockId: r.stockId, symbol: r.symbol, snapshot: mSnap, metrics: mMetrics.get(r.symbol)! });
@@ -550,17 +631,24 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     const mktSub = market && market.state === "scored" ? market.subtotal : null;
     const ctx: OwnershipContext = { priceProbe: makePriceProbe(r.daily), feeds: feedsByStock.get(r.stockId) ?? NO_FEEDS };
     const own = r.own.length ? computeOwnership(r.symbol, r.own, ctx) : null;
+    // CHANGE 2.5 — the rebuilt pillar. Three graded readings against the UNIVERSE's own
+    // cross-sectional distribution of the same change in the same quarter (v2-flow.ts
+    // explains why the pool cannot be per-PG). Falls to null when no leg can be formed, and
+    // §14.4 then redistributes — never a fabricated baseline of 75.
+    const ownV2 = r.own.length
+      ? computeOwnershipV2({ ...readingsAt(r.own), promoterPool: flowPools.promoter, institutionalPool: flowPools.institutional })
+      : null;
     const latest = r.own[r.own.length - 1];
     const pillars: PillarInput[] = [
       { pillar: "foundation", subtotal: fPillar.subtotal, state: fPillar.pillarState, sourcePeriod: fSnap },
       { pillar: "momentum", subtotal: mPillar.subtotal, state: mPillar.pillarState, sourcePeriod: mSnap },
       { pillar: "market", subtotal: mktSub, state: mktSub != null ? "scored" : "unavailable_redistributed", sourcePeriod: mktSub != null ? marketSourcePeriod : "MARKET_EXCLUDED" },
-      { pillar: "ownership", subtotal: own ? own.finalOwnership : null, state: own ? "scored" : "unavailable_redistributed", sourcePeriod: own?.snapshot.periodKey ?? "—" },
+      { pillar: "ownership", subtotal: ownV2 ? ownV2.subtotal : null, state: ownV2?.subtotal != null ? "scored" : "unavailable_redistributed", sourcePeriod: own?.snapshot.periodKey ?? "—" },
     ];
-    const composite = assembleComposite(r.stockId, r.symbol, pillars, { snapshotType: "quarterly", periodKey, asOfDate: asOf });
+    const composite = assembleComposite(r.stockId, r.symbol, pillars, { snapshotType: "quarterly", periodKey, asOfDate: asOf, specVersion, bandMappingVersion: bandMapping });
     // Pond heat is a PG-level property inherited by every member (File 2 §7) — the same
     // pgMkt.pondHeat for all. undefined only when the Market pass returned no pond (no roster).
-    return { stockId: r.stockId, symbol: r.symbol, fPillar, fMetrics: fMetrics.get(r.symbol)!, fBarSetIds, mPillar, mMetrics: mMetrics.get(r.symbol)!, mBarSetIds, market, marketSourcePeriod, own, composite, pondHeat: pgMkt?.pondHeat };
+    return { stockId: r.stockId, symbol: r.symbol, fPillar, fMetrics: fMetrics.get(r.symbol)!, fBarSetIds, mPillar, mMetrics: mMetrics.get(r.symbol)!, mBarSetIds, market, marketSourcePeriod, own, ownV2, composite, pondHeat: pgMkt?.pondHeat };
   });
 
   let dampenReport: DampenReport | undefined;
@@ -744,7 +832,7 @@ export async function computePgScores(ref: PgRef, opts: ComputeOpts = {}): Promi
     }
   }
 
-  return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members, peerStats: peerStatsCaps, dampenReport, guardrail: gate };
+  return { ref, peerGroupId: pgRow.id, asOf, periodKey, industry, members, peerStats: peerStatsCaps, dampenReport, guardrail: gate, specVersion, bandMappingVersion: bandMapping };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
@@ -839,16 +927,30 @@ export interface Scaffold { specVersionId: string; runId: string; bandMappingVer
 export interface ScaffoldOpts {
   runType?: "quarterly" | "live";
   triggerType?: "scheduled" | "post_ingest" | "manual_api";
+  /** The spec version this pass writes under. Pass `pg.specVersion` from the compute so the
+   *  ScoringSpecVersion FK, the snapshot stamp and the fingerprint cannot disagree. Omitted
+   *  => v1, so every existing caller is byte-identical.
+   *
+   *  ⚠ The BAND MAPPING is deliberately NOT switched here. v2's cut-points are a separate,
+   *  later change (the population-preserving re-band); until that map exists there is no
+   *  "2026.2" mapping to point at, and inventing one now would stamp v2 rows with v1 cuts
+   *  under a v2 label — a lie the read layer could never detect. */
+  specVersion?: string;
+  /** The band mapping this pass labels against ("2026.1" v1 / "2026.2" v2). Pass
+   *  `pg.bandMappingVersion`; omitted => v1, so every existing caller is unchanged. */
+  bandMappingVersion?: string;
 }
 export async function ensureScaffold(db: Db, asOf: Date, opts: ScaffoldOpts = {}): Promise<Scaffold> {
+  const specVersion = opts.specVersion ?? SCORING_SPEC_VERSION;
+  const bandVersion = opts.bandMappingVersion ?? BAND_MAPPING_VERSION;
   // ★ Both are get-or-create on a VERSION STRING that every concurrent pass shares — the highest-
   //   contention identity in the file, because every pass wants the same two rows.
   const spec = await getOrCreate(db, "scoringSpecVersion",
-    () => db.scoringSpecVersion.findFirst({ where: { version: COMPOSITE_SPEC_VERSION }, select: { id: true } }),
-    () => db.scoringSpecVersion.create({ data: { version: COMPOSITE_SPEC_VERSION, effectiveFrom: asOf, notes: "4-pillar Health Score scoring pass (Foundation+Momentum+universal Market+Ownership)." }, select: { id: true } }));
+    () => db.scoringSpecVersion.findFirst({ where: { version: specVersion }, select: { id: true } }),
+    () => db.scoringSpecVersion.create({ data: { version: specVersion, effectiveFrom: asOf, notes: SCORING_SPEC_NOTES }, select: { id: true } }));
   const mapping = await getOrCreate(db, "bandMappingVersion",
-    () => db.bandMappingVersion.findFirst({ where: { version: BAND_MAPPING_VERSION }, select: { id: true } }),
-    () => db.bandMappingVersion.create({ data: { version: BAND_MAPPING_VERSION, mapping: bandMappingJson(), effectiveFrom: asOf }, select: { id: true } }));
+    () => db.bandMappingVersion.findFirst({ where: { version: bandVersion }, select: { id: true } }),
+    () => db.bandMappingVersion.create({ data: { version: bandVersion, mapping: bandMappingJson(bandVersion), effectiveFrom: asOf }, select: { id: true } }));
   const run = await db.scoringRun.create({ data: { runType: opts.runType ?? "quarterly", triggerType: opts.triggerType ?? "manual_api", specVersionId: spec.id, asOfDate: asOf, status: "running", startedAt: asOf }, select: { id: true } });
   return { specVersionId: spec.id, runId: run.id, bandMappingVersionId: mapping.id };
 }
@@ -939,9 +1041,9 @@ async function writeMarketPillar(db: Db, market: MarketUniversalResult, stockId:
 }
 
 /** Get-or-create the Ownership PillarScore (+ OwnershipScore + 4 flow categories). */
-async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: string, symbol: string, ctx: { runId: string; specVersionId: string; asOfDate: Date }): Promise<{ id: string; r1Fired: boolean; r1Triggering: Record<string, unknown> | null }> {
-  const fp = fullInputsFingerprint(own);
-  const { ownershipScore, r1Fired, r1TriggeringValues } = buildOwnershipScoreData(own);
+async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: string, symbol: string, ctx: { runId: string; specVersionId: string; asOfDate: Date }, ownV2: OwnershipV2Result | null = null): Promise<{ id: string; r1Fired: boolean; r1Triggering: Record<string, unknown> | null }> {
+  const fp = fullInputsFingerprint(own, ownV2);
+  const { ownershipScore, r1Fired, r1TriggeringValues } = buildOwnershipScoreData(own, ownV2);
   const existing = await db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId, pillar: "ownership", inputsFingerprint: fp } }, select: { id: true } });
   if (existing) return { id: existing.id, r1Fired, r1Triggering: r1TriggeringValues };
 
@@ -958,7 +1060,8 @@ async function writeOwnershipPillar(db: Db, own: OwnershipResult, stockId: strin
     () => db.pillarScore.findUnique({ where: { score_pillar_input_identity: { stockId, pillar: "ownership", inputsFingerprint: fp } }, select: { id: true } }),
     () => db.pillarScore.create({
     data: {
-      stockId, symbol, pillar: "ownership", subtotal: own.finalOwnership, pillarState: "scored", sourcePeriod: own.snapshot.periodKey, asOfDate: ctx.asOfDate, runId: ctx.runId, specVersionId: ctx.specVersionId, inputsFingerprint: fp,
+      // the SUBTOTAL the composite used: v2 replaces the value, not the register reading beneath it.
+      stockId, symbol, pillar: "ownership", subtotal: ownV2?.subtotal ?? own.finalOwnership, pillarState: "scored", sourcePeriod: own.snapshot.periodKey, asOfDate: ctx.asOfDate, runId: ctx.runId, specVersionId: ctx.specVersionId, inputsFingerprint: fp,
       ownershipScore: {
         create: {
           ...ownershipScore,
@@ -1091,7 +1194,7 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
     foundation: pillarInputsFingerprint(m.fPillar, m.fPillar.snapshot),
     momentum: pillarInputsFingerprint(m.mPillar, m.mPillar.snapshot),
     market: m.market ? marketInputsFingerprint(m.market, m.stockId, m.market.state === "scored" ? m.marketSourcePeriod : "MARKET_EXCLUDED") : null,
-    ownership: m.own ? fullInputsFingerprint(m.own) : null,
+    ownership: m.own ? fullInputsFingerprint(m.own, m.ownV2) : null,
   };
   // Raw, because the four pillar FKs on ScoreSnapshot are scalar (a PillarScore cannot carry four
   // back-relations), so there is no include to traverse.
@@ -1148,7 +1251,7 @@ export async function persistMember(db: Db, m: EvaluatedMember, sc: Scaffold, as
   if (!m.market) throw new Error(`persistMember: ${m.symbol} has no Market result — orchestrate.scoreMarketForPg must return every roster member`);
   const marketId = await writeMarketPillar(db, m.market, m.stockId, m.symbol, { runId: sc.runId, specVersionId: sc.specVersionId, asOfDate: asOf, sourcePeriod: m.market.state === "scored" ? m.marketSourcePeriod : "MARKET_EXCLUDED" });
   if (!m.own) throw new Error(`persistMember: ${m.symbol} has no Ownership result (no shareholding rows)`);
-  const ownership = await writeOwnershipPillar(db, m.own, m.stockId, m.symbol, { runId: sc.runId, specVersionId: sc.specVersionId, asOfDate: asOf });
+  const ownership = await writeOwnershipPillar(db, m.own, m.stockId, m.symbol, { runId: sc.runId, specVersionId: sc.specVersionId, asOfDate: asOf }, m.ownV2);
 
   const pillarScoreIds: Record<Pillar, string> = { foundation: foundationId, momentum: momentumId, market: marketId, ownership: ownership.id };
   // LAYER-1 PROVENANCE. `opts.guardrail` present ⇒ the caller ran the pass through the

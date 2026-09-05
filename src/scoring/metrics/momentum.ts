@@ -175,6 +175,46 @@ export function m5TtmInterestCoverage(run: MomentumQuarter[]): MetricValue {
   };
 }
 
+// ══ CHANGE 2.9 — M5 REPLACED: THE OPERATING SHARE OF PRE-TAX PROFIT ══════════════
+//
+// M5 was TTM interest coverage. Three independent measurements say it was not doing a job,
+// and none of them depends on the replacement being good:
+//   · 4% CORRELATION with the accounts it should track. Every other Momentum metric runs
+//     40-59% (profit growth 59%, net margin 51%, operating margin 49%, revenue growth 40%).
+//   · ABSENT FROM ANY HUMAN READING of trading momentum — the verdict grades revenue growth,
+//     profit growth, margin change and other-income share, and never interest cover.
+//   · DUPLICATED. Foundation already carries interest cover as F5, so a leveraged company
+//     was marked down for the same fact in two pillars.
+//
+// The replacement answers a question the metric set otherwise never asks and the verdict
+// grades directly: IS THIS QUARTER'S PROFIT COMING FROM THE BUSINESS, OR FROM SOMETHING ELSE?
+// Adopted on +29.9/1000 forward profit and +20.6/1000 composite, both RESOLVED. (The
+// Momentum-verdict gain of +24.8 is CONTAMINATED — the verdict grades other-income share and
+// this metric is built from it — and was not used to adopt.)
+//
+// ★ THE NEGATIVE TAIL IS REAL AND IS LEFT TO THE LADDER. PBT <= 0 is undefined and returns
+//   unavailable, but a SMALL POSITIVE PBT swamped by other income gives a large negative
+//   share — measured as low as -12,069% on our universe. L1 clamps at 0, so such a reading
+//   scores as distress and cannot corrupt the ladder. It does pull the peer mean, which is
+//   precisely the condition the bad-class guard now on Momentum exists to catch. Deliberately
+//   NOT floored: a company whose profit is entirely other income IS the signal.
+export function m5TtmOperatingShareOfPbt(run: MomentumQuarter[]): MetricValue {
+  if (run.length < 4) return unavailable("M5_OPSHARE", "TTM Operating Share of PBT %", "%", "insufficient_history", `need 4 consecutive quarters, have ${run.length}`, { consecutive: run.length });
+  const ttm = run.slice(-4);
+  const pbt = ttmSum(ttm, (q) => q.profitBeforeTax);
+  const oi = ttmSum(ttm, (q) => q.otherIncome);
+  if (pbt === null || oi === null) return unavailable("M5_OPSHARE", "TTM Operating Share of PBT %", "%", "missing_line_item", "PBT or other income null in a TTM quarter");
+  if (pbt <= 0) return unavailable("M5_OPSHARE", "TTM Operating Share of PBT %", "%", "non_positive_base", `TTM PBT ${r2(pbt)} <= 0 - the share of a non-positive profit is undefined`);
+  const value = ((pbt - oi) / pbt) * 100;
+  return {
+    key: "M5_OPSHARE", label: "TTM Operating Share of PBT %", available: true, value, unit: "%", source: "derived",
+    formula: `OpShare = (TTM PBT ${r2(pbt)} - TTM other income ${r2(oi)}) / ${r2(pbt)} x 100 = ${r2(value)}%  (${span(ttm)})`,
+    inputs: { ttmPbt: r2(pbt), ttmOtherIncome: r2(oi), window: span(ttm) },
+    reason: null,
+    flags: ["change 2.9: replaces TTM interest coverage, which correlated 4% with the accounts it tracked and was already carried by Foundation as F5"],
+  };
+}
+
 // ── Aggregate: all 5 Momentum metrics at the latest standalone quarter ──────────
 export interface MomentumResult {
   snapshotQuarter: string; // e.g. "FY26Q4"

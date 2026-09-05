@@ -31,11 +31,14 @@ import { buildActionAnswer } from "./action.js";
 import { composeReaderAnswer, readerShape } from "./families/reader.js";
 import {
   composeInstrumentAnswer, composeComparisonAnswer, composeUniverseAnswer, composeScreenAnswer,
-  composeFrameDeclinedScreen,
+  composeFrameDeclinedScreen, composeFindingScreenAnswer, composeLineItemScreenAnswer,
 } from "./families/market.js";
+import { resolveScreen } from "../resolve/blocks-market.js";
+import { FILING_REGISTRY } from "../filing/registry.js";
+import { STOCK_FINDINGS } from "../catalogue/stock-findings.js";
 import { asksTermToAct, declinedFrame } from "../router/question-shape.js";
 import { definitionKeyFor } from "../resolve/concept.js";
-import { extractConditions } from "./screen-conditions.js";
+import { screenAsk } from "./screen-ask.js";
 import type { AnySection, AnswerProse, ComposeContext, Composition } from "./contract.js";
 import type { RoutedTurn } from "../router/contract.js";
 import { coverageReadFailed, stockCoverage } from "../resolve/contract.js";
@@ -257,8 +260,26 @@ async function definitionAnswer(
   //
   // ★ `extractConditions` IS THAT SIGNAL AND IT ALREADY EXISTS (N-5). It is the screen detector step
   //   3g runs on; asking it here means the two paths cannot disagree about what a screen is.
+  //
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
-  if (extractConditions(turn.raw).length > 0) return null;
+  // ⚠⚠ AND `extractConditions` ALONE WAS TOO NARROW — THE FOURTH OCCURRENCE OF THIS CLASS, OBSERVED
+  //    LIVE, TWICE, WITH NO NUMBER IN EITHER SENTENCE FOR IT TO SEE:
+  //
+  //      "give me a list of all the stocks which are in pristine health band" → the five-labels card
+  //      "how many stocks are showing pledging red flag"                      → the what-a-flag-is card
+  //
+  //    Neither asked what a term means. Both asked for a SET and named a defined term as the FILTER,
+  //    and `extractConditions` returns `[]` for both because neither carries a comparator and a
+  //    number. The registry then matched `concept_bands` / `concept_finding`, `mentionsAreTheTerm`
+  //    was vacuously true again, and the definition answer swallowed two screens.
+  //
+  // ★ THE RULE: **a request for a set is never a definition question, however many defined terms it
+  //   names.** `screenAsk` is the widened detector and it is still the SAME object step 3g runs on —
+  //   it now returns the whole screen SPECIFICATION rather than a condition list, so the two paths
+  //   cannot disagree about what a screen is. It was widened rather than duplicated for exactly the
+  //   reason this comment has had to be written four times.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  if (screenAsk(turn.raw)) return null;
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   // ⚠ A READER ASKING ABOUT THEIR OWN BOOK IS NOT ASKING FOR A DEFINITION — found by this pass.
   //
@@ -305,6 +326,102 @@ async function definitionAnswer(
   };
 }
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ A SET WAS ASKED FOR — ANSWERED WHEREVER IT ARRIVES. ONE HOME, THREE CALLERS.
+ *
+ * This is `definitionAnswer`'s shape, one branch along, and it exists for the same measured reason:
+ * step 3g composes screens beautifully and THREE EARLIER BRANCHES RETURN BEFORE IT.
+ *
+ * ⚠ MEASURED OFFLINE ON THE LEXICAL CLASSIFIER, ALL THREE REACHING A DIFFERENT WRONG ANSWER:
+ *
+ *   "how many stocks are showing pledging red flag"   → operation `unresolved` ⇒ **clarify chips**:
+ *      "I could not read that one closely just now — which of these did you mean?" — to a sentence
+ *      naming one of our own 22 rules and asking for a count of it.
+ *   "companies with return on equity above 900"        → the same, and this one has a FIELD, a
+ *      COMPARATOR and a NUMBER in it. It is a matrix case that passes only because the matrix drives
+ *      it with `operation: "screen"` declared; on the path a reader uses it clarified.
+ *   "which stocks have an earnings quality red flag"   → `declinedFrame` returns `superlative`,
+ *      because "quality" is a verdict word and "stocks" is a market noun — so an out-of-scope roll
+ *      answers a NAMED RULE with a health RANKING.
+ *
+ * ★ THE RULING IS THE ONE THIS FILE HAS NOW APPLIED FOUR TIMES: **an operation slot is grammar, and a
+ *   behavioural rule must not be gated on one.** Step 2b took the advice decline off the slot, step 3g
+ *   took the screen COMPOSITIONS off it, 2c and 2d moved to the sentence. What was missed is that
+ *   taking 3g off the slot does nothing while step 2 returns first — the gate did not move, it just
+ *   stopped being 3g's.
+ *
+ * ⚠ AND IT IS SAFE TO RUN BEFORE A REFUSAL FOR `definitionAnswer`'s OWN REASON: every filter
+ *   `screenAsk` reads is resolved against a registry WE PUBLISH — the five band labels, the 22 filing
+ *   rules, the nine screen fields. A sentence that names something we hold a screen for cannot be a
+ *   sentence about something we do not cover.
+ *
+ * ⚠ NO SUBJECT, AND THE GUARD IS HERE RATHER THAN AT EACH CALLER. "How does TCS compare with the
+ *   companies in the pristine band" carries a band and is not a screen — it is a comparison, and a
+ *   screen check running before subject resolution would take it. Step 3g's own `if (!symbol)` says
+ *   the same thing; putting it inside means the two earlier callers cannot forget it.
+ */
+async function screenAnswer(turn: RoutedTurn): Promise<TurnResult | null> {
+  if (turn.resolvedSymbols.length > 0) return null;
+  const ask = screenAsk(turn.raw);
+  if (!ask) return null;
+
+  // ⚠ THE LAYER IS THE ASK'S, NOT A GUESS MADE HERE. A finding filter reaches all 2,291 stocks; a
+  //   metric or band filter reaches the 95 we score. Deciding it twice is how two answers come to
+  //   state two different denominators for one question.
+  if (ask.layer === "finding" && ask.finding) {
+    const keys = ask.finding.ruleKey
+      ? [ask.finding.ruleKey]
+      : FILING_REGISTRY.filter((e) => e.kind === ask.finding!.kind).map((e) => e.ruleKey);
+    const what = ask.finding.name ?? (ask.finding.kind === "pattern" ? "a pattern" : "a red flag");
+    // ★ THE CHECK'S OWN DEFINITION, from the catalogue — what the reader asking "which stocks show X"
+    //   actually wants beside the list. Only for a NAMED rule: a KIND screen spans eleven rules and
+    //   has no single description, and stitching eleven together would be a paragraph nobody asked for.
+    const definition = ask.finding.ruleKey
+      ? (STOCK_FINDINGS as Record<string, { description?: string }>)[ask.finding.ruleKey]?.description ?? null
+      : null;
+    const fs = await composeFindingScreenAnswer(keys, what, ask.bandLabel, ask.shape, definition);
+    if (fs) return fs;
+  }
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ FILED LINE ITEMS — THE THIRD UNIVERSE, AND THE INTERSECTION WHERE A SENTENCE SPANS TWO.
+  //
+  // "Revenue above 100cr" reaches the 2,284 companies that have filed. "Health above 70" reaches the
+  // 95 we score. A sentence carrying both is an OVERLAP, and it can only be as wide as the narrower
+  // side — so the scored screen runs FIRST, its full match set restricts the line-item screen, and
+  // the answer says which population it searched. Silently applying the narrower one is the defect
+  // §2 exists to name.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  if (ask.lineItems.length > 0) {
+    const alsoScored = ask.conditions.length > 0 || ask.band !== null;
+    let narrowed: { symbols: ReadonlySet<string>; what: string; population: number; said: string } | null = null;
+    if (alsoScored) {
+      const scored = await resolveScreen(ask.conditions, ask.bandLabel);
+      if (scored.ok) {
+        narrowed = {
+          symbols: new Set(scored.data.matchedSymbols),
+          what: `we score${ask.bandLabel ? ` and label ${ask.bandLabel}` : ""}`,
+          population: scored.data.scoredUniverse,
+          // The scored side echoed back in the reader's terms, from the APPLIED conditions rather
+          // than from the sentence — the same rule that keeps a threshold code-extracted.
+          said: [
+            ...scored.data.conditions.map((c) => `${c.label.toLowerCase()} ${c.bound}`),
+            ...(ask.bandLabel ? [`a ${ask.bandLabel} label`] : []),
+          ].join(" and "),
+        };
+      }
+    }
+    const li = await composeLineItemScreenAnswer(ask.lineItems, ask.basis, ask.shape, narrowed);
+    if (li) return li;
+  }
+
+  if (ask.conditions.length > 0 || ask.band) {
+    const sc = await composeScreenAnswer(ask.conditions, ask.bandLabel, ask.shape);
+    if (sc) return sc;
+  }
+  return null;
+}
+
 async function composeTurnBody(
   turn: RoutedTurn,
   reader: { userId: string } | null = null,
@@ -335,6 +452,20 @@ async function composeTurnBody(
     //   `declinedFrame` requires a MARKET NOUN plus a verdict word — so a question about a celebrity
     //   still stops, and §6.3's "one line, no improvisation" is untouched for everything it was
     //   written about.
+    // ═══ ★★ AND A SET WE CAN ACTUALLY SCREEN FOR IS NEVER OUTSIDE OUR COVERAGE — AND BEATS THE
+    //     FRAME DECLINE BELOW, WHICH OVER-FIRES ON IT.
+    //
+    // ⚠ MEASURED: `declinedFrame("which stocks have an earnings quality red flag")` returns
+    //   **`superlative`**, because "quality" sits in its verdict list and "stocks" is a market noun.
+    //   So on an out-of-scope roll a question naming R3 by name was answered with a ranking of the
+    //   whole scored universe on health — every figure real, none of them about the check asked for.
+    //
+    // ★ ORDER IS THE FIX AND IT IS THE SAME ORDER STEP 3g ALREADY HOLDS: a filter we can run beats a
+    //   frame we decline, because the decline substitutes a DIFFERENT question and the filter answers
+    //   this one. `screenAsk` refuses rather than guesses, so nothing the frame decline should own
+    //   can be captured here.
+    const asScreen = await screenAnswer(turn);
+    if (asScreen) return asScreen;
     const oosFrame = declinedFrame(turn.raw);
     if (oosFrame) {
       const declined = await composeFrameDeclinedScreen(oosFrame);
@@ -516,6 +647,24 @@ async function composeTurnBody(
   }
   }
 
+
+  // 2a-bis · ★★ A SET REQUEST IS NOT AN UNRESOLVED OPERATION, AND STEP 2 WAS SWALLOWING EVERY ONE
+  //          THAT THE LEXICAL CLASSIFIER COULD NOT NAME.
+  //
+  // ⚠ THE SCREEN COMPOSITIONS WERE TAKEN OFF THE OPERATION SLOT AT 3g — "so that one slot's coin-flip
+  //   cannot decide whether an answer exists at all" — and it did not help, because THIS branch reads
+  //   the same slot twenty lines earlier and returns. Measured offline: "companies with return on
+  //   equity above 900", a sentence carrying a field, a comparator and a number, was answered with
+  //   "I could not read that one closely just now".
+  //
+  // ★ SAME OVERRIDE, SAME NARROWNESS, AS STEP 2b's FOR ADVICE AND 2c's FOR DEFINITIONS. §6.2's rule
+  //   is that an unresolved operation gets chips rather than a GUESS; a code-extracted screen
+  //   specification is not a guess — it is a field, a comparator and a number, or one of five
+  //   published band labels, or one of 22 registered rules, read off the reader's own sentence.
+  {
+    const asScreen = await screenAnswer(turn);
+    if (asScreen) return asScreen;
+  }
 
   // 2 · ★ OPERATION UNRESOLVED — CHIPS, NEVER A HANDLER (§6.2). This is checked BEFORE subject
   //     ambiguity on purpose: knowing WHICH company does not help if we do not know what was asked,
@@ -699,11 +848,25 @@ async function composeTurnBody(
     // ⚠ ORDER IS THE RULING, AND CONDITIONS COME FIRST. "pharma companies with return on equity above
     //   20" names a pond AND states a filter; the filter is what was asked for, and letting the pond
     //   matcher take it would answer a screen with a roster.
-    const conditions = extractConditions(turn.raw);
-    if (conditions.length > 0) {
-      const sc = await composeScreenAnswer(conditions);
-      if (sc) return sc;
-    }
+    // ═══ ★★ ONE DETECTOR, AND IT IS THE SAME ONE `definitionAnswer` STOOD DOWN FOR ════════════════
+    //
+    // ⚠ THIS READ `extractConditions` ALONE, AND SO DID THE DEFINITION GUARD AT 2c. Two paths asking
+    //   the same question with the same narrow test — which was fine while they agreed and became
+    //   the fourth occurrence of the definition over-fire when the test turned out to be too narrow
+    //   for both of them at once. `screenAsk` is now the single home: it decides what a screen IS and
+    //   returns the specification it runs on, so a sentence the definition path stood down for is by
+    //   construction a sentence this composes.
+    //
+    // ★ THREE FILTERS, AND EACH REFUSES RATHER THAN GUESSES: a numeric condition needs a field, a
+    //   comparator and a number; a band must be one of the five published labels; a finding must be
+    //   one of the 22 rules that actually write `stock_findings` rows. A sentence matching none is
+    //   not a screen and falls through unchanged, exactly as before.
+    // ⚠ AND IT IS THE SAME `screenAnswer` STEPS 1 AND 2a-bis CALL, NOT A COPY OF IT. Those two are
+    //   overrides on branches that would otherwise return first; this is the ordinary path. Three
+    //   call sites, one behaviour — which is the whole point, because a screen composed differently
+    //   depending on which gate happened to catch it is the defect one layer up.
+    const asScreen = await screenAnswer(turn);
+    if (asScreen) return asScreen;
 
     // ★★ TWO NAMED PONDS, AND IT MUST BE TRIED BEFORE THE SINGLE-POND ANSWER — N-1.
     //

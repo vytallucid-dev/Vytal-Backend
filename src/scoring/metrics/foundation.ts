@@ -26,6 +26,7 @@ import {
   totalDebtFrom,
   sumNonNull,
   type FoundationAnnual,
+  type MomentumQuarter,
   type MetricValue,
   type BuybackPath,
 } from "./types.js";
@@ -412,6 +413,174 @@ export function fOpmOperatingMargin(r: FoundationAnnual): MetricValue {
     flags: ["F1_OPM = EBITDA-based operating margin (stored STANDALONE column EBITDA/Revenue×100); reused as PG8's 11th Foundation metric — CN-8: no new derivation"],
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════
+// CHANGE 2.1 — FOUNDATION ON A ROLLING TWELVE MONTHS (v2)
+//
+// Six of the ten metrics are recomputed on a trailing twelve months instead of the last
+// annual statement. THE SPLIT IS FORCED, NOT CHOSEN: quarterly operating cash flow and
+// quarterly balance-sheet lines do not exist in this database (defect R31), so F3 cash
+// conversion, F4 debt/equity, F8 FCF/PAT and F9 cash consistency CANNOT move and stay
+// annual. That caps the fix at six of ten and is the honest half of cadence.
+//
+// THE CONSTRUCTION, per _tools/u-metrics.cjs TTM: the P&L NUMERATOR rolls every quarter;
+// the balance-sheet DENOMINATOR stays at the most recent annual close. A 12-month
+// numerator over a year-end base is scale-correct — a 3-month numerator would be a
+// quarter of the true ratio.
+//
+// ★ WHY NO BAR MOVED. A rolling figure must MEAN the same thing as the annual figure it
+//   replaces, or the ladders would have to be re-cut. Measured across all six metrics the
+//   median TTM / annual ratio is 1.000. That check is what made this shippable, and it is
+//   re-run as a Phase-2 gate rather than taken on trust.
+//
+// ★ THE DENOMINATOR IS FROZEN FOR THREE QUARTERS OF EVERY YEAR, and that is accepted, not
+//   overlooked. F1/F2/F6/F7 take their denominator from the annual statement: 75% frozen in
+//   Q1-Q3, 1% in Q4, which is the complete explanation of the Q4 concentration (40% of all
+//   Foundation movement lands in one quarter). Two remedies were tested and BOTH rejected —
+//   rolling the balance sheet forward on retained earnings cost -9.2/1000, resolved; and
+//   carrying each annual change forward over four quarters was rejected on product grounds,
+//   because smearing a known change forward makes the score misrepresent what it knows on
+//   the day the annual report lands. The ranking is undamaged: tau against the Foundation
+//   verdict is 0.667/0.675/0.686/0.671 across Q1-Q4, flat. (Addendum A.4.)
+
+/** Sum a quarterly field over the last 4 of `run`; null if the run is short or any is null. */
+function ttm4(run: MomentumQuarter[], pick: (q: MomentumQuarter) => number | null): number | null {
+  if (run.length < 4) return null;
+  let s = 0;
+  for (const q of run.slice(-4)) {
+    const v = pick(q);
+    if (v === null) return null;
+    s += v;
+  }
+  return s;
+}
+
+/** TTM EBIT = sum over 4 quarters of (PBT + interest). Quarterly `interest` IS the
+ *  finance-costs line, so this is term-for-term the annual ebitFrom(PBT, financeCosts)
+ *  the bars were cut on. */
+const ttmEbit = (run: MomentumQuarter[]): number | null =>
+  ttm4(run, (q) => (q.profitBeforeTax !== null && q.interest !== null ? q.profitBeforeTax + q.interest : null));
+
+const shortRun = (key: string, label: string, unit: MetricValue["unit"], need: number, have: number): MetricValue =>
+  unavailable(key, label, unit, "insufficient_history", `rolling ${key} needs ${need} consecutive quarters, have ${have}`, { consecutive: have });
+
+/** F1 ROCE %, rolling. TTM EBIT over the ANNUAL capital employed. */
+export function f1RoceTtm(r: FoundationAnnual, run: MomentumQuarter[]): MetricValue {
+  const e = ttmEbit(run);
+  if (e === null) return shortRun("F1", "ROCE % (TTM)", "%", 4, run.length);
+  const nw = netWorthFrom(r);
+  if (nw === null) return unavailable("F1", "ROCE % (TTM)", "%", "missing_line_item", "need net worth");
+  const debt = totalDebtFrom(r);
+  if (debt === null)
+    return unavailable("F1", "ROCE % (TTM)", "%", "missing_line_item",
+      "borrowings not disclosed — capital employed is unknown (absence is not zero debt)",
+      { ttmEbit: r2(e), netWorth: r2(nw), totalDebt: null });
+  const ce = nw + debt;
+  if (ce === 0) return unavailable("F1", "ROCE % (TTM)", "%", "divide_by_zero", "capital employed = 0");
+  const value = (e / ce) * 100;
+  return {
+    key: "F1", label: "ROCE % (TTM)", available: true, value, unit: "%", source: "derived",
+    formula: `ROCE = TTM EBIT ${r2(e)} / (net worth ${r2(nw)} + debt ${r2(debt)} = ${r2(ce)}) x 100 = ${r2(value)}%`,
+    inputs: { ttmEbit: r2(e), netWorth: r2(nw), totalDebt: r2(debt), capitalEmployed: r2(ce), cadence: "ttm" },
+    reason: null, flags: ["change 2.1: rolling numerator over the annual balance-sheet base"],
+  };
+}
+
+/** F2 ROE %, rolling. TTM net profit over the ANNUAL year-end net worth. */
+export function f2RoeTtm(r: FoundationAnnual, run: MomentumQuarter[]): MetricValue {
+  const p = ttm4(run, (q) => q.netProfit);
+  if (p === null) return shortRun("F2", "ROE % (TTM)", "%", 4, run.length);
+  const nw = netWorthFrom(r);
+  if (nw === null) return unavailable("F2", "ROE % (TTM)", "%", "missing_line_item", "need net worth");
+  if (nw === 0) return unavailable("F2", "ROE % (TTM)", "%", "divide_by_zero", "net worth = 0");
+  const value = (p / nw) * 100;
+  return {
+    key: "F2", label: "ROE % (TTM)", available: true, value, unit: "%", source: "derived",
+    formula: `ROE = TTM net profit ${r2(p)} / net worth ${r2(nw)} x 100 = ${r2(value)}%`,
+    inputs: { ttmNetProfit: r2(p), netWorth: r2(nw), cadence: "ttm" },
+    reason: null, flags: ["uses YEAR-END net worth per spec; change 2.1 rolls only the numerator"],
+  };
+}
+
+/** F5 Interest Coverage, rolling. Wholly quarterly — no annual anchor. */
+export function f5InterestCoverageTtm(_r: FoundationAnnual, run: MomentumQuarter[]): MetricValue {
+  const e = ttmEbit(run), f = ttm4(run, (q) => q.interest);
+  if (e === null || f === null) return shortRun("F5", "Interest Coverage (TTM)", "x", 4, run.length);
+  if (f <= 0)
+    return unavailable("F5", "Interest Coverage (TTM)", "x", "divide_by_zero",
+      `TTM finance costs ${r2(f)} <= 0 -> coverage undefined (effectively unconstrained)`,
+      { ttmEbit: r2(e), ttmFinanceCosts: r2(f) });
+  const value = e / f;
+  return {
+    key: "F5", label: "Interest Coverage (TTM)", available: true, value, unit: "x", source: "derived",
+    formula: `IC = TTM EBIT ${r2(e)} / TTM finance costs ${r2(f)} = ${r2(value)}x`,
+    inputs: { ttmEbit: r2(e), ttmFinanceCosts: r2(f), cadence: "ttm" },
+    reason: null, flags: ["change 2.1: both legs roll - F5 needs no annual anchor"],
+  };
+}
+
+/** F6 Receivables Days, rolling. ANNUAL receivables over TTM revenue.
+ *  WARNING - this carries defect F6-inverted (Addendum A.3): the numerator is annual and
+ *  the denominator rolls, so outside Q4 a revenue fall reads as a working-capital problem
+ *  (83% of the movement is denominator-driven, median numerator share 0%). Recorded, not
+ *  repaired: repairing it means moving the metric's definition, which is not a v2 change. */
+export function f6ReceivablesDaysTtm(r: FoundationAnnual, run: MomentumQuarter[]): MetricValue {
+  const rev = ttm4(run, (q) => q.revenue);
+  if (rev === null) return shortRun("F6", "Receivables Days (TTM)", "days", 4, run.length);
+  const recv = sumNonNull(r.tradeReceivablesCurrent, r.tradeReceivablesNoncurrent);
+  if (recv === null) return unavailable("F6", "Receivables Days (TTM)", "days", "missing_line_item", "need trade receivables");
+  if (rev === 0) return unavailable("F6", "Receivables Days (TTM)", "days", "divide_by_zero", "TTM revenue = 0");
+  const value = (recv / rev) * 365;
+  return {
+    key: "F6", label: "Receivables Days (TTM)", available: true, value, unit: "days", source: "derived",
+    formula: `RecvDays = receivables ${r2(recv)} / TTM revenue ${r2(rev)} x 365 = ${r2(value)} days`,
+    inputs: { tradeReceivables: r2(recv), ttmRevenue: r2(rev), cadence: "ttm" },
+    reason: null, flags: ["change 2.1: annual receivables over a rolling revenue base - see defect F6-inverted"],
+  };
+}
+
+/** F7 Asset Turnover, rolling. TTM revenue over ANNUAL total assets. */
+export function f7AssetTurnoverTtm(r: FoundationAnnual, run: MomentumQuarter[]): MetricValue {
+  const rev = ttm4(run, (q) => q.revenue);
+  if (rev === null) return shortRun("F7", "Asset Turnover (TTM)", "x", 4, run.length);
+  if (r.totalAssets === null) return unavailable("F7", "Asset Turnover (TTM)", "x", "missing_line_item", "need total assets");
+  if (r.totalAssets === 0) return unavailable("F7", "Asset Turnover (TTM)", "x", "divide_by_zero", "total assets = 0");
+  const value = rev / r.totalAssets;
+  return {
+    key: "F7", label: "Asset Turnover (TTM)", available: true, value, unit: "x", source: "derived",
+    formula: `AssetTurn = TTM revenue ${r2(rev)} / total assets ${r2(r.totalAssets)} = ${r2(value)}x`,
+    inputs: { ttmRevenue: r2(rev), totalAssets: r2(r.totalAssets), cadence: "ttm" },
+    reason: null, flags: ["change 2.1: rolling revenue over the annual asset base"],
+  };
+}
+
+/** F10 Revenue 3y CAGR %, rolling. TTM-now against TTM three years back - wholly quarterly,
+ *  so it needs SIXTEEN consecutive quarters (two windows twelve apart). */
+export const F10_TTM_QUARTERS = 16;
+export function f10Revenue3yCagrTtm(_r: FoundationAnnual, run: MomentumQuarter[]): MetricValue {
+  if (run.length < F10_TTM_QUARTERS) return shortRun("F10", "Revenue 3y CAGR % (TTM)", "%", F10_TTM_QUARTERS, run.length);
+  const now = ttm4(run, (q) => q.revenue);
+  const then = ttm4(run.slice(0, run.length - 12), (q) => q.revenue);
+  if (now === null || then === null) return unavailable("F10", "Revenue 3y CAGR % (TTM)", "%", "missing_line_item", "revenue null in a TTM window");
+  if (then <= 0) return unavailable("F10", "Revenue 3y CAGR % (TTM)", "%", "non_positive_base", `TTM revenue 3y ago ${r2(then)} <= 0`);
+  if (now <= 0) return unavailable("F10", "Revenue 3y CAGR % (TTM)", "%", "non_positive_base", `TTM revenue now ${r2(now)} <= 0`);
+  const value = (Math.pow(now / then, 1 / F10_CAGR_YEARS) - 1) * 100;
+  return {
+    key: "F10", label: "Revenue 3y CAGR % (TTM)", available: true, value, unit: "%", source: "derived",
+    formula: `CAGR = (TTM rev ${r2(now)} / TTM rev 3y ago ${r2(then)})^(1/3) - 1 = ${r2(value)}%`,
+    inputs: { ttmRevenueNow: r2(now), ttmRevenue3yAgo: r2(then), cadence: "ttm" },
+    reason: null,
+    flags: ["change 2.1: TTM-vs-TTM twelve quarters apart; the <=10% intra-pillar WEIGHT cap is a pillar-layer concern, not a value cap"],
+  };
+}
+
+/** The six metrics change 2.1 moves to a rolling twelve months. The other four (F3, F4, F8,
+ *  F9) cannot move: their numerator or denominator needs quarterly cash flow or a quarterly
+ *  balance sheet, and neither exists (R31). */
+export const FOUNDATION_TTM: Record<string, (r: FoundationAnnual, run: MomentumQuarter[]) => MetricValue> = {
+  F1: f1RoceTtm, F2: f2RoeTtm, F5: f5InterestCoverageTtm,
+  F6: f6ReceivablesDaysTtm, F7: f7AssetTurnoverTtm, F10: f10Revenue3yCagrTtm,
+};
 
 // ── Aggregate: compute all 10 Foundation metrics at the latest standalone FY ─────
 export interface FoundationResult {

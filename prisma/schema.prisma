@@ -2918,6 +2918,23 @@ model OwnershipScore {
   flowAdjustmentClamped Decimal                 @map("flow_adjustment_clamped") @db.Decimal(8, 4) // clamp(raw, -12, +12)
   finalOwnership        Decimal                 @map("final_ownership") @db.Decimal(8, 4) // clamp(primary + flowClamped, 40, 100)
 
+  // ── CHANGE 2.5 — the REBUILT pillar's own decomposition ────────────────────────────────────────
+  // Every column above describes v1: a baseline of 75 minus three FIXED-STEP penalties. v2 replaces
+  // that with three GRADED readings (pledge .40 / promoter flow .35 / institutional flow .25), so
+  // none of them has an honest home in a v1 column. Writing the v2 subtotal onto a row whose stored
+  // decomposition still describes v1 would make the row contradict itself.
+  //
+  // NULL means "this snapshot was not scored under v2" — the same honest-null discipline as
+  // not_evaluable and guardrail_screened, and NOT the same as zero.
+  v2Subtotal            Decimal?                @map("v2_subtotal") @db.Decimal(8, 4)
+  v2PledgePct           Decimal?                @map("v2_pledge_pct") @db.Decimal(8, 4)
+  v2PledgeScore         Decimal?                @map("v2_pledge_score") @db.Decimal(8, 4)
+  v2PledgeAdjustment    Decimal?                @map("v2_pledge_adjustment") @db.Decimal(8, 4)
+  v2PromoterScore       Decimal?                @map("v2_promoter_score") @db.Decimal(8, 4)
+  v2InstitutionalScore  Decimal?                @map("v2_institutional_score") @db.Decimal(8, 4)
+  v2PromoterChange      Decimal?                @map("v2_promoter_change") @db.Decimal(18, 4)
+  v2InstitutionalChange Decimal?                @map("v2_institutional_change") @db.Decimal(18, 4)
+
   // R1 pledge red-flag FIRING RECORD (the breach is a red flag, NOT a pillar nudge).
   // The score_red_flags ROW stays deferred (it needs a ScoreSnapshot, snapshot_id
   // NOT NULL → out-of-scope pillars), but R1's firing is recorded HERE so that row

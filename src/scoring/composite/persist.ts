@@ -21,7 +21,12 @@ import { Prisma } from "../../generated/prisma/client.js"; // DbNull sentinel fo
 import { BAND_MAPPING_VERSION } from "./label.js";
 import type { CompositeResult, Pillar } from "./types.js";
 
-export const COMPOSITE_SPEC_VERSION = "2026.1";
+/** The spec every composite is stamped with. Re-exported from scoring/v2/spec.ts rather than
+ *  declared, so there is exactly one place the version can be changed and no way for the
+ *  fallback in assembleComposite to disagree with what a pass actually computed. */
+export { SCORING_SPEC_VERSION as COMPOSITE_SPEC_VERSION } from "../v2/spec.js";
+import { SCORING_SPEC_VERSION } from "../v2/spec.js";
+const COMPOSITE_SPEC_VERSION = SCORING_SPEC_VERSION;
 const d4 = (x: number) => Math.round(x * 1e4) / 1e4;
 
 /** The three witness columns, as the row mapper needs them. score-pass.ts's `FindingsEvaluation`
@@ -54,7 +59,9 @@ export function snapshotInputsFingerprint(r: CompositeResult): string {
     stockId: r.stockId,
     periodKey: r.periodKey,
     snapshotType: r.snapshotType,
-    spec: COMPOSITE_SPEC_VERSION,
+    // ★ from the RESULT, not the module constant. Moving the spec version is what makes a
+    //   v2 rebuild supersede an existing v1 head instead of skip-identical against it.
+    spec: r.specVersion,
     bandMapping: BAND_MAPPING_VERSION,
     composite: r.composite === null ? null : Number(r.composite.toFixed(4)),
     reason: r.redistributionReason,

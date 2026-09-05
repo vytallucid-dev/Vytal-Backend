@@ -254,6 +254,10 @@ export async function buildPersonalSection(
       buy_composite: number | null;
       buy_band: string | null;
       buy_as_of: Date | null;
+      /** The band-mapping VERSION each of the two scores was written under, so band-safe
+       *  rounding judges a score against the cut points it was actually banded by. */
+      buy_band_mapping: string | null;
+      cur_band_mapping: string | null;
       cur_band: string | null;
       cur_composite: number | null;
       prior_band: string | null;
@@ -280,17 +284,23 @@ export async function buildPersonalSection(
     -- watched stock is described without ever being counted as a holding.
     -- (No backticks anywhere in this SQL: it is a template literal and a backtick ends the string.)
     scope AS (SELECT stock_id FROM held UNION SELECT ${stockId} AS stock_id),
+    -- band_mapping is carried through because BAND-SAFE ROUNDING NEEDS THE SNAPSHOT'S OWN MAP.
+    -- A snapshot is pinned to the mapping in force when it was written; rounding it against a
+    -- later one is exactly the drift bandSafeScore exists to prevent, and after the v2 re-band
+    -- the two maps have different cut points.
     snap AS (
       SELECT DISTINCT ON (s.stock_id, s.period_key)
-             s.id, s.stock_id, s.period_key, s.composite, s.label_band::text AS label_band
+             s.id, s.stock_id, s.period_key, s.composite, s.label_band::text AS label_band,
+             bm.version AS band_mapping
       FROM score_snapshots s
       JOIN scope ON scope.stock_id = s.stock_id
+      JOIN score_band_mappings bm ON bm.id = s.band_mapping_version_id
       WHERE s.snapshot_type::text = 'quarterly' AND s.period_key <= ${periodKey}
       ORDER BY s.stock_id, s.period_key, s.version DESC
     ),
     cur AS (SELECT * FROM snap WHERE period_key = ${periodKey}),
     prv AS (
-      SELECT DISTINCT ON (stock_id) id, stock_id, period_key, composite, label_band
+      SELECT DISTINCT ON (stock_id) id, stock_id, period_key, composite, label_band, band_mapping
       FROM snap WHERE period_key < ${periodKey}
       ORDER BY stock_id, period_key DESC
     ),
@@ -331,6 +341,12 @@ export async function buildPersonalSection(
          WHERE s.stock_id = ${stockId} AND s.snapshot_type::text = 'quarterly'
            AND s.as_of_date <= (SELECT first_lot FROM lot)
          ORDER BY s.as_of_date DESC, s.version DESC LIMIT 1) AS buy_as_of,
+      (SELECT bm.version FROM score_snapshots s
+         JOIN score_band_mappings bm ON bm.id = s.band_mapping_version_id
+         WHERE s.stock_id = ${stockId} AND s.snapshot_type::text = 'quarterly'
+           AND s.as_of_date <= (SELECT first_lot FROM lot)
+         ORDER BY s.as_of_date DESC, s.version DESC LIMIT 1) AS buy_band_mapping,
+      (SELECT band_mapping FROM mine_cur) AS cur_band_mapping,
       (SELECT label_band FROM mine_cur) AS cur_band,
       (SELECT composite   FROM mine_cur) AS cur_composite,
       (SELECT label_band FROM mine_prv) AS prior_band,
@@ -499,7 +515,7 @@ export async function buildPersonalSection(
       // the takeaway's bullets already follow.
       const buyScore =
         detail.buy_composite !== null && detail.buy_band
-          ? ` Vytal scored this company ${scoreDisplay(Number(detail.buy_composite), detail.buy_band)} out of 100 that day, in the ${bandLabel(detail.buy_band)} band.`
+          ? ` Vytal scored this company ${scoreDisplay(Number(detail.buy_composite), detail.buy_band, detail.buy_band_mapping ?? undefined)} out of 100 that day, in the ${bandLabel(detail.buy_band)} band.`
           : "";
       facts.push({
         key: "personal.since",
@@ -555,7 +571,7 @@ export async function buildPersonalSection(
     // clause, and "it" again stood for the company while the sentence before it was about a score.
     const now =
       detail?.cur_composite !== null && detail?.cur_composite !== undefined && curBand
-        ? ` This quarter it scores ${scoreDisplay(Number(detail.cur_composite), curBand)}${nowBand}.`
+        ? ` This quarter it scores ${scoreDisplay(Number(detail.cur_composite), curBand, detail?.cur_band_mapping ?? undefined)}${nowBand}.`
         : "";
     facts.push({
       key: "personal.watchlist",

@@ -17,6 +17,7 @@ import { combineLenses } from "../lenses/composite.js";
 import { assertUnitMatch, type LiveUnit } from "./unit-guard.js";
 import type { BarDirection } from "../lenses/types.js";
 import { computePeerStats, decideLift531, decideLift541 } from "./peer-stats.js";
+import { l2BadClassGuard, l2SigmaGuard, type L2Guard } from "./lens-guards.js";
 import { normalizeSuppression } from "./types.js";
 import type {
   Pillar,
@@ -104,6 +105,14 @@ export function scoreMetricCrossSection(input: CrossSectionInput): CrossSectionR
   for (const m of scoredSet) l1Map.set(m.stockId, scoreL1(m.rawValue as number, bars, direction, { stock: m.symbol, override }));
   const lift531 = decideLift531(peerSetCommon.map((m) => l1Map.get(m.stockId)!.score));
 
+  // CHANGE 2.6/C.1 — the BAD-CLASS guard is a property of the CROSS-SECTION, so it is
+  // decided once per metric here, over the same peer set lift531 counts. The SIGMA guard
+  // is a property of the STATS THIS MEMBER IS SCORED AGAINST, so it is decided per member
+  // in buildScored — an O4 stock is scored against a cross-section including itself, and
+  // the guard must judge that one, not the one everyone else sees.
+  const badClassFired = config.l2BadClassGuard === true &&
+    l2BadClassGuard(peerSetCommon.map((m) => m.rawValue as number), bars, direction);
+
   // 4 + 5. per member
   const scored: ScoredMetric[] = members.map((m) => {
     if (ownExcluded.has(m.stockId)) return buildNotScored(input, m, "suppressed", "suppressed by guardrail directive (own-score excluded)");
@@ -122,7 +131,7 @@ export function scoreMetricCrossSection(input: CrossSectionInput): CrossSectionR
       l2Avail = stats.sampleN >= config.peerMinN;
       extraNote.push("O4: peer-only exclusion — own score kept (scored vs the full cross-section incl. self); value removed from the peer μ/σ others see");
     }
-    return buildScored(input, m, l1Map.get(m.stockId)!, stats, l2Avail, lift531, !peerExcl, extraNote);
+    return buildScored(input, m, l1Map.get(m.stockId)!, stats, l2Avail, lift531, !peerExcl, extraNote, badClassFired);
   });
 
   return {
@@ -146,14 +155,28 @@ function buildScored(
   lift531: AnchorLiftDecision,
   includedInPeerStats: boolean,
   extraNotes: string[] = [],
+  badClassFired = false,
 ): ScoredMetric {
   const { direction, bars, config } = input;
   const value = m.rawValue as number;
   const notes: string[] = [...extraNotes];
 
-  // ── Lens 2 (peer) — gated on peer N ≥ min ──
+  // ── CHANGE 2.6 / C.1 — the peer-lens guards ──
+  // Each is set for exactly one pillar (sigma Foundation, bad-class Momentum) and never for
+  // a banking PG. When one fires L2 is UNAVAILABLE, and combineLenses renormalises over the
+  // lenses that remain — the metric is NOT scored against a comparison we have just decided
+  // is not a comparison.
+  let guardFired: L2Guard | null = null;
+  if (badClassFired) guardFired = "bad_class";
+  else if (config.l2SigmaGuard === true && l2SigmaGuard(peerStats.mean, peerStats.stdDev)) guardFired = "sigma";
+
+  // ── Lens 2 (peer) — gated on peer N ≥ min, then on the guards ──
   let l2: ZLensResult | null = null;
-  if (l2Available) {
+  if (guardFired === "bad_class") {
+    notes.push(`L2 suppressed — BAD-CLASS guard: the peer group's median L1 fails the acceptable bar, so topping this field is not health`);
+  } else if (guardFired === "sigma") {
+    notes.push(`L2 suppressed — SIGMA guard: peer σ=${peerStats.stdDev.toFixed(3)} > |mean|=${Math.abs(peerStats.mean).toFixed(3)}, so the z-score is meaningless`);
+  } else if (l2Available) {
     l2 = computeLens2({ value, peerMean: peerStats.mean, peerStdDev: peerStats.stdDev, direction, anchorLifted: lift531.fired });
     if (l2.guard === "std_dev_zero") notes.push("L2 peer σ=0 → anchor returned");
   } else {

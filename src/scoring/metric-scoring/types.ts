@@ -96,6 +96,15 @@ export function normalizeSuppression(s: SuppressionInput): SuppressionPredicates
 
 // ── Tunables — SPEC values / interpretations, NOT fitted (CN-8). All FLAGGED. ────
 export interface WiringConfig {
+  /** CHANGE 2.6 as amended by C.1 — suppress L2 when the peer spread exceeds the peer mean.
+   *  FOUNDATION ONLY: it is a coefficient-of-variation test, sound for a level metric and
+   *  meaningless for a growth rate. Never set for a banking PG. */
+  l2SigmaGuard?: boolean;
+  /** CHANGE 2.6 as amended by C.1 — suppress L2 when the peer group's own median fails the
+   *  acceptable bar, so best-in-a-bad-class does not read as good. MOMENTUM ONLY: on
+   *  Foundation it fires as a proxy for the 51 known miscut bar rows. Never set for a
+   *  banking PG. */
+  l2BadClassGuard?: boolean;
   /** Min VALID peers to compute Lens 2 (else L2 unavailable → fallback). */
   peerMinN: number;
   /** Min effective in-window own-history obs to compute Lens 3 (else fallback). */

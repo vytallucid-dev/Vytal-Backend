@@ -125,6 +125,15 @@ export const CANONICAL_METRICS: CanonicalMetric[] = [
     "Vytal computes this as trailing-twelve-month EBIT divided by trailing-twelve-month interest, " +
     "after depreciation — the same basis as the annual measure."),
   M("M1_OPM_TTM", "TTM Operating Margin (PG8)", "%", "higher_better", "momentum", "non_financial"),
+  // CHANGE 2.9 — M5's replacement. A SEPARATE KEY, not a redefinition of M5, because the two
+  // are different quantities in different units: M5 is a coverage RATIO (unit "x", panel p90
+  // ~196) and this is a bounded PERCENTAGE. Redefining M5 in place would leave a percentage
+  // being scored against a ladder cut on a ratio — which is exactly what the v2 bar set ships
+  // and what assertUnitMatch exists to refuse.
+  M("M5_OPSHARE", "TTM Operating Share of PBT", "%", "higher_better", "momentum", "non_financial",
+    // momentum.ts — (Σ4Q PBT − Σ4Q other income) / Σ4Q PBT × 100.
+    "Vytal reads this as the share of trailing-twelve-month pre-tax profit that came from the " +
+    "business rather than from other income. It is undefined when pre-tax profit is not positive."),
   // Banking Foundation
   M("Tier1", "Tier-1 Capital", "%", "higher_better", "foundation", "banking"),
   M("GNPA", "Gross NPA", "%", "lower_better", "foundation", "banking"),

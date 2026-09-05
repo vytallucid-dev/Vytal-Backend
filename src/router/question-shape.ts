@@ -174,7 +174,10 @@ export type DeclinedFrame = "valuation" | "superlative";
 //   REFUSAL rather than a different answer, so a missing noun costs the same as the definition bug:
 //   "show me the strongest businesses" was told it is outside our coverage. Measured, 3 of 6
 //   phrasings of a declined frame missed.
-const MARKET_NOUNS = ["stocks", "stock", "companies", "company", "shares", "share", "names", "picks",
+// ★ EXPORTED FOR `composition/screen-ask.ts` — ONE HOME, TWO CONSUMERS (N-5). It is already the
+//   product's "this sentence is about the market at large" vocabulary; a screen detector with its
+//   own copy is how the two would drift, and drifting is exactly what the set-request bug was.
+export const MARKET_NOUNS = ["stocks", "stock", "companies", "company", "shares", "share", "names", "picks",
   "businesses", "business", "firms", "counters", "tickers", "ideas"];
 
 export function declinedFrame(raw: string): DeclinedFrame | null {

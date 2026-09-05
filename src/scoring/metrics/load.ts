@@ -26,11 +26,18 @@ export async function resolveStockId(symbol: string): Promise<string | null> {
 /** Load all STANDALONE annual fundamentals for a stock, normalized + sorted asc.
  *  `reportDateCutoff` (point-in-time backfill) restricts to periods whose report
  *  (year-end) date is ≤ the cutoff — never leaking a future period's data. */
-export async function loadFoundationStandalone(stockId: string, reportDateCutoff?: Date): Promise<FoundationAnnual[]> {
-  const rows = await prisma.fundamental.findMany({
-    where: { stockId, resultType: "standalone", ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) },
-    orderBy: { fiscalYear: "asc" },
-  });
+export async function loadFoundationStandalone(stockId: string, reportDateCutoff?: Date, basis: "standalone" | "consolidated" = "standalone"): Promise<FoundationAnnual[]> {
+  const where = (rt: string) => ({ stockId, resultType: rt, ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) });
+  // CHANGE 2.8 — nine named companies are scored on CONSOLIDATED annual accounts (v2/basis.ts).
+  // ★ FALL BACK TO STANDALONE WHEN CONSOLIDATED IS ABSENT, which is what u6.cjs srcIndex does:
+  //   `let rows = L.A(sym, want); if (!rows.length && want !== 'standalone') rows = L.A(sym);`
+  //   Without the fallback a company on the consolidated list that has not filed consolidated
+  //   for a period would lose its Foundation pillar outright rather than fall back to the
+  //   accounts it does have.
+  let rows = await prisma.fundamental.findMany({ where: where(basis), orderBy: { fiscalYear: "asc" } });
+  if (rows.length === 0 && basis !== "standalone") {
+    rows = await prisma.fundamental.findMany({ where: where("standalone"), orderBy: { fiscalYear: "asc" } });
+  }
   return rows.map((r) => ({
     fiscalYear: r.fiscalYear,
     fyOrdinal: fyOrdinal(r.fiscalYear),
@@ -73,11 +80,15 @@ export async function loadFoundationStandalone(stockId: string, reportDateCutoff
 /** Load all STANDALONE quarterly results for a stock, normalized + sorted asc.
  *  `reportDateCutoff` (point-in-time backfill) restricts to periods whose report
  *  (quarter-end) date is ≤ the cutoff — never leaking a future quarter's data. */
-export async function loadMomentumStandalone(stockId: string, reportDateCutoff?: Date): Promise<MomentumQuarter[]> {
-  const rows = await prisma.quarterlyResult.findMany({
-    where: { stockId, resultType: "standalone", ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) },
-    orderBy: [{ fiscalYear: "asc" }, { quarter: "asc" }],
-  });
+export async function loadMomentumStandalone(stockId: string, reportDateCutoff?: Date, basis: "standalone" | "consolidated" = "standalone"): Promise<MomentumQuarter[]> {
+  const where = (rt: string) => ({ stockId, resultType: rt, ...(reportDateCutoff ? { reportDate: { lte: reportDateCutoff } } : {}) });
+  // CHANGE 2.8 + 2.1 TOGETHER — see v2/basis.ts. Same standalone fallback as the annual
+  // loader: a company on the consolidated list that has not filed consolidated quarters keeps
+  // the accounts it does have rather than losing its rolling metrics entirely.
+  let rows = await prisma.quarterlyResult.findMany({ where: where(basis), orderBy: [{ fiscalYear: "asc" }, { quarter: "asc" }] });
+  if (rows.length === 0 && basis !== "standalone") {
+    rows = await prisma.quarterlyResult.findMany({ where: where("standalone"), orderBy: [{ fiscalYear: "asc" }, { quarter: "asc" }] });
+  }
   return rows.map((r) => ({
     fiscalYear: r.fiscalYear,
     quarter: r.quarter,

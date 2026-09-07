@@ -324,6 +324,21 @@ export async function resolvePeerGroupByName(raw: string): Promise<Resolved<Peer
  *   `ownershipFocus` and `question-shape.ts` — a word boundary written through a script has become a
  *   literal backspace four times in this build.
  */
+/**
+ * ★ THE WORDS THAT NAME THE CONTAINER RATHER THAN WHICH CONTAINER — exported because a second reader
+ *   now needs them.
+ *
+ * ⚠ `screen-ask.ts` TREATS A SECTOR NAME AS A SET INTENT, and that swallowed the pond family's own
+ *   questions: "how is the large-cap pharma peer group doing" names a sector ("pharma") and is a POND
+ *   question, which `composePondAnswer` answers with a distribution strip. Measured — the price-lens
+ *   assertion went red and `distribution-strip` became a renderer with no caller.
+ *
+ * ★ SO THE SCREEN STANDS DOWN WHERE THESE APPEAR, using this list rather than a copy of it. They are
+ *   already the authority on "this sentence is about a peer group"; a second list is how the two
+ *   families come to disagree about whose question it is.
+ */
+export const POND_CONTAINER_WORDS: readonly string[] = ["peer", "peers", "group", "groups", "pond", "ponds"];
+
 export function matchPondName(
   raw: string,
   ponds: readonly { id: string; displayName: string; name: string }[],
@@ -333,7 +348,7 @@ export function matchPondName(
   // ⚠ "pond" IS OUR OWN WORD FOR A PEER GROUP and was the one synonym missing — "compare the metals
   //   pond with the cement pond" was refused while "compare metals and cement" resolved. It sits
   //   beside `peer`/`group` for the same reason: it names the container, never which container.
-  const NOISE = new Set(["large", "cap", "largecap", "peer", "group", "peers", "pond", "ponds", "the", "and", "&", "sector"]);
+  const NOISE = new Set(["large", "cap", "largecap", ...POND_CONTAINER_WORDS, "the", "and", "&", "sector"]);
 
   let best: { id: string; displayName: string; hits: number; need: number } | null = null;
   for (const p of ponds) {

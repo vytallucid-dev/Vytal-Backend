@@ -148,7 +148,13 @@ function isBankingMeasured(symbol: string, values: UniverseMetricValues): boolea
  * ★ null MEANS NOT-MEASURED AND NOTHING ELSE. It never means zero. `metric-values.cache.ts` omits
  * non-finite raw values rather than storing them, so a null here is always the honest state.
  */
-function valueOf(m: UniverseMemberView, field: ScreenField, values: UniverseMetricValues): number | null {
+/**
+ * ★ EXPORTED FOR THE TREE EVALUATOR (N-5). Reading a scored field off a member is a rule with three
+ *   branches — composite, a pillar subtotal, or a `score_metrics` raw value by first-matching key —
+ *   and a second copy of it in the evaluator would be a second opinion about what "return on equity"
+ *   means on this surface. One home, two consumers.
+ */
+export function valueOf(m: UniverseMemberView, field: ScreenField, values: UniverseMetricValues): number | null {
   if (field.tier === "score") {
     if (field.id === "health") return m.composite;
     const sub = m.pillars[field.id as "foundation" | "momentum" | "market" | "ownership"];

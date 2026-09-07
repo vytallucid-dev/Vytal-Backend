@@ -19,7 +19,6 @@
     "verify:evidence-facts": "tsx src/scripts/verify-evidence-facts.ts",
     "verify:harness": "tsx src/scripts/verify-harness-selftest.ts && tsx src/scripts/verify-routes.ts && tsx src/scripts/verify-answer-invariants.ts",
     "verify:router-live": "tsx src/scripts/verify-router-live.ts",
-    "verify:browser": "tsx src/scripts/verify-browser.ts",
     "verify:routes": "tsx src/scripts/verify-routes.ts",
     "verify:ai-copy": "tsx src/scripts/verify-metric-aliases.ts && tsx src/scripts/verify-swallowed-absence.ts && tsx src/scripts/verify-source-control-chars.ts && tsx src/scripts/verify-control-chars.ts && tsx src/scripts/verify-catalogue.ts && tsx src/scripts/verify-catalogue-endpoint.ts && tsx src/scripts/verify-concepts.ts && tsx src/scripts/gen-screen-fields.ts --check && tsx src/scripts/verify-screen-ask.ts && tsx src/scripts/verify-lens-separation.ts && tsx src/scripts/verify-evidence-register.ts && tsx src/scripts/verify-quarter-metrics.ts && tsx src/scripts/verify-annual-metrics.ts && tsx src/scripts/verify-phs-copy.ts && tsx src/scripts/verify-boundary-corpus.ts && tsx src/scripts/verify-copy-register.ts && tsx src/scripts/verify-verdicts.ts && tsx src/scripts/verify-trajectory.ts && tsx src/scripts/verify-not-covered.ts && tsx src/scripts/verify-grounding-names.ts && tsx src/scripts/verify-rule-thresholds.ts",
     "verify:ai": "tsc --noEmit && npm run verify:ai-copy && npm run verify:cross-repo && npm run verify:harness",

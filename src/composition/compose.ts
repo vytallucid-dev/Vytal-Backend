@@ -33,6 +33,9 @@ import {
   composeInstrumentAnswer, composeComparisonAnswer, composeUniverseAnswer, composeScreenAnswer,
   composeFrameDeclinedScreen, composeFindingScreenAnswer, composeLineItemScreenAnswer,
 } from "./families/market.js";
+import { composeParsedScreenAnswer, screenVocabulary } from "./families/screen-tree.js";
+import { parseScreen, admitScreen, type ScreenVocabulary } from "./screen-parse.js";
+import { askToTree } from "./screen-ask-tree.js";
 import { resolveScreen } from "../resolve/blocks-market.js";
 import { FILING_REGISTRY } from "../filing/registry.js";
 import { STOCK_FINDINGS } from "../catalogue/stock-findings.js";
@@ -279,7 +282,11 @@ async function definitionAnswer(
   //   cannot disagree about what a screen is. It was widened rather than duplicated for exactly the
   //   reason this comment has had to be written four times.
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
-  if (screenAsk(turn.raw)) return null;
+  // ⚠ THE SAME INPUTS AS THE COMPOSER'S CALL, INCLUDING THE SECTOR LIST. A detector consulted with a
+  //   narrower vocabulary here than at step 3g is the two paths disagreeing again — the exact defect
+  //   this guard was rebuilt to remove. Degrades to an empty list rather than throwing.
+  const screenVocab = await screenVocabulary().catch(() => ({ sectors: [], peerGroups: [] }));
+  if (screenAsk(turn.raw, screenVocab.sectors)) return null;
   // ═══════════════════════════════════════════════════════════════════════════════════════════════
   // ⚠ A READER ASKING ABOUT THEIR OWN BOOK IS NOT ASKING FOR A DEFINITION — found by this pass.
   //
@@ -361,10 +368,159 @@ async function definitionAnswer(
  *   screen check running before subject resolution would take it. Step 3g's own `if (!symbol)` says
  *   the same thing; putting it inside means the two earlier callers cannot forget it.
  */
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ WHAT THE FALLBACK LOST — the dropped-filter rule, made visible.
+ *
+ * ⚠ "Pharma companies with revenue above 100cr" SILENTLY IGNORED "pharma" AND RETURNED THE WHOLE
+ *   MARKET. That is the worst kind of wrong answer, because it looks right. The parsed path filters on
+ *   sector now (2,290 of 2,291 stocks carry one); this is for the case where the model's reading was
+ *   refused and the regex extractor — which has no concept of a sector — is what ran.
+ *
+ * ★ IT IS DETECTED FROM OUR OWN VOCABULARY, never from a word list: a sector or peer group we hold,
+ *   named in the question, and absent from the tree that is about to run.
+ */
+function droppedFromFallback(raw: string, vocab: ScreenVocabulary, ask: ReturnType<typeof screenAsk>): string[] {
+  const hay = ` ${raw.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/ +/g, " ")} `;
+  const out: string[] = [];
+  for (const sec of vocab.sectors) {
+    // The first word of a sector name is what a reader types — "pharma" for "Pharma & Healthcare".
+    const head = sec.toLowerCase().split(/[^a-z]+/).filter((w) => w.length >= 4)[0];
+    if (head && hay.includes(` ${head}`)) out.push(`"${head}" — the regex reading has no notion of a sector`);
+  }
+  for (const pg of vocab.peerGroups) {
+    if (hay.includes(` ${pg.toLowerCase()} `)) out.push(`"${pg}" — the regex reading has no notion of a peer group`);
+  }
+  void ask;
+  return out.slice(0, 3);
+}
+
 async function screenAnswer(turn: RoutedTurn): Promise<TurnResult | null> {
   if (turn.resolvedSymbols.length > 0) return null;
-  const ask = screenAsk(turn.raw);
+  // ⚠ THE VOCABULARY IS LOADED BEFORE THE DETECTOR RUNS, because a sector is one of the things that
+  //   makes a sentence a screen. It is cached for ten minutes and degrades to an empty list, so a
+  //   database blip narrows the detector rather than breaking the turn.
+  const vocab = await screenVocabulary().catch(() => ({ sectors: [], peerGroups: [] }));
+  const ask = screenAsk(turn.raw, vocab.sectors);
   if (!ask) return null;
+
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ THE MODEL READS THE QUESTION INTO A STRUCTURE; CODE VALIDATES AND EXECUTES IT.
+  //
+  // ⚠ `screenAsk` STILL DECIDES WHETHER THIS IS A SCREEN AT ALL, and that is deliberate. It is the
+  //   detector the definition path stands down for, and moving that decision into a model call would
+  //   put the four-times-over definition bug behind a network request and a quota. So: code decides
+  //   IF, the model decides WHAT, code decides the answer.
+  //
+  // ★ AND THE FALLBACK IS A TREE TOO. Where the parse is refused, `ask` is folded into an `and` tree
+  //   and runs through the same evaluator, restatement and card — one execution path, and the
+  //   difference is one sentence saying which reading ran.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  {
+    const parse = await parseScreen(turn.raw, vocab);
+
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // ⚠⚠ THE FALLBACK TREE IS VALIDATED TOO, AND THE FIRST DRAFT SKIPPED IT.
+    //
+    //    `admitScreen` is where the bare-magnitude refusal lives. Running it only on the MODEL's tree
+    //    meant "revenue above 1000000000" — whose parse the model got wrong for an unrelated reason —
+    //    fell back to the regex extractor and executed the very bound the refusal exists to stop,
+    //    returning an empty set that looks like an answer. One validator, both paths.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    let tree = parse.parsed?.tree ?? null;
+    let refused = parse.parsed ? null : parse.rejected;
+    let refusedKind: "unavailable" | "refused" | null = parse.parsed ? null : parse.kind;
+    if (!tree) {
+      const fb = askToTree(ask);
+      if (fb) {
+        const admitted = admitScreen({ shape: ask.shape, basis: ask.basis, tree: fb }, vocab);
+        if (admitted.ok) tree = admitted.parsed.tree;
+        // ★ THE REFUSAL REPLACES THE PARSE REASON — it is the operative one, and it is a `refused`
+        //   rather than an `unavailable`: the bound itself is what we would not run.
+        else { refused = admitted.why; refusedKind = "refused"; }
+      }
+    }
+    if (tree) {
+      const composed = await composeParsedScreenAnswer(
+        tree,
+        parse.parsed?.shape ?? ask.shape,
+        // ⚠ THE REGEX FALLBACK HAS NO NOTION OF AN ORDERING OR A LIMIT. `null` is honest: the answer
+        //   then ranks on its first condition and says so, rather than claiming a ranking nobody read.
+        parse.parsed?.order ?? null,
+        parse.parsed?.limit ?? null,
+        (parse.parsed?.basis ?? ask.basis) as "standalone" | "consolidated" | null,
+        // ⚠ ONLY A REAL REFUSAL IS REPORTED. "No model configured" is the offline harness, not a
+        //   reading the reader should be told about — the AND tree IS the answer there.
+        parse.parsed || refused === "no model configured" ? null : refused,
+        parse.parsed || refused === "no model configured" ? null : (refusedKind ?? "refused"),
+        // ★ AND WHAT THE FALLBACK LOST, NAMED. See `droppedFromFallback`.
+        parse.parsed ? [] : droppedFromFallback(turn.raw, vocab, ask),
+        // ★ COULD THE SIMPLER READING HAVE DIFFERED? Only if the reader wrote an "or" or a "not" —
+        //   the fallback is AND-only, and on an all-AND sentence it produces the identical set.
+        /\b(?:or|not|except|excluding|other than|besides)\b/i.test(turn.raw),
+      );
+      if (composed) {
+        return {
+          kind: "composed", compositionId: composed.compositionId,
+          sections: composed.sections, prose: composed.prose, missLogged: false,
+        };
+      }
+    }
+    // ⚠ A PURE RANKING HAS NO FILTER, so `askToTree` returns null and there is nothing to fall back
+    //   TO — the parsed path is the only one that can answer it. That is not a refusal: it falls
+    //   through to the older readings exactly as an unrecognised sentence always did.
+    // ★★ A REFUSED BOUND IS AN ANSWER, NOT A FALL-THROUGH. If validation rejected the only reading we
+    //    had — a bare number against a crore column being the case it was built for — saying so is the
+    //    whole point. Falling past this into the older paths would run the very bound just refused.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // ★★ AND THE "no model configured" EXEMPTION IS GONE, BECAUSE ITS REASON WAS.
+    //
+    //   It read: the offline harness is not a reading the reader should be told about, because THE
+    //   AND TREE IS THE ANSWER THERE. True — while every screen had an AND tree to fall back to.
+    //
+    // ⚠ BATCH 2'S LEAF KINDS HAVE NONE. A ranking, a price condition and a trend are model-parsed
+    //   only; `askToTree` returns null for all three, so `!tree` is now reachable with no refusal to
+    //   report — and the fall-through hands the question to `declinedFrame`, which claims "top" as a
+    //   superlative and answers a REVENUE ranking with a HEALTH-SCORE one.
+    //
+    // ⚠ I-DISTINCT CAUGHT IT, intermittently, as two matrix rows returning the identical answer:
+    //   "what are the best stocks to buy" and "top 10 stocks by revenue". Identical is the symptom;
+    //   the defect is that the second question's basis was silently replaced by the first's.
+    //
+    // ★ SO: IF WE IDENTIFIED A SCREEN AND COULD NOT BUILD A TREE, WE SAY SO. A plain "ask again in a
+    //   moment" is worth more than a confident answer to a question nobody asked.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    if (!tree && refused) {
+      return {
+        kind: "composed",
+        compositionId: "market.screen.refused",
+        sections: [],
+        prose: {
+          // ═══════════════════════════════════════════════════════════════════════════════════
+          // ⚠ TWO DIFFERENT THINGS WERE SHARING ONE SENTENCE, and one of them was wrong advice.
+          //
+          //   A REFUSED BOUND is the reader's to fix — "revenue above 1000000000" needs a unit, and
+          //   saying so is the whole point of the refusal.
+          //
+          //   AN UNAVAILABLE PARSER IS NOT. MEASURED: "top 10 stocks by revenue" with the model
+          //   unreachable told the reader to «say the figure with its unit» — a question with no
+          //   figure and no unit in it, blamed for a phrasing problem it does not have. The reader
+          //   would edit a correct question and get the same result.
+          // ═══════════════════════════════════════════════════════════════════════════════════
+          opening: refusedKind === "unavailable"
+            ? [`I could not read that question closely just now. Ask again in a moment.`]
+            : [
+                `I have not run that screen, because I could not read one part of it safely: ${refused}.`,
+                ...(/unit|crore|₹|ambiguous|magnitude/i.test(refused)
+                  ? [`Say the figure with its unit — "above 100 cr" — and I will run it.`]
+                  : []),
+              ],
+          leads: {}, after: {}, close: "",
+        },
+        missLogged: false,
+      };
+    }
+  }
 
   // ⚠ THE LAYER IS THE ASK'S, NOT A GUESS MADE HERE. A finding filter reaches all 2,291 stocks; a
   //   metric or band filter reaches the 95 we score. Deciding it twice is how two answers come to
@@ -664,6 +820,24 @@ async function composeTurnBody(
   {
     const asScreen = await screenAnswer(turn);
     if (asScreen) return asScreen;
+  }
+
+  // 2a-ter · ★★ A FRAME WE DECLINE IS NOT AN UNRESOLVED OPERATION EITHER.
+  //
+  // ⚠ MEASURED ON THE LEXICAL PATH: "what are the best stocks to buy" — the literal SC-12 case, with
+  //   its own matrix row — returns `operation: "unresolved"` and was answered with clarifying chips
+  //   rather than the frame decline written for it. The matrix never saw it because that row DECLARES
+  //   `operation: "screen"`, so the decline was reachable only through a slot the live router does not
+  //   reliably produce. Same shape as `screen · matches` passing while real readers were clarified.
+  //
+  // ★ THE SAME OVERRIDE, THE SAME NARROWNESS, as 2b for advice and 2c for definitions: `declinedFrame`
+  //   needs a market noun AND a verdict word, so nothing it should not own can be captured here.
+  {
+    const frame = declinedFrame(turn.raw);
+    if (frame) {
+      const declined = await composeFrameDeclinedScreen(frame);
+      if (declined) return declined;
+    }
   }
 
   // 2 · ★ OPERATION UNRESOLVED — CHIPS, NEVER A HANDLER (§6.2). This is checked BEFORE subject

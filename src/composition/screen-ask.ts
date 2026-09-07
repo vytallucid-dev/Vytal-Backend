@@ -53,12 +53,16 @@
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 import { extractConditions } from "./screen-conditions.js";
 import { extractLineItemConditions, type LineItemCondition } from "./line-item-conditions.js";
-import { MARKET_NOUNS } from "../router/question-shape.js";
+import { MARKET_NOUNS, definitionAsked } from "../router/question-shape.js";
+import { POND_CONTAINER_WORDS } from "../resolve/peer-group.js";
+import { namesFiledField } from "./line-item-conditions.js";
+import { PRICE_METRICS } from "./screen-grammar.js";
 import { parseBand } from "../scoring/read/universe-projection.service.js";
 import { BAND_LABEL } from "../scoring/read/universe-projection.types.js";
 import type { LabelBand } from "../scoring/read/health-view.types.js";
 import { FILING_REGISTRY } from "../filing/registry.js";
 import { STOCK_FINDINGS } from "../catalogue/stock-findings.js";
+import { SCREEN_FIELDS, SCREEN_FIELDS_IDS } from "../scoring/read/screen.types.js";
 import type { ScreenCondition } from "../scoring/read/screen.types.js";
 
 /**
@@ -248,6 +252,215 @@ const CHECK_WORDS = [...RED_FLAG_WORDS, ...PATTERN_WORDS, "finding", "findings",
  *   answers the same question over 2,291, which is a different and much larger set — see
  *   `composeFindingScreenAnswer` for why that denominator is said out loud rather than implied.
  */
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ A RANKING IS A SET REQUEST, AND THE DETECTOR HAD TO LEARN IT TOO.
+ *
+ * ⚠ MEASURED: "top 10 stocks by revenue" REACHED THE DEFINITION CARD. It carries no comparator, no
+ *   number, no band, no finding and no sector — nothing the detector recognised as a filter — so it
+ *   was not a screen, while the parser and the evaluator could both answer it completely. The same
+ *   shape of gap as the sector one, one clause along.
+ *
+ * ⚠ AND IT MATTERS MORE THAN IT LOOKS, because `declinedFrame` claims "top" as a SUPERLATIVE. Without
+ *   this, the best case was a frame decline — a health ranking substituted for the revenue ranking the
+ *   reader actually named. Now `screenAsk` runs first and the reader gets what they asked for.
+ *
+ * ★ AND IT IS NOT A LICENCE TO INVENT A LEADERBOARD. The ranking word alone is not enough: the
+ *   sentence must also NAME A FIELD from the derived vocabulary, so "the best stocks" still has no
+ *   basis and still reaches the frame decline. SC-12 is intact — the reader names what to rank on.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ */
+const RANK_WORDS = ["top", "largest", "biggest", "highest", "most", "lowest", "smallest", "cheapest",
+  "ranked", "rank", "leading", "bottom", "least"];
+
+export function rankAsked(raw: string): boolean {
+  const w = wordsOf(raw);
+  // ★ "NEAR ITS 52-WEEK HIGH" IS A RANKING, and it is the one phrasing with no rank word in it.
+  //   The reader named a basis and no bound, which is exactly what an ordering is for — and it is
+  //   the honest answer to a question we must not invent a cut-off for.
+  if (/\b(near|close to|approaching)\b/i.test(raw) && namesPriceField(raw)) return true;
+  if (!RANK_WORDS.some((x) => w.has(x))) return false;
+  // ★ THE BASIS MUST BE A FIELD WE HOLD. A superlative with nothing to rank on is a frame we decline.
+  return namesFiledField(raw) !== null || namesPriceField(raw) || namesReturnWindow(raw)
+    || namesScoredField(raw) || SCORED_LABEL_WORDS.some((x) => w.has(x));
+}
+
+/**
+ * ★ DOES THE SENTENCE NAME A SCORED FIELD? — DERIVED FROM THE SCORED REGISTRY, not from a word list.
+ *
+ * ⚠ THE WORD LIST MISSED THE METRICS. It held the five pillar names, so "top 10 by health score"
+ *   worked and "banks with return on equity above their peer group median" REACHED THE DEFINITION
+ *   CARD — `returnOnEquity` is a scored field with a perfectly good label, and nothing here read it.
+ *
+ * ★ SO IT READS `SCREEN_FIELDS` ITSELF. A metric added to the scored set becomes askable by the
+ *   detector in the same edit, which is the whole reason the filed vocabulary is generated too.
+ */
+const SCORED_PHRASES: readonly string[] = SCREEN_FIELDS_IDS
+  .flatMap((id) => [id, SCREEN_FIELDS[id].label])
+  .map((x) => ` ${x.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/ +/g, " ").trim()} `);
+
+export function namesScoredField(raw: string): boolean {
+  const hay = padded(raw);
+  return SCORED_PHRASES.some((x) => hay.includes(x));
+}
+
+/** The five pillar words, kept because "health"/"score" appear alone in ordinary phrasings. */
+const SCORED_LABEL_WORDS = ["health", "score", "foundation", "momentum", "ownership"];
+
+/**
+ * ★★ A PLEDGE THRESHOLD — and the NUMBER is what tells it from the check.
+ *
+ * ⚠ "Stocks with pledging above 30%" REACHED CLARIFYING CHIPS. "Pledge" is a one-word rule handle, so
+ *   `matchFindingRule` requires a check word beside it ("flag", "red") — correctly, or the bare word
+ *   "distribution" would claim R6. But a reader who typed a COMPARATOR AND A PERCENTAGE has not asked
+ *   about a check at all; they have named a bound, and R1's bar is fixed at half.
+ *
+ * ★ SO THE DISAMBIGUATOR IS THE NUMBER, which is exactly what the two questions differ by:
+ *     "pledging red flag"        → the R1 finding, fixed bars
+ *     "pledging above 30%"       → a threshold the reader chose
+ */
+/**
+ * ★ THE PRICE WORDS — the fourth thing the detector had to learn this batch, and by now the pattern
+ *   is the point: every new LEAF kind needs the detector taught alongside the parser, or the question
+ *   never reaches the parser at all. Sector, then ranking, then pledge, now price.
+ *
+ * ⚠ THEY COME FROM `PRICE_METRICS`, not from a list typed here. A second spelling of "market cap"
+ *   would be a vocabulary the detector accepts and the validator refuses — the reader gets a screen
+ *   that opens and then says their field does not exist.
+ */
+const PRICE_PHRASES: readonly string[] = Object.values(PRICE_METRICS)
+  .flatMap((m) => [m.label, ...m.aliases])
+  .map((x) => ` ${x.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/ +/g, " ").trim()} `);
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ A RETURN QUESTION NAMES NO FIELD — IT NAMES A WINDOW.
+ *
+ * ⚠ "Companies up more than 50% in the last year" REACHED THE CLARIFYING CHIPS. Every predicate above
+ *   looks for a FIELD NAME, and this sentence has none: the thing being measured is implied by the
+ *   period ("in the last year") and the direction ("up"). No alias list of return phrasings would have
+ *   caught it either, because the reader never says the word "return".
+ *
+ * ★ SO THE SIGNAL IS THE PAIR: a movement word AND a time window. Either alone is ordinary English —
+ *   "up" appears everywhere, and "last year" appears in questions about filings — and together they
+ *   are a question about what the price did.
+ *
+ * ⚠ AND IT CANNOT SWALLOW A TREND. A trend question names a FILED FIELD ("revenue growing for four
+ *   straight quarters"); this one names none, and `trendAsked` requires one. The two are decided by
+ *   what else is in the sentence, not by a shared word list.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ */
+const MOVE_WORDS = ["up", "down", "gained", "gain", "lost", "returned", "rose", "fell", "fallen",
+  "risen", "jumped", "dropped", "surged", "declined", "rallied", "gainers", "losers"];
+
+const WINDOW_PHRASES: readonly string[] = [
+  "in the last year", "in the past year", "over the last year", "over the past year", "in a year",
+  "in one year", "last year", "past year", "this year", "year to date", "ytd", "in 12 months",
+  "in the last 12 months", "over 12 months",
+  "in the last month", "in a month", "last month", "past month", "over the last month",
+  "in the last 3 months", "in three months", "in the last three months", "last 3 months",
+  "over the last 3 months", "in 3 months", "last three months",
+  "in the last 6 months", "in six months", "last 6 months", "in the last six months",
+  "over the last 6 months", "in 6 months", "last six months",
+];
+
+export function namesReturnWindow(raw: string): boolean {
+  const w = wordsOf(raw);
+  if (!MOVE_WORDS.some((x) => w.has(x))) return false;
+  const hay = padded(raw);
+  return WINDOW_PHRASES.some((x) => hay.includes(` ${x} `));
+}
+
+export function namesPriceField(raw: string): boolean {
+  const hay = ` ${raw.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/ +/g, " ").trim()} `;
+  return PRICE_PHRASES.some((p) => hay.includes(p));
+}
+
+/** A comparator followed by a number — the shape `extractConditions` insists on. One home, two users. */
+const COMPARATOR_THEN_NUMBER =
+  /(above|over|below|under|more than|less than|at least|at most|greater than|under a|within|>=?|<=?)\s*(a\s+)?\d/i
+  // ⚠ "WITHIN 10% OF ITS 52-WEEK HIGH" CARRIED NO COMPARATOR THIS KNEW, so the headline question for
+  //   the whole 52-week feature reached the clarifying chips. "within" is a bound like any other.
+  ;
+
+/**
+ * ★ A MOVEMENT WORD CAN CARRY THE NUMBER ITSELF — "up 50% in the last year" states a bound with no
+ *   comparator in it at all, and it is how readers actually ask about returns.
+ */
+const MOVE_THEN_NUMBER = /\b(up|down|gained|lost|rose|fell|risen|fallen|jumped|dropped|surged|returned)\s+(?:by\s+)?\d/i;
+
+/**
+ * ★ A TREND IS A SCREEN, and it carries no comparator and no number of its own — "companies whose
+ *   revenue has grown for four straight quarters" has a 4 in it that is a COUNT OF QUARTERS, not a
+ *   bound, so every predicate above would have passed it over.
+ *
+ * ⚠ THE MOVEMENT WORD ALONE IS NOT ENOUGH. "Growing companies" names nothing to measure growth in,
+ *   and answering it would mean choosing the field ourselves — the same ruling that keeps "the best
+ *   stocks" a frame we decline. The sentence must also name a field we hold.
+ */
+const TREND_WORDS = ["growing", "grown", "grew", "rising", "risen", "increasing", "increased",
+  "improving", "improved", "falling", "fallen", "declining", "declined", "shrinking", "dropping",
+  "consecutive", "straight", "streak"];
+
+/**
+ * ★ A COMPARISON AGAINST THE READER'S OWN GROUP — "cheaper than its sector median".
+ *
+ * ⚠ IT CARRIES NO NUMBER AT ALL, so every bound-shaped predicate here passes it over. The signal is a
+ *   BENCHMARK WORD beside a group word, which is the only thing such a question has in common.
+ */
+const BENCHMARK_WORDS = ["median", "average", "typical", "peers", "peer", "rest"];
+
+export function relativeAsked(raw: string): boolean {
+  const w = wordsOf(raw);
+  const hay = padded(raw);
+  const named = BENCHMARK_WORDS.some((x) => w.has(x))
+    || hay.includes(" than its sector ") || hay.includes(" than their sector ");
+  if (!named) return false;
+  // ★ AND SOMETHING TO COMPARE ON. "Better than its peers" names no measure, and choosing one would
+  //   be the frame we decline — see `rankAsked` for the same rule one clause along.
+  return namesFiledField(raw) !== null || namesPriceField(raw)
+    || namesScoredField(raw) || SCORED_LABEL_WORDS.some((x) => w.has(x));
+}
+
+/**
+ * ★ HOW MUCH A FIGURE MOVED — a movement word, a percentage, and a period, without a price window.
+ *
+ * ⚠ THIS IS NOT `namesReturnWindow`. That one is about the SHARE PRICE over a calendar window; this
+ *   is about a FILED FIGURE between two reporting periods. They are told apart by whether the
+ *   sentence names a filed field: "up 50% in the last year" is the price, "revenue up 20% year on
+ *   year" is the statement.
+ */
+export function growthAsked(raw: string): boolean {
+  if (namesFiledField(raw) === null) return false;
+  const hay = padded(raw);
+  const period = hay.includes(" year on year ") || hay.includes(" yoy ")
+    || hay.includes(" quarter on quarter ") || hay.includes(" qoq ")
+    || hay.includes(" year over year ") || hay.includes(" from a year ago ")
+    || hay.includes(" compared to last year ") || hay.includes(" versus last year ");
+  if (!period) return false;
+  return COMPARATOR_THEN_NUMBER.test(raw) || MOVE_THEN_NUMBER.test(raw);
+}
+
+export function trendAsked(raw: string): boolean {
+  const w = wordsOf(raw);
+  const moved = TREND_WORDS.some((x) => w.has(x))
+    || / in a row\b/i.test(raw) || /\bquarter (on|over) quarter\b/i.test(raw)
+    // ★ THE LOOSE FORM CARRIES NO TREND WORD AT ALL. "Revenue up in 3 of the last 4 quarters"
+    //   reads as ordinary English — the shape "N of the last M quarters" is the whole signal.
+    || /\b\d+\s+of\s+(?:the\s+)?(?:last\s+|past\s+)?\d+\s+quarters?\b/i.test(raw);
+  if (!moved) return false;
+  return namesFiledField(raw) !== null;
+}
+
+const PLEDGE_WORDS = ["pledge", "pledged", "pledging", "pledges"];
+
+export function pledgeThresholdAsked(raw: string): boolean {
+  const w = wordsOf(raw);
+  if (!PLEDGE_WORDS.some((x) => w.has(x))) return false;
+  // A comparator AND a number, in that order — the same shape `extractConditions` insists on.
+  return COMPARATOR_THEN_NUMBER.test(raw);
+}
+
 export function findingKindAsked(raw: string): "red_flag" | "pattern" | null {
   const w = wordsOf(raw);
   if (RED_FLAG_WORDS.some((x) => w.has(x))) return "red_flag";
@@ -292,7 +505,37 @@ export function matchFindingRule(raw: string): FindingHandle | null {
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
 // ★★ THE DETECTOR. One function, two consumers, and they cannot disagree about what a screen is.
 // ═══════════════════════════════════════════════════════════════════════════════════════════════════
-export function screenAsk(raw: string): ScreenAsk | null {
+/**
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ * ★★ A SECTOR IS A FILTER, AND THE DETECTOR HAD TO LEARN IT — measured, and it cost a whole capability.
+ *
+ * ⚠ "Banks and NBFCs with pledging above 50%" REACHED CLARIFYING CHIPS. The model parses it perfectly
+ *   — `(Banks OR NBFC & Others) AND Pledging Crisis` — but the parser never ran, because `screenAsk`
+ *   decides IF a sentence is a screen and it knew nothing about sectors: no numeric bound, no band,
+ *   and "pledging" is a one-word rule handle that needs a check word beside it. So the detector said
+ *   "not a screen" about a question the rest of the system could answer completely.
+ *
+ * ★ AND IT IS REGISTRY-RESOLVED LIKE EVERY OTHER FILTER. The 24 sector names come from the database,
+ *   passed in by the caller rather than read here, so this function stays pure and a word that is not
+ *   one of our sectors still resolves to nothing. A reader types "pharma" for "Pharma & Healthcare",
+ *   so the FIRST word of a sector name is what is matched, at four characters or more.
+ * ═══════════════════════════════════════════════════════════════════════════════════════════════════
+ */
+export function sectorNamed(raw: string, sectorNames: readonly string[]): string | null {
+  if (sectorNames.length === 0) return null;
+  const hay = ` ${raw.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/ +/g, " ").trim()} `;
+  let best: string | null = null;
+  let bestLen = 0;
+  for (const sec of sectorNames) {
+    const full = sec.toLowerCase();
+    if (hay.includes(` ${full} `) && full.length > bestLen) { best = sec; bestLen = full.length; }
+    const head = full.split(/[^a-z]+/).filter((w) => w.length >= 4)[0];
+    if (head && hay.includes(` ${head}`) && head.length > bestLen) { best = sec; bestLen = head.length; }
+  }
+  return best;
+}
+
+export function screenAsk(raw: string, sectorNames: readonly string[] = []): ScreenAsk | null {
   const shape: ScreenShape = countAsked(raw) ? "count" : "list";
 
   // ── 1 · A NUMERIC CONDITION IS A SCREEN ON ITS OWN, AND THAT IS UNCHANGED BEHAVIOUR.
@@ -310,12 +553,49 @@ export function screenAsk(raw: string): ScreenAsk | null {
   // ── 2 · THE OTHER TWO FILTERS ARE DEFINED TERMS, and a defined term is exactly what a definition
   //    question names. So they count as a FILTER only where the sentence also asks for a set —
   //    which is the whole distinction between the two observed failures and "what does pristine mean".
-  const intent = setIntent(raw);
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ A SECTOR NAME IS ITSELF A SET INTENT, AND WITHOUT THAT A WHOLE CLASS NEVER REACHED THE PARSER.
+  //
+  // ⚠ MEASURED: "banks and NBFCs with pledging above 50%" REACHED CLARIFYING CHIPS. It carries no
+  //   market noun — no "stocks", no "companies" — and no enumeration verb, so `setIntent` said no and
+  //   the detector never asked. The model parses that sentence perfectly.
+  //
+  // ★ "Banks" IS A SET OF COMPANIES. A sector name is not a filter that needs a subject beside it; it
+  //   IS the subject, in the plural, and a reader naming one has named a set.
+  //
+  // ⚠ AND THE ONE THING THAT MUST STILL WIN IS A DEFINITION. "What is the banking sector" names a
+  //   sector and is a question about a word — so the guard is `definitionAsked`, which is an existing
+  //   tested gate rather than a new list of phrases. Reusing it is what keeps this from becoming the
+  //   fifth occurrence of the class this file was written for.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  const sectorHit = sectorNamed(raw, sectorNames);
+  const ranked = rankAsked(raw);
+  const pledgeBound = pledgeThresholdAsked(raw);
+  // ★ A PRICE FIELD WITH A BOUND IS A SCREEN. "Market cap above 50,000 cr" names no filed column, so
+  //   nothing else in this function would have recognised it.
+  const priceBound = (namesPriceField(raw) || namesReturnWindow(raw))
+    && (COMPARATOR_THEN_NUMBER.test(raw) || MOVE_THEN_NUMBER.test(raw));
+  const trending = trendAsked(raw);
+  const growing = growthAsked(raw);
+  const relative = relativeAsked(raw);
+  // ⚠ AND NOT INSIDE A POND QUESTION. "How is the large-cap pharma peer group doing" names a sector
+  //   and belongs to PG, which answers it with a roster and a distribution strip. Letting the sector
+  //   make it a screen took the question AND left `distribution-strip` with no caller at all — both
+  //   caught by the invariants rather than by reasoning. `POND_CONTAINER_WORDS` is the pond family's
+  //   own list, imported rather than copied.
+  const pondShaped = POND_CONTAINER_WORDS.some((w) => wordsOf(raw).has(w));
+  const intent = setIntent(raw) || ranked || pledgeBound || priceBound || trending || growing || relative
+    || (sectorHit !== null && !definitionAsked(raw) && !pondShaped);
   const band = intent ? extractBand(raw) : null;
   const finding = intent ? matchFindingRule(raw) : null;
   const kind = intent && !finding ? findingKindAsked(raw) : null;
+  const sector = intent ? sectorHit : null;
 
-  if (conditions.length === 0 && lineItems.length === 0 && !band && !finding && !kind) return null;
+  // ★ A RANKING IS ITSELF A REASON TO SCREEN — there may be no filter at all, and "the 10 largest by
+  //   revenue" is still a set. The tree the fallback builds would be empty, so the parsed path is the
+  //   only one that can answer it; where the parse is unavailable the ask falls through as before.
+  if (conditions.length === 0 && lineItems.length === 0 && !band && !finding && !kind && !sector
+      && !ranked && !pledgeBound && !priceBound && !trending && !growing && !relative) return null;
 
   // ── 3 · WHICH LAYER. A finding filter reaches every stock we hold; a metric or band filter reaches
   //    the scored universe alone. Where both are named the finding layer answers, because it is the

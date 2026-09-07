@@ -642,6 +642,24 @@ export function iPledgeSilent(a: AnswerUnderTest): Violation[] {
   //   exact sentence that shipped, and it is a false statement with nothing numeric in it.
   const ZERO_CLAIM = /(?:none|nothing|no part|not any|zero)\b[^.;]{0,60}?pledg|pledg\w*[^.;]{0,60}?\b(?:is nil|none|nothing|zero)\b/i;
   /**
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   * ★★ A BOUND THE READER TYPED IS NOT A MAGNITUDE WE PUBLISHED.
+   *
+   * ⚠ "Companies with pledging above 50% of the promoter holding" FIRED THIS GATE, and it is the
+   *   screen restating the reader's own filter — required by the restatement ruling, and generated
+   *   from the validated tree so it cannot describe anything but what ran. Refusing it would mean a
+   *   pledge threshold could be executed and never described, which is worse than either.
+   *
+   * ★ THE DISTINCTION IS STRUCTURAL, NOT COSMETIC: a threshold has a COMPARATOR in front of the
+   *   number. "pledging above 30%" selects; "pledged 30% of the promoter stake" asserts. Only the
+   *   second is a claim about a company, and only the second is what the ruling forbids.
+   *
+   * ⚠ AND IT IS DELIBERATELY NARROW. Without the comparator this exempts nothing, so a company-level
+   *   pledge figure still fires exactly as before — see the negative control in the harness.
+   * ═══════════════════════════════════════════════════════════════════════════════════════════════
+   */
+  const FILTER_BOUND = /pledg\w*\s+(?:above|over|below|under|at least|at most|more than|less than|exactly)\s+\d/i;
+  /**
    * ⚠ AND THE HEDGE EXEMPTION, WHICH THE FIRST VERSION OF THIS GATE DID NOT HAVE AND WHICH IT NEEDED
    *   WITHIN ONE RUN. It fired 17 times on the ruling's OWN sentences — "We cannot state pledging for
    *   this company. The pledge field is zero-filled…" contains `pledg` near `zero`, and "there is
@@ -673,7 +691,9 @@ export function iPledgeSilent(a: AnswerUnderTest): Violation[] {
   const check = (text: string, where: string) => {
     if (AUTHORED.has(text.trim())) return;
     if (CLAIM.test(text)) {
-      v.push({ invariant: "I-PLEDGE-SILENT", where, detail: `a pledge magnitude reached the reader: "${text.slice(0, 110)}"` });
+      if (!FILTER_BOUND.test(text)) {
+        v.push({ invariant: "I-PLEDGE-SILENT", where, detail: `a pledge magnitude reached the reader: "${text.slice(0, 110)}"` });
+      }
     } else if (ZERO_CLAIM.test(text) && !HEDGED.test(text)) {
       v.push({ invariant: "I-PLEDGE-SILENT", where, detail: `a pledge ABSENCE was asserted, and absence is what this field cannot prove: "${text.slice(0, 110)}"` });
     }
@@ -1224,7 +1244,42 @@ export function iStatesSurvive(a: AnswerUnderTest): Violation[] {
     }
     const totals = [...shownTotals, ...digestLines];
 
-    // A findings screen is the one that reports a FIRED count. Nothing else in the product does.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    // ⚠⚠ RE-POINTED A SECOND TIME, AND THE SECOND MOVE IS THE ONE THAT MATTERS.
+    //
+    //    This keyed on a digest total labelled exactly "Fired", which the OLD findings block emits.
+    //    When the tree evaluator took over every screen, that label stopped appearing — so this gate
+    //    matched nothing, skipped every answer, and REPORTED GREEN. It had been dead for a whole
+    //    batch. That is precisely the failure this file's header names, and it happened here.
+    //
+    // ★ SO IT NOW KEYS ON THE SHAPE THE PROPERTY ACTUALLY HAS: a findings leaf emits three sibling
+    //   digest lines — "<leaf> · fired", "· ran, did not fire", "· could not be checked" — and all
+    //   three must be present. A fold shows up as a missing sibling, which no amount of renaming can
+    //   hide.
+    // ═══════════════════════════════════════════════════════════════════════════════════════════
+    const firedLines = totals.filter((t) => / · fired$/.test(t.label));
+    if (firedLines.length === 0) {
+      // ⚠ AND A SCREEN WITH NO FINDINGS LEAF IS NOT A FAILURE — it is a metric or band screen, which
+      //   has no such states. Falling through silently is correct here and only here.
+      const legacy = totals.find((t) => /^fired$/i.test(t.label));
+      if (!legacy) continue;
+    }
+    for (const f of firedLines) {
+      const stem = f.label.replace(/ · fired$/, "");
+      const ran = totals.find((t) => t.label === `${stem} · ran, did not fire`);
+      const could = totals.find((t) => t.label === `${stem} · could not be checked`);
+      if (!ran || !could) {
+        v.push({
+          invariant: "I-STATES-SURVIVE", where: at,
+          detail: `"${stem}" reports a fired count without both siblings `
+            + `(ran-and-did-not-fire: ${ran ? "present" : "MISSING"}, `
+            + `could-not-be-checked: ${could ? "present" : "MISSING"}) — a company we could not check `
+            + "is being counted as one that passed",
+        });
+      }
+    }
+    if (firedLines.length > 0) continue;
+
     const fired = totals.find((t) => /^fired$/i.test(t.label));
     if (!fired) continue;
 

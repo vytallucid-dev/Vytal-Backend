@@ -237,14 +237,22 @@ export async function composeUniverseAnswer(): Promise<MarketTurnResult | null> 
 //   highest first". Picking a threshold here would be a number nobody typed selecting the rows the
 //   reader then reads as the answer, which is the whole reason conditions are code-extracted (§6.5).
 const FRAME_COPY: Record<DeclinedFrame, { decline: string; basis: string; coverage: string }> = {
+  // ⚠ THIS COPY WAS TRUE WHEN IT WAS WRITTEN AND IS NOT ANY MORE. It said "There is no
+  //   price-to-earnings, no price-to-book, no market cap" — and batch 2 added P/E and market cap as
+  //   filterable fields. A decline that describes our coverage has to be re-read whenever the
+  //   coverage moves, or it becomes the most confident wrong sentence on the page.
+  //
+  // ★ WHAT IS STILL DECLINED IS THE VERDICT, not the data. "Undervalued" is a judgement about what a
+  //   share is worth; a P/E is a reading. So the decline now holds the line where the line actually
+  //   is, and points at the filter the reader can have.
   valuation: {
     decline:
-      "We do not publish a view on whether a share is cheap or expensive, and in this case we could " +
-      "not filter on one even if we did: nothing in the screen is a price multiple.",
+      "We do not publish a view on whether a share is cheap or expensive — that is a judgement about " +
+      "what a business is worth, and it depends on things we do not hold.",
     basis:
-      "Every field a screen can filter on is a reading of the filings — returns, margins, leverage, " +
-      "the health score. There is no price-to-earnings, no price-to-book, no market cap. So what " +
-      "follows is ranked on financial health, which is a different question from what a share costs.",
+      "What we can do is filter on the figures behind it: ask for a P/E below a number, or a market " +
+      "cap above one, and you will get the companies that clear it. What follows is ranked on " +
+      "financial health, which is a different question again from what a share costs.",
     coverage: "The scored universe, ranked on health — not on price",
   },
   superlative: {

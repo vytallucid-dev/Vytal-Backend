@@ -124,6 +124,10 @@ function display(v: number, unit: LineItemCondition["field"]["unit"]): string {
     case "fraction": return `${g(v * 100, 1)}%`;
     case "times": return `${g(v, 1)}×`;
     case "perShare": return `₹${g(v)}`;
+    // ⚠ ADDED WHEN THE UNIT UNION WIDENED FOR `receivablesDays`. A switch over a union with no
+    //   default is the right shape — it FAILS TO COMPILE when the union grows, which is how this was
+    //   caught rather than shipping a blank cell.
+    case "days": return `${g(v, 0)} days`;
   }
 }
 

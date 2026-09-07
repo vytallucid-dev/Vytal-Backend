@@ -345,6 +345,84 @@ export const MARKET_CASES: readonly Case[] = [
   { label: "SC · ★ a combined filter across two universes", question: "stocks with health score above 70 and revenue above 500cr",
     scope: "market", slots: { operation: "unresolved", subjects: [] } },
 
+  // ═══ ★★ MODEL-PARSED CONDITIONS — scope, sectors, and the refusal ═════════════════════════════
+  //
+  // ⚠ THESE ROWS COST A MODEL CALL EACH in the non-mock arm, and that is the point: the parse is the
+  //   new behaviour and a matrix that only exercised the regex fallback would test the degraded path
+  //   exclusively. The mock arm still runs them through the AND-only extractor, so both readings are
+  //   covered by the same rows.
+  //
+  // ★ SCOPE. "(Banks OR NBFC & Others) AND Pledging Crisis" — the reading a regex cannot express, and
+  //   the question that reached clarifying chips until the detector learned that a sector name is a
+  //   set of companies.
+  { label: "SC · ★ OR across two sectors, plus a finding", question: "banks and NBFCs with pledging above 50%",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ NOT. The operator whose scope decides the answer, and whose negation must happen inside the
+  //   leaf's own population — otherwise the companies a check never ran on are called clean.
+  { label: "SC · ★ a NOT over a sector", question: "stocks with revenue above 100cr but not in banking",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ THE DROPPED CONDITION, NOW FILTERED. "Pharma companies with revenue above 100cr" returned the
+  //    whole market with "pharma" silently ignored; sector is on 2,290 of 2,291 stocks, so it filters.
+  { label: "SC · ★ a sector filter", question: "pharma companies with revenue above 100cr",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ FINDINGS × FIGURES — the intersection across the two widest universes, three states intact.
+  { label: "SC · ★ findings crossed with figures", question: "stocks with a pledging red flag and revenue above 100cr",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ THE MAGNITUDE REFUSAL. A bare number against a crore column is the case that silently succeeds,
+  //    so it is refused with a reason rather than run — and the refusal is an ANSWER, not a fallthrough.
+  { label: "SC · ★ a bare magnitude, refused", question: "revenue above 1000000000",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+
+  // ═══ ★★ BATCH 2 — THE FOUR NEW LEAF KINDS, EACH THROUGH THE LIVE ROUTER ═══════════════════════
+  //
+  // ⚠ EVERY ONE OF THESE IS HERE BECAUSE THE LEAF ALONE WAS NOT ENOUGH. Four times this batch a leaf
+  //   was built, validated and executed, and the question still reached the definition card — the
+  //   DETECTOR had not been taught. `verify-screen-ask` §6 asserts the detector sees them; these rows
+  //   assert the whole path does, with the real router in front of it.
+  //
+  // ★ A PRICE-SHAPED CONDITION. Market cap is not a filed column, so the derived vocabulary cannot
+  //   hold it and validation rewrites the reader's `cmp` into a computed leaf.
+  { label: "SC · ★ a price-shaped condition", question: "companies with market cap above 50000 cr",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ A P/E, whose earnings side follows `chooseBasis` and whose loss-makers are in NEITHER set —
+  //   without that, every loss-making company would rank as the cheapest on the page.
+  { label: "SC · ★ a P/E, and a loss is not a low one", question: "stocks with a P/E below 15",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ A RANKING WITH NO FILTER — the reader named a basis and a count, and nothing to select on.
+  { label: "SC · ★ a ranking with no filter", question: "top 10 stocks by revenue",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ A TREND, where the archive's DEPTH becomes the answer's population and says so.
+  { label: "SC · ★ a trend, and the depth floor", question: "companies whose revenue has grown for 4 straight quarters",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ A PLEDGE THRESHOLD — the same word as the R1 check, told apart by the number the reader typed.
+  { label: "SC · ★ a pledge threshold, not the check", question: "stocks with pledging above 30%",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ PRICE HISTORY — the 52-week band was fully populated and unreachable. Cross-checked in SQL:
+  //   566 within 10% of the high, 223 up more than 50% over a year.
+  { label: "SC · ★ near a 52-week extreme", question: "stocks within 10% of their 52 week high",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ A BOUND WE MUST NOT INVENT. No distance is named, so this is an ORDERING — choosing 5% or 10%
+  //    ourselves would be a cut-off the reader never set, and the rows would look like an answer.
+  { label: "SC · ★ a level with no bound is a ranking", question: "stocks near their 52 week high",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ A RETURN, which names no field at all — the window and the direction are the whole question.
+  { label: "SC · ★ a return over a window", question: "companies up more than 50% in the last year",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ HOW MUCH a filed figure moved. The base is the danger: 451 of 3,406 net-profit year-on-year
+  //    pairs have a base at or below zero, and no percentage exists off one.
+  { label: "SC · ★ a growth magnitude", question: "companies with revenue up more than 20% year on year",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★ THE LOOSE TREND — one flat quarter no longer disqualifies a company that is plainly growing.
+  { label: "SC · ★ a trend with a window", question: "stocks with revenue up in 3 of the last 4 quarters",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ A BOUND THAT IS NOT A NUMBER — every row compared against its own sector's median.
+  { label: "SC · ★ compared with its own sector", question: "stocks cheaper than their sector median p/e",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+  // ★★ AN EMPTY THAT IS A COVERAGE GAP, NOT A MISSED BOUND: zero of the 12 banks we score carry a
+  //    return-on-equity value, so "none matched" would have been a false negative.
+  { label: "SC · ★ empty because we do not hold it", question: "banks with return on equity above their peer group median",
+    scope: "market", slots: { operation: "unresolved", subjects: [] } },
+
   // ═══ ⚠⚠ THE DOOR THIS FIX MUST NOT CLOSE — AND WHY THERE IS NO ROW FOR IT HERE ════════════════
   //
   //   A definition question must still reach the definition path. It is the half every previous fix

@@ -8,6 +8,56 @@ ground it used to hold.
 
 ---
 
+## `verify-browser.ts` — retired 2026-09-06, by Operator decision
+
+**Ran:** `npm run verify:browser` (never wired into `build`; needed both servers, a driver and a session)
+
+**What it asserted.** Layer 3 — a real Chromium, a real signed-in session, real clicks. 28 assertions
+over nine sections, driving exactly **three turns**:
+
+| turn | question | what it proved |
+|---|---|---|
+| 1 | *"how is my portfolio doing"* | sections render · no placeholder or interpolation hole in visible text · nothing overflows |
+| 2 | the first follow-up chip (last run: *"What is on my watchlist?"*) | a chip's handler does something, not merely that it exists |
+| 3 | *"add TCS to my watchlist"* | ★ a POST reaching the API **authenticated**, returning 201, replayed as "already done", un-pinned in a `finally` |
+
+Then §7–8 reloaded and re-opened the conversation — replayed from cache, asking nothing new.
+
+**Last run — 2026-09-05: ✅ ALL PASS — 28 passed, 0 failed.** ⚠ That was BEFORE batch 1's tree
+evaluator landed, so its last verdict does not cover the current screen path. It was blocked from
+re-running on 2026-09-06 by the shared daily model budget (480/480), not by any failure.
+
+**Why it is retired.** It is a browser gate, and the Operator verifies the browser by eye. Same
+judgement as `verify-ux.ts` the day before, and the same call to make.
+
+⚠ **WHAT IS GIVEN UP, AND IT IS NOT THE SAME AS THE UX GATE'S.** That one covered layout, which an eye
+covers well. This one covered three things an eye cannot:
+
+- **TRANSPORT.** A source scan (C1) proves a call goes *through* `apiFetch`. Only a real browser proved
+  the request arrived at the other origin **authenticated** and came back 2xx. Nothing now proves that
+  end to end; C1 still proves the call is routed correctly, which is the shape and not the outcome.
+- **A DEAD CONTROL.** C2 proves a `<button>` has an `onClick`. Only a click proved the handler was
+  wired to something that happens. That is now unproven.
+- **THE RENDERED SENTENCE.** Its own example: `"nothing filed with us for  yet"` — correct in the
+  payload, broken on screen. `I-INTERPOLATION` and the placeholder scan still run over PAYLOADS in
+  `verify-answer-invariants`, so a hole in a payload is caught; a hole introduced by the renderer is
+  not.
+
+**What holds the ground now.**
+
+- `verify-answer-invariants` (109 assertions) holds every property about the ANSWER — `I-FALSE-ZERO`,
+  `I-DENOMINATOR`, `I-STATES-SURVIVE`, `I-RAW-TOKEN`, `I-BOUNDARY` and the rest — plus C1–C5, the
+  client-contract scans that read the frontend's source. No browser required.
+- `verify-routes` still proves every emitted link resolves (11,508 across the slot space).
+- `verify-screen-ask` holds the routing boundary offline.
+- The write path is exercised by nothing automated. **That is the real gap this retirement opens**, and
+  it is worth knowing before a change to `apiFetch`, to auth, or to an ACTION control.
+
+⚠ `src/harness/browser.ts` is now imported by NOTHING in `src/` — both browser gates that used it are
+retired. It is kept rather than deleted because it holds the three viewport definitions and the
+sign-in flow, and `tmp/` harnesses still drive it; a future browser check should start from it rather
+than re-derive sign-in.
+
 ## `verify-ux.ts` — retired 2026-09-05, by Operator decision
 
 **Ran:** `npm run verify:ux` (never wired into `build`; needed both servers, a driver and a session)
@@ -48,10 +98,9 @@ somebody looking.
 
 **What holds the ground now.**
 
-- `verify:browser` (kept) still drives a real session and asserts the two things an eye cannot check:
-  that a request arrives at the API **authenticated** and returns 2xx, and that a control's handler
-  is bound to something that happens. It also carries `I-INTERPOLATION` and the placeholder scan over
-  the rendered DOM, so a `${}` hole or a `[missing …]` on screen is still caught mechanically.
+- ~~`verify:browser` (kept)~~ — ⚠ **retired the following day; see its own entry above.** When this
+  was written it still covered the authenticated round trip and the bound-handler check. It no longer
+  does, so the ground it was holding here is now genuinely uncovered rather than merely moved.
 - `verify:answer-invariants` holds every property that is about the ANSWER rather than its layout —
   `I-FALSE-ZERO`, `I-DENOMINATOR`, `I-STATES-SURVIVE`, `I-RAW-TOKEN` and the rest — and needs no
   browser at all.

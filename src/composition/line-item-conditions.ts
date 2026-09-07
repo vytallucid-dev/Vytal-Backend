@@ -170,5 +170,21 @@ export function extractLineItemConditions(text: string): LineItemCondition[] {
   return out;
 }
 
+/**
+ * ★ DOES THE SENTENCE NAME A FIELD WE HOLD? — for the detector, which needs to know that "top 10
+ *   stocks by revenue" is about something screenable before it decides the question is a screen.
+ *
+ * ⚠ IT REUSES `PHRASES`, THE SAME LONGEST-FIRST TABLE THE EXTRACTOR MATCHES ON. A second notion of
+ *   "names a field" would drift from the first, and the drift would show up as a question the
+ *   detector waved through and the extractor then found nothing in.
+ */
+export function namesFiledField(raw: string): string | null {
+  const sentence = raw.toLowerCase().replace(/[^a-z0-9 ]+/g, " ").split(/ +/).filter(Boolean);
+  if (sentence.length === 0) return null;
+  const hay = ` ${sentence.join(" ")} `;
+  for (const { phrase, field } of PHRASES) if (hay.includes(` ${phrase} `)) return field.label;
+  return null;
+}
+
 /** How many distinct fields a reader could filter on here — for the report and for the gate. */
 export const LINE_ITEM_FIELD_COUNT = DERIVED_SCREEN_FIELDS.length;

@@ -15,7 +15,7 @@
 //     working on the answer layer   `npm run verify:ai`       typecheck + the 16 copy gates that can
 //                                                             break + cross-repo + this
 //     iterating inside one family   `npm run verify:ai-fast`  the same, one matrix arm (see §3)
-//     before calling it done        `npm run build` once, then `verify:live`, `verify:browser`,
+//     before calling it done        `npm run build` once, then `verify:live`,
 //                                   `verify:ux`, `verify:router-live`
 //
 // ⚠ AND `npm run build` IS 29 COPY GATES, OF WHICH 13 GUARD SUBSYSTEMS THE ANSWER LAYER CANNOT TOUCH
@@ -298,7 +298,14 @@ async function main() {
           emptyPhrase?: string;
         }
       | undefined;
-    const matched = Number(p?.totals?.find((t) => t.label === "Matched")?.value ?? "0");
+    // ⚠ THE COUNT MOVED OFF THE CARD AND THE GATE FOLLOWED IT. Screens no longer render a totals row
+    //   — the Operator's call, because it restated the paragraph above — so the matched count lives in
+    //   `totalAvailable` (and in the digest, for the model). Reading only `totals` made this assertion
+    //   compare 0 against 60 rendered rows: a gate reporting a defect that was its own staleness.
+    const totalAvailable = (p as { totalAvailable?: number | null } | undefined)?.totalAvailable;
+    const matched = typeof totalAvailable === "number"
+      ? totalAvailable
+      : Number(p?.totals?.find((t) => t.label === "Matched")?.value ?? "0");
     const shown = p?.rows?.length ?? 0;
     ok(`${label} — the count and the list agree`,
       !!p && (matched === 0 ? shown === 0 : shown > 0),

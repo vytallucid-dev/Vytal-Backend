@@ -81,6 +81,67 @@ const FINANCIAL_MODELS: readonly {
   { model: "GeneralInsuranceFundamental", grain: "annual", industry: "general_insurance" },
 ];
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ★★ WHERE THE GLOSS AND THE SCHEMA NAME THE SAME QUANTITY DIFFERENTLY.
+//
+// ⚠ THE PREMISE THIS CORRECTS: 24 gloss keys were reported as "computed at read time, no stored
+//   column". MEASURED against the schema, most of them are STORED — under a different name. The
+//   screen's gap was a NAMING gap, not a computation gap, and the difference matters enormously:
+//   a stored column is a WHERE clause, and a computed one is a pass over 2,284 companies.
+//
+//     grossNpaRatio  ↔ gnpaPct        netNpaRatio ↔ nnpaPct     grossNpaAmount ↔ gnpaAbsolute
+//     provisionCoverageRatio ↔ pcr    netInterestIncome ↔ nii   preProvisionOperatingProfit ↔ ppop
+//     staffCost ↔ employeesCost       freeCashFlow ↔ fcf        capitalExpenditure ↔ capex
+//
+//   The NPA ratios are the ones that matter most — they are how anyone screens a bank, and 40 banking
+//   stocks plus 143 NBFCs were otherwise unscreenable on the thing that defines them. They cost
+//   nothing: they were always columns.
+//
+// ★ IT IS A DECLARED CORRESPONDENCE, RECONCILED BOTH WAYS. An entry naming a gloss that does not
+//   exist fails; an entry naming a field no financial table has fails; an entry for a gloss that
+//   already matches a column of its own name fails as redundant. So it cannot rot into a list of
+//   wishes, which is exactly what the hand-kept `SCREEN_FIELDS_IDS` had become.
+//
+// ⚠ AND IT IS NOT A PLACE TO PUT A COMPUTATION. `tradeReceivables` is `tradeReceivablesCurrent +
+//   tradeReceivablesNoncurrent` — a SUM, not a rename — and it is deliberately absent here. A map
+//   entry that quietly meant "add two columns" would be a computation hiding in a lookup table.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+const GLOSS_TO_FIELD: Readonly<Record<string, string>> = {
+  // ── banking, and the reason this batch exists ──
+  grossNpaRatio: "gnpaPct",
+  netNpaRatio: "nnpaPct",
+  grossNpaAmount: "gnpaAbsolute",
+  netNpaAmount: "nnpaAbsolute",
+  provisionCoverageRatio: "pcr",
+  netInterestIncome: "nii",
+  preProvisionOperatingProfit: "ppop",
+  staffCost: "employeesCost",
+  returnOnAssetsQuarterly: "roaQuarterly",
+  // ── non-financial ──
+  freeCashFlow: "fcf",
+  capitalExpenditure: "capex",
+  debtDueWithinAYear: "borrowingsCurrent",
+  // ── NBFC ──
+  creditCost: "creditCostPct",
+  loanBook: "loans",
+  investmentBook: "investments",
+  // ⚠ `returnOnEquity` IS DELIBERATELY ABSENT. `roe` is PERCENT on Fundamental and FRACTION on
+  //   NbfcFundamental — the same reader-name stored in two units. The generator's one-unit rule would
+  //   drop it anyway; naming it here would only make the drop look like an oversight rather than the
+  //   measured data conflict it is. It stays reachable through the SCORED path, which has one unit.
+};
+
+/**
+ * ★ A UNIT THE SCHEMA DOES NOT ANNOTATE, DECLARED — and only where the column's meaning fixes it.
+ *
+ * ⚠ `receivablesDays` is Decimal(10,2) with no `// UNIT:` comment, so `unitOf` refuses it (correctly —
+ *   guessing currency would filter a day count against a crore threshold). It is days, unambiguously,
+ *   and "days customers take to pay" is a screen a reader will want. Declared rather than inferred.
+ */
+const UNIT_OVERRIDE: Readonly<Record<string, "days">> = {
+  receivablesDays: "days",
+};
+
 interface ParsedField { field: string; column: string; unit: string | null; decimal: [number, number] | null }
 interface ParsedModel { name: string; table: string; fields: ParsedField[] }
 
@@ -119,7 +180,7 @@ function parseSchema(src: string): Map<string, ParsedModel> {
  *   reader would obviously want to screen on, dropped because the generator's vocabulary was
  *   narrower than the schema's.
  */
-type Unit = "currency" | "percent" | "fraction" | "perShare" | "times";
+type Unit = "currency" | "percent" | "fraction" | "perShare" | "times" | "days";
 
 function unitOf(f: ParsedField): Unit | null {
   switch (f.unit) {
@@ -164,6 +225,27 @@ function main(): void {
     string, { label: string; aliases?: readonly string[] }
   >;
 
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ⚠ THE CORRESPONDENCE IS RECONCILED BOTH WAYS, HERE, BEFORE ANYTHING IS EMITTED. A hand-written
+  //   map is exactly the thing that rots — which is what `SCREEN_FIELDS_IDS` did — so every entry has
+  //   to earn its place on each run.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  const allFields = new Set(FINANCIAL_MODELS.flatMap((fm) => models.get(fm.model)!.fields.map((f) => f.field)));
+  const mapErrors: string[] = [];
+  for (const [glossKey, schemaField] of Object.entries(GLOSS_TO_FIELD)) {
+    if (!(glossKey in glosses)) mapErrors.push(`"${glossKey}" is not a gloss key — nothing names it to a reader`);
+    else if (!allFields.has(schemaField)) mapErrors.push(`"${glossKey}" → "${schemaField}", which no financial table has`);
+    else if (allFields.has(glossKey)) mapErrors.push(`"${glossKey}" is already a column of its own name — the entry is redundant`);
+  }
+  for (const k of Object.keys(UNIT_OVERRIDE)) {
+    if (!allFields.has(GLOSS_TO_FIELD[k] ?? k)) mapErrors.push(`unit override "${k}" names no column`);
+  }
+  if (mapErrors.length) {
+    console.error("❌ the gloss→schema correspondence does not reconcile:");
+    for (const e of mapErrors) console.error(`   ${e}`);
+    process.exit(1);
+  }
+
   interface Source { table: string; column: string; grain: string; industry: string }
   interface Field { key: string; label: string; aliases: string[]; unit: Unit; sources: Source[] }
 
@@ -172,10 +254,12 @@ function main(): void {
   for (const key of Object.keys(glosses).sort()) {
     const sources: Source[] = [];
     let unit: Unit | null = null;
+    // ★ THE SCHEMA'S NAME FOR THIS GLOSS — its own, or the declared correspondence.
+    const schemaField = GLOSS_TO_FIELD[key] ?? key;
     for (const fm of FINANCIAL_MODELS) {
-      const pf = models.get(fm.model)!.fields.find((x) => x.field === key);
+      const pf = models.get(fm.model)!.fields.find((x) => x.field === schemaField);
       if (!pf) continue;
-      const u = unitOf(pf);
+      const u = UNIT_OVERRIDE[key] ?? unitOf(pf);
       if (u === null) continue;
       // ⚠ ONE UNIT PER FIELD. If two tables store the same reader-name in different units, the reader's
       //   number would mean two things in one screen — so the field is dropped and reported, never
@@ -201,7 +285,7 @@ function main(): void {
 
 /** How a reader's number maps onto the stored one — a percent typed against a fraction column is a
  *  screen that silently returns everything or nothing. */
-export type ScreenFieldUnit = "currency" | "percent" | "fraction" | "perShare" | "times";
+export type ScreenFieldUnit = "currency" | "percent" | "fraction" | "perShare" | "times" | "days";
 
 export interface ScreenFieldSource {
   readonly table: string;

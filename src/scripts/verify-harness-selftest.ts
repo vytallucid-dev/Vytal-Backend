@@ -128,6 +128,25 @@ function phase1Batch1Controls(): void {
     answer({ prose: { opening: ["51.4% of the promoter holding is pledged."], leads: {}, after: {}, close: "" } }),
     answer({ prose: { opening: [PLEDGE_PHRASE.disclosed_unquantified], leads: {}, after: {}, close: "" } }),
   );
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  // ★★ THE NARROWING HAS ITS OWN CONTROL, because an exemption with no control is a hole.
+  //
+  //   A pledge THRESHOLD must be describable — "companies with pledging above 50%" is the reader's own
+  //   filter, generated from the validated tree, and a screen that runs a bound it may not state is
+  //   worse than one that states it. So `FILTER_BOUND` exempts a magnitude behind a COMPARATOR.
+  //
+  // ⚠ AND THIS ROW IS WHAT KEEPS THAT FROM WIDENING. The broken artefact is a company-level pledge
+  //   figure with no comparator in front of it — the exact sentence the ruling forbids — and it must
+  //   still fire. If someone loosens the exemption to "any sentence containing a pledge word and a
+  //   number", this row goes red.
+  // ═══════════════════════════════════════════════════════════════════════════════════════════════
+  control(
+    "I-PLEDGE-SILENT · a company's own pledge figure still fires; a reader's threshold does not",
+    iPledgeSilent,
+    answer({ prose: { opening: ["Reliance has pledged 51.4% of the promoter holding."], leads: {}, after: {}, close: "" } }),
+    answer({ prose: { opening: ["Companies with pledging above 50% of the promoter holding."], leads: {}, after: {}, close: "" } }),
+  );
+
   control(
     "I-PLEDGE-SILENT · a numeric pledge field crossing to the browser",
     iPledgeSilent,

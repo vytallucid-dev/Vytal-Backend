@@ -53,7 +53,7 @@ export type MissOrigin = "reader" | "harness";
  * without a code change; `setMissLogOrigin` covers an in-process harness that builds the matrix
  * directly. Default `reader`, because a turn that nobody marked is a turn a person asked for.
  *
- * ⚠ KNOWN GAP, STATED SO IT IS NOT MISTAKEN FOR COVERAGE. `verify:browser` and `verify:ux` drive the
+ * ⚠ KNOWN GAP, STATED SO IT IS NOT MISTAKEN FOR COVERAGE. the retired browser gates drove the
  *   RUNNING SERVER over HTTP as an authenticated account. At the server those requests are
  *   indistinguishable from a reader's and record `reader`. Closing that would mean trusting a
  *   client-supplied header (a hole) or hard-coding a test account id (a lie the day a person uses it).
